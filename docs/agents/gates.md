@@ -151,10 +151,12 @@ just attest --only check-sea --build build-release
 - `--build DIR` reuses a build of this source tree; without
   `CMakeCache.txt` it configures one (Release) with the CMake arguments
   after `--`. The build is brought up to date first.
-- bench-perf compares the median CPU time per job over 3 runs
-  (`--perf-runs`) of the default configuration, which uses z3, and fails
-  when the total over the jobs both sides solve grows by more than 10 %
-  (`--perf-threshold`). Yices times vary with its random seed and need
+- bench-perf compares the CPU time per job of one run per side
+  (`--perf-runs N`: N runs, medians) of the default configuration, which
+  uses z3, and fails when the total over the jobs both sides solve grows
+  by more than 10 % (`--perf-threshold`). z3 times vary little; after a
+  failure, rerun with `--perf-runs 3` before looking for a cause.
+  Yices times vary with its random seed and need
   several seeds per job; they are not compared. The base is `--base`
   (default: the merge base with `origin/main`). Each vcc gate run is
   recorded per SHA in `$SEA_BENCH_HOME/attest/`; without a record for
@@ -170,9 +172,13 @@ requires a pull request approved by one reviewer other than its author
 `commits` and `docs` jobs, and the
 `sea-mlir/check-sea` and `sea-mlir/bench-vcc` statuses on the branch's
 latest commit, up to date with `main`. It blocks force pushes and
-deleting the branch, and allows merge commits and rebase merges: a squash
-merge would take the pull request's title as the commit message, which
-the `commits` job does not check. Organization admins may bypass the
+deleting the branch, and allows only merge commits: they keep the
+pull request's commits, with the SHAs attest posted statuses on, and the
+merge's tree is the attested head (the branch must be up to date). A
+rebase merge rewrites every commit, so nothing on `main` would carry a
+status; a squash merge also takes the pull request's title as the commit
+message, which the `commits` job does not check. `git log --first-parent
+main` shows one line per pull request. Organization admins may bypass the
 rules only through a pull request (GitHub shows them a "merge without
 waiting for requirements" option): the maintainer uses it, case by case,
 for pull requests that have no second reviewer. Agents never merge.
