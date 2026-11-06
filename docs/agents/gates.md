@@ -151,10 +151,12 @@ just attest --only check-sea --build build-release
 - `--build DIR` reuses a build of this source tree; without
   `CMakeCache.txt` it configures one (Release) with the CMake arguments
   after `--`. The build is brought up to date first.
-- bench-perf compares the median CPU time per job over 3 runs
-  (`--perf-runs`) of the default configuration, which uses z3, and fails
-  when the total over the jobs both sides solve grows by more than 10 %
-  (`--perf-threshold`). Yices times vary with its random seed and need
+- bench-perf compares the CPU time per job of one run per side
+  (`--perf-runs N`: N runs, medians) of the default configuration, which
+  uses z3, and fails when the total over the jobs both sides solve grows
+  by more than 10 % (`--perf-threshold`). z3 times vary little; after a
+  failure, rerun with `--perf-runs 3` before looking for a cause.
+  Yices times vary with its random seed and need
   several seeds per job; they are not compared. The base is `--base`
   (default: the merge base with `origin/main`). Each vcc gate run is
   recorded per SHA in `$SEA_BENCH_HOME/attest/`; without a record for

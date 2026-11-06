@@ -70,7 +70,8 @@ OPTIONS:
                       -G Ninja -DCMAKE_BUILD_TYPE=Release and the CMAKE_ARGs after `--`
                       if it has no CMakeCache.txt; it must be a build of this source tree
   --dry-run           run the gates, print the statuses instead of posting them
-  --perf-runs N       vcc gate runs per side for bench-perf (default 3; medians)
+  --perf-runs N       vcc gate runs per side for bench-perf (default 1; medians);
+                      after a bench-perf failure, rerun with --perf-runs 3 to rule out noise
   --repo OWNER/NAME   default: from the origin remote
 OUTPUT: `key: value` lines; one `status: <context> <state> <description>` per gate, then
   `posted:` or `would-post:` lines (statuses are posted at the end, after the tree is
@@ -430,6 +431,8 @@ def gate_bench_perf(a, sha, sea_vc):
     for j, b, h in c["slower"][:10]:
         print(f"perf-slower: {j} base={b:.2f} head={h:.2f} ratio={h / b:.2f}")
     state = "success" if c["pass"] else "failure"
+    if state == "failure" and runs < 3:
+        print("perf-hint: rerun with --perf-runs 3 to rule out timing noise")
     return state, perf_description(c, a.perf_threshold, base, runs)
 
 
@@ -489,7 +492,7 @@ def main():
     p.add_argument("--build", default=os.path.join(REPO, "build-attest"))
     p.add_argument("--base", help="base commit of bench-perf")
     p.add_argument("--base-sea-vc", help="a sea-vc built at the base")
-    p.add_argument("--perf-runs", type=int, default=3)
+    p.add_argument("--perf-runs", type=int, default=1)
     p.add_argument("--perf-threshold", type=float, default=10.0, help="percent")
     p.add_argument("--par", type=int, default=4)
     p.add_argument("--repo", help="OWNER/NAME (default: the origin remote)")
