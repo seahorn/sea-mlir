@@ -71,6 +71,7 @@ RULES = [
     ("**.cfg", "#", "top"),
     ("**.toml", "#", "top"),
     ("justfile", "#", "top"),
+    ("utils/hooks/*", "#", "top"),
     ("**Dockerfile", "#", "top"),
     ("**.dockerignore", "#", "top"),
     ("**.gitignore", "#", "top"),

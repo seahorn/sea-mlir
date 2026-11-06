@@ -1,0 +1,66 @@
+# PR contents are Git objects only. Never check out or execute the PR head in
+# this secret-bearing workflow; both this workflow and its checker are trusted.
+name: publication privacy
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: privacy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
+
+jobs:
+  privacy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out trusted base code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch PR objects without checking them out
+        if: github.event_name == 'pull_request_target'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$PR_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --no-tags origin "refs/pull/$PR_NUMBER/head"
+          test "$(git rev-parse FETCH_HEAD)" = "$PR_HEAD"
+      - name: Install pinned gitleaks
+        run: |
+          mkdir -p "$RUNNER_TEMP/gitleaks-bin"
+          curl --fail --silent --show-error --location \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.0/gitleaks_8.30.0_linux_x64.tar.gz \
+            --output "$RUNNER_TEMP/gitleaks.tar.gz"
+          printf '%s  %s\n' \
+            79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e \
+            "$RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
+      - name: Scan every commit with trusted checker
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PRIVATE_TERMS: ${{ secrets.PRIVACY_TERMS }}
+        run: |
+          terms=$(mktemp "$RUNNER_TEMP/privacy-terms.XXXXXX")
+          trap 'rm -f "$terms"' EXIT
+          printf '%s' "$PRIVATE_TERMS" > "$terms"
+          if [ ! -s "$terms" ]; then
+            echo 'warning: private terms unavailable; generic privacy patterns only'
+          fi
+          python3 utils/publish.py --check-range "$BASE_SHA" "$HEAD_SHA" \
+            --terms "$terms" --strict

@@ -80,3 +80,11 @@ docker-check:
     docker run --rm sea-mlir-test:yices sh -c 'ninja -C /build check-sea && /build/bin/sea-vc --version'
     docker run --rm -v "$PWD/test:/test:ro" sea-mlir:dev sea-vc /test/VC/print/replay.mlir --lower | grep -E '^(tool.version|result|replay):'
     docker run --rm -v "$PWD/test:/test:ro" sea-mlir:dev sea-vc /test/VC/seam/inb-ok.mlir --config=seam | grep -E '^(result|vc.config):'
+
+# Check all unpublished commits, then push the checked branch (docs/agents/gates.md).
+publish branch *args:
+    python3 utils/publish.py {{quote(branch)}} {{args}}
+
+# Install the public-remote pre-push guard; refuses to overwrite a different hook.
+install-hooks:
+    python3 utils/publish.py --install-hook

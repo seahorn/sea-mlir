@@ -168,6 +168,8 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
 
 - Commits: Conventional Commits, header <= 72 (`.commitlintrc.yml`); `just lint` before committing; `just attest` posts check-sea and the vcc gates as commit statuses on a clean HEAD (docs/agents/gates.md).
 
+- Publish curated branches with `just publish <branch> --strict`; install the public-remote guard with `just install-hooks` (docs/agents/gates.md).
+
 - Keep source and documentation free of personal paths and unpublished review or study references; run `python3 utils/privacy-check.py` before committing.
 
 - Guiding principle: conditional soundness (Conway, Dams, Namjoshi,

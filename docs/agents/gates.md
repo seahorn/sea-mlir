@@ -193,3 +193,78 @@ for pull requests that have no second reviewer. Agents never merge.
   counters, and an explanation for any slowdown.
 - Every pull request: lint, and `just attest` on its last commit.
 - A release: all of them.
+
+## Publishing
+
+Development happens in the private `sea-mlir-dev` repository. Start a
+publication branch from public `main`, then copy the changes intended for
+release onto it. Publish that branch only after reviewing its **whole
+history**: deleting a private reference in a later commit does not remove
+it from the commits a push exposes.
+
+Configure a remote named `public` for `seahorn/sea-mlir` and keep the
+private regex file outside the checkout. Install
+[gitleaks](https://github.com/gitleaks/gitleaks) (the CI version is 8.30.0),
+then run:
+
+```bash
+export SEA_PRIVACY_TERMS=<external-regex-file>
+just install-hooks
+just publish <branch> --strict --dry-run
+just publish <branch> --strict
+```
+
+`publish.py` fetches `main` from the remote's actual push URL and checks every commit reachable from
+the selected branch but not from that main. A different fetch URL cannot
+change the baseline; multiple push URLs are refused. Shallow repositories
+are refused until their history is fetched in full. For each commit it scans the
+complete added or changed files, filenames, and commit message with the
+privacy matcher. The published branch name is checked too. Merge commits
+include changes against each parent.
+Symlink targets are scanned as text; links are not followed. The normal
+public-credit exceptions in `privacy-check.py` still apply to file
+contents, but never to commit messages. Gitleaks scans patches across the
+same history with its built-in rules; repository ignore files, scanner
+configuration, and inline suppressions cannot disable that scan.
+
+A finding refuses publication. A missing gitleaks installation emits a
+warning unless `--strict` (or `SEA_PUBLISH_STRICT=1`) makes it an error.
+An unreadable terms file, invalid regex, or scanner failure is always an
+error. Terms are optional; without `--terms` or `SEA_PRIVACY_TERMS`, only
+the generic privacy patterns run. The tool prints locations and pattern
+categories, never matching content. It also redacts terms from filenames
+and suppresses raw scanner diagnostics.
+
+On success, the tool pushes the exact SHA it checked, without force or
+following tags, and prints a `gh pr create` command. It does not create
+the pull request. Review, attest, and merge through the public repository's
+normal gates; bring public `main` back into the private development
+repository afterward.
+
+The installed pre-push hook applies the same checks to branch updates
+sent to the canonical HTTPS or SSH URLs of `seahorn/sea-mlir`. Existing
+branches are checked from their advertised old tip; new branches are
+checked from freshly fetched public `main`. Deletions need no scan.
+Other remotes pass through even in older worktrees without the checker;
+a public push from such a worktree is refused. Tags require a separate release review and
+are refused by this hook. Installation refuses to replace a different
+hook; integrate existing hooks manually. Hooks are local guards against
+accidents, not enforcement against a developer who bypasses them.
+
+The `privacy` job in `.github/workflows/privacy.yml` scans pull-request
+commits with the `PRIVACY_TERMS` Actions secret when present and requires
+the pinned gitleaks binary. It uses `pull_request_target` so the workflow
+and checker come from the trusted base. **PR files are never checked out
+or executed in that job**: it fetches objects and reads blobs as data.
+This also permits private-term checks on fork PRs. No token is persisted,
+permissions are read-only, and raw scanner reports are discarded. Keep
+that boundary when editing the workflow. The ordinary CI jobs still run
+without these private terms on `pull_request`.
+
+CI runs after a public push, so it cannot prevent the first disclosure.
+The local scan is required before publishing. The workflow becomes active
+only once it is on the default branch; bootstrap its installation with a
+reviewed local strict scan. Initial repository creation and release tags
+remain separate maintainer operations. Repository settings, including the
+secret and any required-check configuration, are not changed by these
+scripts.
