@@ -61,6 +61,7 @@ OUTPUT of run: stats.csv (job config rep wall cpu status verdict + every BRUNCH_
   logs/<config>/<job>.<rep>.{out,err}, manifest.yaml (sea-vc sha256, git rev/dirty, configs, host, date), rows.jsonl.
   verdict: sat unsat unknown timeout memout error inb-violation (rc 4) replay-mismatch (rc 2).
 compare prints `key: value` lines; verdict disagreements first, `DISAGREE-SAT-UNSAT` is a soundness bug.
+--no-record on gate: temporary logs outside the source tree, deleted on exit; no result directory or gate record is retained.
 SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SEA_BENCH_SUITES (colon-separated)
   or bench/work/<name>/ (gitignored; `bench.py connect` / `just bench-connect` fills it from bench/sources.yaml,
   overlaid by bench/sources.local.yaml and $SEA_BENCH_SOURCE_<NAME>; local path -> symlink, URL -> clone / pull).
@@ -971,6 +972,15 @@ def find_vc(a):
 
 
 def cmd_gate(a):
+    if a.no_record:
+        # Keep transient solver logs outside both the source tree and BENCH_HOME.
+        # A context manager also removes them on a failed gate or exception.
+        with tempfile.TemporaryDirectory(prefix="sea-bench-gate-", dir="/tmp") as out:
+            return run_gate(a, out)
+    return run_gate(a)
+
+
+def run_gate(a, temporary_output=None):
     if a.tier not in TIERS:
         sys.exit(f"bench: tier must be one of {TIERS}")
     vc = find_vc(a)
@@ -982,10 +992,11 @@ def cmd_gate(a):
             "bench: no jobs (connect suites with `bench.py connect`, or check the tier / --suite / --jobs)"
         )
     stamp = datetime.datetime.now()
-    outdir = os.path.join(
+    outdir = temporary_output or os.path.join(
         HOME, "results", stamp.strftime("%Y-%m-%d_%H%M%S") + f"-gate-{a.tier}"
     )
-    os.makedirs(outdir)
+    if temporary_output is None:
+        os.makedirs(outdir)
     gs = git_state()
     print(
         f"gate: {a.tier} configs={','.join(cfgs)} jobs={len(tasks)} runs={len(tasks) * len(cfgs)} par={a.par}"
@@ -1308,7 +1319,11 @@ def main():
     )
     g.add_argument("--slow", type=float, default=2.0)
     g.add_argument("--jobs", help="regex over suite/family/job")
-    g.add_argument("--no-record", action="store_true")
+    g.add_argument(
+        "--no-record",
+        action="store_true",
+        help="use temporary logs, remove them on exit, and write no gate record",
+    )
     g.add_argument(
         "--no-counters", action="store_true", help="do not check the counter bounds"
     )
