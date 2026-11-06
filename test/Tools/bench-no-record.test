@@ -1,0 +1,4 @@
+// RUN: python3 %S/Inputs/bench-no-record.py %sea_src_root/utils/bench.py %sea_vc %S/../VC/brunch-stats.mlir
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
