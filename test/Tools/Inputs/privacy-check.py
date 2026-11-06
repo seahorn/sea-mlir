@@ -71,6 +71,8 @@ with tempfile.TemporaryDirectory() as directory:
 
     assert run().returncode == 0  # Git metadata and ignored output are excluded.
     (root / "untracked.md").write_text(local)
+    assert run().returncode == 0  # Untracked scratch files are not published.
+    subprocess.run(["git", "-C", directory, "add", "untracked.md"], check=True)
     bad = run()
     assert bad.returncode == 1 and "untracked.md:1: local-path" in bad.stdout
     (root / "untracked.md").unlink()
@@ -96,4 +98,16 @@ with tempfile.TemporaryDirectory() as directory:
     assert run("--terms", str(alternate)).returncode == 2
     (root / "tracked.md").unlink()
     (root / "link").symlink_to(local)
-    assert run().returncode == 1  # Check even a dangling link's target.
+    subprocess.run(["git", "-C", directory, "add", "link"], check=True)
+    assert run().returncode == 1  # Check even a tracked dangling link's target.
+
+# Source archives still receive a scan without requiring Git metadata.
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    (root / "source.md").write_text(local)
+    result = subprocess.run(
+        [sys.executable, sys.argv[1], "--root", directory],
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 1 and "source.md:1: local-path" in result.stdout
