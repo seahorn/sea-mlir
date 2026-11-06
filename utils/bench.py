@@ -979,7 +979,7 @@ def cmd_gate(a):
     if a.no_record:
         # Keep transient solver logs outside both the source tree and BENCH_HOME.
         # A context manager also removes them on a failed gate or exception.
-        with tempfile.TemporaryDirectory(prefix="sea-bench-gate-", dir="/tmp") as out:
+        with tempfile.TemporaryDirectory(prefix="sea-bench-gate-") as out:
             return run_gate(a, out)
     return run_gate(a)
 
