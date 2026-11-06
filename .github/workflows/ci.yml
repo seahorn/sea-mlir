@@ -87,5 +87,7 @@ jobs:
         run: python -m compileall -q utils test
       - name: privacy-check fixtures (test/Tools/privacy.test without lit)
         run: python test/Tools/Inputs/privacy-check.py utils/privacy-check.py
+      - name: publication gate fixtures (local repositories only)
+        run: python test/Tools/Inputs/publish.py utils/publish.py
       - name: attest self-test (no build, no GitHub)
         run: python utils/attest.py --self-test

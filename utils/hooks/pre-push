@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+"""Guard public pushes, including from worktrees that predate the checker."""
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+from urllib.parse import urlsplit
+
+
+def public_url(url):
+    if url.startswith("git@github.com:"):
+        path = url[len("git@github.com:") :]
+    else:
+        try:
+            parsed = urlsplit(url)
+        except ValueError:
+            return False
+        if parsed.scheme not in ("https", "ssh") or parsed.hostname != "github.com":
+            return False
+        path = parsed.path.lstrip("/")
+    return path.lower().rstrip("/").removesuffix(".git") == "seahorn/sea-mlir"
+
+
+def main():
+    if len(sys.argv) != 3:
+        print("error: pre-push requires a remote name and URL", file=sys.stderr)
+        return 2
+    if not public_url(sys.argv[2]):
+        print("publish-check: non-public remote; skipped")
+        return 0
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], capture_output=True
+    )
+    if result.returncode:
+        print("error: public push needs a source worktree", file=sys.stderr)
+        return 2
+    checker = Path(os.fsdecode(result.stdout).strip()) / "utils" / "publish.py"
+    if not checker.is_file():
+        print(
+            "error: public push needs the publication checker in this worktree",
+            file=sys.stderr,
+        )
+        return 2
+    os.execv(
+        sys.executable, [sys.executable, str(checker), "--pre-push", *sys.argv[1:]]
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())
