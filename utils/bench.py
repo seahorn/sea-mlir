@@ -302,7 +302,9 @@ def cmd_export(a):
 def git_state():
     def g(*x):
         return subprocess.run(
-            ["git", "-C", REPO] + list(x), capture_output=True, text=True
+            ["git", "--no-optional-locks", "-C", REPO] + list(x),
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
     return {
@@ -734,7 +736,9 @@ def suite_commit(root):
         text=True,
     )
     d = subprocess.run(
-        ["git", "-C", root, "status", "--porcelain"], capture_output=True, text=True
+        ["git", "--no-optional-locks", "-C", root, "status", "--porcelain"],
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     return (p.stdout.strip() or "none") + ("-dirty" if d else "")
 

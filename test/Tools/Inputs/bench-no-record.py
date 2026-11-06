@@ -26,6 +26,11 @@ with tempfile.TemporaryDirectory() as directory:
     family = suite / "family"
     family.mkdir(parents=True)
     shutil.copyfile(fixture, family / "one.mlir")
+    # Force status to refresh a stale tracked-file stat cache. Even that read
+    # must not rewrite a suite's Git index during a nonrecording gate.
+    subprocess.run(["git", "init", "-q", str(suite)], check=True)
+    subprocess.run(["git", "-C", str(suite), "add", "."], check=True)
+    os.utime(family / "one.mlir", (1, 1))
     home = root / "bench"
     home.mkdir()
     env = dict(
