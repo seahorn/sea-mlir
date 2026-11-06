@@ -46,7 +46,7 @@ DESC_MAX = 140
 AGENT = """attest.py agent guide (plain, terse)
 WHAT: run the gates GitHub Actions cannot run (they need LLVM, the solvers and the
   benchmark suites) on the current HEAD and post each result as a GitHub commit status
-  on that exact SHA. The ruleset of branch seam requires sea-mlir/check-sea and
+  on that exact SHA. The ruleset of branch main requires sea-mlir/check-sea and
   sea-mlir/bench-vcc (docs/agents/gates.md).
 WHEN: after the last commit of a pull request is pushed; a new push needs a new attest
   (statuses belong to a SHA). Refuses a dirty tree (untracked files included).
@@ -61,7 +61,7 @@ GATES (contexts):
                        per job and are not compared.
 RECORDS: $SEA_BENCH_HOME/attest/<sha>.json: the results dirs of every vcc gate run at <sha>
   (sea-vc sha256 included). The base of bench-perf is --base (default: merge-base of HEAD
-  and origin/seam, or HEAD~1 on seam itself); without a record for it, pass
+  and origin/main, or HEAD~1 on main itself); without a record for it, pass
   --base-sea-vc PATH (a sea-vc built at the base): attest runs base and HEAD interleaved
   and records both.
 OPTIONS:
@@ -316,9 +316,9 @@ def perf_description(c, threshold, base_sha, runs):
 
 def default_base(sha):
     try:
-        upstream = git("rev-parse", "origin/seam")
+        upstream = git("rev-parse", "origin/main")
     except subprocess.CalledProcessError as e:
-        raise Refuse("no origin/seam: pass --base REF") from e
+        raise Refuse("no origin/main: pass --base REF") from e
     base = git("merge-base", sha, upstream)
     return git("rev-parse", f"{sha}~1") if base == sha else base
 

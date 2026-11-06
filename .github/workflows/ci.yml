@@ -1,4 +1,4 @@
-# The checks GitHub runs on every pull request and every push to seam:
+# The checks GitHub runs on every pull request and every push to main:
 #   lint        .pre-commit-config.yaml on every file (`just lint`)
 #   commits     Conventional Commits (.commitlintrc.yml), header <= 72
 #   docs        the documentation site builds without warnings (`just docs`)
@@ -11,7 +11,7 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [seam]
+    branches: [main]
 
 permissions:
   contents: read

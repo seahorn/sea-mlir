@@ -7,7 +7,7 @@
 name: docs
 
 # Manual only while the repository is private (GitHub Pages needs a public
-# repository); restore the push trigger (branch seam, tags v*) when it is
+# repository); restore the push trigger (branch main, tags v*) when it is
 # made public.
 on:
   workflow_dispatch:

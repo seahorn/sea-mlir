@@ -1,11 +1,11 @@
 {
-  "name": "seam",
+  "name": "main",
   "target": "branch",
   "enforcement": "active",
   "conditions": {
     "ref_name": {
       "include": [
-        "refs/heads/seam"
+        "~DEFAULT_BRANCH"
       ],
       "exclude": []
     }

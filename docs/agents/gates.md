@@ -116,7 +116,7 @@ cap per job.
 ## Continuous integration and attestation
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request
-and every push to `seam`:
+and every push to `main`:
 
 | job | checks |
 |---|---|
@@ -156,20 +156,20 @@ just attest --only check-sea --build build-release
   when the total over the jobs both sides solve grows by more than 10 %
   (`--perf-threshold`). Yices times vary with its random seed and need
   several seeds per job; they are not compared. The base is `--base`
-  (default: the merge base with `origin/seam`). Each vcc gate run is
+  (default: the merge base with `origin/main`). Each vcc gate run is
   recorded per SHA in `$SEA_BENCH_HOME/attest/`; without a record for
   the base, pass `--base-sea-vc` (a sea-vc built at the base) and the
   base and HEAD runs alternate.
 - Without `--dry-run`, posting needs `gh` logged in with write access to
   the repository.
 
-The ruleset of `seam` (`.github/rulesets/seam.json`, applied with
-`gh api repos/seahorn/sea-mlir/rulesets --input .github/rulesets/seam.json`)
+The ruleset of `main`, the default branch (`.github/rulesets/main.json`,
+applied with `gh api repos/seahorn/sea-mlir/rulesets --input .github/rulesets/main.json`)
 requires a pull request approved by one reviewer other than its author
 (an approval counts only if it comes after the last push), the `lint`,
 `commits` and `docs` jobs, and the
 `sea-mlir/check-sea` and `sea-mlir/bench-vcc` statuses on the branch's
-latest commit, up to date with `seam`. It blocks force pushes and
+latest commit, up to date with `main`. It blocks force pushes and
 deleting the branch, and allows merge commits and rebase merges: a squash
 merge would take the pull request's title as the commit message, which
 the `commits` job does not check. Organization admins may bypass the
