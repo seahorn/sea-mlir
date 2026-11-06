@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-"""A passing or failing nonrecording gate must leave no persistent artifacts."""
+"""A nonrecording gate writes no gate record and leaves its inputs unchanged."""
 
 import os
 import shutil
@@ -57,18 +57,19 @@ with tempfile.TemporaryDirectory() as directory:
             "  timeout: 30\n  mem: 4096\njobs:\n"
             f"  one: {{expected: {expected}, tier: smoke}}\n"
         )
-        before = snapshot(root)
+        before = snapshot(suite)
         result = subprocess.run(
             command + ["--no-record"], env=env, capture_output=True, text=True
         )
         assert result.returncode == code, result.stdout + result.stderr
-        assert snapshot(root) == before, (
-            "nonrecording gate changed its inputs or benchmark home"
+        assert snapshot(suite) == before, "nonrecording gate changed its inputs"
+        assert not list((home / "gates").glob("*.yaml")), (
+            "nonrecording gate wrote a gate record"
         )
         output = next(
             line[5:] for line in result.stdout.splitlines() if line.startswith("out: ")
         )
-        assert not Path(output).exists(), "temporary solver output survived the gate"
+        assert Path(output, "rows.jsonl").exists(), "results must stay for attest"
     # Recording remains the default, including for a failed gate.
     result = subprocess.run(command, env=env, capture_output=True, text=True)
     assert result.returncode == 1, result.stdout + result.stderr
