@@ -1,0 +1,73 @@
+// RUN: split-file %s %t
+// RUN: sea-vc %t/halt.mlir --lower 2>&1 | FileCheck %s --check-prefix=HALT
+// RUN: sea-vc %t/unreachable.mlir --lower 2>&1 | FileCheck %s --check-prefix=SAFE
+// RUN: sea-vc %t/unreachable.mlir --lower --sink-assumes 2>&1 | FileCheck %s --check-prefix=SAFE
+// RUN: sea-vc %t/unreachable.mlir --lower --smt2 | %z3 -in | FileCheck %s --check-prefix=SMT
+// RUN: sea-vc %t/blocked.mlir --lower 2>&1 | FileCheck %s --check-prefix=SAFE
+// RUN: sea-vc %t/unknown.mlir --lower | FileCheck %s --check-prefix=SAT
+// RUN: not sea-vc %t/loop.mlir --lower 2>&1 | FileCheck %s --check-prefix=LOOP
+// HALT: result: unsat
+// SAFE: merge-asserts.no-assertions
+// SAFE: result: unsat
+// SMT: unsat
+// SAT: result: sat
+// SAT: replay: assert-failed
+// LOOP: the program has a loop
+// REQUIRES: z3
+
+//--- halt.mlir
+sea.program @p {
+  %c = sea.const true
+  sea.cond_br %c, ^safe, ^bad
+^safe:
+  sea.halt
+^bad:
+  %f = sea.const false
+  sea.assert %f
+  sea.halt
+}
+
+//--- unreachable.mlir
+sea.program @p {
+  %c = sea.const true
+  sea.cond_br %c, ^blocked, ^bad
+^blocked:
+  sea.unreachable
+^bad:
+  %f = sea.const false
+  sea.assert %f
+  sea.halt
+}
+
+//--- blocked.mlir
+// every path is blocked: no halt and no assert, even before any folding
+sea.program @p {
+  sea.unreachable
+}
+
+//--- unknown.mlir
+sea.program @p {
+  %c = sea.nondet "choose" [0] : i1
+  sea.cond_br %c, ^safe, ^bad
+^safe:
+  sea.halt
+^bad:
+  %f = sea.const false
+  sea.assert %f
+  sea.halt
+}
+
+//--- loop.mlir
+sea.program @p {
+  %c = sea.const true
+  sea.cond_br %c, ^loop, ^bad
+^loop:
+  sea.br ^loop
+^bad:
+  %f = sea.const false
+  sea.assert %f
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
