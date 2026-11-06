@@ -1,0 +1,4 @@
+# the same jobs, exported with --horn-shadow-mem-optimize=false
+include: vcc
+description: verify-c-common, MemSSA optimize off
+memopt: false

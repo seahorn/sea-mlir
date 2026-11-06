@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+# the build context of docker/Dockerfile: the source tree without build
+# trees, benchmark checkouts and the docs site
+.git
+build*/
+bench/work/
+site/
+**/__pycache__/

@@ -1,0 +1,55 @@
+# Build the documentation site with MkDocs and deploy it to GitHub Pages.
+# The dialect reference (docs/reference/dialect.md) is generated from the ODS
+# with mlir-tblgen and committed (`just docs-dialect`), so this job needs no
+# LLVM. Pages must be enabled in the repository settings (source: GitHub
+# Actions) before the deploy job can succeed. Pull requests check the build
+# in ci.yml (job docs); this workflow only deploys.
+name: docs
+
+# Manual only while the repository is private (GitHub Pages needs a public
+# repository); restore the push trigger (branch seam, tags v*) when it is
+# made public.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+      - name: Install the pinned toolchain
+        run: python -m pip install -r docs/requirements.txt
+      - name: Build
+        run: mkdocs build --strict
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

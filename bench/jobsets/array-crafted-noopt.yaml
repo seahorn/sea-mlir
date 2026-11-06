@@ -1,0 +1,4 @@
+description: crafted array benchmarks, MemSSA optimize off
+source: copy
+from: ${SEA_BENCH_ARRAY_CRAFTED_NOOPT:-bench/work/public/crafted-noopt}
+widen: 4

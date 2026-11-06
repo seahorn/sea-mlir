@@ -1,0 +1,39 @@
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+#ifdef WITH_YICES2
+
+#include "yices.h"
+
+#include "sea/Expr/Smt/MarshalYices.hh"
+#include "sea/Expr/Smt/Model.hh"
+#include "sea/Expr/Smt/Yices2ModelImpl.hh"
+
+namespace sea {
+namespace solver {
+
+/* printing defaults */
+uint32_t yices_model_impl::width = 80;
+uint32_t yices_model_impl::height = 100;
+uint32_t yices_model_impl::offset = 0;
+
+yices_model_impl::yices_model_impl(model_t *model, yices_solver_impl &solver,
+                                   expr::ExprFactory &efac)
+    : d_model(model), d_solver(solver), d_efac(efac) {}
+
+yices_model_impl::~yices_model_impl() { yices_free_model(d_model); }
+
+expr::Expr yices_model_impl::eval(expr::Expr exp, bool complete) {
+  return marshal_yices::eval(d_solver.inline_defs(exp), d_efac,
+                             d_solver.get_cache(), complete, d_model);
+}
+
+void yices_model_impl::print(llvm::raw_ostream &o) const {
+  char *model_as_string = yices_model_to_string(d_model, width, height, offset);
+  o << model_as_string;
+  yices_free_string(model_as_string);
+}
+
+} // namespace solver
+} // namespace sea
+#endif

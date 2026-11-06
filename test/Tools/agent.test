@@ -1,0 +1,21 @@
+RUN: sea-run --agent | FileCheck %s --check-prefix=RGUIDE
+RUN: sea-opt --agent | FileCheck %s --check-prefix=OGUIDE
+
+RGUIDE: sea-run agent guide
+RGUIDE: STATUS CODES:
+OGUIDE: sea-opt agent guide
+OGUIDE: STATUS CODES:
+RUN: sea-vc --agent | FileCheck %s --check-prefix=VPRINT
+RUN: sea-run --agent | FileCheck %s --check-prefix=RPRINT
+RUN: sea-opt --agent | FileCheck %s --check-prefix=OPRINT
+
+VPRINT: PRINTS (docs/design/Print.md)
+RPRINT: PRINTS (docs/design/Print.md)
+OPRINT: sea-print-strengthen
+RUN: sea-reduce --agent | FileCheck %s --check-prefix=DGUIDE
+DGUIDE: sea-reduce agent guide
+DGUIDE: INTERESTINGNESS TEST
+DGUIDE: OUTPUT:
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

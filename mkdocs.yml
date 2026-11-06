@@ -1,0 +1,130 @@
+# The sea-mlir documentation site (MkDocs + Material).
+# Build: `just docs` (mkdocs build --strict); preview: `just docs-serve`.
+# Pinned toolchain: docs/requirements.txt. Deployed by .github/workflows/docs.yml.
+# The dialect reference (docs/reference/dialect.md) is generated from the
+# ODS by `just docs-dialect` (utils/gen-dialect-doc.sh) and committed.
+
+site_name: sea-mlir
+site_description: A verification toolkit for low-level code, built for AI agents as well as people.
+repo_name: seahorn/sea-mlir
+repo_url: https://github.com/seahorn/sea-mlir
+edit_uri: ""
+use_directory_urls: true
+
+docs_dir: docs
+site_dir: site
+
+# Only the site's own pages are published. The repository's working
+# documents (docs/*.md with capitalized names, docs/design/) are not part of
+# the site and are not copied into it.
+exclude_docs: |
+  /[A-Z]*.md
+  /design/
+  README.md
+  /requirements.txt
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+theme:
+  name: material
+  custom_dir: overrides
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
+  palette:
+    - media: "(prefers-color-scheme)"
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to system preference
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.indexes
+    - navigation.sections
+    - navigation.footer
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Why trust it: trust/index.md
+  - Get started:
+      - Build and install: guide/build.md
+      - First proof: guide/getting-started.md
+      - Reading the output: guide/output.md
+      - Counterexamples: guide/counterexamples.md
+      - Proof controls: guide/proof-controls.md
+  - Applications:
+      - tutorials/index.md
+      - NKI kernels: tutorials/nki.md
+      - "Inductive proof: FD-FRAG": tutorials/inductive-proof.md
+      - Stellar: tutorials/stellar.md
+      - "Firedancer: HPACK": tutorials/firedancer.md
+      - "Firedancer: transaction parsing": tutorials/txn-parse.md
+      - "Firedancer: HTTP/2 flow control": tutorials/h2-flow-control.md
+  - For agents:
+      - agents/index.md
+      - Running the tools: agents/running.md
+      - Profiles: agents/profiles.md
+      - Minimizing a problem: agents/minimizing.md
+      - Gates: agents/gates.md
+      - Rules for contributors: agents/rules.md
+  - Reference:
+      - reference/index.md
+      - "Background: SeaM": reference/seam.md
+      - The sea dialect: reference/dialect.md
+      - Command line: reference/cli.md
+      - Output formats and exit codes: reference/output-formats.md
+      - Counterexample notation: reference/print.md
+      - Profiles: reference/profiles.md
+      - The reducer: reference/reducer.md
+      - Benchmarks and gates: reference/benchmarks.md
+      - SeaM export: reference/seam-export.md
+      - Known limitations: reference/limitations.md
+
+markdown_extensions:
+  - attr_list
+  - md_in_html
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+extra_css:
+  - assets/katex/katex.min.css
+  - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/katex-init.js
+  - assets/katex/katex.min.js
+  - assets/katex/contrib/auto-render.min.js

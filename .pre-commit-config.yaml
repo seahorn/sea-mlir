@@ -1,0 +1,82 @@
+# The checks of every change, in one place: `just lint` runs them locally
+# (pre-commit or prek), the `lint` job of .github/workflows/ci.yml runs them
+# on pull requests and pushes. Hooks are pinned by commit (`# frozen:` is the
+# tag); update them with `pre-commit autoupdate --freeze` and review the
+# diff. clang-format stays on major 18 (the clang-18 toolchain of the build):
+# a newer major reformats the tree, so moving it is a decision with its own
+# `style:` commit.
+#
+# Vendored and generated files are excluded everywhere: KaTeX
+# (docs/assets/katex), the license texts. The dialect reference
+# (docs/reference/dialect.md) is mlir-tblgen output: whitespace hooks skip it.
+minimum_pre_commit_version: "3.2.0"
+exclude: ^(docs/assets/katex/|LICENSES/|LICENSE$)
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # frozen: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^docs/reference/dialect\.md$
+      - id: end-of-file-fixer
+        exclude: ^docs/reference/dialect\.md$
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: 7d85583be209cb547946c82fbe51f4bc5dd1d017 # frozen: v18.1.8
+    hooks:
+      - id: clang-format
+        # C and C++ only (the hook's default includes JavaScript and JSON);
+        # .def files are textual C++ includes, unknown to pre-commit's types
+        types_or: [text]
+        files: \.(c|cc|cpp|h|hh|def)$
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: c0f278f1254ccc8fb09676bcdb8d847e7db493e5 # frozen: v0.17.4
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: 745eface02aef23e168a8afb6b5737818efbea95 # frozen: v0.11.0.1
+    hooks:
+      - id: shellcheck
+
+  - repo: https://github.com/Mateusz-Grzelinski/actionlint-py
+    rev: 805f85e558841bf4d852335e036b33d2b26be1cc # frozen: v1.7.12.25
+    hooks:
+      - id: actionlint
+
+  - repo: https://github.com/crate-ci/typos
+    rev: 4c8b7f51ca60df14e3c5ca82770dfbbe6c3dae85 # frozen: v1.52.0
+    hooks:
+      - id: typos
+
+  - repo: https://github.com/fsfe/reuse-tool
+    rev: ea739bff9c6daa1c4c8a5c5dfd069f3fb0374728 # frozen: v6.3.0
+    hooks:
+      - id: reuse
+
+  - repo: local
+    hooks:
+      - id: spdx
+        name: SPDX headers (utils/spdx.py)
+        entry: python3 utils/spdx.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
+      # Generic patterns only, unless the checkout has a .privacy-terms file
+      # (untracked; docs/agents/gates.md)
+      - id: privacy
+        name: privacy check (utils/privacy-check.py)
+        entry: python3 utils/privacy-check.py
+        language: system
+        pass_filenames: false
+        always_run: true

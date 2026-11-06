@@ -1,0 +1,17 @@
+// The supported Expr construction helpers (include/sea/Expr/ExprOpBool.hh,
+// boolop::land / lor / lneg / limp / lite): their local folds, the binary and
+// range forms agreeing, empty ranges giving the identities. TypeChecker
+// (include/sea/Expr/TypeChecker.hh): function / lambda application, nested
+// binders, widths, the error result and its cache, a deep term. The checker
+// prints nothing: stderr is empty.
+RUN: sea-expr-api-test 2>%t.err | FileCheck %s
+RUN: count 0 < %t.err
+CHECK: test: bool-binary ok
+CHECK: test: bool-range ok
+CHECK: test: tc-functions ok
+CHECK: test: tc-errors ok
+CHECK: test: tc-deep ok
+CHECK: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

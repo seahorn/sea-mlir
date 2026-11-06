@@ -1,0 +1,2 @@
+include: [vcc-seam-yices, seam-wide, seam-words-all]
+args: [--words-check]

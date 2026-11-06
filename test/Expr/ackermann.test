@@ -1,0 +1,16 @@
+// Ackermann lowering of read-only arrays (include/sea/Expr/Ackermann.hh,
+// docs/design/Ackermann.md): read sharing and constraint counts, which arrays
+// are kept, aliasing pairs stay unsat, model reconstruction, and a seeded
+// random equisatisfiability + model test (Yices, z3).
+RUN: sea-ackermann-test | FileCheck %s
+REQUIRES: yices
+CHECK: test: sharing ok
+CHECK: test: leaf ok
+CHECK: test: kept ok
+CHECK: test: aliasing ok
+CHECK: test: model ok
+CHECK: test: random ok
+CHECK: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

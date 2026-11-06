@@ -1,0 +1,2 @@
+# addr.prune-size0 off (docs/design/SeaM-provenance.md, step 0): the A/B baseline
+args: [--seam-prune-size0=0]

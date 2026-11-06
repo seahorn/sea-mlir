@@ -1,0 +1,45 @@
+// Every code and test file of the source tree carries the SPDX header, or
+// REUSE.toml licenses it (utils/spdx.py; `just spdx-fix` adds missing ones).
+// Then utils/spdx.py itself on a scratch git tree: missing, wrong and
+// untracked headers are reported, --fix puts them at the top of code (after
+// a #! line) and at the end of test inputs, and a second --fix does nothing.
+REQUIRES: sea-git-tree
+RUN: %python %sea_src_root/utils/spdx.py --check --root %sea_src_root | FileCheck %s --check-prefix=TREE
+TREE: spdx: 0 file(s) to fix
+
+RUN: rm -rf %t && mkdir -p %t/test %t/lib && cd %t && git init -q
+RUN: printf '// RUN: true\n' > %t/test/a.mlir
+RUN: printf '#!/bin/sh\necho\n' > %t/run.sh
+RUN: printf '// %%s-FileCopyrightText: 1999 Someone\n// %%s-License-Identifier: MIT\n\nint x;\n' SPDX SPDX > %t/lib/b.cpp
+RUN: printf 'data\n' > %t/data.bin
+RUN: git -C %t add test run.sh lib data.bin
+RUN: printf 'int y;\n' > %t/lib/new.cpp
+RUN: not %python %sea_src_root/utils/spdx.py --check --root %t | FileCheck %s --check-prefix=CHECK1
+CHECK1: data.bin: no SPDX rule
+CHECK1: lib/b.cpp: wrong or misplaced header
+CHECK1: lib/new.cpp: missing header
+CHECK1: run.sh: missing header
+CHECK1: test/a.mlir: missing header
+CHECK1: spdx: 5 file(s) to fix
+RUN: rm %t/data.bin
+RUN: %python %sea_src_root/utils/spdx.py --fix --root %t
+RUN: %python %sea_src_root/utils/spdx.py --check --root %t | FileCheck %s --check-prefix=CHECK2
+CHECK2: spdx: 0 file(s) to fix
+RUN: %python %sea_src_root/utils/spdx.py --fix --root %t | not grep fixed
+RUN: cat %t/run.sh %t/lib/b.cpp %t/test/a.mlir | FileCheck %s --check-prefix=FIXED --match-full-lines
+FIXED: #!/bin/sh
+FIXED-NEXT: # SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+FIXED-NEXT: # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+FIXED-EMPTY:
+FIXED-NEXT: echo
+FIXED-NEXT: // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+FIXED-NEXT: // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+FIXED-EMPTY:
+FIXED-NEXT: int x;
+FIXED-NEXT: // RUN: true
+FIXED-EMPTY:
+FIXED-NEXT: // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+FIXED-NEXT: // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

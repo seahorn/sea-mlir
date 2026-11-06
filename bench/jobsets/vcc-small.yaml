@@ -1,0 +1,5 @@
+description: 7 verify-c-common jobs used in the early sea-mlir experiments
+source: copy
+from: ${SEA_BENCH_VCC_SMALL:-bench/work/public/vcc-small}
+widen: 8
+files: [array_eq, array_eq2, array_list_init_static2, byte_cursor_advance, hash_iter_begin, mem_realloc_unsafe, ring_buffer_release2]

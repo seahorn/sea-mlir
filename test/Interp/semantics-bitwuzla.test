@@ -1,0 +1,9 @@
+ORACLE: op semantics vs z3, for the Bitwuzla backend (see test/README.md).
+REQUIRES: z3, bitwuzla
+RUN: %if yices %{ %python %sea_src_root/utils/check-semantics.py --sea-run sea-run --sea-expr-eval sea-expr-eval --sea-opt sea-opt --z3 %z3 --bitwuzla --seed 2 --random 3 | FileCheck %s --check-prefix=YICES %}
+RUN: %if !yices %{ %python %sea_src_root/utils/check-semantics.py --sea-run sea-run --sea-expr-eval sea-expr-eval --sea-opt sea-opt --z3 %z3 --no-yices --bitwuzla --seed 2 --random 3 | FileCheck %s --check-prefix=NOYICES %}
+YICES: checked {{[0-9]+}} cases, {{[0-9]+}} results from 5 implementations (sea-run, expanded, expr-z3, expr-yices, expr-bitwuzla), 0 mismatches
+NOYICES: checked {{[0-9]+}} cases, {{[0-9]+}} results from 4 implementations (sea-run, expanded, expr-z3, expr-bitwuzla), 0 mismatches
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

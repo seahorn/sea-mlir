@@ -1,0 +1,19 @@
+// One object id in every jsonl record (the print notation `stack.1`):
+// `object` (id, plus symbol = the VC constant obj.<id>), print.object (id),
+// print.mem / print (obj), memread (obj + off, the cell's offset). Numbers
+// for base everywhere. A consumer joins them without string surgery.
+
+// RUN: sea-vc %S/../print/defaults.mlir --lower --seam --print-refs=strong --format=jsonl > %t.def.jsonl
+// RUN: %python %S/Inputs/join-objects.py %t.def.jsonl | FileCheck %s --check-prefix=JOIN
+// RUN: sea-vc %S/../print/replay.mlir --lower --seam --print-refs=strong --format=jsonl > %t.rep.jsonl
+// RUN: %python %S/Inputs/join-objects.py %t.rep.jsonl | FileCheck %s --check-prefix=JOIN
+// JOIN: join: {{[1-9][0-9]*}} references
+
+// RUN: FileCheck %s --check-prefix=DEF < %t.def.jsonl
+// DEF: {"kind":"object","id":"stack.1","symbol":"obj.stack.1","order":{{[0-9]+}},"objkind":"stack","base":3221225464,"size":8,
+// DEF: {"kind":"memread","site":0,"addr":3221225464,"width":8,"value":7,"obj":"stack.1","off":0,"text":"memread: {{.*}} obj=&stack.1[0]"}
+// DEF: {"kind":"print.object","id":"stack.1","objkind":"stack","size":8,{{.*}}"base":3221225464,"text":"print.object: stack.1 kind=stack size=8 {{.*}}base=0xbffffff8"}
+// DEF: {"kind":"print.mem","path":"buf","obj":"stack.1",
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

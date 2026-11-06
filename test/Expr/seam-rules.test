@@ -1,0 +1,26 @@
+// SeaM rewrite rules (include/sea/Expr/SeaMRules.hh): one case per rule, each
+// checked for soundness with Yices (assumptions => in = out; A-INB only for the
+// rules that name it, and with A-INB off no assumption at all), the thesis'
+// Fig. 3.3b / 3.4b / 3.5-3.6 examples, and a seeded random test (sound, and a
+// normal form: rewriting the result changes nothing), and the provenance of a
+// decision (every reason and premise of every leaf pair).
+RUN: sea-seam-rules-test 300 | FileCheck %s
+REQUIRES: yices
+CHECK: test: add-normalize ok
+CHECK: test: add-pull-ite ok
+CHECK: test: sub ok
+CHECK: test: compare ok
+CHECK: test: compare-ite ok
+CHECK: test: ite-bool ok
+CHECK: test: row ok
+CHECK: test: thesis-examples ok
+CHECK: test: arm ok
+CHECK: test: provenance ok
+CHECK: test: null ok
+CHECK: test: prune-size0 ok
+CHECK: random: terms=300
+CHECK: random-arm: terms=150
+CHECK: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

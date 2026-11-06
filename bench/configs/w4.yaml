@@ -1,0 +1,2 @@
+# memory words of 4 bytes (the SeaHorn engine passes word size 8)
+args: [--lower, --widen-memory=4]

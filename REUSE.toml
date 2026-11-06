@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+# REUSE.toml: licensing of the files that carry no SPDX header of their
+# own (https://reuse.software/spec-3.3/). Every other file carries the
+# two-line SPDX header; `utils/spdx.py --check` (`just spdx`) checks it,
+# reading the paths below as its exclusions.
+version = 1
+
+# Markdown, YAML and JSON data and configuration, generated docs, images,
+# HTML templates and plain data files.
+[[annotations]]
+path = [
+  "**.md",
+  "**.yaml",
+  "**.yml",
+  "**.json",
+  "**.svg",
+  "**.html",
+  "AUTHORS",
+  "LICENSE",
+  "LLVM_REVISION",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 The sea-mlir Authors"
+SPDX-License-Identifier = "Apache-2.0 WITH LLVM-exception"
+
+# Vendored KaTeX 0.19.1 (minified scripts, stylesheet and fonts).
+[[annotations]]
+path = "docs/assets/katex/**"
+precedence = "override"
+SPDX-FileCopyrightText = "2013-2020 Khan Academy and other contributors"
+SPDX-License-Identifier = "MIT"

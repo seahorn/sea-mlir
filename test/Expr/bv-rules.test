@@ -1,0 +1,22 @@
+// Bit-vector and Boolean normalization rules (include/sea/Expr/BvRules.hh):
+// one case per rule, each checked for soundness with Yices (`in = out`
+// valid with no assumption), and a seeded random test (sound, a normal form,
+// the same result in two fresh factories). The views group checks that the
+// Lean formalization's zext / sext / shl views equal Expr's operators (z3 and
+// Yices validity).
+RUN: sea-bv-rules-test 300 | FileCheck %s
+REQUIRES: yices
+CHECK: test: extract ok
+CHECK: test: concat ok
+CHECK: test: ac ok
+CHECK: test: eq ok
+CHECK: test: ite ok
+CHECK: test: guards ok
+CHECK: views: queries=
+CHECK: test: views ok
+CHECK: random: terms=300
+CHECK: random-mem: terms=150
+CHECK: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

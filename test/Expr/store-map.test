@@ -1,0 +1,23 @@
+// Store-Map (include/sea/Expr/StoreMap.hh, SeaMRules.hh; thesis Ch. 6, 7.2):
+// the write rules of Fig. 6.4, the read rules of Fig. 6.5, the ordered map
+// table, the expansion into stores, a random test of sound and normal memories,
+// and the R-ABORT caching test (the Fig. 7.1 shape with store-maps: linear
+// with chain-start caching, exponential without).
+RUN: sea-store-map-test 12 | FileCheck %s
+REQUIRES: yices
+CHECK: test: smap-new-hit ok
+CHECK: test: collapse ok
+CHECK: test: commute ok
+CHECK: test: barriers ok
+CHECK: test: read ok
+CHECK: test: table ok
+CHECK: test: expand ok
+CHECK: smap-shape abort-narrow variant=default N=40
+CHECK: smap-ablation abort-narrow N=12
+CHECK: test: abort-caching ok
+CHECK: random: programs=12
+CHECK: test: random ok
+CHECK: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -1,0 +1,1 @@
+args: [--z3-tactic=smtfd]

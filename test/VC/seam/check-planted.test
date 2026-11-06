@@ -1,0 +1,22 @@
+--seam-check catches a wrong rule. --seam-plant-bug (hidden, test
+only) makes one rule wrong: sub.const adds the numeral instead of
+subtracting it (a rule without premises); row.store-hit returns the stored
+value for a read the compare decided different (an A-INB rule: the stated
+premise does not make it valid). The invalid firing is reported with its rule,
+location and SMT-LIB, and the exit status is 5 (BRUNCH_STAT status).
+RUN: not sea-vc %S/inb-witness-memory.mlir --lower --widen-memory=4 --seam --seam-check --seam-plant-bug=sub.const --brunch-stats 2>&1 | FileCheck %s --check-prefix=SUB
+RUN: not sea-vc %S/arm.mlir --lower --seam --seam-check --seam-plant-bug=row.store-hit --brunch-stats 2>&1 | FileCheck %s --check-prefix=ROW
+SUB: seam-check-invalid: id={{[0-9]+}} rules=sub.const premises=none op={{[a-z]+}} loc={{.*}}inb-witness-memory.mlir:{{[0-9:]+}}
+SUB-NEXT: seam-check-lhs: bvsub(
+SUB-NEXT: seam-check-rhs: bvadd(
+SUB: seam-check-smt: (check-sat)
+SUB: seam-check: firings={{[0-9]+}} checked={{[0-9]+}} valid={{[0-9]+}} invalid=1 unknown=0 unexpressible=0
+SUB: [seam.check-invalid]
+SUB: BRUNCH_STAT status 5
+ROW: seam-check-invalid: id={{[0-9]+}} rules=row.store-hit,arm.skip,arm.skip-diff-base premises=A-INB op=load loc={{.*}}arm.mlir:{{[0-9:]+}}
+ROW: seam-check-smt: (assert
+ROW: seam-check: {{.*}} invalid=1
+ROW: BRUNCH_STAT status 5
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -1,0 +1,8 @@
+// Check publication inputs and exercise rejection/allowlist behavior.
+REQUIRES: sea-git-tree
+RUN: %python %sea_src_root/utils/privacy-check.py --root %sea_src_root | FileCheck %s
+CHECK: privacy: 0 finding(s)
+RUN: %python %S/Inputs/privacy-check.py %sea_src_root/utils/privacy-check.py
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

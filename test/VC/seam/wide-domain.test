@@ -1,0 +1,20 @@
+// The width domain of width terms (docs/design/SeaM-mixed-width.md:
+// 0 < bytes <= 2^n) is enforced at the VC entry, not only by the lowering.
+// A 17-byte store into a 4-bit-address byte
+// memory gave a false UNSAT without --lower. The 17-byte store revisits
+// address 0 (its last byte, 0, lands there), so the 2-byte read at 0 is 0.
+// Without --lower: the access is refused (vc.wide-access), never a width
+// term. With --lower: sea-split-wide-access expands it into bytes; its offset
+// helper wraps offsets modulo 2^n, preserving the byte semantics.
+RUN: not sea-vc %S/Inputs/wide-oversized-false.mlir --seam --seam-wide --seam-inb=0 2>&1 | FileCheck %s --check-prefix=REFUSED
+RUN: sea-vc %S/Inputs/wide-oversized-false.mlir --lower --seam --seam-wide --seam-inb=0 2>&1 | FileCheck %s --check-prefix=SAT
+RUN: sea-vc %S/Inputs/wide-oversized-true.mlir --lower --seam --seam-wide --seam-inb=0 2>&1 | FileCheck %s --check-prefix=UNSAT
+RUN: sea-vc %S/Inputs/wide-oversized-false.mlir --lower 2>&1 | FileCheck %s --check-prefix=SAT
+REFUSED: vc.wide-access
+REFUSED-NOT: result: unsat
+SAT: result: sat
+SAT: replay: assert-failed
+UNSAT: result: unsat
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

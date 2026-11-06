@@ -1,0 +1,15 @@
+// sat.mlir with Bitwuzla (docs/design/Ackermann.md): replay through the
+// rebuilt arrays.
+REQUIRES: bitwuzla
+RUN: sea-vc %S/sat.mlir --lower --seam --ackermannize=on --solver=bitwuzla 2>&1 | FileCheck %s
+RUN: sea-vc %S/unsat.mlir --lower --seam --ackermannize=on --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=UNSAT
+CHECK: vc.ackermann: on
+CHECK: result: sat
+CHECK: vc.ackermann-model: defaulted={{[0-9]+}} inconsistent=0
+CHECK: replay: assert-failed
+CHECK: validate: checked={{[0-9]+}} mismatches=0
+UNSAT: vc.ackermann: on
+UNSAT: result: unsat
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

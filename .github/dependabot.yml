@@ -1,0 +1,16 @@
+# Dependabot: monthly pull requests for the GitHub Actions of
+# .github/workflows (pinned by commit; the comment names the tag). The
+# pre-commit hooks are updated by hand: `pre-commit autoupdate --freeze`
+# (.pre-commit-config.yaml).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+      include: scope

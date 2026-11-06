@@ -1,0 +1,27 @@
+// bench.py run + compare on two tiny programs and two configs; a temp
+// SEA_BENCH_HOME holds the job set, the configs, the corpus and the results.
+// RUN: rm -rf %t && mkdir -p %t/corpus/tiny %t/bench/jobsets %t/bench/configs
+// RUN: cp %S/../VC/brunch-stats.mlir %t/corpus/tiny/one.mlir
+// RUN: sed 's/@p /@q /' %S/../VC/brunch-stats.mlir > %t/corpus/tiny/two.mlir
+// RUN: echo "source: copy" > %t/bench/jobsets/tiny.yaml
+// RUN: echo "args: []" > %t/bench/configs/plain.yaml
+// RUN: printf "include: [plain]\nargs: [--seam]\nsolver: yices\ntimeout: 60\n" > %t/bench/configs/seamy.yaml
+// RUN: env SEA_BENCH_HOME=%t python3 %sea_src_root/utils/bench.py run tiny plain seamy --sea-vc %sea_vc --name t | FileCheck %s --check-prefix=OUT
+// RUN: cat %t/results/*-t/stats.csv | FileCheck %s --check-prefix=CSV
+// RUN: ls %t/results/*-t/manifest.yaml
+// RUN: env SEA_BENCH_HOME=%t python3 %sea_src_root/utils/bench.py compare latest -a plain -b seamy | FileCheck %s --check-prefix=CMP
+// RUN: python3 %sea_src_root/utils/bench.py --agent | FileCheck %s --check-prefix=AGENT
+// OUT: plain: unsat=2
+// OUT: seamy: unsat=2
+// CSV: job,config,rep,wall,cpu,status,verdict
+// CSV: one,plain,0,{{.*}},0,unsat
+// CSV: two,seamy,0,{{.*}},0,unsat
+// CMP: jobs: A=2 B=2 common=2
+// CMP: disagreements: 0
+// CMP: solved-both: 2
+// AGENT: bench.py agent guide
+
+// REQUIRES: yices
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

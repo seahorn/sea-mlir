@@ -1,0 +1,20 @@
+Per-firing check (sea-vc --seam-check): every rule firing of the run
+is a solver query `premise => lhs = rhs` on its terms (store-maps expanded);
+an A-INB firing gets the layout and the in-bounds conditions of the accesses
+the rule compares. On the SeaM programs every firing is valid, under z3 and
+Yices, sampled or not. Under --simplify too.
+RUN: sea-vc %S/store-map.mlir --lower --widen-memory=4 --seam --seam-check | FileCheck %s --check-prefix=ALL
+RUN: sea-vc %S/store-map-join.mlir --lower --widen-memory=4 --seam --seam-check | FileCheck %s
+RUN: sea-vc %S/arm.mlir --lower --seam --seam-check | FileCheck %s
+RUN: sea-vc %S/arm-inb-symbolic.mlir --lower --seam --seam-check | FileCheck %s
+RUN: %if yices %{ sea-vc %S/join.mlir --lower --seam --seam-check --solver=yices | FileCheck %s %}
+RUN: sea-vc %S/store-map-fork.mlir --lower --widen-memory=4 --seam --seam-check=5 | FileCheck %s --check-prefix=SAMPLE
+RUN: sea-vc %S/nary-ops.mlir --lower --simplify --program=mul3m --seam-check | FileCheck %s
+The check comes after the verdict and does not change a valid run's status.
+ALL: result: unsat
+ALL: seam-check: firings=[[N:[0-9]+]] checked=[[N]] valid=[[N]] invalid=0 unknown=0 unexpressible=0
+CHECK: seam-check: firings=[[N:[0-9]+]] checked=[[N]] valid=[[N]] invalid=0 unknown=0 unexpressible=0
+SAMPLE: seam-check: firings={{[0-9]+}} checked=5 valid=5 invalid=0 unknown=0 unexpressible=0
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

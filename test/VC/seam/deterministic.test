@@ -1,0 +1,19 @@
+// The query sea-vc emits is the same in every run (no iteration over pointers:
+// the order of the arguments of the normalization rules is the creation id of
+// the terms, the declarations are printed in the order they are met). Compared
+// byte for byte, with and without SeaM and the normalization.
+RUN: sea-vc %S/../../SeaHorn/opsem/muchang.gstr.mlir --lower --seam --smt2 > %t.a 2> /dev/null
+RUN: sea-vc %S/../../SeaHorn/opsem/muchang.gstr.mlir --lower --seam --smt2 > %t.b 2> /dev/null
+RUN: cmp %t.a %t.b
+RUN: sea-vc %S/../../SeaHorn/opsem/muchang.gstr.mlir --lower --seam --seam-simplify=0 --smt2 > %t.c 2> /dev/null
+RUN: sea-vc %S/../../SeaHorn/opsem/muchang.gstr.mlir --lower --seam --seam-simplify=0 --smt2 > %t.d 2> /dev/null
+RUN: cmp %t.c %t.d
+RUN: sea-vc %S/../../SeaHorn/opsem/muchang.gstr.mlir --lower --simplify --smt2 > %t.e 2> /dev/null
+RUN: sea-vc %S/../../SeaHorn/opsem/muchang.gstr.mlir --lower --simplify --smt2 > %t.f 2> /dev/null
+RUN: cmp %t.e %t.f
+RUN: sea-vc %S/../../SeaHorn/opsem/test_fsh_sat.mlir --lower --seam --smt2 > %t.g 2> /dev/null
+RUN: sea-vc %S/../../SeaHorn/opsem/test_fsh_sat.mlir --lower --seam --smt2 > %t.h 2> /dev/null
+RUN: cmp %t.g %t.h
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

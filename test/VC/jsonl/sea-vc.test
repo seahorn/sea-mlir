@@ -1,0 +1,62 @@
+// --format=jsonl (include/sea/Support/Output.h): every stdout line is one
+// JSON object with a kind and the text rendering; the texts, in order, are
+// the --format=text output, and records with a fixed rendering render from
+// their fields to their text (utils/jsonl-check.py).
+
+// A sat with a replay and prints (abstract program, lowered; SeaM; strong
+// prints keep every printed value alive through the lowering).
+// RUN: sea-vc %S/../print/replay.mlir --lower --seam --print-refs=strong > %t.sat.txt
+// RUN: sea-vc %S/../print/replay.mlir --lower --seam --print-refs=strong --format=jsonl > %t.sat.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.sat.txt --jsonl %t.sat.jsonl \
+// RUN:   --require program:name --require object:id,symbol,order,objkind,base,size,align \
+// RUN:   --require result:value --require nondet:site,callee,width,value \
+// RUN:   --require replay:status,at,loc,op --require validate:checked,mismatches,dontcare \
+// RUN:   --require print:path,scope,type,fmt,value,repr --require print:path,type,obj,off,repr \
+// RUN:   --require print.object:id,objkind,size,label,base \
+// RUN:   --require print.mem:path,obj,lo,hi,bytes,unknown,default --require print.mem.row:path,row \
+// RUN:   --require stat:key,value,accesses,conditions
+// RUN: FileCheck %s --check-prefix=SAT < %t.sat.jsonl
+// SAT: {"kind":"result","value":"sat","text":"result: sat"}
+// SAT: {"kind":"nondet","site":4,"callee":"nondet_u64","width":64,"value":[[V:[0-9]+]],
+// SAT: {"kind":"replay","status":"assert-failed","at":"{{.*}}replay.mlir:41:9",{{.*}}"op":"{{.*}}replay.mlir:42:3","text":"replay: assert-failed\n
+// SAT: {"kind":"print","path":"a.val","scope":"a","type":"i64","fmt":"s","value":[[V]],"repr":"[[V]] : si64",
+// SAT: {"kind":"print.object","id":"heap.3","objkind":"heap","size":16,"label":"node b",{{.*}}"base":134512656,
+// SAT: {"kind":"print","path":"a.next","scope":"a","type":"addr","addr":134512656,"obj":"heap.3","off":0,"repr":"&heap.3[0]",
+// SAT: {"kind":"print","path":"end",{{.*}}"obj":"heap.2","off":16,"state":"end",
+// SAT: {"kind":"print","path":"bval",{{.*}}"value":0,"default":true,
+// SAT: {"kind":"print.mem","path":"dump","obj":"heap.2","lo":0,"hi":32,"bytes":"{{[0-9a-f]+}}1080040800000000{{0+}}","unknown":[],"default":{{\[\[}}16,32]],
+// SAT: {"kind":"validate","checked":{{[0-9]+}},"mismatches":0,"dontcare":0,
+
+// Tree prints with locations.
+// RUN: sea-vc %S/../print/replay.mlir --lower --print=tree --print-locs > %t.tree.txt
+// RUN: sea-vc %S/../print/replay.mlir --lower --print=tree --print-locs --format=jsonl > %t.tree.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.tree.txt --jsonl %t.tree.jsonl \
+// RUN:   --require print.scope:path,tag,depth --require print:path,depth,at
+
+// An unsat with the SeaM counters and brunch's lines: stat records.
+// RUN: sea-vc %S/../brunch-stats.mlir --lower --seam --seam-stats --brunch-stats > %t.unsat.txt
+// RUN: sea-vc %S/../brunch-stats.mlir --lower --seam --seam-stats --brunch-stats --format=jsonl > %t.unsat.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.unsat.txt --jsonl %t.unsat.jsonl \
+// RUN:   --require result:value --require stat:key,value,brunch
+// RUN: FileCheck %s --check-prefix=UNSAT < %t.unsat.jsonl
+// UNSAT: {"kind":"stat","key":"vc-time","value":{{[0-9]+\.[0-9]+}},"text":"vc-time: {{[0-9.]+}}"}
+// UNSAT: {"kind":"stat","key":"seam.inb","value":"assumed","accesses":{{[0-9]+}},"conditions":{{[0-9]+}},"text":"seam.inb: assumed
+// UNSAT: {"kind":"stat","key":"seam.rewrite-time","value":{{[0-9.]+}},
+// UNSAT: {"kind":"result","value":"unsat","text":"result: unsat"}
+// UNSAT: {"kind":"stat","key":"result","value":"unsat","brunch":true,"text":"BRUNCH_STAT result unsat"}
+// UNSAT: {"kind":"stat","key":"status","value":0,"brunch":true,"text":"BRUNCH_STAT status 0"}
+
+// --smt2: the query is one record, the statistics follow on stdout.
+// RUN: sea-vc %S/../brunch-stats.mlir --smt2 --format=jsonl 2> %t.smt2.err > %t.smt2.jsonl
+// RUN: %python -c "import json,sys; rs=[json.loads(l) for l in open(sys.argv[1])]; assert any(r['kind']=='smt2' and '(check-sat)' in r['text'] for r in rs); assert any(r.get('key')=='vc-time' for r in rs)" %t.smt2.jsonl
+// RUN: not grep -q vc-time %t.smt2.err
+
+// The replay record of a merged assertion: assert-at, assert-op, the path.
+// RUN: sea-vc %S/../assert-location.mlir --program=second --lower > %t.path.txt
+// RUN: sea-vc %S/../assert-location.mlir --program=second --lower --format=jsonl > %t.path.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.path.txt --jsonl %t.path.jsonl --require replay:status,at,op,path
+// RUN: FileCheck %s --check-prefix=PATH < %t.path.jsonl
+// PATH: {"kind":"replay","status":"assert-failed","at":"foo.c:14:3",{{.*}}"op":"foo.c:20:5","path":["foo.c:14:3","foo.c:12:3","foo.c:4:3"],
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

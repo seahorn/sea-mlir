@@ -1,0 +1,8 @@
+# Benchmark sources for `bench.py connect` / `just bench-connect` (docs/Benchmarks.md).
+# name: git URL or local path; each is connected as bench/work/<name> (gitignored):
+# a local path becomes a symlink, a URL is cloned (then pulled --ff-only).
+# Override per machine in bench/sources.local.yaml (gitignored, same format) or
+# with SEA_BENCH_SOURCE_<NAME>=<url-or-path>. An empty value skips the source.
+sources:
+  # Public benchmark suite.
+  public: https://github.com/seahorn/sea-mlir-bench.git

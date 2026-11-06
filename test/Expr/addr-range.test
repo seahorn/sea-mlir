@@ -1,0 +1,31 @@
+// ARM (include/sea/Expr/AddrRangeMap.hh, thesis Ch. 5): the lattice (join,
+// meet, add, subset, overflow to top), the thesis' Fig. 5.4 / 5.7 and the Ch. 3
+// pointer, Thm 4 on terms (same base: no assumption; different bases: A-INB;
+// absolute numbers, symbolic addends, top, size-0 objects, 8-bit wraparound,
+// a deep ite chain), and a seeded random test that evaluates the terms under
+// many assignments (every value in gamma(alpha); a disjoint pair never has
+// equal values, with A-INB only where the accessed leaves are in bounds).
+//
+// Mutation check: each mutant makes one lattice operation wrong
+// (arm_test::mutant) and the driver must fail.
+RUN: sea-addr-range-test | FileCheck %s
+CHECK: test: lattice-range ok
+CHECK: test: lattice-map ok
+CHECK: test: thesis ok
+CHECK: test: thm4 ok
+CHECK: test: wrap8 ok
+CHECK: semantics: pairs=3000
+CHECK: test: semantics ok
+CHECK: failures: 0
+
+RUN: not sea-addr-range-test --mutant=1 2>&1 | FileCheck %s --check-prefix=MUT
+RUN: not sea-addr-range-test --mutant=2 2>&1 | FileCheck %s --check-prefix=MUT
+RUN: not sea-addr-range-test --mutant=3 2>&1 | FileCheck %s --check-prefix=MUT
+RUN: not sea-addr-range-test --mutant=4 2>&1 | FileCheck %s --check-prefix=MUT
+RUN: not sea-addr-range-test --mutant=5 2>&1 | FileCheck %s --check-prefix=MUT
+RUN: not sea-addr-range-test --mutant=6 2>&1 | FileCheck %s --check-prefix=MUT
+RUN: not sea-addr-range-test --mutant=7 2>&1 | FileCheck %s --check-prefix=MUT
+MUT: FAIL
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

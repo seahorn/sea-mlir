@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+# Python style of utils/ and the lit configuration and test helpers:
+# `ruff format` and `ruff check` (.pre-commit-config.yaml pins the version).
+target-version = "py311"
+line-length = 88
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+  "E501",   # line length: the formatter wraps code; long strings and comments stay
+  "E731",   # lambda assignment: short local helpers read better as lambdas
+  "E741",   # `l` as a name (a line of text): readable in context
+  "UP031",  # printf-style formatting: no safe automatic fix; convert when touched
+  "B905",   # zip() without strict=: adding it changes behavior on unequal lengths
+]
+
+[lint.per-file-ignores]
+# lit injects `config` and `lit_config`
+"test/lit.cfg.py" = ["F821"]

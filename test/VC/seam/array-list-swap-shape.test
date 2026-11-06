@@ -1,0 +1,38 @@
+// Shape of the SeaM query of aws_array_list_swap (verify-c-common), the
+// motivating case of docs/design/SeaM-memops.md: three 128-byte memmoves
+// expanded into 128-store chains, and a read of the list compared with the
+// cells of the temporary. Input from the verify-c-common array_list_swap
+// benchmark. --smt2: no solving.
+//
+// With --seam, memory-operation range terms keep the query below 10,000
+// nodes and eliminate per-cell store chains.
+//
+// Size-zero pruning (docs/design/SeaM-provenance.md) removes null leaves
+// from the copies' ranges and access addresses, so the
+// translated read addresses s + (j - d) cancel their base through the ite
+// of the list getter (diff.ite-same-base)
+// and keep their object; the reads
+// left undecided over a copy are in the copy's own object (symbolic
+// offsets).
+// RUN: sea-vc %S/Inputs/array_list_swap.mlir --lower --seam --smt2 --seam-stats 2>&1 | FileCheck %s --check-prefix=PROV
+// PROV-DAG: seam.rule.addr.prune-size0-range: {{[1-9]}}
+// PROV-DAG: seam.rule.diff.ite-same-base: {{[1-9]}}
+// The shape is the query before the Ackermann lowering (--ackermannize=off;
+// docs/design/Ackermann.md), which replaces the selects by constants.
+// RUN: sea-vc %S/Inputs/array_list_swap.mlir --lower --smt2 --dag-stats 2>&1 | FileCheck %s --check-prefix=PLAIN
+// RUN: sea-vc %S/Inputs/array_list_swap.mlir --lower --widen-memory=8 --seam --seam-row-expand=0 --ackermannize=off --smt2 --dag-stats 2>&1 | FileCheck %s --check-prefix=WIDE
+// RUN: sea-vc %S/Inputs/array_list_swap.mlir --lower --seam --ackermannize=off --smt2 --dag-stats 2>&1 | FileCheck %s --check-prefix=SEAM
+// PLAIN: vc.dag-size: {{[1-9][0-9]*}}
+// PLAIN: vc.dag-op: ite {{[1-9][0-9]*}}
+// PLAIN: vc.dag-op: select {{[1-9][0-9]*}}
+// WIDE: vc.dag-size: {{[1-9][0-9]?[0-9]?[0-9]?$}}
+// WIDE: vc.dag-op: ite {{[1-9][0-9]*}}
+// WIDE: vc.dag-op: select {{[1-9][0-9]*}}
+// WIDE-NOT: vc.dag-op: store
+// SEAM: vc.dag-size: {{[1-9][0-9]?[0-9]?[0-9]?$}}
+// SEAM: vc.dag-op: ite {{[1-9][0-9]*}}
+// SEAM: vc.dag-op: select {{[1-9][0-9]*}}
+// SEAM-NOT: vc.dag-op: store
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

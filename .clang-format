@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+# One C++ style for the whole tree, the ported Expr code included: LLVM's,
+# with MLIR's deltas (llvm-project/mlir/.clang-format). The formatter is
+# pinned in .pre-commit-config.yaml (clang-format 18.1.8, the major of the
+# clang-18 toolchain the build uses). MLIR's WrapNamespaceBodyWithEmptyLines
+# needs clang-format 20 and is left out; its value there, Never, does not
+# change LLVM style's output.
+BasedOnStyle: LLVM
+AlwaysBreakTemplateDeclarations: Yes
+LineEnding: LF

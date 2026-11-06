@@ -1,0 +1,21 @@
+// Width terms (docs/design/SeaM-mixed-width.md, sea-vc --seam --seam-wide):
+// a load / store of a byte memory wider than a byte stays one wselect /
+// wstore; the rules W-HIT / W-SUB / W-SKIP (and a wide read over a memop
+// term) decide reads, the boundary expands what is left. A pointer stored
+// and reloaded whole keeps its object (W-HIT), so the A-INB answers of
+// inb-ptrmem / inb-ptrmemmove are the same as with byte splitting; every
+// firing (per-access spans) checks valid.
+RUN: sea-vc %S/inb-ptrmem.mlir --program=ptrmem --lower --seam --seam-wide --seam-stats --seam-check 2>&1 | FileCheck %s --check-prefix=PTRMEM
+RUN: sea-vc %S/inb-ptrmemmove.mlir --program=ptrmemmove --lower --seam --seam-wide --seam-stats --seam-check 2>&1 | FileCheck %s --check-prefix=MOVE
+RUN: not sea-vc %S/inb-ptrmem.mlir --program=ptrmem --lower --seam-wide 2>&1 | FileCheck %s --check-prefix=NOSEAM
+PTRMEM-DAG: seam.rule.wide.hit: {{[1-9]}}
+PTRMEM-DAG: seam.rule.wide.skip: {{[1-9]}}
+PTRMEM: result: unsat
+PTRMEM: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
+MOVE-DAG: seam.rule.wide.memop-hit: {{[1-9]}}
+MOVE: result: unsat
+MOVE: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
+NOSEAM: need --seam
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

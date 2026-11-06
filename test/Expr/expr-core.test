@@ -1,0 +1,22 @@
+// Counter invariants of the Expr core (include/sea/Expr/ExprCore.hh,
+// fatalCounter): always checked (Release too), fail at the cause, no
+// recovery. unittests/ExprCore: the last allowed count and id, ordinary
+// release, duplicate candidates, id reset on recycling; then each broken
+// invariant aborts before the counter changes.
+RUN: sea-expr-core-test | FileCheck %s
+CHECK: test: limits ok
+CHECK: test: lifecycle ok
+CHECK: test: reclamation ok
+CHECK: failures: 0
+RUN: not --crash sea-expr-core-test refcount-overflow 2>&1 | FileCheck %s --check-prefix=OVF
+OVF: error: [expr.refcount-overflow] Expr counter invariant broken: {{.*}} value=4294967295
+OVF-NOT: no crash
+RUN: not --crash sea-expr-core-test refcount-underflow 2>&1 | FileCheck %s --check-prefix=UNF
+UNF: error: [expr.refcount-underflow] Expr counter invariant broken: {{.*}} value=0
+UNF-NOT: no crash
+RUN: not --crash sea-expr-core-test id-exhausted 2>&1 | FileCheck %s --check-prefix=IDX
+IDX: error: [expr.id-exhausted] Expr counter invariant broken: {{.*}} value=4294967295
+IDX-NOT: no crash
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

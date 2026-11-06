@@ -1,0 +1,25 @@
+// Dynamic-shape NKI cases without A-INB. Timeouts bound the test cost
+// if memory rewrites expand exponentially.
+// - dyn-add without A-INB: a read through undecided memmove rows of
+//   distinct placed objects can nest every later read (2^n leaves);
+//   cmp.layout / mem.in-layout decide them by the placed numerals.
+// - dyn-add nopre: violates A-INB (numeral offsets outside the object), so
+//   SeaM falls back to running without it; sat. Replay mismatches (exit 2)
+//   without --seam too: the out-of-object writes break the Mem-SSA claim of
+//   the in-place interpreter's earlier-version loads
+//   (interp.load-earlier-version), so only the verdict is pinned here.
+// - scatter with --seam-wide: a wide read (wselect) is data, like a select.
+//   mentionsBase must accept its use as an index so cmp.diff-base can fire.
+RUN: timeout 120 sea-vc %S/Inputs/nki-dyn-add-M4H4-good.mlir --lower --seam --seam-inb=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=LAYOUT,UNSAT
+RUN: timeout 120 sea-vc %S/Inputs/nki-dyn-add-M4H4-good.mlir --lower --seam | FileCheck %s --check-prefix=UNSAT
+RUN: not timeout 120 sea-vc %S/Inputs/nki-dyn-add-M4H4-nopre.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=SAT
+RUN: timeout 120 sea-vc %S/Inputs/nki-scatter-K4-int8.mlir --lower --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=DIFF,UNSAT
+RUN: timeout 120 sea-vc %S/Inputs/nki-scatter-K4-int8.mlir --lower --seam | FileCheck %s --check-prefix=UNSAT
+LAYOUT: seam.rule.mem.in-layout: {{[1-9]}}
+DIFF: seam.rule.{{.*}}cmp.diff-base{{.*}}: {{[1-9]}}
+UNSAT: result: unsat
+SAT: vc.seam-inb-violated
+SAT: result: sat
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

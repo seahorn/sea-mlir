@@ -1,0 +1,47 @@
+Rule trail (sea-vc --seam-trail / --seam-trace; include/sea/Expr/
+RewriteTrail.hh) on the Store-Map program store-map.mlir: one JSON record per
+firing (rules, premises, the op and its location, the access size, lhs / rhs
+node ids), the run's summary (cache hits are counted, not recorded), the term
+DAG in <trail>.terms; --seam-trace prints the firings of the named rules.
+utils/seam-trail.py reads the trail.
+RUN: sea-vc %S/store-map.mlir --lower --widen-memory=4 --seam --seam-trail=%t.jsonl --seam-trail-text '--seam-trace=row.smap-*' 2>%t.err | FileCheck %s --check-prefix=VERDICT
+RUN: FileCheck %s --check-prefix=TRAIL < %t.jsonl
+RUN: FileCheck %s --check-prefix=TERMS < %t.jsonl.terms
+RUN: FileCheck %s --check-prefix=TRACE < %t.err
+RUN: %python %sea_src_root/utils/seam-trail.py %t.jsonl | FileCheck %s --check-prefix=HIST
+RUN: %python %sea_src_root/utils/seam-trail.py %t.jsonl --premise A-INB | FileCheck %s --check-prefix=INB
+RUN: %python %sea_src_root/utils/seam-trail.py --agent | FileCheck %s --check-prefix=AGENT
+Off: no trail file, no trace lines
+RUN: sea-vc %S/store-map.mlir --lower --widen-memory=4 --seam 2>&1 | FileCheck %s --check-prefix=OFF
+RUN: not sea-vc %S/store-map.mlir --lower --seam-trail=%t.x 2>&1 | FileCheck %s --check-prefix=NOSEAM
+
+VERDICT: result: unsat
+TRAIL: {"t":"run","run":1,"inb":true}
+TRAIL: {"t":"fire","run":1,"id":0,"rules":["wow.commute"],"premises":["A-INB"],"op":"store","loc":"{{.*}}store-map.mlir:{{[0-9]+}}:{{[0-9]+}}","units":4,"lhs":{{[0-9]+}},"rhs":{{[0-9]+}},"lhs_text":"store(store({{.*}}","rhs_text":"{{.*}}"}
+TRAIL: "rules":["smap.new"],"premises":[],"op":"store"
+TRAIL: "rules":["row.smap-skip"],"premises":["A-INB"],"op":"load"
+TRAIL: "op":"side"
+TRAIL: {"t":"summary","run":1,"firings":{{[0-9]+}},"rule_calls":{{[0-9]+}},"cache_hits":{{[0-9]+}}}
+TERMS: {"run":1,"id":{{[0-9]+}},"op":"{{[^"]+}}","text":"{{[^"]+}}"}
+TERMS: {"run":1,"id":{{[0-9]+}},"op":"store","args":[{{[0-9]+}},{{[0-9]+}},{{[0-9]+}}]}
+TRACE: seam-trace: id={{[0-9]+}} rules=row.smap-skip premises=A-INB op=load loc={{.*}}store-map.mlir:{{[0-9:]+}} lhs={{[0-9]+}} rhs={{[0-9]+}}
+TRACE-NEXT: seam-trace-lhs: select(store-map(
+TRACE-NEXT: seam-trace-rhs: select(store(
+TRACE: seam-trace: id={{[0-9]+}} rules=smap.lookup,row.smap-hit premises=none op=load
+TRACE-NOT: rules=wow
+HIST: run: 1
+HIST: cache-hits: {{[0-9]+}}
+HIST: rule.row.smap-skip: 1
+HIST: rule.smap.new: 1
+HIST: premise.A-INB: 3
+HIST: op.load:
+INB: firings: 3
+INB: rule.row.smap-skip: 1
+INB: rule.smap.commute: 1
+INB: rule.wow.commute: 1
+AGENT: STATUS CODES
+OFF-NOT: seam-trace
+NOSEAM: --seam-trail, --seam-trace and --seam-check need --seam or --simplify
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

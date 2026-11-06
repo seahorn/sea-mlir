@@ -1,0 +1,58 @@
+// The lambda memory encoding (docs/design/Lambda.md, sea-vc --mem=lambda):
+// memories as unary functions, loads as fapp, stores / memset / memmove /
+// memhavoc as lambdas with the circular membership (i - d) <u n, z3's
+// simplifier at every register write. Assumption-free: the verdicts of the
+// memops corpus programs (test/VC/memops) are the array encoding's, and the
+// exact ones (--seam) where the array encoding bounds symbolic lengths; a
+// sat is replayed through the interpreter (the initial arrays are kept for
+// the model, SeaOpSem::initialArray).
+RUN: sea-vc %S/../memops/memmove-symbolic-overlap-above.mlir --program=unsat --lower --mem=lambda 2>&1 | FileCheck %s --check-prefix=UNSAT
+RUN: sea-vc %S/../memops/memmove-symbolic-overlap-above.mlir --program=sat_last --lower --mem=lambda 2>&1 | FileCheck %s --check-prefix=SAT
+RUN: sea-vc %S/../memops/memmove-source-written.mlir --program=inobj_unsat --lower --mem=lambda 2>&1 | FileCheck %s --check-prefix=UNSAT
+RUN: sea-vc %S/../memops/memmove-source-written.mlir --program=memset_sat --lower --mem=lambda 2>&1 | FileCheck %s --check-prefix=SAT
+RUN: sea-vc %S/../memops/memhavoc.mlir --program=unsat_edges --lower --mem=lambda 2>&1 | FileCheck %s --check-prefix=UNSAT
+RUN: sea-vc %S/../memops/memhavoc.mlir --program=sat_first --lower --mem=lambda 2>&1 | FileCheck %s --check-prefix=SAT
+RUN: sea-vc %S/../memops/memhavoc.mlir --program=symbolic_len --lower --mem=lambda 2>&1 | FileCheck %s --check-prefix=UNSAT
+RUN: sea-vc %S/../memops/memset-const.mlir --program=sat_hi --lower --mem=lambda 2>&1 | FileCheck %s --check-prefix=SAT
+// const memories (sea.mem.const: lambda i. v), joined memories (ite)
+RUN: sea-vc %S/../bitwuzla/const-memory.mlir --program=const --lower --mem=lambda 2>&1 | FileCheck %s --check-prefix=UNSAT
+RUN: sea-vc %S/../bitwuzla/const-memory.mlir --program=join --lower --mem=lambda 2>&1 | FileCheck %s --check-prefix=UNSAT
+RUN: sea-vc %S/../bitwuzla/const-memory.mlir --program=bug --lower --mem=lambda 2>&1 | FileCheck %s --check-prefix=SAT
+// exact symbolic lengths: the array encoding's bound (n <= 16) is not taken
+RUN: sea-vc %S/../memops/memmove-over-bound.mlir --program=over_bound --lower --mem=lambda 2>&1 | FileCheck %s --check-prefix=SAT
+// the schedule knobs and the final simplify keep the verdict
+RUN: sea-vc %S/../memops/memmove-symbolic-overlap-above.mlir --program=unsat --lower --mem=lambda --lambda-simplify=none 2>&1 | FileCheck %s --check-prefix=UNSAT
+RUN: sea-vc %S/../memops/memmove-symbolic-overlap-above.mlir --program=unsat --lower --mem=lambda --lambda-simplify-every=3 --lambda-final-simplify 2>&1 | FileCheck %s --check-prefix=FINAL
+// widened memories (sea-widen-memory: aligned 8-byte cells; a memset's byte
+// is repeated per word)
+RUN: sea-vc %S/../memops/memset-const.mlir --program=unsat --lower --widen-memory=8 --mem=lambda 2>&1 | FileCheck %s --check-prefix=UNSAT
+RUN: sea-vc %S/../memops/memset-const.mlir --program=sat_hi --lower --widen-memory=8 --mem=lambda 2>&1 | FileCheck %s --check-prefix=SAT
+RUN: sea-vc %S/../bitwuzla/const-memory.mlir --program=join --lower --widen-memory=8 --mem=lambda 2>&1 | FileCheck %s --check-prefix=UNSAT
+// refusals
+RUN: not sea-vc %S/../memops/memhavoc.mlir --program=unsat --lower --mem=lambda --seam 2>&1 | FileCheck %s --check-prefix=NOSEAM
+RUN: not sea-vc %S/../memops/memhavoc.mlir --program=unsat --lower --mem=lambda --vc-join=eq 2>&1 | FileCheck %s --check-prefix=NOJOIN
+RUN: %if yices %{ not sea-vc %S/../memops/memhavoc.mlir --program=unsat --lower --mem=lambda --solver=yices 2>&1 | FileCheck %s --check-prefix=NOYICES %}
+UNSAT: lambda.writes: {{[1-9][0-9]*}}
+UNSAT: result: unsat
+SAT: result: sat
+SAT: replay: assert-failed
+FINAL: lambda.simplify.skipped: {{[1-9][0-9]*}}
+FINAL: lambda.final-simplify-time:
+FINAL: result: unsat
+NOSEAM: --mem=lambda is an alternative to --seam
+NOJOIN: vc.lambda-join
+NOYICES: vc.lambda-unsupported
+// z3's global parameters (SeaHorn's --horn-bmc-tactic): smtfd keeps the
+// verdict (a sat is replayed through the interpreter, so an unsound sat of a
+// lazy tactic would not be reported as a counterexample)
+RUN: sea-vc %S/../memops/memmove-symbolic-overlap-above.mlir --program=unsat --lower --mem=lambda --z3-tactic=smtfd 2>&1 | FileCheck %s --check-prefix=FD
+RUN: sea-vc %S/../memops/memmove-symbolic-overlap-above.mlir --program=sat_last --lower --mem=lambda --z3-tactic=smtfd 2>&1 | FileCheck %s --check-prefix=SAT
+RUN: sea-vc %S/../memops/memmove-symbolic-overlap-above.mlir --program=unsat --lower --z3-param=smt.random_seed=7 2>&1 | FileCheck %s --check-prefix=UNSAT-ANY
+RUN: not sea-vc %S/../memops/memmove-symbolic-overlap-above.mlir --program=unsat --lower --z3-param=bogus 2>&1 | FileCheck %s --check-prefix=BADPARAM
+FD: solver.z3-tactic: smtfd
+FD: result: unsat
+UNSAT-ANY: result: unsat
+BADPARAM: --z3-param wants key=value
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

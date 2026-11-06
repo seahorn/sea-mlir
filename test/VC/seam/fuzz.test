@@ -1,0 +1,44 @@
+Differential fuzzing of --seam on programs with objects (utils/fuzz-seam.py; not
+an oracle). A-INB is assumed and reported, not discharged. Accesses at object
+bases, and cells (many numeral cells of several objects, every access inside
+its object, memory read back by the assertion): A-INB holds, so every variant
+(--seam, --seam-arm=0, --seam-store-map=0, --seam-inb=0) agrees with plain and
+no run falls back to no A-INB; for cells Store-Map fires and the final run
+reports rules that need A-INB (smap.commute, cross-base skips). Violating
+modes (accesses anywhere, cells-violate, circular, ptrmem): plain and
+--seam-inb=0 agree, --seam may differ (seam-differs: its answer is conditional
+on A-INB); when --seam is unsat and plain is sat, the counterexample of plain
+is run by sea-run on the abstract program and must make an access outside its
+object (oob-confirmed). Circular: the shape of the A-INB circularity (a
+load-dependent assume / branch / address after a store through another
+object's offset): seed 0, n=12 has 3 programs on which --seam is unsat and
+plain sat, each confirmed out of bounds (the shape on which a solver check
+built from the A-INB encoding gave a wrong "A-INB holds"). Ptrmem: a pointer
+stored in memory and reloaded after a store that only A-INB lets the rewriting
+skip. Cells-violate: the sure violation (numeral offset) is detected statically
+in every program (fallbacks).
+RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 1 -n 20 --accesses=bases | FileCheck %s --check-prefix=INB
+RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 2 -n 20 --accesses=any | FileCheck %s
+RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 3 -n 8 --accesses=cells | FileCheck %s --check-prefix=CELLS
+RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 4 -n 6 --accesses=cells-violate | FileCheck %s --check-prefix=VIOL
+RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 0 -n 12 --accesses=circular | FileCheck %s --check-prefix=CIRC
+RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 1 -n 12 --accesses=ptrmem | FileCheck %s --check-prefix=PTRMEM
+CHECK: failures: 0
+INB: fallbacks: 0
+INB: failures: 0
+CELLS: smap-fired: {{[1-9][0-9]*}}
+CELLS: smap.commute: {{[1-9][0-9]*}}
+CELLS: cross-base-skips: {{[1-9][0-9]*}}
+CELLS: fallbacks: 0
+CELLS: failures: 0
+VIOL: fallbacks: 6
+VIOL: failures: 0
+CIRC: seam-differs: 3
+CIRC: oob-confirmed: 3
+CIRC: oob-undetermined: 0
+CIRC: failures: 0
+PTRMEM: oob-confirmed: {{[1-9][0-9]*}}
+PTRMEM: failures: 0
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

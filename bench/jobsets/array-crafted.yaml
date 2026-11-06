@@ -1,0 +1,4 @@
+description: crafted array benchmarks (bAnd, bOr, mapsum, mapavg, xor, ...), MemSSA optimize on
+source: copy
+from: ${SEA_BENCH_ARRAY_CRAFTED:-bench/work/public/crafted}
+widen: 4

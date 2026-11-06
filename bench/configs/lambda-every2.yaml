@@ -1,0 +1,1 @@
+args: [--lambda-simplify-every=2]

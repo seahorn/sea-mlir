@@ -1,0 +1,33 @@
+// bench.py suites / establish / gate on a tiny suite (SEA_BENCH_SUITES): a
+// family with two unsat jobs; establish fills expected / tier / time; the
+// smoke gate passes; with one expectation flipped to sat it fails (WRONG).
+// RUN: rm -rf %t && mkdir -p %t/s1/fam %t/home/results
+// RUN: cp %S/../VC/brunch-stats.mlir %t/s1/fam/one.mlir
+// RUN: sed 's/@p /@q /' %S/../VC/brunch-stats.mlir > %t/s1/fam/two.mlir
+// RUN: printf "family: fam\ndefaults:\n  args: [--lower, --seam]\n  timeout: 60\n  mem: 4096\njobs:\n  one: {expected: null, tier: null}\n  two: {expected: null, tier: null, args: [--solver=yices]}\n" > %t/s1/fam/manifest.yaml
+// RUN: env SEA_BENCH_SUITES=%t/s1 SEA_BENCH_HOME=%t/home python3 %sea_src_root/utils/bench.py establish s1 --sea-vc %sea_vc --min-free-gb 0 | FileCheck %s --check-prefix=EST
+// RUN: FileCheck %s --check-prefix=MAN < %t/s1/fam/manifest.yaml
+// RUN: env SEA_BENCH_SUITES=%t/s1 python3 %sea_src_root/utils/bench.py suites | FileCheck %s --check-prefix=LIST
+// RUN: env SEA_BENCH_SUITES=%t/s1 SEA_BENCH_HOME=%t/home python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %sea_vc --min-free-gb 0 --no-record | FileCheck %s --check-prefix=PASS
+// RUN: sed -i 's/expected: unsat/expected: sat/' %t/s1/fam/manifest.yaml
+// RUN: env SEA_BENCH_SUITES=%t/s1 SEA_BENCH_HOME=%t/home not python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %sea_vc --min-free-gb 0 --no-record | FileCheck %s --check-prefix=FAIL
+// EST: establish: jobs=2
+// EST: verdicts: unsat=2
+// MAN: one:
+// MAN-NEXT: expected: unsat
+// MAN-NEXT: tier: smoke
+// MAN: two:
+// MAN-NEXT: expected: unsat
+// MAN: args: [--solver=yices]
+// LIST: family: s1/fam jobs=2 smoke=2 quick=0 full=0 hard=0 unsat=2
+// PASS: gate: smoke configs=default jobs=2
+// PASS: failures: 0
+// PASS: gate: pass
+// FAIL: FAIL: WRONG s1.fam.one config=default verdict=unsat expected=sat
+// FAIL: FAIL: WRONG s1.fam.two config=default verdict=unsat expected=sat
+// FAIL: gate: fail
+
+// REQUIRES: yices
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -1,0 +1,16 @@
+// --seam-stats prints the vc-time phase measurements: the lines exist, in
+// order; their values are not checked.
+RUN: sea-vc %S/../../SeaHorn/opsem/muchang.gstr.mlir --lower --seam --seam-stats --smt2 2>&1 >/dev/null | FileCheck %s
+CHECK: vc-time:
+CHECK: vc.setup-time:
+CHECK: vc.encode-time:
+CHECK: vc.simplify-sides-time:
+CHECK: vc.mkquery-time:
+CHECK: vc.simplify-query-time:
+CHECK: vc.solver-term-time:
+CHECK: vc.unique-names-time:
+CHECK: vc.exec-time:
+CHECK: vc.join-time:
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -1,0 +1,106 @@
+// Prints change nothing in the VC (docs/design/Print.md): OpSem encodes
+// no term for them, and every pass of the lowering accepts them. The query
+// (--smt2) of a program is byte-identical with no prints, with weak prints
+// after every value and with strong prints of every used value
+// (sea-test-insert-prints), through the lowering with and without SeaM and
+// memory widening. (Strong prints of unused values keep them alive; the VC
+// encodes every op, so that costs nothing either: array_list_swap.)
+
+// RUN: sea-opt %S/../seam/Inputs/array_list_swap.mlir --mlir-print-debuginfo > %t.als.n.mlir
+// RUN: sea-opt %S/../seam/Inputs/array_list_swap.mlir --mlir-print-debuginfo --pass-pipeline='builtin.module(sea.program(sea-test-insert-prints{mode=weak}))' > %t.als.w.mlir
+// RUN: sea-opt %S/../seam/Inputs/array_list_swap.mlir --mlir-print-debuginfo --pass-pipeline='builtin.module(sea.program(sea-test-insert-prints{mode=strong}))' > %t.als.s.mlir
+// RUN: FileCheck %s --check-prefix=PRINTS < %t.als.w.mlir
+// RUN: FileCheck %s --check-prefix=PRINTS < %t.als.s.mlir
+// RUN: sea-vc %t.als.n.mlir --lower --smt2 > %t.als.lower.n.smt2 2>/dev/null
+// RUN: sea-vc %t.als.w.mlir --lower --smt2 > %t.als.lower.w.smt2 2>/dev/null
+// RUN: sea-vc %t.als.s.mlir --lower --smt2 > %t.als.lower.s.smt2 2>/dev/null
+// RUN: FileCheck %s --check-prefix=QUERY < %t.als.lower.n.smt2
+// RUN: diff %t.als.lower.n.smt2 %t.als.lower.w.smt2
+// RUN: diff %t.als.lower.n.smt2 %t.als.lower.s.smt2
+// RUN: sea-vc %t.als.n.mlir --lower --seam --smt2 > %t.als.seam.n.smt2 2>/dev/null
+// RUN: sea-vc %t.als.w.mlir --lower --seam --smt2 > %t.als.seam.w.smt2 2>/dev/null
+// RUN: sea-vc %t.als.s.mlir --lower --seam --smt2 > %t.als.seam.s.smt2 2>/dev/null
+// RUN: FileCheck %s --check-prefix=QUERY < %t.als.seam.n.smt2
+// RUN: diff %t.als.seam.n.smt2 %t.als.seam.w.smt2
+// RUN: diff %t.als.seam.n.smt2 %t.als.seam.s.smt2
+// RUN: sea-vc %t.als.n.mlir --lower --widen-memory=8 --smt2 > %t.als.widen.n.smt2 2>/dev/null
+// RUN: sea-vc %t.als.w.mlir --lower --widen-memory=8 --smt2 > %t.als.widen.w.smt2 2>/dev/null
+// RUN: sea-vc %t.als.s.mlir --lower --widen-memory=8 --smt2 > %t.als.widen.s.smt2 2>/dev/null
+// RUN: FileCheck %s --check-prefix=QUERY < %t.als.widen.n.smt2
+// RUN: diff %t.als.widen.n.smt2 %t.als.widen.w.smt2
+// RUN: diff %t.als.widen.n.smt2 %t.als.widen.s.smt2
+// RUN: sea-opt %S/../ackermann/sat.mlir --mlir-print-debuginfo > %t.ack.n.mlir
+// RUN: sea-opt %S/../ackermann/sat.mlir --mlir-print-debuginfo --pass-pipeline='builtin.module(sea.program(sea-test-insert-prints{mode=weak}))' > %t.ack.w.mlir
+// RUN: sea-opt %S/../ackermann/sat.mlir --mlir-print-debuginfo --pass-pipeline='builtin.module(sea.program(sea-test-insert-prints{mode=strong}))' > %t.ack.s.mlir
+// RUN: FileCheck %s --check-prefix=PRINTS < %t.ack.w.mlir
+// RUN: FileCheck %s --check-prefix=PRINTS < %t.ack.s.mlir
+// RUN: sea-vc %t.ack.n.mlir --lower --smt2 > %t.ack.lower.n.smt2 2>/dev/null
+// RUN: sea-vc %t.ack.w.mlir --lower --smt2 > %t.ack.lower.w.smt2 2>/dev/null
+// RUN: sea-vc %t.ack.s.mlir --lower --smt2 > %t.ack.lower.s.smt2 2>/dev/null
+// RUN: FileCheck %s --check-prefix=QUERY < %t.ack.lower.n.smt2
+// RUN: diff %t.ack.lower.n.smt2 %t.ack.lower.w.smt2
+// RUN: diff %t.ack.lower.n.smt2 %t.ack.lower.s.smt2
+// RUN: sea-vc %t.ack.n.mlir --lower --seam --smt2 > %t.ack.seam.n.smt2 2>/dev/null
+// RUN: sea-vc %t.ack.w.mlir --lower --seam --smt2 > %t.ack.seam.w.smt2 2>/dev/null
+// RUN: sea-vc %t.ack.s.mlir --lower --seam --smt2 > %t.ack.seam.s.smt2 2>/dev/null
+// RUN: FileCheck %s --check-prefix=QUERY < %t.ack.seam.n.smt2
+// RUN: diff %t.ack.seam.n.smt2 %t.ack.seam.w.smt2
+// RUN: diff %t.ack.seam.n.smt2 %t.ack.seam.s.smt2
+// RUN: sea-vc %t.ack.n.mlir --lower --widen-memory=8 --smt2 > %t.ack.widen.n.smt2 2>/dev/null
+// RUN: sea-vc %t.ack.w.mlir --lower --widen-memory=8 --smt2 > %t.ack.widen.w.smt2 2>/dev/null
+// RUN: sea-vc %t.ack.s.mlir --lower --widen-memory=8 --smt2 > %t.ack.widen.s.smt2 2>/dev/null
+// RUN: FileCheck %s --check-prefix=QUERY < %t.ack.widen.n.smt2
+// RUN: diff %t.ack.widen.n.smt2 %t.ack.widen.w.smt2
+// RUN: diff %t.ack.widen.n.smt2 %t.ack.widen.s.smt2
+// RUN: sea-opt %S/../seam/memops-terms.mlir --mlir-print-debuginfo > %t.mops.n.mlir
+// RUN: sea-opt %S/../seam/memops-terms.mlir --mlir-print-debuginfo --pass-pipeline='builtin.module(sea.program(sea-test-insert-prints{mode=weak}))' > %t.mops.w.mlir
+// RUN: sea-opt %S/../seam/memops-terms.mlir --mlir-print-debuginfo --pass-pipeline='builtin.module(sea.program(sea-test-insert-prints{mode=strong}))' > %t.mops.s.mlir
+// RUN: FileCheck %s --check-prefix=PRINTS < %t.mops.w.mlir
+// RUN: FileCheck %s --check-prefix=PRINTS < %t.mops.s.mlir
+// RUN: sea-vc %t.mops.n.mlir --lower --smt2 > %t.mops.lower.n.smt2 2>/dev/null
+// RUN: sea-vc %t.mops.w.mlir --lower --smt2 > %t.mops.lower.w.smt2 2>/dev/null
+// RUN: sea-vc %t.mops.s.mlir --lower --smt2 > %t.mops.lower.s.smt2 2>/dev/null
+// RUN: FileCheck %s --check-prefix=QUERY < %t.mops.lower.n.smt2
+// RUN: diff %t.mops.lower.n.smt2 %t.mops.lower.w.smt2
+// RUN: diff %t.mops.lower.n.smt2 %t.mops.lower.s.smt2
+// RUN: sea-vc %t.mops.n.mlir --lower --seam --smt2 > %t.mops.seam.n.smt2 2>/dev/null
+// RUN: sea-vc %t.mops.w.mlir --lower --seam --smt2 > %t.mops.seam.w.smt2 2>/dev/null
+// RUN: sea-vc %t.mops.s.mlir --lower --seam --smt2 > %t.mops.seam.s.smt2 2>/dev/null
+// RUN: FileCheck %s --check-prefix=QUERY < %t.mops.seam.n.smt2
+// RUN: diff %t.mops.seam.n.smt2 %t.mops.seam.w.smt2
+// RUN: diff %t.mops.seam.n.smt2 %t.mops.seam.s.smt2
+// RUN: sea-vc %t.mops.n.mlir --lower --widen-memory=8 --smt2 > %t.mops.widen.n.smt2 2>/dev/null
+// RUN: sea-vc %t.mops.w.mlir --lower --widen-memory=8 --smt2 > %t.mops.widen.w.smt2 2>/dev/null
+// RUN: sea-vc %t.mops.s.mlir --lower --widen-memory=8 --smt2 > %t.mops.widen.s.smt2 2>/dev/null
+// RUN: FileCheck %s --check-prefix=QUERY < %t.mops.widen.n.smt2
+// RUN: diff %t.mops.widen.n.smt2 %t.mops.widen.w.smt2
+// RUN: diff %t.mops.widen.n.smt2 %t.mops.widen.s.smt2
+// RUN: sea-opt %S/../seam/inb-ptrmem.mlir --mlir-print-debuginfo > %t.ptrmem.n.mlir
+// RUN: sea-opt %S/../seam/inb-ptrmem.mlir --mlir-print-debuginfo --pass-pipeline='builtin.module(sea.program(sea-test-insert-prints{mode=weak}))' > %t.ptrmem.w.mlir
+// RUN: sea-opt %S/../seam/inb-ptrmem.mlir --mlir-print-debuginfo --pass-pipeline='builtin.module(sea.program(sea-test-insert-prints{mode=strong}))' > %t.ptrmem.s.mlir
+// RUN: FileCheck %s --check-prefix=PRINTS < %t.ptrmem.w.mlir
+// RUN: FileCheck %s --check-prefix=PRINTS < %t.ptrmem.s.mlir
+// RUN: sea-vc %t.ptrmem.n.mlir --lower --smt2 > %t.ptrmem.lower.n.smt2 2>/dev/null
+// RUN: sea-vc %t.ptrmem.w.mlir --lower --smt2 > %t.ptrmem.lower.w.smt2 2>/dev/null
+// RUN: sea-vc %t.ptrmem.s.mlir --lower --smt2 > %t.ptrmem.lower.s.smt2 2>/dev/null
+// RUN: FileCheck %s --check-prefix=QUERY < %t.ptrmem.lower.n.smt2
+// RUN: diff %t.ptrmem.lower.n.smt2 %t.ptrmem.lower.w.smt2
+// RUN: diff %t.ptrmem.lower.n.smt2 %t.ptrmem.lower.s.smt2
+// RUN: sea-vc %t.ptrmem.n.mlir --lower --seam --smt2 > %t.ptrmem.seam.n.smt2 2>/dev/null
+// RUN: sea-vc %t.ptrmem.w.mlir --lower --seam --smt2 > %t.ptrmem.seam.w.smt2 2>/dev/null
+// RUN: sea-vc %t.ptrmem.s.mlir --lower --seam --smt2 > %t.ptrmem.seam.s.smt2 2>/dev/null
+// RUN: FileCheck %s --check-prefix=QUERY < %t.ptrmem.seam.n.smt2
+// RUN: diff %t.ptrmem.seam.n.smt2 %t.ptrmem.seam.w.smt2
+// RUN: diff %t.ptrmem.seam.n.smt2 %t.ptrmem.seam.s.smt2
+// RUN: sea-vc %t.ptrmem.n.mlir --lower --widen-memory=8 --smt2 > %t.ptrmem.widen.n.smt2 2>/dev/null
+// RUN: sea-vc %t.ptrmem.w.mlir --lower --widen-memory=8 --smt2 > %t.ptrmem.widen.w.smt2 2>/dev/null
+// RUN: sea-vc %t.ptrmem.s.mlir --lower --widen-memory=8 --smt2 > %t.ptrmem.widen.s.smt2 2>/dev/null
+// RUN: FileCheck %s --check-prefix=QUERY < %t.ptrmem.widen.n.smt2
+// RUN: diff %t.ptrmem.widen.n.smt2 %t.ptrmem.widen.w.smt2
+// RUN: diff %t.ptrmem.widen.n.smt2 %t.ptrmem.widen.s.smt2
+
+// PRINTS: sea.print
+// QUERY: (check-sat)
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

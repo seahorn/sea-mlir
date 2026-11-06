@@ -1,0 +1,6 @@
+ORACLE: static placement vs abstract interpreter (see test/README.md).
+RUN: %python %sea_src_root/utils/fuzz-place.py --sea-opt sea-opt --sea-run sea-run --sea-vc sea-vc --seed 1 -n 40 --runs 3 | FileCheck %s
+CHECK: programs: 40 sat: {{[0-9]+}} unsat: {{[0-9]+}} failures: 0
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

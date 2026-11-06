@@ -1,0 +1,14 @@
+utils/fuzz-seam.py --seam-check (not an oracle): every --seam
+variant of every program also checks each rule firing with the solver
+(`premise => lhs = rhs`); no firing is invalid or unexpressible. Cells: the
+Store-Map rules and the cross-object skips (A-INB firings); wide: ARM.
+RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 5 -n 2 --accesses=cells --seam-check | FileCheck %s
+RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 5 -n 3 --accesses=wide --seam-check | FileCheck %s
+CHECK: seam-check-firings: {{[1-9][0-9]*}}
+CHECK: seam-check-invalid: 0
+CHECK: seam-check-unknown: 0
+CHECK: seam-check-unexpressible: 0
+CHECK: failures: 0
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

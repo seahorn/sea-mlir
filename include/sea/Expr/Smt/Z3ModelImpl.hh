@@ -1,0 +1,27 @@
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+#pragma once
+
+#include "sea/Expr/Smt/EZ3.hh"
+#include "sea/Expr/Smt/Model.hh"
+
+namespace sea {
+namespace solver {
+
+class z3_model_impl : public Model {
+  ZModel<EZ3> m_model;
+
+public:
+  z3_model_impl(ZModel<EZ3> model) : m_model(model) {}
+
+  virtual expr::Expr eval(expr::Expr expr, bool complete) override {
+    return m_model.eval(expr, complete);
+  }
+
+  virtual void print(llvm::raw_ostream &o) const override {
+    o << *(const_cast<ZModel<EZ3> *>(&m_model));
+  }
+};
+} // namespace solver
+} // namespace sea

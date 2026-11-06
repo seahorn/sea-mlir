@@ -1,0 +1,2 @@
+include: [vcc-seam-yices]
+args: [--ack-stride]

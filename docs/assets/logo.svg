@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <title>sea-mlir</title>
+  <defs>
+    <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c86ad"/>
+      <stop offset="1" stop-color="#0a2f45"/>
+    </linearGradient>
+    <clipPath id="disc"><circle cx="100" cy="100" r="96"/></clipPath>
+  </defs>
+  <circle cx="100" cy="100" r="96" fill="#12597a"/>
+  <circle cx="100" cy="100" r="96" fill="url(#sea)"/>
+  <g clip-path="url(#disc)">
+    <path d="M4 166 C 29 154, 54 178, 79 166 S 129 154, 154 166 S 204 178, 204 166 L 204 200 L 0 200 Z" fill="#2fa3c4" opacity="0.6"/>
+    <path d="M0 180 C 25 168, 50 192, 75 180 S 125 168, 150 180 S 200 192, 200 180 L 200 200 L 0 200 Z" fill="#8fdbea" opacity="0.55"/>
+  </g>
+  <g fill="none" stroke="#c9eef7">
+    <circle cx="158" cy="42" r="5" stroke-width="2.5"/>
+    <circle cx="168" cy="28" r="3.5" stroke-width="2"/>
+    <circle cx="175" cy="17" r="2.5" stroke-width="1.8"/>
+  </g>
+  <g fill="#ffb347" stroke="#d9731a" stroke-width="2" stroke-linejoin="round">
+    <path d="M80 102 L 66 110 L 81 120 Z"/>
+    <path d="M103 33 Q 105 22 110 29 Q 113 20 118 32 Z"/>
+    <path d="M112 31 C 124 29, 132 37, 133 46 L 151 53 Q 158 56, 156 61 Q 154 64, 148 63
+             L 133 63 C 131 72, 139 80, 141 94 C 145 114, 137 132, 118 140
+             C 108 145, 101 150, 99 158 L 87 152
+             C 83 130, 77 112, 84 92 C 88 80, 93 70, 93 58
+             C 93 44, 100 33, 112 31 Z"/>
+  </g>
+  <path d="M93 154 C 85 174, 99 190, 115 184 C 129 178, 125 160, 111 162 C 102 164, 105 176, 112 174"
+        fill="none" stroke="#ffb347" stroke-width="11" stroke-linecap="round"/>
+  <g stroke="#d9731a" stroke-width="2" fill="none" stroke-linecap="round">
+    <path d="M128 98 L 140 96"/><path d="M127 110 L 140 110"/><path d="M122 122 L 135 124"/>
+    <path d="M118 55 Q 122 62 128 60"/>
+  </g>
+  <circle cx="121" cy="45" r="5" fill="#fff"/>
+  <circle cx="122.5" cy="45" r="2.4" fill="#0a2f45"/>
+</svg>

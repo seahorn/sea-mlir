@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+# Vendored (katex/) and generated files: an editor's clang-format must not
+# touch them.
+DisableFormat: true
+SortIncludes: Never

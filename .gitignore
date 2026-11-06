@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+/build*/
+/.cache/
+compile_commands.json
+*.pyc
+__pycache__/
+.z3-trace
+/bench/work/
+/bench/sources.local.yaml
+/site/
+/.privacy-terms

@@ -1,0 +1,11 @@
+// Multi-step Expr rewriter (include/sea/Expr/ExprRewriter.hh): the
+// nested-rewrite caching keeps the rewriting of Fig. 7.1 (thesis Ch. 7)
+// scaled to N levels linear in N. Counts of rule applications, not time.
+// The driver exits non-zero on a failed check and prints the measured counts.
+RUN: sea-expr-rewriter-test | FileCheck %s
+CHECK: fig71-midpoint variant=default N=40
+CHECK: ablation-midpoint variant=no-chain-start N=16
+CHECK: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

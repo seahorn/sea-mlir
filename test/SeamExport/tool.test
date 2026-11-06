@@ -1,0 +1,15 @@
+sea-seam-export: --agent, --version, --help.
+RUN: sea-seam-export --agent | FileCheck %s --check-prefix=AGENT
+RUN: sea-seam-export --version | FileCheck %s --check-prefix=VERSION
+RUN: sea-seam-export --help | FileCheck %s --check-prefix=HELP
+AGENT: sea-seam-export agent guide
+AGENT: LANES
+AGENT: FIRINGS
+AGENT: STATUS CODES:
+VERSION: sea-seam-export (sea-mlir {{[0-9]+\.[0-9]+\.[0-9]+}} ({{.+}}))
+VERSION-NEXT: LLVM/MLIR
+HELP: USAGE: sea-seam-export [options] <program.mlir>
+HELP: --lane=
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -1,0 +1,3 @@
+solver: yices
+timeout: 300
+mem: 16384

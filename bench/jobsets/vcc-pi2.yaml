@@ -1,0 +1,5 @@
+# Export without unified assumes. Pointer-index and alignment check jobs
+# require the individual assumptions to remain in place.
+include: [vcc-pi]
+description: verify-c-common as vcc, with sea.ptr.index, MemSSA optimize on, assumes not unified
+sea-args: [--horn-unify-assumes=false]

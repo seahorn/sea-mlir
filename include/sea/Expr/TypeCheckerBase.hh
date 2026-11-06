@@ -1,0 +1,25 @@
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+#pragma once
+
+#include "sea/Expr/TypeChecker.hh"
+
+namespace expr {
+namespace op {
+namespace typeCheck {
+
+struct TypeCheckBase {
+
+  virtual ~TypeCheckBase() = default;
+
+  /// \return true to infer the type of the current expression before visiting
+  /// its children
+  virtual inline bool topDown() { return false; };
+
+  /// \return the type of the expression
+  virtual inline Expr inferType(Expr exp, TypeChecker &tc) = 0;
+};
+} // namespace typeCheck
+} // namespace op
+} // namespace expr

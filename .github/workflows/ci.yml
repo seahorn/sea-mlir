@@ -1,0 +1,91 @@
+# The checks GitHub runs on every pull request and every push to seam:
+#   lint        .pre-commit-config.yaml on every file (`just lint`)
+#   commits     Conventional Commits (.commitlintrc.yml), header <= 72
+#   docs        the documentation site builds without warnings (`just docs`)
+#   utils-tests the Python tests of utils/ that need no build
+# The build, lit and the benchmark gates need LLVM and the solvers; they
+# run locally and are attested as commit statuses (utils/attest.py,
+# docs/agents/gates.md).
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [seam]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install pre-commit
+        run: python -m pip install pre-commit==4.7.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: pre-commit
+        run: pre-commit run --all-files --show-diff-on-failure --color=always
+
+  commits:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: wagoid/commitlint-github-action@b948419dd99f3fd78a6548d48f94e3df7f6bf3ed # v6.2.1
+        with:
+          configFile: .commitlintrc.yml
+          helpURL: https://www.conventionalcommits.org/en/v1.0.0/
+
+  docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+      - name: Install the pinned toolchain
+        run: python -m pip install -r docs/requirements.txt
+      - name: Build
+        run: mkdocs build --strict
+
+  utils-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Byte-compile the Python sources
+        run: python -m compileall -q utils test
+      - name: privacy-check fixtures (test/Tools/privacy.test without lit)
+        run: python test/Tools/Inputs/privacy-check.py utils/privacy-check.py
+      - name: attest self-test (no build, no GitHub)
+        run: python utils/attest.py --self-test

@@ -1,0 +1,13 @@
+utils/fuzz-seam.py --accesses=addr-forms (completeness, not an oracle): one
+NKI-shaped program rendered with its addresses in other forms (ptr.index
+nodes, nested nodes, ptr.add chains, flat sums, commuted operands, split
+constants, an index read through the copy of its tile, --lower-opt=false)
+must give the same verdict and the same SeaM resolution counters
+(Ackermann reads / constraints, open alias questions, A-INB state).
+RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 1 -n 8 --accesses=addr-forms | FileCheck %s
+CHECK: programs: 8
+CHECK: first-finding: none
+CHECK: failures: 0
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -1,0 +1,9 @@
+VC vs interpreter on random programs, with --sink-assumes as one more variant
+(utils/fuzz-vc.py --sink-assumes): every solver and variant agrees with z3
+without it, every sat model replays, and the counterexample of the sunk
+program fails the original one.
+RUN: %python %sea_src_root/utils/fuzz-vc.py --sea-vc sea-vc --sea-run sea-run --sea-opt sea-opt %if !yices %{ --no-yices %} --seed 3 -n 40 --runs 5 --seam --sink-assumes | FileCheck %s
+CHECK: programs: 40 sat: {{[1-9][0-9]*}} unsat: {{[1-9][0-9]*}} failures: 0
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

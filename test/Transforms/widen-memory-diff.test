@@ -1,0 +1,9 @@
+ORACLE: sea-widen-memory vs byte memory, by replaying a byte run's reads
+into the widened program (see test/README.md, utils/check-widen.py).
+RUN: %python %sea_src_root/utils/check-widen.py %sea_src_root/test/SeaHorn/opsem --sea-opt sea-opt --sea-run sea-run --sea-vc sea-vc -k 2 --runs 5 | FileCheck %s --check-prefix=K2
+RUN: %python %sea_src_root/utils/check-widen.py %sea_src_root/test/SeaHorn/opsem --sea-opt sea-opt --sea-run sea-run --sea-vc sea-vc -k 4 --runs 5 | FileCheck %s --check-prefix=K4
+K2: programs: {{[0-9]+}} widened-and-checked: {{[1-9][0-9]*}} skipped: {{[0-9]+}} failures: 0
+K4: programs: {{[0-9]+}} widened-and-checked: {{[1-9][0-9]*}} skipped: {{[0-9]+}} failures: 0
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

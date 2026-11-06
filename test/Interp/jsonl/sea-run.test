@@ -1,0 +1,47 @@
+// sea-run --format=jsonl (include/sea/Support/Output.h): one JSON object
+// per line; the texts are the --format=text output (utils/jsonl-check.py).
+
+// RUN: sea-run %S/../print/pointers.mlir --input=0=1 > %t.ptr.txt
+// RUN: sea-run %S/../print/pointers.mlir --input=0=1 --format=jsonl > %t.ptr.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.ptr.txt --jsonl %t.ptr.jsonl \
+// RUN:   --require program:name --require nondet:site,callee,width,value,origin \
+// RUN:   --require print:path,type,obj,off,state,repr --require print.object:id,objkind,size,label,at \
+// RUN:   --require status:status,loc --require stat:key,value
+// RUN: FileCheck %s --check-prefix=PTR < %t.ptr.jsonl
+// PTR: {"kind":"print.object","id":"stack.1","objkind":"stack","size":16,"label":"buf","at":"t.c:14:3",
+// PTR: {"kind":"print","path":"s","type":"ptr","obj":"stack.1","off":0,"repr":"&stack.1[0]",
+// PTR: {"kind":"print","path":"neg","type":"ptr","obj":"stack.1","off":-4,"state":"oob",
+// PTR: {"kind":"print","path":"arg","type":"ptr","obj":"heap.2","off":0,"state":"freed",
+// PTR: {"kind":"status","status":"halted",
+// PTR: {"kind":"stat","key":"steps","value":{{[0-9]+}},
+
+// Hex dumps, formats, scopes as a tree, --trace, an assert failure.
+// RUN: sea-run %S/../print/hexdump.mlir > %t.hex.txt
+// RUN: sea-run %S/../print/hexdump.mlir --format=jsonl > %t.hex.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.hex.txt --jsonl %t.hex.jsonl \
+// RUN:   --require print.mem:bytes,unknown --require print.mem.row:row
+// RUN: sea-run %S/../print/formats.mlir --input=0=-1,1=200,2=-2,3=0x8000000000000000 > %t.fmt.txt
+// RUN: sea-run %S/../print/formats.mlir --input=0=-1,1=200,2=-2,3=0x8000000000000000 --format=jsonl > %t.fmt.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.fmt.txt --jsonl %t.fmt.jsonl --require print:fmt,value
+// RUN: sea-run %S/../print/scopes.mlir --input=0=3 --print=tree --print-locs > %t.tree.txt
+// RUN: sea-run %S/../print/scopes.mlir --input=0=3 --print=tree --print-locs --format=jsonl > %t.tree.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.tree.txt --jsonl %t.tree.jsonl --require print.scope:path,tag,depth
+// RUN: sea-run %S/../print/placed.mlir --trace > %t.trace.txt
+// RUN: sea-run %S/../print/placed.mlir --trace --format=jsonl > %t.trace.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.trace.txt --jsonl %t.trace.jsonl --require value:def,loc,type,value,ptr
+// RUN: sea-run %S/../status.mlir --program=bug --input=0=9 > %t.bug.txt
+// RUN: sea-run %S/../status.mlir --program=bug --input=0=9 --format=jsonl > %t.bug.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.bug.txt --jsonl %t.bug.jsonl --require status:status,loc,at,op
+// RUN: sea-run %S/../../VC/assert-location.mlir --program=second --input=0=7 --format=jsonl | FileCheck %s --check-prefix=PATH
+// PATH: {"kind":"status","status":"assert-failed",{{.*}}"at":"foo.c:14:3","op":"foo.c:20:5","path":["foo.c:14:3","foo.c:12:3","foo.c:4:3"],
+
+// memread: an abstract memory's cell is obj + off (no address); a placed
+// one addr, with obj + off when it lies in an object.
+// RUN: sea-run %S/../ptr/objects.mlir --program=inputs --input=0@stack.1+2=42 > %t.abs.txt
+// RUN: sea-run %S/../ptr/objects.mlir --program=inputs --input=0@stack.1+2=42 --format=jsonl > %t.abs.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.abs.txt --jsonl %t.abs.jsonl --require memread:site,obj,off,width,value,origin
+// RUN: FileCheck %s --check-prefix=ABS < %t.abs.jsonl
+// ABS: {"kind":"memread","site":0,"obj":"stack.1","off":2,"width":8,"value":42,"origin":"input","text":"memread: site=0 addr=stack.1+2 width=8 value=42 origin=input"}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

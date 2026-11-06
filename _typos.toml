@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+# typos (https://github.com/crate-ci/typos), run by pre-commit. Words and
+# identifiers below are correct here; add a new one with a reason rather than
+# rename working code.
+
+[files]
+extend-exclude = [
+  "docs/assets/katex/",
+  "LICENSE",
+  "LICENSES/",
+]
+
+[default.extend-words]
+# domain abbreviations
+nd = "nd"       # nondet (sea.nondet sites: nd.<site>)
+lits = "lits"   # literals (solver assumptions)
+bult = "bult"   # bit-vector unsigned less-than (Expr operator BULT)
+thm = "thm"     # theorem (Thm 5, testThm4)
+pn = "pn"       # a pointer named p_n
+fpt = "fpt"     # fat pointer type (utils/fuzz-seam.py)
+als = "als"     # array_list_swap (test file names)
+
+[default.extend-identifiers]
+# local names in code
+ands = "ands"   # a count of AND terms
+aloc = "aloc"   # the location of assert a
+ein = "ein"     # edge in (paired with eout)
+ba = "ba"       # is-base of a (paired with bb)
+fo = "fo"       # file out (paired with fe)
+ser = "ser"     # serialize
+ot = "ot"       # or-true
+MIS = "MIS"     # FileCheck prefix: misaligned
+DOUT = "DOUT"   # -DOUT=<file> (a CMake -D definition of OUT)

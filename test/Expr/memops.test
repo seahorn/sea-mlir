@@ -1,0 +1,32 @@
+// Memory-operation terms (include/sea/Expr/MemOps.hh, SeaMRules.hh rowMemOp;
+// docs/design/SeaM-memops.md "Validation"): the read equations of mcopy /
+// mset / mhavoc against a guarded-store expansion at 4-bit addresses (n = 0,
+// maximal n, wraparound, overlap, memory versions, ites), one H per mhavoc,
+// store-map interaction, the read rules with their premises, the boundary
+// with the rules off or interrupted, and its refusal of unread terms; the
+// PTR_INDEX operators (docs/design/PtrIndex.md) and their expansion.
+RUN: sea-memops-test | FileCheck %s
+REQUIRES: yices
+CHECK-DAG: read-eq: mcopy ok
+CHECK-DAG: read-eq: mcopy-overlap ok
+CHECK-DAG: read-eq: mcopy-n0 ok
+CHECK-DAG: read-eq: mcopy-nmax ok
+CHECK-DAG: read-eq: mset ok
+CHECK-DAG: read-eq: mhavoc ok
+CHECK: test: read-equations ok
+CHECK: test: havoc-one-array ok
+CHECK: test: rules ok
+CHECK: test: null ok
+CHECK: test: prune-size0 ok
+CHECK: test: wide ok
+CHECK: test: wide-review ok
+CHECK: test: wide-congruent ok
+CHECK: test: wide-aligned ok
+CHECK: test: wide-byte-in ok
+CHECK: test: store-map ok
+CHECK: test: boundary ok
+CHECK: test: ptr-index ok
+CHECK: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
