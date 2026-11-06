@@ -127,6 +127,8 @@ The documentation is also a [MkDocs](https://www.mkdocs.org/) site:
 
 ## 🛠️ Development
 
+- [Contributing](CONTRIBUTING.md): submitting and validating changes
+- [Security](SECURITY.md): reporting vulnerabilities privately
 - [`CLAUDE.md`](CLAUDE.md): the development build, the code layout, the
   semantic decisions and the rules for contributors (people and agents)
 - [`docs/design/`](docs/design/): design notes (SeaM, memory, pointers,

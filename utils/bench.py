@@ -61,6 +61,7 @@ OUTPUT of run: stats.csv (job config rep wall cpu status verdict + every BRUNCH_
   logs/<config>/<job>.<rep>.{out,err}, manifest.yaml (sea-vc sha256, git rev/dirty, configs, host, date), rows.jsonl.
   verdict: sat unsat unknown timeout memout error inb-violation (rc 4) replay-mismatch (rc 2).
 compare prints `key: value` lines; verdict disagreements first, `DISAGREE-SAT-UNSAT` is a soundness bug.
+--no-record on gate: no gate record ($SEA_BENCH_HOME/gates); results and logs stay in $SEA_BENCH_HOME/results (attest reads them).
 SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SEA_BENCH_SUITES (colon-separated)
   or bench/work/<name>/ (gitignored; `bench.py connect` / `just bench-connect` fills it from bench/sources.yaml,
   overlaid by bench/sources.local.yaml and $SEA_BENCH_SOURCE_<NAME>; local path -> symlink, URL -> clone / pull).
@@ -301,7 +302,9 @@ def cmd_export(a):
 def git_state():
     def g(*x):
         return subprocess.run(
-            ["git", "-C", REPO] + list(x), capture_output=True, text=True
+            ["git", "--no-optional-locks", "-C", REPO] + list(x),
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
     return {
@@ -733,7 +736,9 @@ def suite_commit(root):
         text=True,
     )
     d = subprocess.run(
-        ["git", "-C", root, "status", "--porcelain"], capture_output=True, text=True
+        ["git", "--no-optional-locks", "-C", root, "status", "--porcelain"],
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     return (p.stdout.strip() or "none") + ("-dirty" if d else "")
 
@@ -1308,7 +1313,11 @@ def main():
     )
     g.add_argument("--slow", type=float, default=2.0)
     g.add_argument("--jobs", help="regex over suite/family/job")
-    g.add_argument("--no-record", action="store_true")
+    g.add_argument(
+        "--no-record",
+        action="store_true",
+        help="write no gate record (results and logs are kept)",
+    )
     g.add_argument(
         "--no-counters", action="store_true", help="do not check the counter bounds"
     )

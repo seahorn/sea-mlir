@@ -158,6 +158,9 @@ It reports, without failing, `slow:` (wall > `--slow` (2) x the manifest
 time and at least 1 s more) and `solved:` (an `unknown-ok` job solved).
 
 Logs and `rows.jsonl` go to `$SEA_BENCH_HOME/results/<stamp>-gate-<tier>/`.
+With `--no-record`, solver logs and results stay in a temporary directory
+outside the source tree and are removed when the gate exits, whether it
+passes or fails. No gate record is written.
 The gate record (date, tier, configs, sea-mlir commit and dirty flag, sea-vc
 sha256, suite revisions, verdict counts, failures, slow jobs) is appended to
 `$SEA_BENCH_HOME/gates/<date>-<commit>.yaml` alongside benchmark results.

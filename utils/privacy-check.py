@@ -8,7 +8,8 @@ Run from any directory: python3 utils/privacy-check.py [--root DIR] [--terms FIL
 Optional project-specific regexes come from FILE or ROOT/.privacy-terms.
 Use one regex per line; blank lines and lines starting with # are ignored.
 Keep that file untracked. Missing default files are allowed.
-Uses tracked plus untracked, nonignored files, as the SPDX check does.
+Scans tracked files (including staged additions), using working-tree contents.
+Outside a Git checkout, scans the directory tree without Git metadata.
 Build outputs, connected corpora and Git metadata are not publication inputs.
 This is a guard against known classes of accidental disclosure, not a secret
 scanner. New findings should add a precise pattern and a regression case.
@@ -86,16 +87,21 @@ def findings(path, text, local_terms=()):
 
 def source_files(root):
     result = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(root),
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ],
+        ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        if "not a git repository" not in result.stderr:
+            raise RuntimeError(result.stderr.strip())
+        return sorted(
+            str(path.relative_to(root))
+            for path in root.rglob("*")
+            if ".git" not in path.relative_to(root).parts
+            and (path.is_file() or path.is_symlink())
+        )
+    result = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "--cached", "-z"],
         check=True,
         capture_output=True,
     )
