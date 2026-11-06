@@ -102,8 +102,10 @@ def Sea_BrOp : Sea_Op<"br", [
 }
 
 def Sea_CondBrOp : Sea_Op<"cond_br", [AttrSizedOperandSegments,
-    DeclareOpInterfaceMethods<BranchOpInterface>, Pure, Terminator]> {
+    DeclareOpInterfaceMethods<BranchOpInterface, ["getSuccessorForOperands"]>,
+    Pure, Terminator]> {
   let summary = "Conditional branch on an i1";
+  let hasCanonicalizer = 1;
   let description = [{
     Jumps to `trueDest` if the condition is 1, else to `falseDest`.
   }];

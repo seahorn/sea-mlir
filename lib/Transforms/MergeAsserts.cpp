@@ -33,6 +33,7 @@
 
 #include "PassUtils.h"
 #include "sea/Dialect/Sea/SeaOps.h"
+#include "sea/Support/Diag.h"
 #include "sea/Transforms/Passes.h"
 
 #include "mlir/IR/Builders.h"
@@ -76,6 +77,9 @@ void MergeAssertsPass::runOnOperation() {
   // nothing to check (an instrumentation job with no check): `assert true`
   // before the halt(s), so the program is in BMC form and trivially holds
   if (asserts.empty()) {
+    diag::warn("merge-asserts.no-assertions",
+               "no assertions remain; the assertion check is trivially safe",
+               program.getLoc());
     for (HaltOp h : halts) {
       b.setInsertionPoint(h);
       asserts.push_back(

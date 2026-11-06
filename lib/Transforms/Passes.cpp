@@ -278,6 +278,9 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
     prog.addPass(createCanonicalizerPass());
     prog.addPass(createCSEPass());
   }
+  // Constant-branch folding may erase the only assertion and halt. Restore
+  // BMC form, including the trivially safe case, after CFG simplification.
+  prog.addPass(createMergeAssertsPass());
   // last: canonicalize changes the CFG (erases blocks)
   prog.addPass(createSplitCriticalEdgesPass());
   // sea.ptr.index stays: the VC encodes it (docs/design/PtrIndex.md).

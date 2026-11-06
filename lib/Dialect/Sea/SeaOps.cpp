@@ -7,7 +7,9 @@
 #include "sea/Dialect/Sea/Semantics.h"
 
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/DenseMap.h"
 
 using namespace mlir;
@@ -90,6 +92,45 @@ SuccessorOperands CondBrOp::getSuccessorOperands(unsigned index) {
   assert(index < getNumSuccessors() && "invalid successor index");
   return SuccessorOperands(index == 0 ? getTrueDestOperandsMutable()
                                       : getFalseDestOperandsMutable());
+}
+
+Block *CondBrOp::getSuccessorForOperands(ArrayRef<Attribute> operands) {
+  if (auto condition = dyn_cast_or_null<IntegerAttr>(operands.front()))
+    return condition.getValue().isOne() ? getTrueDest() : getFalseDest();
+  return nullptr;
+}
+
+namespace {
+// The constant and identical-successor cases of upstream cf.cond_br.
+struct SimplifyCondBr : OpRewritePattern<CondBrOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(CondBrOp op,
+                                PatternRewriter &rewriter) const override {
+    if (matchPattern(op.getCondition(), m_One())) {
+      rewriter.replaceOpWithNewOp<BrOp>(op, op.getTrueDestOperands(),
+                                        op.getTrueDest());
+      return success();
+    }
+    if (matchPattern(op.getCondition(), m_Zero())) {
+      rewriter.replaceOpWithNewOp<BrOp>(op, op.getFalseDestOperands(),
+                                        op.getFalseDest());
+      return success();
+    }
+    if (op.getTrueDest() == op.getFalseDest() &&
+        op.getTrueDestOperands() == op.getFalseDestOperands()) {
+      rewriter.replaceOpWithNewOp<BrOp>(op, op.getTrueDestOperands(),
+                                        op.getTrueDest());
+      return success();
+    }
+    return failure();
+  }
+};
+} // namespace
+
+void CondBrOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                           MLIRContext *context) {
+  patterns.add<SimplifyCondBr>(context);
 }
 
 //===----------------------------------------------------------------------===//
