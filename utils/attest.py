@@ -14,8 +14,10 @@
 """
 
 import argparse
+import contextlib
 import datetime
 import hashlib
+import io
 import json
 import os
 import re
@@ -63,7 +65,8 @@ RECORDS: $SEA_BENCH_HOME/attest/<sha>.json: the results dirs of every vcc gate r
   (sea-vc sha256 included). The base of bench-perf is --base (default: merge-base of HEAD
   and origin/main, or HEAD~1 on main itself); without a record for it, pass
   --base-sea-vc PATH (a sea-vc built at the base): attest runs base and HEAD interleaved
-  and records both.
+  and records both. A record entry whose results dir or rows.jsonl is gone is dropped
+  (`stale-record: <sha> <dir>`) and treated as never recorded.
 OPTIONS:
   --only check-sea,bench-vcc,bench-perf   (default: all three)
   --build DIR         build directory (default: build-attest); configured with
@@ -76,7 +79,8 @@ OPTIONS:
 OUTPUT: `key: value` lines; one `status: <context> <state> <description>` per gate, then
   `posted:` or `would-post:` lines (statuses are posted at the end, after the tree is
   checked again; a build failure is a check-sea failure). EXIT: 0 every gate passed, 1 a gate failed,
-  2 usage / dirty tree / HEAD moved, 3 a gate could not run (no status posted for it).
+  2 usage / dirty tree / HEAD moved / no benchmark suites connected (checked before any
+  bench gate runs, nothing posted; --only check-sea needs none), 3 a gate could not run (no status posted for it).
 """
 
 
@@ -219,6 +223,25 @@ def gate_description(g):
     )
 
 
+def check_suites(bench=None):
+    """Refuse when `bench.py suites public/vcc` fails (no suite, no yaml, ...)."""
+    p = run(
+        [
+            sys.executable,
+            bench or os.path.join(REPO, "utils", "bench.py"),
+            "suites",
+            VCC_SUITE,
+        ],
+        capture_output=True,
+    )
+    if p.returncode:
+        tail = " | ".join((p.stderr or p.stdout).strip().splitlines()[-2:])
+        raise Refuse(
+            "no benchmark suites connected: run `just bench-connect` "
+            f"or set SEA_BENCH_SUITES ({tail})"
+        )
+
+
 def run_vcc_gate(sea_vc, par):
     cmd = [sys.executable, os.path.join(REPO, "utils", "bench.py"), "gate", VCC_TIER]
     cmd += ["--suite", VCC_SUITE, "--par", str(par), "--no-record", "--sea-vc", sea_vc]
@@ -240,11 +263,31 @@ def record_path(sha):
 
 
 def load_record(sha):
+    """The record of SHA. Entries whose results dir or rows.jsonl is gone are
+    dropped (one `stale-record:` line each) and the record is rewritten."""
     try:
         with open(record_path(sha)) as f:
-            return json.load(f)
+            rec = json.load(f)
     except FileNotFoundError:
         return {"sha": sha, "vcc": []}
+    keep = []
+    for r in rec.get("vcc", []):
+        if os.path.isfile(os.path.join(r["results"], "rows.jsonl")):
+            keep.append(r)
+        else:
+            print(f"stale-record: {sha} {r['results']}", flush=True)
+    if len(keep) != len(rec.get("vcc", [])):
+        rec["vcc"] = keep
+        save_record(sha, rec)
+    return rec
+
+
+def save_record(sha, rec):
+    os.makedirs(os.path.dirname(record_path(sha)), exist_ok=True)
+    tmp = f"{record_path(sha)}.tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
+        json.dump(rec, f, indent=1)
+    os.replace(tmp, record_path(sha))
 
 
 def add_record(sha, sea_vc, g, supplied=False):
@@ -259,11 +302,7 @@ def add_record(sha, sea_vc, g, supplied=False):
             "supplied-binary": supplied,
         }
     )
-    os.makedirs(os.path.dirname(record_path(sha)), exist_ok=True)
-    tmp = record_path(sha) + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(rec, f, indent=1)
-    os.replace(tmp, record_path(sha))
+    save_record(sha, rec)
 
 
 def load_times(results_dirs, metric):
@@ -358,6 +397,8 @@ def attest(a):
     print(f"sha: {sha}")
     print(f"repo: {a.repo}")
     print(f"gates: {','.join(only)}", flush=True)
+    if any(g.startswith("bench-") for g in only):
+        check_suites()
 
     build = ensure_build(a)
     sea_vc = os.path.join(build or "", "bin", "sea-vc")
@@ -474,6 +515,82 @@ def self_test():
         with open(os.path.join(d, "rows.jsonl"), "w") as f:
             f.write("".join(json.dumps(r) + "\n" for r in rows))
         assert load_times([d], "cpu") == {"x": [1.5]}
+        # stale record: a missing results dir is dropped, not a crash
+        global BENCH_HOME
+        old, BENCH_HOME = BENCH_HOME, os.path.join(d, "home")
+        try:
+            gone = os.path.join(d, "gone")
+            save_record(
+                "abc", {"sha": "abc", "vcc": [{"results": gone}, {"results": d}]}
+            )
+            os.makedirs(os.path.join(d, "empty"))
+            save_record(
+                "def", {"sha": "def", "vcc": [{"results": os.path.join(d, "empty")}]}
+            )
+            assert load_record("abc")["vcc"] == [{"results": d}]
+            assert load_record("def")["vcc"] == []
+            # the rewrite persisted: no second stale-record line
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                assert load_record("abc")["vcc"] == [{"results": d}]
+                assert load_record("def")["vcc"] == []
+            assert "stale-record" not in buf.getvalue(), buf.getvalue()
+        finally:
+            BENCH_HOME = old
+        # no suites: refuse (rc 2 in main); other bench.py failures pass
+        fake = os.path.join(d, "fake-bench.py")
+        with open(fake, "w") as f:
+            f.write("import sys\nsys.exit('bench: no family matches public/vcc')\n")
+        try:
+            check_suites(fake)
+            raise AssertionError("no refusal")
+        except Refuse as e:
+            assert "no benchmark suites connected" in str(e), e
+
+        # call order: with suites missing, attest() refuses before the build
+        # and before any post
+        def boom(*_a, **_k):
+            raise AssertionError("ran after the suites check")
+
+        g = globals()
+        saved = {k: g[k] for k in ("tree_state", "git", "ensure_build", "post")}
+        real_check = check_suites
+        g.update(
+            tree_state=lambda: ("0" * 40, False),
+            git=lambda *a: "https://github.com/o/r",
+            ensure_build=boom,
+            post=boom,
+            check_suites=lambda: real_check(fake),
+        )
+        try:
+            ns = argparse.Namespace(repo=None, only="bench-vcc,check-sea")
+            try:
+                attest(ns)
+                raise AssertionError("no refusal")
+            except Refuse as e:
+                assert "no benchmark suites connected" in str(e), e
+        finally:
+            g.update(saved, check_suites=real_check)
+        with open(fake, "w") as f:
+            f.write("raise SystemExit(0)\n")
+        check_suites(fake)
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            pass
+        else:
+            env = os.environ.get("SEA_BENCH_SUITES")
+            os.environ["SEA_BENCH_SUITES"] = os.path.join(d, "none")
+            try:
+                check_suites()
+                raise AssertionError("no refusal")
+            except Refuse:
+                pass
+            finally:
+                if env is None:
+                    del os.environ["SEA_BENCH_SUITES"]
+                else:
+                    os.environ["SEA_BENCH_SUITES"] = env
     print("self-test: pass")
     return 0
 
