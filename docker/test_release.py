@@ -8,7 +8,8 @@ import signal
 import subprocess
 import tempfile
 import unittest
-from datetime import UTC, datetime, time as clock
+from datetime import UTC, datetime
+from datetime import time as clock
 from pathlib import Path
 from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
@@ -48,7 +49,9 @@ class CutoffTests(unittest.TestCase):
             ("2026-11-07T06:59:59.999999", "2026-11-07T07:00:00"),
         ):
             with self.subTest(start=start):
-                self.assertEqual(release.cutoff(self.local(start), *NIGHT), self.local(end))
+                self.assertEqual(
+                    release.cutoff(self.local(start), *NIGHT), self.local(end)
+                )
         for start in ("2026-11-07T07:00:00", "2026-11-07T21:59:59.999999"):
             with self.subTest(start=start), self.assertRaises(ValueError):
                 release.cutoff(self.local(start), *NIGHT)

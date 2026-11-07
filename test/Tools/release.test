@@ -1,5 +1,6 @@
-// Check the release window and cancellation without invoking Docker.
+// Check the release deadline, cancellation and packaging guards without invoking Docker.
 RUN: %python %sea_src_root/docker/test_release.py
+RUN: %python %sea_src_root/docker/test_package_release.py
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
