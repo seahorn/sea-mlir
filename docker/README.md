@@ -65,3 +65,63 @@ docker build -f docker/Dockerfile --build-arg YICES=1 --target sea-mlir \
 
 The `runtime` stage fails when Yices is present, so such a build is never
 a runtime image.
+
+
+## Local binary releases
+
+The release job produces a relocatable Linux x86-64 tarball and a runtime
+image, then tests the extracted tarball in a clean Ubuntu 24.04 container.
+Run it between 22:00 and 07:00 in America/Toronto:
+
+```bash
+just binary-release ../release-output --plan
+just binary-release ../release-output
+# Build the standalone artifact first, then the held SeaHorn bundle:
+just binary-release ../release-output --bundle
+```
+
+The output directory must be outside the source tree. Each run records its
+source revision, whether the checkout was dirty, image IDs, stage times,
+logs and artifact hashes in `release-run.json`. Tarballs, SHA-256 files and
+package manifests go in `artifacts/`. Use a clean, committed checkout for
+artifacts intended for review. The job never publishes them.
+
+Builds run sequentially with eight compile jobs and four regression-test
+workers. The driver interrupts the active command at 07:00 and stops its
+own remaining build or smoke containers. Rerun the command in a later
+window to reuse Docker's cached layers. The driver works with Docker's
+legacy builder; BuildKit cancellation has not been separately validated.
+It creates only `sea-mlir-release:*` images and does not prune the cache.
+Both release builders disable Yices.
+
+To reuse an existing LLVM image, pass `--llvm-image IMAGE`. The image must
+contain the LLVM installation at `/opt/llvm` and the build dependencies of
+the `base` stage. The job checks the revision file, Release mode, assertions,
+MLIR and lit before using it. Without this option it builds LLVM from the
+pinned source. Changing the LLVM revision invalidates reuse.
+
+The standalone tarball includes the installed tools, their non-system
+shared libraries, licenses and notices. Every ELF file uses a relative
+`$ORIGIN` RPATH. The package retains Ubuntu's glibc, C++ runtime and GCC
+runtime as system dependencies; Ubuntu 24.04 x86-64 is the tested target.
+The manifest records the packaged files and resolved ELF dependencies.
+The smoke test checks the version, SAT with counterexample replay, and
+UNSAT after relocating the tarball into a fresh container.
+
+### SeaHorn bundle
+
+`--bundle` builds SeaHorn separately against Ubuntu's LLVM 18, with the
+source and dependency pins in `docker/SeaHorn.Dockerfile`. SeaHorn uses
+Z3 4.12; sea-mlir uses Z3 5.3.3. The bundle preserves their distinct shared
+library names. The builders exchange programs through the exported MLIR
+text format and do not share an LLVM installation.
+
+The bundle adds the `sea` Python driver and SeaHorn executables, but no C
+compiler. Its Ubuntu runtime installs `clang-18` and Python 3. The clean
+container smoke compiles C fixtures with `sea yama -y sea-mlir-export`,
+then checks both SAT/replay and UNSAT with `sea-vc`.
+
+The SeaHorn artifact and bundle are **held pending SeaHorn relicensing**.
+Their notices and marker files record that restriction. A successful build
+or smoke test does not authorize distribution. The standalone sea-mlir
+artifact can proceed to release review independently.

@@ -88,3 +88,7 @@ publish branch *args:
 # Install the public-remote pre-push guard; refuses to overwrite a different hook.
 install-hooks:
     python3 utils/publish.py --install-hook
+
+# Build local release artifacts in the overnight window (docker/README.md).
+binary-release output *args:
+    python3 docker/release.py {{quote(output)}} {{args}}
