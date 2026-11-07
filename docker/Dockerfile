@@ -88,6 +88,8 @@ RUN set -eux; \
       --libdir=lib -Ddefault_library=shared \
       -Dtesting=disabled -Dunit_testing=disabled; \
     ninja -C build -j"$JOBS" install; \
+    mkdir -p /opt/solvers/share/pins; \
+    cp subprojects/cadical.wrap subprojects/symfpu.wrap /opt/solvers/share/pins/; \
     cd / && rm -rf /src/bitwuzla
 # declared here, so that z3 and Bitwuzla stay cached across YICES=0/1
 ARG YICES_TAG

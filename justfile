@@ -89,6 +89,6 @@ publish branch *args:
 install-hooks:
     python3 utils/publish.py --install-hook
 
-# Build local release artifacts in the overnight window (docker/README.md).
+# Build local release artifacts (docker/README.md).
 binary-release output *args:
     python3 docker/release.py {{quote(output)}} {{args}}

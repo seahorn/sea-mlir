@@ -14,7 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 ENV CC=clang-18 CXX=clang++-18
 
-# SeaHorn's tested Z3 API version is independent of the sea-mlir solver.
+# z3 4.12.0 (feda706), the version this SeaHorn checkout is built with
+# locally; independent of the sea-mlir solver.
 # Keep its SONAME distinct so both libraries can coexist in the bundle.
 FROM seahorn-base AS seahorn-z3
 ARG JOBS=8

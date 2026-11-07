@@ -7,18 +7,21 @@ ARG SEA_MLIR_IMAGE=sea-mlir-release:sea-mlir
 ARG SEAHORN_IMAGE=sea-mlir-release:seahorn
 FROM ${SEA_MLIR_IMAGE} AS package
 ARG DEBIAN_FRONTEND=noninteractive
-ARG VERSION=0.1
+ARG VERSION
 ARG SOURCE_DATE_EPOCH=0
 ARG SOURCE_REVISION=unknown
+ARG Z3_TAG
+ARG BITWUZLA_TAG
 RUN apt-get update && apt-get install -y --no-install-recommends patchelf \
   && rm -rf /var/lib/apt/lists/*
 COPY docker/package-release.py /release-tools/package-release.py
 RUN python3 /release-tools/package-release.py \
       --name "sea-mlir-${VERSION}-linux-x86_64" \
+      --z3-tag "$Z3_TAG" --bitwuzla-tag "$BITWUZLA_TAG" \
       --source-revision "$SOURCE_REVISION" --epoch "$SOURCE_DATE_EPOCH"
 
 FROM ${UBUNTU} AS runtime
-ARG VERSION=0.1
+ARG VERSION
 COPY --from=package /release/sea-mlir-${VERSION}-linux-x86_64 /opt/sea-mlir
 ENV PATH=/opt/sea-mlir/bin:$PATH
 WORKDIR /work
@@ -26,17 +29,21 @@ CMD ["sea-vc", "--help"]
 
 FROM ${SEAHORN_IMAGE} AS seahorn-install
 FROM package AS bundle-package
-ARG VERSION=0.1
+ARG VERSION
 ARG SOURCE_DATE_EPOCH=0
 ARG SOURCE_REVISION=unknown
+ARG Z3_TAG
+ARG BITWUZLA_TAG
 COPY --from=seahorn-install /opt/seahorn /opt/seahorn
 RUN python3 /release-tools/package-release.py \
       --name "sea-mlir-bundle-${VERSION}-linux-x86_64" --seahorn /opt/seahorn \
+      --output /artifacts/held \
+      --z3-tag "$Z3_TAG" --bitwuzla-tag "$BITWUZLA_TAG" \
       --source-revision "$SOURCE_REVISION" --epoch "$SOURCE_DATE_EPOCH"
 
 FROM ${UBUNTU} AS bundle-runtime
 ARG DEBIAN_FRONTEND=noninteractive
-ARG VERSION=0.1
+ARG VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends clang-18 python3 \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=bundle-package /release/sea-mlir-bundle-${VERSION}-linux-x86_64 /opt/sea-mlir

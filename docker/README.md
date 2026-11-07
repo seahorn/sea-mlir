@@ -46,6 +46,20 @@ this table in sync.
 | z3 | tag `z3-5.3.3` (`Z3_TAG`) | MIT |
 | Bitwuzla | tag `0.9.1` (`BITWUZLA_TAG`) | MIT |
 | Yices | tag `yices-2.7.0` (`YICES_TAG`), only with `YICES=1` | GPLv3 |
+| CaDiCaL | tag from Bitwuzla's `subprojects/cadical.wrap` (currently `rel-2.1.2`); not set by hand | MIT |
+| SymFPU | revision from Bitwuzla's `subprojects/symfpu.wrap` (currently `40bdec0`); not set by hand | BSD 3-Clause |
+| SeaHorn | `SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` (`4f7fdaf`) | held pending relicensing |
+| sea-dsa | `SEADSA_REVISION`, `docker/SeaHorn.Dockerfile` (`3134604`) | held with SeaHorn |
+| llvm-seahorn | `LLVM_SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` (`6cfacb8`) | held with SeaHorn |
+| SeaHorn's z3 | `SEAHORN_Z3_REVISION`, `docker/SeaHorn.Dockerfile`: z3 4.12.0 (`feda706`), the version this SeaHorn checkout is built with locally | MIT |
+
+The release packaging takes the z3 and Bitwuzla tags from the `Z3_TAG` and
+`BITWUZLA_TAG` arguments (`docker/release.py` reads them from
+`docker/Dockerfile` and passes them on). The `solvers` stage saves Bitwuzla's
+two wrap files in `/opt/solvers/share/pins`, and `docker/package-release.py`
+reads the CaDiCaL and SymFPU pins from them for the license downloads and the
+notices. The artifact version is the `project(sea-mlir VERSION ...)` of
+`CMakeLists.txt` unless `--version` is given.
 
 The Ubuntu packages are not pinned: `apt-get` installs the versions
 current at build time on top of the pinned base image.
@@ -88,7 +102,10 @@ just binary-release ../release-output --bundle
 The output directory must be outside the source tree. Each run records its
 source revision, whether the checkout was dirty, image IDs, stage times,
 logs and artifact hashes in `release-run.json`. Tarballs, SHA-256 files and
-package manifests go in `artifacts/`. Use a clean, committed checkout for
+package manifests go in `artifacts/`; the held SeaHorn bundle goes in
+`artifacts/held/` and its files end in `-held`, so `artifacts/*.tar.gz` holds
+only files that can go to release review. A dirty checkout is marked
+`-dirty` in the version string of the built tools. Use a clean, committed checkout for
 artifacts intended for review. The job never publishes them.
 
 Builds run sequentially with eight compile jobs and four regression-test
@@ -110,6 +127,9 @@ shared libraries, licenses and notices. Every ELF file uses a relative
 `$ORIGIN` RPATH. The package retains Ubuntu's glibc, C++ runtime and GCC
 runtime as system dependencies; Ubuntu 24.04 x86-64 is the tested target.
 The manifest records the packaged files and resolved ELF dependencies.
+Packaging fails when a copied shared library has neither an owning Ubuntu
+package (whose copyright file is included) nor a known upstream license, or
+when a dependency would resolve outside the package.
 The smoke test checks the version, SAT with counterexample replay, and
 UNSAT after relocating the tarball into a fresh container.
 
@@ -137,7 +157,8 @@ that include system headers need an additional multilib toolchain.
 The smoke fixtures retain symbolic inputs through export, so both verdicts
 exercise the backend.
 
-The SeaHorn artifact and bundle are **held pending SeaHorn relicensing**.
+The bundle is `artifacts/held/sea-mlir-bundle-VERSION-linux-x86_64-held.tar.gz`
+(with its `.sha256` and manifest). The SeaHorn artifact and bundle are **held pending SeaHorn relicensing**.
 Their notices and marker files record that restriction. A successful build
 or smoke test does not authorize distribution. The standalone sea-mlir
 artifact can proceed to release review independently.

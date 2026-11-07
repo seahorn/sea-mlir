@@ -24,6 +24,32 @@ SYSTEM = re.compile(
 )
 
 
+# Upstream license files of components built from source and copied into lib/;
+# a copied library with neither of these nor a distro package is refused.
+UPSTREAM_LICENSE = (
+    (re.compile(r"libz3\.so.*"), "Z3-LICENSE.txt"),
+    (re.compile(r"libbitwuzla.*\.so.*"), "Bitwuzla-COPYING.txt"),
+)
+
+
+def wrap_value(path, key):
+    """A value of a Meson .wrap file (Bitwuzla's CaDiCaL and SymFPU pins)."""
+    for line in path.read_text().splitlines():
+        name, _, value = line.partition("=")
+        if name.strip() == key:
+            return value.strip()
+    raise RuntimeError(f"no {key} in {path}")
+
+
+def source_pins(wrap_dir):
+    """CaDiCaL tag and SymFPU revision, from the wraps Bitwuzla was built with."""
+    url = wrap_value(wrap_dir / "cadical.wrap", "source_url")
+    tag = re.search(r"/archive/(.+)\.tar\.gz$", url)
+    if not tag:
+        raise RuntimeError(f"cannot read the CaDiCaL tag from {url}")
+    return tag.group(1), wrap_value(wrap_dir / "symfpu.wrap", "revision")
+
+
 def run(*args, env=None):
     return subprocess.check_output(args, text=True, env=env).strip()
 
@@ -111,8 +137,8 @@ def upstream_license(destination, name, url):
     return {"file": name, "url": url, "sha256": digest(target)}
 
 
-def archive(prefix, output, epoch):
-    path = output / (prefix.name + ".tar.gz")
+def archive(prefix, output, epoch, suffix=""):
+    path = output / (prefix.name + suffix + ".tar.gz")
     with path.open("wb") as raw:
         with gzip.GzipFile(
             filename="", fileobj=raw, mode="wb", mtime=epoch
@@ -134,11 +160,110 @@ def archive(prefix, output, epoch):
     print(f"artifact: {path} bytes={path.stat().st_size} sha256={digest(path)}")
 
 
+def check_forbidden(prefix):
+    for path in prefix.rglob("*"):
+        if "yices" in path.name.lower() and (
+            path.parent == prefix / "bin" or ".so" in path.name or path.suffix == ".a"
+        ):
+            raise RuntimeError(f"Yices binary is forbidden in a release: {path}")
+    if any(path.name.startswith("clang") for path in (prefix / "bin").iterdir()):
+        raise RuntimeError("clang must remain an external dependency")
+
+
+def bundle_libraries(prefix, lib, env):
+    """Copy non-system shared libraries into lib/, following dependencies."""
+    queue = [path for path in prefix.rglob("*") if not path.is_symlink() and elf(path)]
+    visited = set()
+    libraries = {}
+    packages = {}
+    copied = set()
+    while queue:
+        path = queue.pop()
+        if path in visited:
+            continue
+        visited.add(path)
+        for name, source in dependencies(path, env):
+            if "yices" in name.lower():
+                raise RuntimeError("Yices dependency is forbidden")
+            if SYSTEM.fullmatch(name):
+                libraries.setdefault(name, {"system": True})
+                continue
+            target = lib / name
+            if not target.exists():
+                shutil.copy2(source.resolve(), target)
+                copied.add(name)
+                queue.append(target)
+            elif target.resolve() != source.resolve() and digest(target) != digest(
+                source
+            ):
+                raise RuntimeError(f"conflicting shared library: {name}")
+            entry = libraries.setdefault(name, {"system": False, "source": str(source)})
+            owner = package_owner(source)
+            if owner:
+                entry["package"] = owner
+                packages[owner] = None
+    return visited, libraries, packages, copied
+
+
+def require_licenses(libraries, copied):
+    """Fail closed: every copied library has a package copyright or an upstream license."""
+    for name in sorted(copied):
+        entry = libraries[name]
+        if entry.get("package") or entry.get("license"):
+            continue
+        for pattern, license_file in UPSTREAM_LICENSE:
+            if pattern.fullmatch(name):
+                entry["license"] = "share/licenses/release/" + license_file
+                break
+        else:
+            raise RuntimeError(
+                f"no license for copied library {name} ({entry['source']}): "
+                "no owning package and no known upstream license"
+            )
+
+
+def set_runpaths(prefix, lib, visited):
+    # Every object gets its own relative search path; RUNPATH is not transitive.
+    for path in sorted(visited):
+        needed = subprocess.run(
+            ["patchelf", "--print-needed", str(path)], capture_output=True
+        )
+        if needed.returncode:
+            continue  # Static executables have no dynamic loader metadata.
+        relative = os.path.relpath(lib, path.parent)
+        rpath = "$ORIGIN" if relative == "." else "$ORIGIN/" + relative
+        subprocess.run(["patchelf", "--set-rpath", rpath, str(path)], check=True)
+        if run("patchelf", "--print-rpath", str(path)) != rpath:
+            raise RuntimeError(f"incorrect relative runpath: {path}")
+
+
+def check_relocatable(prefix, visited, env):
+    elf_report = {}
+    for path in sorted(visited):
+        deps = dependencies(path, env)
+        for name, resolved in deps:
+            if not SYSTEM.fullmatch(name) and not resolved.is_relative_to(prefix):
+                raise RuntimeError(f"nonrelocatable dependency: {path}: {resolved}")
+        elf_report[str(path.relative_to(prefix))] = {
+            "sha256": digest(path),
+            "dependencies": {name: str(resolved) for name, resolved in deps},
+        }
+    return elf_report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--name", required=True)
     parser.add_argument("--source-revision", default="unknown")
     parser.add_argument("--seahorn", type=Path)
+    parser.add_argument("--z3-tag", required=True)
+    parser.add_argument("--bitwuzla-tag", required=True)
+    parser.add_argument(
+        "--wrap-dir",
+        type=Path,
+        default=Path("/opt/solvers/share/pins"),
+        help="Bitwuzla's cadical.wrap and symfpu.wrap, saved by the solvers stage",
+    )
     parser.add_argument("--output", type=Path, default=Path("/artifacts"))
     parser.add_argument("--release-root", type=Path, default=Path("/release"))
     parser.add_argument(
@@ -162,46 +287,13 @@ def main():
             raise RuntimeError(f"nonrelocatable symlink: {path}")
     lib = prefix / "lib"
     lib.mkdir(exist_ok=True)
-    for path in prefix.rglob("*"):
-        if "yices" in path.name.lower() and (
-            path.parent == prefix / "bin" or ".so" in path.name or path.suffix == ".a"
-        ):
-            raise RuntimeError(f"Yices binary is forbidden in a release: {path}")
-    if any(path.name.startswith("clang") for path in (prefix / "bin").iterdir()):
-        raise RuntimeError("clang must remain an external dependency")
+    check_forbidden(prefix)
 
     search = [lib, Path("/opt/solvers/lib")]
     if args.seahorn:
         search.insert(1, args.seahorn / "lib")
     env = dict(os.environ, LD_LIBRARY_PATH=":".join(map(str, search)))
-    queue = [path for path in prefix.rglob("*") if not path.is_symlink() and elf(path)]
-    visited = set()
-    libraries = {}
-    packages = {}
-    while queue:
-        path = queue.pop()
-        if path in visited:
-            continue
-        visited.add(path)
-        for name, source in dependencies(path, env):
-            if "yices" in name.lower():
-                raise RuntimeError("Yices dependency is forbidden")
-            if SYSTEM.fullmatch(name):
-                libraries.setdefault(name, {"system": True})
-                continue
-            target = lib / name
-            if not target.exists():
-                shutil.copy2(source.resolve(), target)
-                queue.append(target)
-            elif target.resolve() != source.resolve() and digest(target) != digest(
-                source
-            ):
-                raise RuntimeError(f"conflicting shared library: {name}")
-            entry = libraries.setdefault(name, {"system": False, "source": str(source)})
-            owner = package_owner(source)
-            if owner:
-                entry["package"] = owner
-                packages[owner] = None
+    visited, libraries, packages, copied = bundle_libraries(prefix, lib, env)
 
     seahorn_packages = []
     provenance = prefix / "share/seahorn/runtime-packages.tsv"
@@ -227,10 +319,14 @@ def main():
                         }
                     )
 
+    require_licenses(libraries, copied)
     license_dir = prefix / "share" / "licenses" / "release"
     license_dir.mkdir(parents=True)
     llvm_pin = Path("/opt/llvm/LLVM_REVISION").read_text()
     llvm_commit = re.search(r"^commit:\s*(\S+)", llvm_pin, re.M).group(1)
+    cadical_tag, symfpu_revision = source_pins(args.wrap_dir)
+    z3_version = args.z3_tag.removeprefix("z3-")
+    cadical_version = cadical_tag.removeprefix("rel-")
     licenses = [
         upstream_license(
             license_dir,
@@ -240,22 +336,22 @@ def main():
         upstream_license(
             license_dir,
             "Z3-LICENSE.txt",
-            "https://raw.githubusercontent.com/Z3Prover/z3/z3-5.3.3/LICENSE.txt",
+            f"https://raw.githubusercontent.com/Z3Prover/z3/{args.z3_tag}/LICENSE.txt",
         ),
         upstream_license(
             license_dir,
             "Bitwuzla-COPYING.txt",
-            "https://raw.githubusercontent.com/bitwuzla/bitwuzla/0.9.1/COPYING",
+            f"https://raw.githubusercontent.com/bitwuzla/bitwuzla/{args.bitwuzla_tag}/COPYING",
         ),
         upstream_license(
             license_dir,
             "CaDiCaL-LICENSE.txt",
-            "https://raw.githubusercontent.com/arminbiere/cadical/rel-2.1.2/LICENSE",
+            f"https://raw.githubusercontent.com/arminbiere/cadical/{cadical_tag}/LICENSE",
         ),
         upstream_license(
             license_dir,
             "SymFPU-LICENSE-BSD.txt",
-            "https://raw.githubusercontent.com/martin-cs/symfpu/40bdec00e99f8ea1b96c3dac0a05eed11c541639/LICENSE-BSD",
+            f"https://raw.githubusercontent.com/martin-cs/symfpu/{symfpu_revision}/LICENSE-BSD",
         ),
     ]
     packages["libboost1.83-dev"] = None
@@ -266,39 +362,18 @@ def main():
     shutil.copyfile(prefix / "share/doc/sea-mlir/LICENSE", prefix / "LICENSE")
     shutil.copyfile("/opt/llvm/LLVM_REVISION", prefix / "LLVM_REVISION")
 
-    # Every object gets its own relative search path; RUNPATH is not transitive.
-    for path in sorted(visited):
-        needed = subprocess.run(
-            ["patchelf", "--print-needed", str(path)], capture_output=True
-        )
-        if needed.returncode:
-            continue  # Static executables have no dynamic loader metadata.
-        relative = os.path.relpath(lib, path.parent)
-        rpath = "$ORIGIN" if relative == "." else "$ORIGIN/" + relative
-        subprocess.run(["patchelf", "--set-rpath", rpath, str(path)], check=True)
-        if run("patchelf", "--print-rpath", str(path)) != rpath:
-            raise RuntimeError(f"incorrect relative runpath: {path}")
-
+    set_runpaths(prefix, lib, visited)
     clean_env = dict(os.environ)
     clean_env.pop("LD_LIBRARY_PATH", None)
-    elf_report = {}
-    for path in sorted(visited):
-        deps = dependencies(path, clean_env)
-        for name, resolved in deps:
-            if not SYSTEM.fullmatch(name) and not resolved.is_relative_to(prefix):
-                raise RuntimeError(f"nonrelocatable dependency: {path}: {resolved}")
-        elf_report[str(path.relative_to(prefix))] = {
-            "sha256": digest(path),
-            "dependencies": {name: str(resolved) for name, resolved in deps},
-        }
+    elf_report = check_relocatable(prefix, visited, clean_env)
 
-    text = """Third-party components in this install prefix
+    text = f"""Third-party components in this install prefix
 
 sea-mlir: Apache-2.0 WITH LLVM-exception; LICENSE at the prefix root.
 LLVM/MLIR: Apache-2.0 WITH LLVM-exception; pin in LLVM_REVISION.
-Z3 5.3.3: MIT. Bitwuzla 0.9.1: MIT.
-CaDiCaL 2.1.2: MIT; linked into Bitwuzla.
-SymFPU: BSD 3-Clause option; linked into Bitwuzla.
+Z3 {z3_version}: MIT. Bitwuzla {args.bitwuzla_tag}: MIT.
+CaDiCaL {cadical_version}: MIT; linked into Bitwuzla.
+SymFPU {symfpu_revision[:7]}: BSD 3-Clause option; linked into Bitwuzla.
 Boost: Boost Software License; headers used by sea-mlir.
 GMP/GMPXX and MPFR: LGPL; dynamically linked, replaceable libraries in lib/.
 zlib and Zstandard: their package copyright/license texts are included.
@@ -316,10 +391,11 @@ Python utilities require Python 3. The SeaHorn frontend also needs clang-18.
 """
     if args.seahorn:
         text += """
-SEA HORN BUNDLE: NOT FOR DISTRIBUTION; SEA HORN IS TO BE RELICENSED.
+SEAHORN BUNDLE: NOT FOR DISTRIBUTION; SEAHORN IS TO BE RELICENSED.
 SeaHorn's current license and dependency licenses are retained under
-share/doc/seahorn/ and share/release-licenses/. This local bundle is for
-build and interoperability testing only until the maintainer relicenses it.
+share/release-licenses/ (seahorn.txt, sea-dsa.txt, llvm-seahorn.txt, ...).
+This local bundle is for build and interoperability testing only until the
+maintainer relicenses it.
 """
         (prefix / "NOT-FOR-DISTRIBUTION").write_text(
             "SeaHorn is to be relicensed before this bundle can ship.\n"
@@ -328,6 +404,7 @@ build and interoperability testing only until the maintainer relicenses it.
     (prefix / "NOTICE").write_text(
         "sea-mlir\nCopyright 2026 The sea-mlir Authors\nSee LICENSE and THIRD-PARTY-NOTICES for terms and dependency notices.\n"
     )
+    suffix = "-held" if args.seahorn else ""
     manifest = {
         "name": args.name,
         "source_revision": args.source_revision,
@@ -345,9 +422,9 @@ build and interoperability testing only until the maintainer relicenses it.
     )
     args.output.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(
-        prefix / "RELEASE-MANIFEST.json", args.output / (args.name + ".json")
+        prefix / "RELEASE-MANIFEST.json", args.output / (args.name + suffix + ".json")
     )
-    archive(prefix, args.output, args.epoch)
+    archive(prefix, args.output, args.epoch, suffix)
 
 
 if __name__ == "__main__":

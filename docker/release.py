@@ -13,7 +13,8 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, time as clock, timedelta
+from datetime import datetime, timedelta
+from datetime import time as clock
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -61,9 +62,7 @@ def cutoff(now, until, not_before=None):
                 f"outside the {not_before:%H:%M}-{until:%H:%M} build window"
             )
     naive = now.replace(tzinfo=None, fold=0)
-    end = naive.replace(
-        hour=until.hour, minute=until.minute, second=0, microsecond=0
-    )
+    end = naive.replace(hour=until.hour, minute=until.minute, second=0, microsecond=0)
     if end <= naive:
         end += timedelta(days=1)
     if isinstance(now.tzinfo, ZoneInfo):
@@ -288,7 +287,9 @@ def main():
     end = None
     if args.until:
         try:
-            end = cutoff(datetime.now(zone).astimezone(zone), args.until, args.not_before)
+            end = cutoff(
+                datetime.now(zone).astimezone(zone), args.until, args.not_before
+            )
         except ValueError as error:
             parser.error(str(error))
     job = ReleaseJob(source, output, end)
@@ -343,7 +344,10 @@ def main():
                 ],
             )
         job.record["artifacts"] = {
-            str(p.relative_to(output / "artifacts")): {"bytes": p.stat().st_size, "sha256": file_hash(p)}
+            str(p.relative_to(output / "artifacts")): {
+                "bytes": p.stat().st_size,
+                "sha256": file_hash(p),
+            }
             for p in sorted((output / "artifacts").rglob("*"))
             if p.is_file()
         }

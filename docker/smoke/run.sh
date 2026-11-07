@@ -11,8 +11,15 @@ case "$version" in ''|*[!a-zA-Z0-9._-]*) echo 'invalid version' >&2; exit 2;; es
 case "$mode" in ''|--bundle) ;; *) echo 'expected --bundle' >&2; exit 2;; esac
 fixtures=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 package="sea-mlir-$version-linux-x86_64"
-[ "$mode" != --bundle ] || package="sea-mlir-bundle-$version-linux-x86_64"
-[ -f "$artifacts/$package.tar.gz" ] || { echo "missing $package.tar.gz" >&2; exit 1; }
+archive="$package.tar.gz"
+subdir=
+if [ "$mode" = --bundle ]; then
+  # The held bundle is kept out of the shippable artifacts/*.tar.gz.
+  package="sea-mlir-bundle-$version-linux-x86_64"
+  archive="$package-held.tar.gz"
+  subdir=/held
+fi
+[ -f "$artifacts$subdir/$archive" ] || { echo "missing $subdir/$archive" >&2; exit 1; }
 container="sea-mlir-smoke-$(date +%s)-$$"
 cleanup() { docker rm -f "$container" >/dev/null 2>&1 || :; }
 trap cleanup EXIT
@@ -21,7 +28,7 @@ trap 'exit 143' TERM
 printf 'smoke-container: %s\n' "$container"
 docker run --name "$container" --label sea-mlir.release-smoke=true \
   -v "$artifacts:/artifacts:ro" -v "$fixtures:/fixtures:ro" \
-  -e PACKAGE="$package" -e MODE="$mode" \
+  -e PACKAGE="$package" -e ARCHIVE="$archive" -e SUBDIR="$subdir" -e MODE="$mode" \
   ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 \
   sh -ec '
     if [ "$MODE" = --bundle ]; then
@@ -29,10 +36,10 @@ docker run --name "$container" --label sea-mlir.release-smoke=true \
       apt-get update
       apt-get install -y --no-install-recommends clang-18 python3
     fi
-    cd /artifacts
-    sha256sum -c "$PACKAGE.tar.gz.sha256"
+    cd "/artifacts$SUBDIR"
+    sha256sum -c "$ARCHIVE.sha256"
     mkdir /test /work
-    tar -xzf "$PACKAGE.tar.gz" -C /test
+    tar -xzf "$ARCHIVE" -C /test
     cd /work
     sh /fixtures/check.sh "/test/$PACKAGE" "${MODE#--}"
   ' &
