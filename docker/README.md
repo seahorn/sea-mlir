@@ -46,6 +46,20 @@ this table in sync.
 | z3 | tag `z3-5.3.3` (`Z3_TAG`) | MIT |
 | Bitwuzla | tag `0.9.1` (`BITWUZLA_TAG`) | MIT |
 | Yices | tag `yices-2.7.0` (`YICES_TAG`), only with `YICES=1` | GPLv3 |
+| CaDiCaL | tag from Bitwuzla's `subprojects/cadical.wrap` (currently `rel-2.1.2`); not set by hand | MIT |
+| SymFPU | revision from Bitwuzla's `subprojects/symfpu.wrap` (currently `40bdec0`); not set by hand | BSD 3-Clause |
+| SeaHorn | `SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` (`4f7fdaf`) | held pending relicensing |
+| sea-dsa | `SEADSA_REVISION`, `docker/SeaHorn.Dockerfile` (`3134604`) | held with SeaHorn |
+| llvm-seahorn | `LLVM_SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` (`6cfacb8`) | held with SeaHorn |
+| SeaHorn's z3 | `SEAHORN_Z3_REVISION`, `docker/SeaHorn.Dockerfile`: z3 4.12.0 (`feda706`), the version this SeaHorn checkout is built with locally | MIT |
+
+The release packaging takes the z3 and Bitwuzla tags from the `Z3_TAG` and
+`BITWUZLA_TAG` arguments (`docker/release.py` reads them from
+`docker/Dockerfile` and passes them on). The `solvers` stage saves Bitwuzla's
+two wrap files in `/opt/solvers/share/pins`, and `docker/package-release.py`
+reads the CaDiCaL and SymFPU pins from them for the license downloads and the
+notices. The artifact version is the `project(sea-mlir VERSION ...)` of
+`CMakeLists.txt` unless `--version` is given.
 
 The Ubuntu packages are not pinned: `apt-get` installs the versions
 current at build time on top of the pinned base image.
@@ -65,3 +79,86 @@ docker build -f docker/Dockerfile --build-arg YICES=1 --target sea-mlir \
 
 The `runtime` stage fails when Yices is present, so such a build is never
 a runtime image.
+
+
+## Local binary releases
+
+The release job produces a relocatable Linux x86-64 tarball and a runtime
+image, then tests the extracted tarball in a clean Ubuntu 24.04 container.
+The builds take hours on a shared machine, so the driver can stop at a
+given local time (`--until HH:MM`), and can refuse to start before another
+(`--not-before HH:MM`, a window across midnight when it is later than
+`--until`). `--timezone NAME` sets the zone of both (default: the system
+zone). Without `--until` there is no time limit:
+
+```bash
+just binary-release ../release-output --plan
+just binary-release ../release-output
+just binary-release ../release-output --not-before 22:00 --until 07:00
+# Build the standalone artifact first, then the held SeaHorn bundle:
+just binary-release ../release-output --bundle
+```
+
+The output directory must be outside the source tree. Each run records its
+source revision, whether the checkout was dirty, image IDs, stage times,
+logs and artifact hashes in `release-run.json`. Tarballs, SHA-256 files and
+package manifests go in `artifacts/`; the held SeaHorn bundle goes in
+`artifacts/held/` and its files end in `-held`, so `artifacts/*.tar.gz` holds
+only files that can go to release review. A dirty checkout is marked
+`-dirty` in the version string of the built tools. Use a clean, committed checkout for
+artifacts intended for review. The job never publishes them.
+
+Builds run sequentially with eight compile jobs and four regression-test
+workers. At the `--until` time the driver interrupts the active command and
+stops its own remaining build or smoke containers (exit 124). Rerun the
+command later to reuse Docker's cached layers. The driver works with Docker's
+legacy builder; BuildKit cancellation has not been separately validated.
+It creates only `sea-mlir-release:*` images and does not prune the cache.
+Both release builders disable Yices.
+
+To reuse an existing LLVM image, pass `--llvm-image IMAGE`. The image must
+contain the LLVM installation at `/opt/llvm` and the build dependencies of
+the `base` stage. The job checks the revision file, Release mode, assertions,
+MLIR and lit before using it. Without this option it builds LLVM from the
+pinned source. Changing the LLVM revision invalidates reuse.
+
+The standalone tarball includes the installed tools, their non-system
+shared libraries, licenses and notices. Every ELF file uses a relative
+`$ORIGIN` RPATH. The package retains Ubuntu's glibc, C++ runtime and GCC
+runtime as system dependencies; Ubuntu 24.04 x86-64 is the tested target.
+The manifest records the packaged files and resolved ELF dependencies.
+Packaging fails when a copied shared library has neither an owning Ubuntu
+package (whose copyright file is included) nor a known upstream license, or
+when a dependency would resolve outside the package.
+The smoke test checks the version, SAT with counterexample replay, and
+UNSAT after relocating the tarball into a fresh container.
+
+### SeaHorn bundle
+
+`--bundle` builds SeaHorn separately against Ubuntu's LLVM 18, with the
+source and dependency pins in `docker/SeaHorn.Dockerfile`. SeaHorn uses
+Z3 4.12; sea-mlir uses Z3 5.3.3. The bundle preserves their distinct shared
+library names. The builders exchange programs through the exported MLIR
+text format and do not share an LLVM installation.
+
+The bundle adds the `sea` Python driver and SeaHorn executables, but no C
+compiler. Its Ubuntu runtime installs `clang-18` and Python 3. The clean
+container smoke compiles C fixtures with `sea yama -y sea-mlir-export`,
+then checks both SAT/replay and UNSAT with `sea-vc`. For a C input, use
+SeaHorn's assertion header and the profile's export option:
+
+```bash
+sea yama -y sea-mlir-export -m64 --horn-sea-mlir-out=program.mlir program.c
+sea-vc program.mlir --lower
+```
+
+`-m64` selects the installed compiler's native headers; 32-bit C inputs
+that include system headers need an additional multilib toolchain.
+The smoke fixtures retain symbolic inputs through export, so both verdicts
+exercise the backend.
+
+The bundle is `artifacts/held/sea-mlir-bundle-VERSION-linux-x86_64-held.tar.gz`
+(with its `.sha256` and manifest). The SeaHorn artifact and bundle are **held pending SeaHorn relicensing**.
+Their notices and marker files record that restriction. A successful build
+or smoke test does not authorize distribution. The standalone sea-mlir
+artifact can proceed to release review independently.

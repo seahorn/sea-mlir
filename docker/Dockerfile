@@ -12,6 +12,7 @@
 #
 # The pins: keep docker/README.md ("Pins") in sync.
 ARG UBUNTU=ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+ARG LLVM_BASE=base
 ARG Z3_TAG=z3-5.3.3
 ARG BITWUZLA_TAG=0.9.1
 ARG YICES_TAG=yices-2.7.0
@@ -33,12 +34,22 @@ ENV CC=clang-18 CXX=clang++-18
 # commit), Release with assertions, installed to /opt/llvm with the test
 # utilities (FileCheck, not, count) and lit (/opt/llvm/share/lit/lit.py).
 # Only LLVM_REVISION is copied in: a sea-mlir change keeps this layer.
-FROM base AS llvm
+FROM ${LLVM_BASE} AS llvm
 ARG JOBS=8
-COPY LLVM_REVISION /opt/llvm/LLVM_REVISION
+ARG REUSE_LLVM=0
+COPY LLVM_REVISION /opt/llvm/LLVM_REVISION.expected
 RUN set -eux; \
-    commit="$(sed -n 's/^commit: *//p' /opt/llvm/LLVM_REVISION)"; \
+    commit="$(sed -n 's/^commit: *//p' /opt/llvm/LLVM_REVISION.expected)"; \
     test -n "$commit"; \
+    if [ "$REUSE_LLVM" = 1 ]; then \
+      cmp /opt/llvm/LLVM_REVISION.expected /opt/llvm/LLVM_REVISION; \
+      test "$(/opt/llvm/bin/llvm-config --build-mode)" = Release; \
+      test "$(/opt/llvm/bin/llvm-config --assertion-mode)" = ON; \
+      test -f /opt/llvm/lib/cmake/mlir/MLIRConfig.cmake; \
+      test -f /opt/llvm/share/lit/lit.py; \
+      exit 0; \
+    fi; \
+    cp /opt/llvm/LLVM_REVISION.expected /opt/llvm/LLVM_REVISION; \
     mkdir /src && cd /src; \
     git init -q llvm-project && cd llvm-project; \
     git remote add origin https://github.com/llvm/llvm-project.git; \
@@ -77,6 +88,8 @@ RUN set -eux; \
       --libdir=lib -Ddefault_library=shared \
       -Dtesting=disabled -Dunit_testing=disabled; \
     ninja -C build -j"$JOBS" install; \
+    mkdir -p /opt/solvers/share/pins; \
+    cp subprojects/cadical.wrap subprojects/symfpu.wrap /opt/solvers/share/pins/; \
     cd / && rm -rf /src/bitwuzla
 # declared here, so that z3 and Bitwuzla stay cached across YICES=0/1
 ARG YICES_TAG
@@ -110,6 +123,7 @@ RUN set -eux; \
       -DLLVM_ENABLE_LLD=ON \
       -DMLIR_DIR=/opt/llvm/lib/cmake/mlir \
       -DLLVM_EXTERNAL_LIT=/opt/llvm/share/lit/lit.py \
+      -DLLVM_LIT_ARGS="-sv -j4" \
       -DZ3_ROOT=/opt/solvers -DSEA_Z3=/opt/solvers/bin/z3 \
       -DBITWUZLA_ROOT=/opt/solvers \
       -DSEA_ENABLE_YICES="$yices" -DYICES2_ROOT=/opt/solvers \
