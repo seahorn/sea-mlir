@@ -161,7 +161,12 @@ just attest --only check-sea --build build-release
   (default: the merge base with `origin/main`). Each vcc gate run is
   recorded per SHA in `$SEA_BENCH_HOME/attest/`; without a record for
   the base, pass `--base-sea-vc` (a sea-vc built at the base) and the
-  base and HEAD runs alternate.
+  base and HEAD runs alternate. A record entry whose results
+  directory is gone is dropped (`stale-record:` line) and counts as
+  never recorded.
+- Without the benchmark suites (`just bench-connect`, or
+  `SEA_BENCH_SUITES`), attest refuses with exit code 2 before running
+  any bench gate and posts nothing; `--only check-sea` needs no suites.
 - Without `--dry-run`, posting needs `gh` logged in with write access to
   the repository.
 
