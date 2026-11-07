@@ -14,8 +14,10 @@
 """
 
 import argparse
+import contextlib
 import datetime
 import hashlib
+import io
 import json
 import os
 import re
@@ -222,7 +224,7 @@ def gate_description(g):
 
 
 def check_suites(bench=None):
-    """Refuse when bench.py finds no family of the vcc suite."""
+    """Refuse when `bench.py suites public/vcc` fails (no suite, no yaml, ...)."""
     p = run(
         [
             sys.executable,
@@ -232,10 +234,11 @@ def check_suites(bench=None):
         ],
         capture_output=True,
     )
-    if p.returncode and "no family matches" in p.stderr + p.stdout:
+    if p.returncode:
+        tail = " | ".join((p.stderr or p.stdout).strip().splitlines()[-2:])
         raise Refuse(
             "no benchmark suites connected: run `just bench-connect` "
-            "or set SEA_BENCH_SUITES"
+            f"or set SEA_BENCH_SUITES ({tail})"
         )
 
 
@@ -281,7 +284,7 @@ def load_record(sha):
 
 def save_record(sha, rec):
     os.makedirs(os.path.dirname(record_path(sha)), exist_ok=True)
-    tmp = record_path(sha) + ".tmp"
+    tmp = f"{record_path(sha)}.tmp.{os.getpid()}"
     with open(tmp, "w") as f:
         json.dump(rec, f, indent=1)
     os.replace(tmp, record_path(sha))
@@ -526,7 +529,12 @@ def self_test():
             )
             assert load_record("abc")["vcc"] == [{"results": d}]
             assert load_record("def")["vcc"] == []
-            assert [r["results"] for r in load_record("abc")["vcc"]] == [d]
+            # the rewrite persisted: no second stale-record line
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                assert load_record("abc")["vcc"] == [{"results": d}]
+                assert load_record("def")["vcc"] == []
+            assert "stale-record" not in buf.getvalue(), buf.getvalue()
         finally:
             BENCH_HOME = old
         # no suites: refuse (rc 2 in main); other bench.py failures pass
@@ -538,6 +546,31 @@ def self_test():
             raise AssertionError("no refusal")
         except Refuse as e:
             assert "no benchmark suites connected" in str(e), e
+
+        # call order: with suites missing, attest() refuses before the build
+        # and before any post
+        def boom(*_a, **_k):
+            raise AssertionError("ran after the suites check")
+
+        g = globals()
+        saved = {k: g[k] for k in ("tree_state", "git", "ensure_build", "post")}
+        real_check = check_suites
+        g.update(
+            tree_state=lambda: ("0" * 40, False),
+            git=lambda *a: "https://github.com/o/r",
+            ensure_build=boom,
+            post=boom,
+            check_suites=lambda: real_check(fake),
+        )
+        try:
+            ns = argparse.Namespace(repo=None, only="bench-vcc,check-sea")
+            try:
+                attest(ns)
+                raise AssertionError("no refusal")
+            except Refuse as e:
+                assert "no benchmark suites connected" in str(e), e
+        finally:
+            g.update(saved, check_suites=real_check)
         with open(fake, "w") as f:
             f.write("raise SystemExit(0)\n")
         check_suites(fake)
