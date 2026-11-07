@@ -71,11 +71,16 @@ a runtime image.
 
 The release job produces a relocatable Linux x86-64 tarball and a runtime
 image, then tests the extracted tarball in a clean Ubuntu 24.04 container.
-Run it between 22:00 and 07:00 in America/Toronto:
+The builds take hours on a shared machine, so the driver can stop at a
+given local time (`--until HH:MM`), and can refuse to start before another
+(`--not-before HH:MM`, a window across midnight when it is later than
+`--until`). `--timezone NAME` sets the zone of both (default: the system
+zone). Without `--until` there is no time limit:
 
 ```bash
 just binary-release ../release-output --plan
 just binary-release ../release-output
+just binary-release ../release-output --not-before 22:00 --until 07:00
 # Build the standalone artifact first, then the held SeaHorn bundle:
 just binary-release ../release-output --bundle
 ```
@@ -87,9 +92,9 @@ package manifests go in `artifacts/`. Use a clean, committed checkout for
 artifacts intended for review. The job never publishes them.
 
 Builds run sequentially with eight compile jobs and four regression-test
-workers. The driver interrupts the active command at 07:00 and stops its
-own remaining build or smoke containers. Rerun the command in a later
-window to reuse Docker's cached layers. The driver works with Docker's
+workers. At the `--until` time the driver interrupts the active command and
+stops its own remaining build or smoke containers (exit 124). Rerun the
+command later to reuse Docker's cached layers. The driver works with Docker's
 legacy builder; BuildKit cancellation has not been separately validated.
 It creates only `sea-mlir-release:*` images and does not prune the cache.
 Both release builders disable Yices.

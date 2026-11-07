@@ -8,7 +8,7 @@ import signal
 import subprocess
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time as clock
 from pathlib import Path
 from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
@@ -20,8 +20,22 @@ release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 
 
+def zone_or_none(name):
+    try:
+        return ZoneInfo(name)
+    except Exception:  # no tz database on this machine
+        return None
+
+
+NIGHT = (clock(7, 0), clock(22, 0))  # until, not_before
+
+
 class CutoffTests(unittest.TestCase):
-    toronto = ZoneInfo("America/Toronto")
+    toronto = zone_or_none("America/Toronto")
+
+    def setUp(self):
+        if self.toronto is None:
+            self.skipTest("tz database unavailable")
 
     def local(self, value):
         return datetime.fromisoformat(value).replace(tzinfo=self.toronto)
@@ -34,10 +48,10 @@ class CutoffTests(unittest.TestCase):
             ("2026-11-07T06:59:59.999999", "2026-11-07T07:00:00"),
         ):
             with self.subTest(start=start):
-                self.assertEqual(release.cutoff(self.local(start)), self.local(end))
+                self.assertEqual(release.cutoff(self.local(start), *NIGHT), self.local(end))
         for start in ("2026-11-07T07:00:00", "2026-11-07T21:59:59.999999"):
             with self.subTest(start=start), self.assertRaises(ValueError):
-                release.cutoff(self.local(start))
+                release.cutoff(self.local(start), *NIGHT)
 
     def test_dst_changes_elapsed_window_but_not_local_cutoff(self):
         for start, utc_end, hours in (
@@ -46,7 +60,7 @@ class CutoffTests(unittest.TestCase):
         ):
             with self.subTest(start=start):
                 now = self.local(start)
-                end = release.cutoff(now)
+                end = release.cutoff(now, *NIGHT)
                 self.assertEqual(end.hour, 7)
                 self.assertEqual(end.astimezone(UTC), datetime.fromisoformat(utc_end))
                 self.assertEqual(end.timestamp() - now.timestamp(), hours * 3600)
@@ -54,22 +68,49 @@ class CutoffTests(unittest.TestCase):
     def test_repeated_fall_hour_has_one_deadline(self):
         first = self.local("2026-11-01T01:30:00")
         second = first.replace(fold=1)
+        end = lambda now: release.cutoff(now, *NIGHT).timestamp()
+        self.assertEqual(end(first), end(second))
+        self.assertEqual(end(first) - first.timestamp(), 6.5 * 3600)
+        self.assertEqual(end(second) - second.timestamp(), 5.5 * 3600)
+
+    def test_until_alone_has_no_start_restriction(self):
+        until = clock(7, 0)
         self.assertEqual(
-            release.cutoff(first).timestamp(), release.cutoff(second).timestamp()
+            release.cutoff(self.local("2026-11-06T12:00:00"), until),
+            self.local("2026-11-07T07:00:00"),
         )
         self.assertEqual(
-            release.cutoff(first).timestamp() - first.timestamp(), 6.5 * 3600
+            release.cutoff(self.local("2026-11-06T07:00:00"), until),
+            self.local("2026-11-07T07:00:00"),
         )
         self.assertEqual(
-            release.cutoff(second).timestamp() - second.timestamp(), 5.5 * 3600
+            release.cutoff(self.local("2026-11-06T06:00:00"), until),
+            self.local("2026-11-06T07:00:00"),
         )
+
+    def test_same_day_window(self):
+        end, start = clock(17, 30), clock(9, 0)
+        self.assertEqual(
+            release.cutoff(self.local("2026-11-06T10:00:00"), end, start),
+            self.local("2026-11-06T17:30:00"),
+        )
+        with self.assertRaises(ValueError):
+            release.cutoff(self.local("2026-11-06T08:59:00"), end, start)
+
+
+class SystemZoneTests(unittest.TestCase):
+    def test_naive_arithmetic_in_system_zone(self):
+        now = datetime.fromisoformat("2026-06-01T12:00:00").astimezone()
+        end = release.cutoff(now, clock(7, 0))
+        self.assertEqual(end.replace(tzinfo=None).isoformat(), "2026-06-02T07:00:00")
+        self.assertGreater(end, now)
 
 
 class CancellationTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.job = release.NightJob.__new__(release.NightJob)
+        self.job = release.ReleaseJob.__new__(release.ReleaseJob)
         self.job.source = Path(temporary.name)
         self.job.output = self.job.source
         self.job.logs = self.job.source
