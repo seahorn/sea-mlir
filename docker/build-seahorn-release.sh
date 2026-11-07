@@ -28,8 +28,8 @@ cmake --build "$build_dir" --parallel "$JOBS" --target install \
 "$build_dir/units/units_type_checker"
 "$build_dir/units/units_hex_dump"
 
-# The bundle uses sea-mlir's z3 executable; SeaHorn itself links its separately
-# versioned library. Do not install a compiler or unversioned solver alias.
+# The export frontend needs Z3's versioned library, not its executable.
+# Do not install a compiler or unversioned solver alias.
 rm -f "$prefix/bin/z3"
 mkdir -p "$prefix/lib" "$prefix/share/release-licenses" "$prefix/share/seahorn"
 cp -L /opt/seahorn-z3/lib/libz3.so.4.12 "$prefix/lib/libz3.so.4.12"

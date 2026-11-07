@@ -31,8 +31,13 @@ if [ "${2:-}" = bundle ]; then
   python3 --version
   sea --help > sea-help.log
   for verdict in sat unsat; do
-    sea yama -y sea-mlir-export "$fixtures/$verdict.c" -o "$verdict.mlir" > "$verdict-export.log" 2>&1
+    if ! sea yama -y sea-mlir-export -m64 --horn-sea-mlir-out="$verdict.mlir" "$fixtures/$verdict.c" > "$verdict-export.log" 2>&1; then
+      cat "$verdict-export.log"
+      exit 1
+    fi
     cat "$verdict-export.log"
+    # Both fixtures must reach the backend as symbolic obligations.
+    grep -q "sea.nondet" "$verdict.mlir"
     sea-vc "$verdict.mlir" --lower > "$verdict-bundle.log"
     cat "$verdict-bundle.log"
     grep -q "^result: $verdict$" "$verdict-bundle.log"

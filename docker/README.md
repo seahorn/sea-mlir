@@ -119,7 +119,18 @@ text format and do not share an LLVM installation.
 The bundle adds the `sea` Python driver and SeaHorn executables, but no C
 compiler. Its Ubuntu runtime installs `clang-18` and Python 3. The clean
 container smoke compiles C fixtures with `sea yama -y sea-mlir-export`,
-then checks both SAT/replay and UNSAT with `sea-vc`.
+then checks both SAT/replay and UNSAT with `sea-vc`. For a C input, use
+SeaHorn's assertion header and the profile's export option:
+
+```bash
+sea yama -y sea-mlir-export -m64 --horn-sea-mlir-out=program.mlir program.c
+sea-vc program.mlir --lower
+```
+
+`-m64` selects the installed compiler's native headers; 32-bit C inputs
+that include system headers need an additional multilib toolchain.
+The smoke fixtures retain symbolic inputs through export, so both verdicts
+exercise the backend.
 
 The SeaHorn artifact and bundle are **held pending SeaHorn relicensing**.
 Their notices and marker files record that restriction. A successful build
