@@ -1,13 +1,17 @@
 # Why trust it
 
-A verifier can be wrong in two directions. A wrong counterexample wastes
-time and is easy to spot. A wrong proof is dangerous: it reports that a
-property holds when it does not, and nothing in the output shows it.
-sea-mlir is built so that each of its answers is checked by something
-other than the code that produced it.
+A solver can prove the formula it was given even if a mistake in the
+verifier made that formula describe the wrong program. Trust therefore
+depends on the path from program to query as well as on the solver.
 
-This page describes those checks, what each one covers, and what is not
-checked.
+sea-mlir checks that path in several ways. Ordinary runs replay
+counterexamples in an interpreter. The optional `--seam-check` mode checks
+individual memory rewrites. Development tests compare independent
+components, and Lean proofs establish the soundness of the formalized
+memory rules. These checks support confidence in the implementation;
+they do not independently certify every `unsat` answer end to end.
+
+This page explains what each check covers and which assumptions remain.
 
 ## Counterexamples are replayed
 
@@ -21,7 +25,7 @@ the same values. If it does not, `sea-vc` exits with status 2 and says so.
 The interpreter is itself checked: every operation is compared against its
 definition in SMT-LIB, evaluated by z3, on generated inputs.
 
-## Every rewrite is checked
+## Checking each rewrite with `--seam-check`
 
 Before solving, sea-mlir simplifies the verification condition. The memory
 rewriter (SeaM) resolves loads against stores, decides whether two
@@ -31,8 +35,9 @@ and also where its bugs tend to be.
 
 With `--seam-check`, every rewrite that fires is checked by the solver: its
 premises must imply that the term before the rewrite equals the term
-after. An invalid rewrite stops the run with exit status 5. The SeaM
-fuzzer can run every generated program with this check.
+after. This check is off by default. An invalid rewrite stops the run
+with exit status 5. The SeaM fuzzer can run every generated program with
+this check.
 
 ## The foundations are proved in Lean
 
@@ -87,8 +92,10 @@ any change of verdict.
 
 Verdicts alone miss performance regressions that do not change an answer.
 The gates also bound the work left for the solver, such as the number of
-memory constraints. For example, the NKI gather proofs must leave no
-memory constraints at all, and a gate fails when one does.
+memory-consistency constraints. For example, the NKI gather good jobs
+must resolve aliasing statically and leave zero Ackermann constraints.
+A gate fails when that count rises, even if the final verdict stays the
+same.
 
 ## Protected oracles
 

@@ -1,8 +1,14 @@
-# Gates
+# Sea-MLIR contributor gates
 
-A gate is a check that a change must pass before it is trusted. The gates
-answer different questions, and none replaces another. All of them run
-from a sea-mlir source tree.
+These gates protect changes to **Sea-MLIR itself**: its semantics,
+encodings, performance, release artifacts and repository contents. Run
+them from a Sea-MLIR source tree. Each answers a different question, so
+passing one does not replace the others.
+
+For a gate that protects application code, follow the
+[application verification workflow](index.md). That workflow includes the
+property, harness and regeneration from changed source; the contributor
+checks below test the verifier and its distribution.
 
 | gate | question | command |
 |---|---|---|

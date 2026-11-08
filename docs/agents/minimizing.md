@@ -29,6 +29,11 @@ reduce.output-ops: 3
 reduce.recheck: interesting (result=sat status=0 signal=None timeout=0 time=0.08 rss=0.045)
 ...
 $ cat small.mlir
+```
+
+The reduced program is:
+
+```mlir
 module {
   sea.program @main {
     %0 = sea.const false
@@ -39,8 +44,8 @@ module {
 ```
 
 The reduced program still answers `sat`, but it no longer contains the
-mutant. In the same way, a test for `unsat` alone reduces to an inconsistent assumption. Tie the test
-to what differs: two configurations, a diagnostic kind, or a counter of
+mutant. In the same way, a test for `unsat` alone reduces to an
+inconsistent assumption. Tie the test to what differs: two configurations, a diagnostic kind, or a counter of
 the mechanism.
 
 | symptom | mode and options |

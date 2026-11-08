@@ -8,9 +8,50 @@ complete list is in `sea-vc --agent` and in
 
 ## A proof
 
-The proof of Firedancer's HPACK Huffman decoder
-([Firedancer: HPACK](../tutorials/firedancer.md)), run from a checkout of
-the benchmark repository:
+Start with the verdict, the assumptions and the tool version. This excerpt
+comes from the [HPACK decoder proof](../tutorials/firedancer.md):
+
+```console
+$ sea-vc firedancer/hpack-huff-proof.mlir --lower --seam --widen-memory=4
+tool.version: sea-mlir 0.1.0 (...)
+...
+seam.inb: assumed accesses=51 conditions=9
+...
+result: unsat
+```
+
+The assertion holds under the reported in-bounds assumption. This is a
+conditional result, not an independent proof that the accesses stay in
+bounds. To use it, retain the assumption with the verdict and check that
+it matches the claim your harness is intended to establish.
+
+## What to read first
+
+1. **`result:`** is `unsat` when no violating input exists, `sat` when
+   the solver finds one, `unknown` when it cannot decide, or `none` (with
+   `--vcgen-only`, which builds the query without solving it). Read it
+   together with the exit status
+   ([exit codes](../reference/output-formats.md#exit-codes)). For `sat`,
+   require a failing replay with no validation mismatches before treating
+   it as a counterexample ([Counterexamples](counterexamples.md)).
+2. **The assumptions.** `seam.inb: assumed accesses=51 conditions=9` says
+   that the `unsat` holds for executions in which those 51 memory
+   accesses stay inside their objects. For 9 of them the in-bounds
+   condition was not constant. The other assumption lines are
+   `assume.memset-bound` (a memset of symbolic length was bounded),
+   `seam.inb: off (fallback: ...)` (the assumption was dropped), and
+   `seam.ptrint` (`--ptr-companion=assume`). An `unsat` reported without
+   its assumption lines is incomplete.
+3. **Warnings on stderr.** `Warning: ... [kind]` names handling that is
+   incomplete or approximate. The verdict is then about the program as the
+   tool understood it.
+4. **`tool.version:`** and every `vc.config:` line. Record them with the
+   verdict. The defaults are not tuned and can change between versions.
+
+## Detailed output
+
+The same run includes object placement, pointer mode, timings and memory
+encoding statistics. These help diagnose a result or compare configurations:
 
 ```console
 $ sea-vc firedancer/hpack-huff-proof.mlir --lower --seam --widen-memory=4
@@ -36,32 +77,13 @@ solve-time: 0.424
 result: unsat
 ```
 
-## What to read first
-
-1. **`result:`** is `sat`, `unsat`, `unknown`, or `none` (with
-   `--vcgen-only`, which builds the query without solving it). Read it
-   together with the exit status
-   ([exit codes](../reference/output-formats.md#exit-codes)).
-2. **The assumptions.** `seam.inb: assumed accesses=51 conditions=9` says
-   that the `unsat` holds for executions in which those 51 memory
-   accesses stay inside their objects. For 9 of them the in-bounds
-   condition was not constant. The other assumption lines are
-   `assume.memset-bound` (a memset of symbolic length was bounded),
-   `seam.inb: off (fallback: ...)` (the assumption was dropped), and
-   `seam.ptrint` (`--ptr-companion=assume`). An `unsat` reported without
-   its assumption lines is incomplete.
-3. **Warnings on stderr.** `Warning: ... [kind]` names handling that is
-   incomplete or approximate. The verdict is then about the program as the
-   tool understood it.
-4. **`tool.version:`** and every `vc.config:` line. Record them with the
-   verdict. The defaults are not tuned and can change between versions.
-5. **The pointer mode.** `vc.ptr-mode: opaque` refuses integer-to-pointer
+1. **The pointer mode.** `vc.ptr-mode: opaque` refuses integer-to-pointer
    casts; `address` admits them. `vc.int-to-ptr` counts them in the
    program.
-6. **The objects.** Every placed object, with its name, kind, address and
+2. **The objects.** Every placed object, with its name, kind, address and
    size. Counterexamples refer to memory by these names
    (`&global.hp_in[0]`).
-7. **The times.** `vc-time` is the generation of the query, including the
+3. **The times.** `vc-time` is the generation of the query, including the
    SeaM rewriting; `solve-time` is the solver. `--timeout` bounds only the
    solver. A blowup in query generation shows as a large `vc-time`, or as
    a run that never prints `solve-time`.

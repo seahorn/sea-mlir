@@ -20,17 +20,22 @@ the only platform that is built and tested.
 
 ## Configure, build, test, install
 
+Replace the `/path/to/...` paths with your LLVM installation, z3 installation
+and chosen install prefix, then run:
+
 ```bash
 cmake -S . -B build-release -GNinja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DLLVM_ENABLE_LLD=ON \
-  -DMLIR_DIR=<llvm-install>/lib/cmake/mlir \
-  -DZ3_ROOT=<z3-install> -DSEA_Z3=<z3-install>/bin/z3 \
-  [-DYICES2_ROOT=<yices-install>] [-DBITWUZLA_ROOT=<bitwuzla-install>] \
-  -DCMAKE_INSTALL_PREFIX=<prefix>
+  -DMLIR_DIR=/path/to/llvm-install/lib/cmake/mlir \
+  -DZ3_ROOT=/path/to/z3-install -DSEA_Z3=/path/to/z3-install/bin/z3 \
+  -DCMAKE_INSTALL_PREFIX=/path/to/sea-mlir-install
 ninja -C build-release            # build
 ninja -C build-release check-sea  # the regression tests; every test must pass
 ninja -C build-release install
 ```
+
+To add optional solvers, append `-DYICES2_ROOT=/path/to/yices-install`
+and/or `-DBITWUZLA_ROOT=/path/to/bitwuzla-install` to the CMake command.
 
 `-DSEA_Z3` names the z3 binary that the tests use. Without
 `-DBITWUZLA_ROOT`, `--solver=bitwuzla` is an error. Yices is used when

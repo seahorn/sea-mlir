@@ -96,8 +96,9 @@ nav:
       - Running the tools: agents/running.md
       - Profiles: agents/profiles.md
       - Minimizing a problem: agents/minimizing.md
-      - Gates: agents/gates.md
-      - Rules for contributors: agents/rules.md
+  - Contributing to Sea-MLIR:
+      - Contributor gates: agents/gates.md
+      - Contributor rules: agents/rules.md
   - Reference:
       - reference/index.md
       - "Background: SeaM": reference/seam.md
@@ -107,7 +108,7 @@ nav:
       - Counterexample notation: reference/print.md
       - Profiles: reference/profiles.md
       - The reducer: reference/reducer.md
-      - Benchmarks and gates: reference/benchmarks.md
+      - Verifier benchmarks and gates: reference/benchmarks.md
       - SeaM export: reference/seam-export.md
       - Known limitations: reference/limitations.md
 
