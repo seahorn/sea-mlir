@@ -7,7 +7,7 @@ the counterexample, and lists what the result rests on.
 
 | page | code under test | shows |
 |---|---|---|
-| [NKI kernels](nki.md) | the `nki-library` gather kernel | SeaM resolving all data movement before the solver |
+| [NKI kernels](nki.md) | `nki-library` gather, dynamic add and scatter-add | data-movement claims, static alias resolution and residual SMT work |
 | [Inductive proof: FD-FRAG](inductive-proof.md) | Firedancer's QUIC fragment reassembly | why a bounded run failed, and a one-step inductive proof |
 | [Stellar](stellar.md) | stellar-core's TTL merge, ported to C | a historical bug, and a counterexample that is not a bug of the system |
 | [Firedancer: HPACK](firedancer.md) | nghttp2's Huffman decoder in Firedancer | a loop cut, a mutant, the JSON view of a counterexample |
