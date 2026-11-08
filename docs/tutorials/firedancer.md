@@ -1,27 +1,93 @@
 # Firedancer: HPACK
 
-Firedancer's HTTP/2 client decodes HPACK headers. Header strings are
-Huffman-coded, and Firedancer decodes them with nghttp2's decoder. This
-page proves the decoder's contract for inputs of any length, then breaks
-the decoder and reads the counterexample, first as text and then as JSON.
+An HTTP/2 header can occupy more bytes after Huffman decoding than it did
+on the wire. A caller that reserves twice the encoded length is relying
+on a precise decoder contract. That contract must hold for every byte
+sequence and every valid continuation state, including a call that ends
+halfway through a header.
 
-## The question
-
-For every input of length $n$ and every valid starting state, does
-`nghttp2_hd_huff_decode` write at most $2n$ bytes, leave a valid state,
-and return $n$, or an error only on a final call?
+Firedancer uses nghttp2's Huffman decoder in its HPACK implementation.
+We check the expansion bound and state transitions on the decoder's C
+code, then use that contract to check the surrounding header reader and
+skip logic. The results catch deliberately broken bounds and two reverts
+of a historical HPACK fix. They also expose where the extraction relies
+on a model rather than the real decode table.
 
 ## The contract
 
 The harness calls the decoder once, from an arbitrary valid state, on an
-input whose length $n$ is arbitrary up to `NMAX`, and asserts four claims:
+input whose length $n$ is arbitrary up to `NMAX`, and asserts five claims:
 
+- the decoder reads exactly the input range;
 - the decoder writes at most $2n$ bytes;
 - the state after the call is valid;
 - the call returns $n$, or an error only if it is the final call;
 - on an empty input the state is unchanged.
 
-## Cutting the loop
+These are buffer and state-management claims. They do not establish that
+each decoded string is the one specified by HPACK, or that splitting a
+header across calls produces the same result as decoding it in one call.
+The input length is arbitrary within the harness capacity `NMAX`; the
+proof does not stop after a fixed number of decoder iterations.
+
+## From decoder source to a check
+
+See [Firedancer source and extraction](index.md#firedancer-source-and-extraction)
+for the pinned revision, harnesses and shared frontend pipeline.
+
+The harness supplies arbitrary bytes and a valid starting decoder state.
+It checks the writes and return value against the contract above. To cover
+the input loop, the agent supplies an invariant relating bytes consumed
+to bytes produced; the verifier checks that each iteration preserves it.
+The detailed invariant appears in the verification section below.
+
+One extraction limitation matters to the result: the exported job leaves
+the large Huffman decode table symbolic. It assumes each table entry leads
+to a valid state, a property checked separately over every entry of the
+real table. The result is conditional on that table property and the
+reported in-bounds memory assumption. A replay checks the extracted model,
+not the fidelity of the extraction to the original library.
+
+## What the checks found
+
+The decoder contract passes, and a planted change that writes an extra
+byte per input byte fails. One byte of input is enough to expose the
+change. The decoder proof took about half a second in the recorded run;
+the surrounding reader proof took about 16 seconds. These are individual
+observations at the benchmark snapshot, not a CI timing guarantee.
+
+## The other HPACK jobs
+
+The family has 22 HPACK jobs: the Huffman decoder (`hpack-huff-*`), the
+skip function `fd_hpack_skip_feed` (`hpack-skip-*`), and the reader
+`fd_hpack_rd_next` (`hpack-rd-*`), each with a proof, reach jobs and
+mutants. Two jobs revert parts of Firedancer commit `791176436`; both give
+counterexamples.
+
+## Where a regression gate would help
+
+We would pilot a gate on the buffer and returned-length contracts when
+updating the decoder integration or changing HPACK parsing. The caller
+allocates space and advances pointers using those contracts; a locally
+plausible change can violate an assumption in the next layer. The two
+historical reverts give concrete evidence that the exact-length claims
+protect behavior that has needed fixing, rather than a property chosen
+only because it was easy to prove.
+
+The experiment's costs support trying these checks on relevant changes.
+Use the [application CI workflow](../agents/index.md#5-regenerate-and-check-in-ci),
+keeping the real-table check beside the symbolic proof. Integration tests
+of actual decoded headers cover behavior beyond this contract.
+
+---
+
+## For verification developers
+
+The remaining sections explain the loop proof, the meaning of its
+counterexample, and the table abstraction. Commands run from the benchmark
+checkout; [Applications](index.md) identifies the recorded snapshot.
+
+### Cutting the loop
 
 The decoder loops over its input, and the input has any length up to
 `NMAX`, so unrolling the loop to the export bound would not cover it. The
@@ -40,7 +106,7 @@ the decoder state is valid, and it is the initial state while $r = r_0$.
 The code after the loop sees an arbitrary state that satisfies the
 invariant and has $r = \mathit{end}$.
 
-## The proof
+### The proof
 
 ```console
 $ sea-vc firedancer/hpack-huff-proof.mlir --lower --seam --widen-memory=4
@@ -58,7 +124,7 @@ result: unsat
 The contract holds for every input length up to `NMAX`, under the
 assumption that the 51 reported accesses stay in their objects.
 
-## A mutant
+### A mutant
 
 The mutant `hpack-huff-mut-extra` makes the decoder write an extra zero
 byte for each input byte, three bytes where the original writes at most
@@ -92,7 +158,7 @@ that satisfies the invariant.
 [Counterexamples](../guide/counterexamples.md#reading-a-counterexample)
 reads this output line by line.
 
-## The same run as JSON
+### The same run as JSON
 
 An agent asks for JSON and selects what it needs. `--config=seam` loads
 the shipped profile that sets `--lower --seam`:
@@ -113,7 +179,7 @@ $ jq -c 'select(.kind=="validate") | {checked, mismatches}' run.jsonl
 
 The run records which profile file it loaded (`vc.config`).
 
-## The decode table
+### The decode table
 
 The model in the counterexample also chose entries of
 `huff_decode_table`:
@@ -130,12 +196,3 @@ was checked natively over all entries of the real table. The proof
 therefore holds for any table with that property, and a counterexample
 may use entries that differ from nghttp2's. This is an exporter gap
 ([Known limitations](../reference/limitations.md)).
-
-## The other HPACK jobs
-
-The family has 22 HPACK jobs: the Huffman decoder (`hpack-huff-*`), the
-skip function `fd_hpack_skip` (`hpack-skip-*`), and the reader
-`fd_hpack_rd_next` (`hpack-rd-*`), each with a proof, reach jobs and
-mutants. Two jobs revert parts of Firedancer commit `791176436`; both give
-counterexamples. The `fd_hpack_rd_next` proof took 16 s when the
-expectations were established.

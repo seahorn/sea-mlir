@@ -1,4 +1,10 @@
-# Benchmarks and gates
+# Verifier benchmarks and gates
+
+This suite gates changes to **Sea-MLIR** by running fixed exported programs
+and checking their verdicts, replay results and performance counters. It
+does not regenerate jobs from new application source. To gate changes to
+an application, use the [application verification workflow](../agents/index.md)
+and regenerate its jobs before solving.
 
 The regression tests (lit, `test/`) are in the sea-mlir repository. The
 benchmarks are not: they are large and carry third-party code under its

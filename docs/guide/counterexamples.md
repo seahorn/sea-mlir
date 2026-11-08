@@ -1,30 +1,11 @@
 # Counterexamples
 
-When the solver answers `sat`, `sea-vc` does not report the solver's model.
-It turns the model into inputs, runs the program in the interpreter, and
-reports that run.
-
-## Replay
-
-The model gives a value to every input site and to every cell of an input
-memory that the run reads. The interpreter runs the program on
-those values and compares every value it computes with the model. There
-are three outcomes.
-
-- The run fails the assertion and every compared value agrees:
-  `replay: assert-failed` and `validate: ... mismatches=0`. Exit status 0.
-  This is a counterexample.
-- The run and the model disagree. Exit status 2. Either the query or the
-  interpreter is wrong; this is a bug in sea-mlir.
-- With `--seam`, the run leaves an object. Exit status 4, with a
-  `seam.inb-violation:` line. The model relies on an out-of-bounds access,
-  so the in-bounds assumption does not hold for it. The program has a
-  memory-safety error, and the answer about the assertion is
-  inconclusive.
-
-`validate: checked=<n> mismatches=<m> dontcare=<d>` counts the compared
-values. `dontcare` counts values the model leaves unconstrained; they are
-not compared, and an unconstrained input replays as 0.
+A useful counterexample tells you which input violates the claim, where
+the check fails and whether the execution agrees with the solver.
+`sea-vc` obtains inputs from the solver model, runs the program in its
+interpreter and reports that replay. Read the run's
+[assumptions](output.md#what-to-read-first) alongside the failure; they
+remain part of what the result says.
 
 ## Reading a counterexample
 
@@ -58,6 +39,50 @@ validate: checked=157 mismatches=0 dontcare=1
 - `memread:` lines are memory cells the model chose, with the object and
   offset they lie in: the input byte `0xc0` (192) at `hp_in[0]`, and
   entries of the decode table.
+- `assert-at` identifies the failed check; here it is the decoder loop's
+  bound on bytes written. `assert-op` identifies the assertion in the
+  extracted program, and `assert-path` shows the branches leading to it.
+- `replay: assert-failed` and `validate: ... mismatches=0` show that the
+  interpreter reproduced the failure and agreed with the checked model
+  values. A `sat` verdict alone is not enough.
+
+In this example, the input length is 1 and the byte is `0xc0`. The mutant
+writes three bytes, violating the loop-cut invariant
+`w - w0 ≤ 2*(r - r0)` for one consumed byte. The failure is
+in the loop-cut program: the iteration starts from an arbitrary state
+satisfying the invariant. The decode table is also modeled, so its chosen
+entries need not match the actual table. See the
+[HPACK case study](../tutorials/firedancer.md) before interpreting this as
+a concrete execution of the original library.
+
+## Replay
+
+The model gives a value to every input site and to every cell of an input
+memory that the run reads. The interpreter runs the program on
+those values and compares every value it computes with the model. There
+are three outcomes.
+
+- The run fails the assertion and every compared value agrees:
+  `replay: assert-failed` and `validate: ... mismatches=0`. Exit status 0.
+  This is a counterexample.
+- The run and the model disagree. Exit status 2. Either the query or the
+  interpreter is wrong; this is a bug in sea-mlir.
+- With `--seam`, the run leaves an object. Exit status 4, with a
+  `seam.inb-violation:` line. The model relies on an out-of-bounds access,
+  so the in-bounds assumption does not hold for it. The program has a
+  memory-safety error, and the answer about the assertion is
+  inconclusive.
+
+`validate: checked=<n> mismatches=<m> dontcare=<d>` counts the compared
+values. `dontcare` counts values the model leaves unconstrained; they are
+not compared, and an unconstrained input replays as 0.
+
+## Source locations and exporter details
+
+The source location is usually enough to find the check. When it points
+to a generated assertion or a merged check, these rules explain how it was
+chosen:
+
 - `assert-at` is the C source location of the failed check, taken from the
   debug locations the exporter kept. When the assertion's condition is
   computed, `assert-at` is the op that computes it, or the first false

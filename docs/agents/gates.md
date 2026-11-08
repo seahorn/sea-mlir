@@ -1,8 +1,14 @@
-# Gates
+# Sea-MLIR contributor gates
 
-A gate is a check that a change must pass before it is trusted. The gates
-answer different questions, and none replaces another. All of them run
-from a sea-mlir source tree.
+These gates protect changes to **Sea-MLIR itself**: its semantics,
+encodings, performance, release artifacts and repository contents. Run
+them from a Sea-MLIR source tree. Each answers a different question, so
+passing one does not replace the others.
+
+For a gate that protects application code, follow the
+[application verification workflow](index.md). That workflow includes the
+property, harness and regeneration from changed source; the contributor
+checks below test the verifier and its distribution.
 
 | gate | question | command |
 |---|---|---|
@@ -49,7 +55,7 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 ## lit
 
 Every test must pass. The oracles among them are protected: they are not
-weakened to make a change pass ([Rules for contributors](rules.md#tests-and-oracles)).
+weakened to make a change pass ([Sea-MLIR contributor rules](rules.md#tests-and-oracles)).
 lit also runs small fuzz campaigns.
 
 ## The release check
@@ -81,7 +87,7 @@ is a bug; reduce it ([Minimizing a problem](minimizing.md)).
 ## Benchmarks
 
 The benchmark suites live in their own repository and are connected to a
-checkout on demand ([Benchmarks and gates](../reference/benchmarks.md)):
+checkout on demand ([Verifier benchmarks and gates](../reference/benchmarks.md)):
 
 ```bash
 just bench-connect        # clone or link the suites into bench/work/

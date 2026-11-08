@@ -1,10 +1,26 @@
-# Inductive proof: FD-FRAG
+# Firedancer: QUIC fragment reassembly
 
-Firedancer's TPU reassembles QUIC stream fragments into transactions
-(`fd_tpu_reasm.c`). Fragments arrive from the network in any order, so the
-reassembly code is exposed to attackers. This page shows why a bounded
-proof did not finish, and how a proof of one inductive step covers any
-number of operations.
+A fragment overlaps bytes already received. Another arrives with an end
+offset just beyond the transaction buffer. Then the stream is cancelled.
+The reassembly code must handle each operation without corrupting a
+neighboring payload or leaving a stale map entry behind. Testing the
+operations separately does not by itself establish that the next call
+starts from a valid state.
+
+We check Firedancer's `fd_tpu_reasm_frag` and `fd_tpu_reasm_cancel` by
+stating what must remain true between calls. That lets one verified step
+cover a sequence of any length in the modeled configuration. The study
+checks byte preservation, bounds and slot bookkeeping, and catches both
+planted mistakes and a historical fix reverted in the source.
+
+## Scope of the reassembly check
+
+The harness fixes a small configuration: five slots, with two streams
+prepared in the initial state. It checks fragment and cancel operations
+on the target stream while preserving the other stream. Fragment offsets,
+lengths and bytes are symbolic. The proof covers arbitrarily many of
+these operations, not arbitrary slot counts or the complete prepare and
+publish lifecycle.
 
 ## The question
 
@@ -20,7 +36,91 @@ do the claims C1 to C6 of the harness hold?
   the other stream is still found;
 - C6: the library's own consistency check, `verify_state`, passes.
 
-## Bounded runs
+## How the check follows the C code
+
+See [Firedancer source and extraction](index.md#firedancer-source-and-extraction)
+for the pinned revision, harnesses and shared frontend pipeline.
+
+The agent writes a model of the target slot and an invariant for the
+queue and map membership. The harness starts from any state satisfying
+that invariant, executes the real fragment or cancel code, and checks the
+claims and the invariant again. Initialization is checked separately with
+a native test of the fixed base state.
+
+The slot map is replaced by a contract for a set with unique keys. This
+avoids reasoning through hash calculations when the claim concerns
+reassembly behavior. The map implementation itself remains a separate
+verification obligation. The other assumptions are listed below; this
+model boundary is part of the result, not an implementation detail to hide.
+
+## Results
+
+| job | expected | time when established |
+|---|---|---|
+| `step-claims-cancel`, `step-claims-frag` | `unsat` | 7 s, 24 s |
+| `step-inv-cancel`, `step-inv-frag` | `unsat` | 7 s, 15 s |
+| `step-vs-cancel`, `step-vs-frag` | `unsat` | 156 s, 239 s |
+| four mutants, one revert of `071c0006` | `sat` | 1 s to 14 s |
+| `step-reach-sz`, `step-reach-trim` | `sat` | 599 s, 7 s |
+
+Directly checking executions from initialization did not finish even
+for one operation within the benchmark limits. The inductive step
+proves C1 to C6 for any number of the modeled fragment/cancel operations
+in the fixed configuration, under the assumptions below.
+
+## A case for a reassembly gate
+
+We would pilot a gate around fragment trimming, destination bounds and
+cancel bookkeeping. These are stateful operations on network-supplied
+inputs, and a mistake can affect a different payload or a later call.
+The historical revert of `071c00065` checks that reordered fragments do
+not cancel reassembly. Planted off-by-one and trim mistakes also fail
+the claims they were designed to challenge.
+
+The invariant is particularly useful for maintenance. Removing a map entry
+on cancel may look like bookkeeping, but leaving it behind can violate
+the state needed by future operations even if the immediate return value
+looks right. Checking both the operation's result and the state it leaves
+protects that relationship through a refactor.
+
+The reported costs make a focused pilot plausible, although some
+consistency and reachability jobs take minutes. Follow the
+[application CI workflow](../agents/index.md#5-regenerate-and-check-in-ci),
+retaining the native base check and map-contract assumptions. This is a conditional gate for the
+modeled operations; extending it to prepare, publish or larger layouts
+requires additional work.
+
+## What the proof rests on
+
+- **The map contract.** The slot map implements a set of slots with
+  unique keys. The step uses this contract instead of the map's code, and
+  checks the contract's preconditions where the code calls the map. The
+  map's own operations are a separate obligation.
+- **Valid keys.** Preparing a slot for a new stream inserts a valid key
+  into the map (assumption E-KEY in the harness).
+- **In-bounds accesses** for the jobs that report `seam.inb: assumed`.
+  `step-inv-cancel` above does not rely on it.
+- **The base case**, checked natively.
+- **The pointer analysis of the export.** The invariant constrains a
+  pointer loaded from havocked memory, and SeaHorn's pointer analysis
+  needs to be told that it aliases a known buffer
+  ([Known limitations](../reference/limitations.md#programs-exported-by-seahorn)).
+
+The controls are the four mutants and the revert of `071c0006`, each
+expected `sat` against the obligation it breaks, and two reach jobs: a
+fragment rejected for its size (`step-reach-sz`) and a fragment that
+overlaps data already received (`step-reach-trim`). See
+[Proof controls](../guide/proof-controls.md).
+
+---
+
+## For verification developers
+
+These sections explain why the bounded encoding was difficult, how the
+inductive step avoids it, and how to interpret the memory-model diagnostics.
+Commands and timings use the snapshot in [Applications](index.md).
+
+### Bounded runs
 
 The bounded jobs `frag-spec-K1` and `frag-spec-K2` build a reassembly
 state with the library's own initialization and then run $K$ calls. The
@@ -29,7 +129,7 @@ and stream ids. Neither job was solved within the benchmark limits of
 900 s and 16 GB; they are in the `hard` tier with expected verdict
 `unknown-ok`.
 
-## One inductive step
+### One inductive step
 
 The `step-*` jobs prove an invariant Inv instead. With $\mathit{Init}$
 the initial states, $T$ one call of `fd_tpu_reasm_frag` or
@@ -55,7 +155,7 @@ The proof is split by operation and by obligation: the claims
 (`step-vs-*`). A job that checks one of these may assume another that a
 different job checks ([check classes](../guide/proof-controls.md#check-classes)).
 
-## Running it
+### Running it
 
 The invariant after a cancel:
 
@@ -85,7 +185,7 @@ again without that assumption (`seam.inb: off`). This `unsat` therefore
 rests on no in-bounds assumption. The report names the accesses; it cannot
 tell that their path is infeasible.
 
-## A mutant
+### A mutant
 
 The mutant `step-mut-bounds-1` relaxes a size check in `fd_tpu_reasm.c`
 by one byte, so that a fragment may end one byte past the payload. Its job
@@ -111,38 +211,3 @@ the data region outside the target payload has changed. `assert-path`
 lists the branches before it, most recent first. They are in the mutated
 copy of `fd_tpu_reasm.c` (`OUT/` is the export's output directory), so
 the run went through the relaxed check.
-
-## Results
-
-| job | expected | time when established |
-|---|---|---|
-| `step-claims-cancel`, `step-claims-frag` | `unsat` | 7 s, 24 s |
-| `step-inv-cancel`, `step-inv-frag` | `unsat` | 7 s, 15 s |
-| `step-vs-cancel`, `step-vs-frag` | `unsat` | 156 s, 239 s |
-| four mutants, one revert of `071c0006` | `sat` | 1 s to 14 s |
-| `step-reach-sz`, `step-reach-trim` | `sat` | 599 s, 7 s |
-
-The bounded runs did not finish for one operation. The inductive step
-proves C1 to C6 for any number of operations.
-
-## What the proof rests on
-
-- **The map contract.** The slot map implements a set of slots with
-  unique keys. The step uses this contract instead of the map's code, and
-  checks the contract's preconditions where the code calls the map. The
-  map's own operations are a separate obligation.
-- **Valid keys.** Preparing a slot for a new stream inserts a valid key
-  into the map (assumption E-KEY in the harness).
-- **In-bounds accesses** for the jobs that report `seam.inb: assumed`.
-  `step-inv-cancel` above does not rely on it.
-- **The base case**, checked natively.
-- **The pointer analysis of the export.** The invariant constrains a
-  pointer loaded from havocked memory, and SeaHorn's pointer analysis
-  needs to be told that it aliases a known buffer
-  ([Known limitations](../reference/limitations.md#programs-exported-by-seahorn)).
-
-The controls are the four mutants and the revert of `071c0006`, each
-expected `sat` against the obligation it breaks, and two reach jobs: a
-fragment rejected for its size (`step-reach-sz`) and a fragment that
-overlaps data already received (`step-reach-trim`). See
-[Proof controls](../guide/proof-controls.md).

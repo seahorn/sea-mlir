@@ -1,8 +1,8 @@
 # First proof
 
-This page runs `sea-run` and `sea-vc` on one small program: a proof, a
-counterexample, and the query the solver sees. It assumes the tools are on
-`PATH` ([Build and install](build.md)).
+Run one input, check every allowed input, then change the program to get
+a counterexample. You need `sea-run` and `sea-vc` on `PATH`
+([Build and install](build.md)).
 
 ## A program
 
@@ -24,23 +24,11 @@ sea.program @main {
 
 The claim is that if $x < 10$ then $2x < 20$, for 32-bit unsigned $x$.
 
-The parts of a program:
+Three operations define the check:
 
-- `sea.nondet "<callee>" [<site>]` is an input. The site number names the
-  input everywhere: in the solver's query (`nd.0_0`), in the model, and on
-  the command line of `sea-run`. Sites are unique in a program.
-- `sea.assume` restricts the executions. An execution whose assumption is
-  false is not considered.
-- `sea.assert` states the property.
-- Values are bit-vectors (`i32`). Every operation is total and follows
-  SMT-LIB bit-vector semantics, including the cases C leaves undefined:
-  unsigned division by zero gives all ones, and a shift by at least the
-  width gives 0 or the sign fill. There is no poison and no undef.
-
-`sea-vc` reads a program in BMC form: no loops, one `sea.halt`, exactly one
-`sea.assert` right before it, and no critical edges. `sea-vc --lower`
-establishes the parts of the form that a front end does not. Input that is
-not in this form is an error.
+- `sea.nondet` supplies an arbitrary 32-bit input `x`.
+- `sea.assume` restricts the allowed inputs to those with `x < 10`.
+- `sea.assert` requires `2*x < 20` for every allowed input.
 
 ## Run it
 
@@ -118,13 +106,40 @@ assert-op: double-bad.mlir:9:3
 steps: 8
 ```
 
+## Writing or importing programs
+
+The example above already has the form the verifier needs. When writing
+larger programs or importing them from a frontend, keep these rules in mind:
+
+- `sea.nondet "<callee>" [<site>]` names an input by its site number.
+  Sites are unique in a program. The same number identifies the input in
+  the solver query (`nd.0_0`), the model and `sea-run --input`.
+- Values are bit-vectors such as `i32`. Operations are total and follow
+  SMT-LIB bit-vector semantics, including cases that C leaves undefined:
+  unsigned division by zero gives all ones, and a shift by at least the
+  width gives 0 or the sign fill. There is no poison and no undef.
+- `sea-vc` requires BMC form: no loops, one `sea.halt`, exactly one
+  `sea.assert` immediately before it, and no critical edges. `--lower`
+  establishes the parts of that form that a frontend does not supply.
+  Input that is not in the required form is an error.
+
+The [dialect reference](../reference/dialect.md) describes the operations.
+The C import path below explains the lowering options used by the
+application tutorials.
+
 ## See the query
 
+This optional step is for inspecting the encoding sent to the solver.
 `--smt2` prints the query instead of solving it. The statistics go to
 stderr.
 
 ```console
 $ sea-vc double.mlir --smt2 2>/dev/null
+```
+
+The generated SMT-LIB query is:
+
+```lisp title="SMT-LIB"
 (declare-fun nd.0_0 () (_ BitVec 32))
 (declare-fun ^bb0_0 () Bool)
 
@@ -150,5 +165,7 @@ sea-vc <job>.mlir --lower --seam --widen-memory=4
 
 `--widen-memory=4` turns byte memories into 4-byte words where every
 access is an aligned word. These options are not the defaults; see
-[Profiles](../agents/profiles.md) for why. The [Applications](../tutorials/index.md)
-run this configuration on Firedancer, Stellar and NKI programs.
+[Profiles](../agents/profiles.md) for why. The Firedancer and Stellar
+[applications](../tutorials/index.md) use this configuration. The NKI harness
+traces Python directly into Sea-MLIR, and its jobs use `--lower --seam`
+without memory widening.

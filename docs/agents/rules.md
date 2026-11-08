@@ -1,4 +1,4 @@
-# Rules for contributors
+# Sea-MLIR contributor rules
 
 These rules apply to anyone who changes sea-mlir or reports its results,
 person or agent.

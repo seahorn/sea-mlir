@@ -1,20 +1,24 @@
 # Applications
 
-These pages walk through proofs of real code: AWS Neuron NKI kernels, the
-Firedancer Solana validator, and stellar-core. Each page states the
-question, names the exported jobs, runs `sea-vc`, reads the verdict and
-the counterexample, and lists what the result rests on.
+A kernel changes its tiling, a parser advances through a packet, or two
+transaction clusters merge their updates. In each case, the implementation
+has many details to get right while the requirement can be small: preserve
+the selected values, stay inside the packet, or keep the larger TTL.
 
-| page | code under test | shows |
+These studies show how to turn such requirements into checks on real code.
+Start with the system closest to yours. Each tutorial explains the domain
+problem and the scope of the check before discussing verification machinery.
+
+| Tutorial | Code under test | Engineering question |
 |---|---|---|
-| [NKI kernels](nki.md) | the `nki-library` gather kernel | SeaM resolving all data movement before the solver |
-| [Inductive proof: FD-FRAG](inductive-proof.md) | Firedancer's QUIC fragment reassembly | why a bounded run failed, and a one-step inductive proof |
-| [Stellar](stellar.md) | stellar-core's TTL merge, ported to C | a historical bug, and a counterexample that is not a bug of the system |
-| [Firedancer: HPACK](firedancer.md) | nghttp2's Huffman decoder in Firedancer | a loop cut, a mutant, the JSON view of a counterexample |
-| [Firedancer: transaction parsing](txn-parse.md) | `fd_txn_parse_core` | loop invariants, and a size constant the proof explained |
-| [Firedancer: HTTP/2 flow control](h2-flow-control.md) | Firedancer's h2 client | ghost state from an RFC, and reach jobs against vacuity |
+| [NKI kernels](nki.md) | `nki-library` gather, dynamic add and scatter-add | Do tiled transfers and runtime updates preserve the intended tensor values? |
+| [QUIC fragment reassembly](inductive-proof.md) | Firedancer's fragment reassembly | Can a fragment sequence cause a copy outside its buffer? |
+| [Stellar](stellar.md) | stellar-core's TTL merge, ported to C | Can committing one cluster lose another cluster's TTL extension? |
+| [HPACK decoding](firedancer.md) | nghttp2's Huffman decoder in Firedancer | Does the decoder respect its input and output boundaries? |
+| [Transaction parsing](txn-parse.md) | Firedancer's `fd_txn_parse_core` | Do parsing steps preserve the bounds needed for subsequent reads? |
+| [HTTP/2 flow control](h2-flow-control.md) | Firedancer's h2 client | Do window updates and data transmission preserve the protocol's accounting? |
 
-## The jobs
+## Reproducing the experiments
 
 All programs are in the benchmark repository
 [seahorn/sea-mlir-bench](https://github.com/seahorn/sea-mlir-bench),
@@ -35,24 +39,42 @@ sea-vc firedancer/hpack-huff-proof.mlir --lower --seam --widen-memory=4
 
 The jobs and the sample output on these pages are from the benchmark at
 commit `f14be40`. The times shown are from single runs and vary between
-machines and runs.
+machines and runs. Transcripts illustrate that recorded snapshot; replay
+counts and source locations can differ with the build and solver model.
 
 ## How a job is made
 
 A harness is a C program that calls the code under test on
 nondeterministic inputs, constrains the inputs with `assume`, and states
 the claims with `sassert`. clang compiles it to LLVM bitcode, and SeaHorn
-exports the `sea` program, with loops unrolled to the bound 8:
+exports the `sea` program. A typical export uses an unroll bound of 8:
 
 ```bash
 sea yama -y sea-mlir-export --bound=8 --horn-sea-mlir-out=job.mlir h.bc
 ```
 
-Each family's `PROVENANCE.md` in the benchmark records the source
+Some harnesses replace loops with explicit invariant obligations; the
+unroll bound alone does not describe their proof scope. Each family's
+`PROVENANCE.md` in the benchmark records the source
 commits, compiler flags and export settings of its jobs. The NKI jobs are
 made differently: a Python harness traces the kernels into the `sea`
 dialect directly. The pages describe each harness in prose; the exported
 `.mlir` file is what `sea-vc` checks.
+
+## Firedancer source and extraction
+
+The jobs use Firedancer commit `37c658197`. Their C harnesses and extracted
+programs are in the [benchmark repository](https://github.com/seahorn/sea-mlir-bench/tree/main/firedancer).
+An agent writes the contract, chooses the environment assumptions and
+constructs deliberate regressions. Clang and SeaHorn compile the harness
+and selected source into Sea-MLIR; Sea-MLIR checks the resulting program
+and replays violating inputs. The export settings and source transformations
+are recorded in the family's
+[provenance](https://github.com/seahorn/sea-mlir-bench/blob/main/firedancer/PROVENANCE.md).
+
+For gates on changed application code, follow the
+[regeneration and controls workflow](../agents/index.md#5-regenerate-and-check-in-ci).
+Fixed exports check the verifier against the same input.
 
 ## Three kinds of job
 
