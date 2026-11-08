@@ -68,6 +68,9 @@ theme:
     - search.highlight
     - content.code.copy
 
+hooks:
+  - utils/docs_highlight.py
+
 plugins:
   - search
 

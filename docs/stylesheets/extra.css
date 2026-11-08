@@ -200,3 +200,11 @@ body { font-feature-settings: "cv11", "ss01"; -webkit-font-smoothing: antialiase
 @media screen and (max-width: 30em) {
   .sm-hero__inner { flex-direction: column; align-items: flex-start; gap: 1rem; }
 }
+
+/* Terminal commands use the link accent; output keeps the ordinary code color. */
+.md-typeset .language-console code,
+.md-typeset .language-console code span {
+  color: var(--sm-accent-strong);
+}
+.md-typeset .language-console code .gp { font-weight: 700; }
+.md-typeset .language-console code .go { color: var(--md-code-fg-color); }

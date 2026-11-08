@@ -1,19 +1,19 @@
 # NKI kernels: verifying data movement
 
-A tensor kernel can stay within every buffer and still return the wrong
-answer: a tile offset can select the wrong rows, or a loop can overwrite
-one tile and leave another untouched. These errors are easy to miss with
-example inputs, especially when the indices and loop counts come from
-runtime data.
+Suppose you change the tiling of a gather kernel. The operation is still
+`out[i, :] = input[index[i], :]`, but the implementation now splits that
+copy across different DMA transfers. You want to know whether every output
+cell still comes from the right input cell—for every valid index vector,
+including repeated indices and a final tile that is only partly full.
 
-This case study checks three kernels from AWS's
-[nki-library](https://github.com/aws-neuron/nki-library/tree/ad2f1b921d8e5949fa3b9a186e5f9130269353dc):
-gather, dynamic elementwise add, and scatter-add. An agent-built Python
-harness extracts their memory operations into Sea-MLIR and states both
-bounds and functional properties. Sea-MLIR checks those properties for
-symbolic inputs at concrete shapes. The results give us repeatable gates
-for data movement and a useful distinction: some dynamic kernels simplify
-almost completely, while others leave substantial alias reasoning to SMT.
+That is a small enough question to state precisely, yet it reaches into
+the part of the kernel you just changed. We tried answering it directly
+from the Python source of three
+[nki-library kernels](https://github.com/aws-neuron/nki-library/tree/ad2f1b921d8e5949fa3b9a186e5f9130269353dc).
+Gather was tractable. A runtime loop in elementwise add was tractable too.
+Scatter-add was harder: two tiles can update the same row, and the later
+update must keep what the earlier one wrote. Here is what we checked,
+how the checks work, and where they stop being practical.
 
 ## What an NKI kernel does
 
@@ -109,19 +109,140 @@ DMA offsets, it emits checks that the accessed row lies within its tensor.
 A failed check makes the final assertion fail, as does a wrong output
 value or an excessive runtime trip count.
 
-These checks coexist with SeaM's reported **A-INB assumption** that
-low-level memory accesses remain within their objects. A successful run
-under A-INB does not independently discharge that assumption. The API-level
-checks state useful bounds properties, but a complete discharge requires
-a separate check whose encoding does not rely on the assumption being
-proved. Read `seam.inb` alongside the verdict.
+The current proof also assumes that low-level accesses stay within their
+allocated objects. The tensor checks do not independently establish that
+assumption; [the verification details below](#bounds-and-the-memory-model)
+explain the distinction.
 
 The model executes operations synchronously within one program. It does
 not verify hardware scheduling, concurrent programs, or the independence
 promised by an `affine_range`. Every result also depends on the harness's
 interpretation of the supported NKI operations.
 
-## Static structure versus dynamic difficulty
+## Which parts were easy, and which were hard?
+
+With fixed shapes and direct accesses, following a value through a kernel
+is conceptually simple: each transfer names a known region, even if its
+contents are unknown. Runtime data makes the problem harder only when it
+changes dependencies between operations.
+
+Gather reads rows chosen at runtime, but never changes its input. Each
+output cell can be traced back to the selected input cell. Dynamic add
+chooses how many tiles to process at runtime, but the tiles still follow
+a regular sequence. Both fit this approach well. In the recorded gather
+run at `N=64`, `D=16`, `K=32`, verification-condition generation took about
+0.8 seconds and solving took 0.065 seconds.
+
+Scatter-add has a different dependency. With a row-tile size of 2, the
+index vector `[1, 3, 1, 2]` is legal: each tile has distinct indices, but
+both tiles update row 1. The second tile must read the value produced by
+the first. The checker must account for all such index relationships.
+In exploratory runs at `N=4`, `D=2`, increasing `K` from 2 to 4 to 6 raised
+the run time from roughly 0.9 to 6.6 to 71 seconds. Small tensors can
+therefore be expensive when their updates depend on runtime indices.
+These timings describe recorded experiments, not a limit on future tools.
+
+## Trying a check
+
+The [benchmark repository](https://github.com/seahorn/sea-mlir-bench)
+contains the extracted programs. From its root, run:
+
+```console
+$ sea-vc nki/gather-hw-N4D3K2-all-good.mlir --lower --seam
+...
+result: unsat
+```
+
+`unsat` means there is no input that violates the assertion under this
+job's assumptions. Now run the version with a deliberately shifted source
+offset:
+
+```console
+$ sea-vc nki/gather-hw-N4D3K2-all-mut-src-shift.mlir --lower --seam
+...
+result: sat
+...
+replay: assert-failed
+...
+validate: checked=137 mismatches=0 dontcare=0
+```
+
+`sat` means the checker found a violating input. Replay executes that
+input and confirms the failed assertion. The zero mismatch count says
+the solver model and the interpreter agreed on the checked values.
+The [verification section](#for-verification-developers) shows the
+extracted code and the fuller output.
+
+## What the experiments establish for NKI
+
+We found **no new bug in these upstream NKI kernels**. We did check that
+planted mistakes fail: a shifted source offset in gather, a missing offset
+advance in dynamic add, and a lost previous value in scatter-add.
+Dropping scatter's within-tile uniqueness requirement also produces a
+counterexample to its documented contract.
+
+The tile boundaries matter. A mutation that always uses the first column
+tile is indistinguishable from correct code when there is only one column
+tile. The structural sweeps scale tile constants down to exercise multiple
+tiles and partial tiles with small tensors. They record which mutations
+should fail at each shape, rather than treating every passing mutant as a
+failure of the checker.
+
+### Where we would try a CI gate
+
+We recommend trying a small data-movement gate alongside the existing NKI
+integration tests, starting with dynamic add or gather. The engineering
+case is familiar from checking optimized implementations against reference
+code: tiling and address calculations can change while the intended mapping
+stays fixed. That stable contract gives the check a life beyond one proof.
+A wrong mapping affects the returned tensor even when every access is legal.
+
+The existing tests suggest a concrete place to start. At the pinned
+revision, dynamic add's
+[test input generator](https://github.com/aws-neuron/nki-library/blob/ad2f1b921d8e5949fa3b9a186e5f9130269353dc/test/integration/nkilib/experimental/dynamic_shapes/test_dynamic_elementwise_add.py)
+sets `num_m_tiles` to the full capacity, `M/P`. The symbolic check covers
+every legal count at each selected shape: zero, an early stop and full
+capacity. It also checks that an early stop leaves the remaining rows
+untouched. This directly exercises the runtime behavior that distinguishes
+the kernel from a static elementwise add.
+
+Similarly, gather's
+[integration tests](https://github.com/aws-neuron/nki-library/blob/ad2f1b921d8e5949fa3b9a186e5f9130269353dc/test/integration/nkilib/experimental/misc/test_gather.py)
+compare against a reference using sampled index vectors. A symbolic gate
+checks all legal index vectors for its selected shapes, including repeated
+indices and boundary rows. Adding concrete tests for these cases is useful
+too. The symbolic check adds exhaustive coverage within its model, without
+requiring a developer to enumerate the combinations.
+
+A practical first gate would use a small set of shapes chosen to exercise
+one tile, multiple tiles and partial tiles where supported. It would
+regenerate the extracted programs when the kernel changes, require the
+good cases to pass, and retain planted mistakes as checks on the harness.
+Gather and dynamic add are promising because their studied cases simplify
+well; scatter needs more work before we would recommend a routine CI gate.
+Scaled tile constants exercise implementation structure cheaply, but their
+proofs do not establish correctness at every production shape. Keep
+hardware-size checks where affordable and the existing integration tests
+for actual compiler, device and numerical behavior.
+
+This is our case for spending a modest CI budget on a pilot: a stable
+property, concrete runtime choices to cover, and evidence that relevant
+mistakes are detectable at manageable sizes. We have not measured the
+maintenance cost across NKI revisions or established how often these
+kernels regress. The pilot should answer those questions before expanding
+coverage. The exported jobs reproduce the experiments today; distributing
+the tracing harness and automating regeneration remain necessary to turn
+them into a gate on changing Python source.
+
+---
+
+## For verification developers
+
+The rest of this page examines the encoding, solver work and regression
+gates for Sea-MLIR itself. These explain why the checks behave as they do;
+they are separate from the case for adopting a gate in an NKI project.
+
+### Static alias resolution and residual solver work
 
 A fixed shape with direct accesses should be an easy verification case,
 even when every tensor element is symbolic. Symbolic execution can follow
@@ -156,7 +277,7 @@ guarantees; they locate the difficulty in a tiny program with symbolic
 updates. Some residual constraints were also avoidable address-arithmetic
 work, so this is a target for better simplification as well as solving.
 
-## Walk through a gather job
+### Inspecting the extracted program
 
 Run the following commands from the benchmark checkout, as described in
 [Applications](index.md). The output and timings use that page's recorded
@@ -191,7 +312,7 @@ row lies inside the input. At the end, it compares every output element
 (`spec.actual`) with the input element its index selects
 (`spec.expect`). The assertion is the conjunction of all these checks.
 
-## Running it
+### Solver output and replay
 
 ```console
 $ sea-vc nki/gather-hw-N4D3K2-all-good.mlir --lower --seam
@@ -227,7 +348,7 @@ replayed counterexample. Three other mutants (`idx-k0`, `out-col`,
 `src-col`) are equivalent to the kernel at this small shape; the harness
 expects `unsat` for them, and that is the answer.
 
-## Gather scaling
+### Gather scaling
 
 At the hardware tile sizes, with $N = 64$, $D = 16$, $K = 32$:
 
@@ -262,52 +383,30 @@ In the benchmark manifest, the $N = 256$ proof is `unsat` in the `full`
 tier (134 s when the expectations were established). The $N = 512$ proof
 runs out of the 16 GB memory cap and is tracked in the `hard` tier.
 
-## What did we find, and what can we gate?
+### Bounds and the memory model
 
-This study did **not establish a new defect in the upstream NKI kernels**.
-Counterexamples came from deliberately changed kernels or violated input
-contracts. For scatter, dropping within-tile uniqueness exposes the
-kernel's documented duplicate-index hazard; it is not a new kernel bug.
+These checks coexist with SeaM's reported **A-INB assumption** that
+low-level memory accesses remain within their objects. A successful run
+under A-INB does not independently discharge that assumption. The API-level
+checks state useful bounds properties, but a complete discharge requires
+a separate check whose encoding does not rely on the assumption being
+proved. Read `seam.inb` alongside the verdict.
 
-Those controls show what the checks can detect. Gather's shifted-source
-mutant copies the wrong elements. Dynamic add's `no-advance` mutant keeps
-writing the first row tile. Scatter's `drop-existing` mutant loses the
-previous value. Other mutants need multiple tiles before they differ from
-the original kernel. A one-tile proof cannot validate a check for a
-cross-tile error, so the sweep includes scaled configurations that exercise
-those boundaries and records equivalent mutants as such.
+### A regression gate for Sea-MLIR
 
-A **gate** packages a claim so that it can be checked again: source and
-extraction provenance, an explicit contract, a harness, expected verdicts,
-and controls that demonstrate sensitivity to relevant mistakes. Finding a
-bug is one possible outcome. Establishing a conditional verification
-result and preserving it through changes is another.
+The exported programs are fixed inputs to Sea-MLIR, so they can gate
+changes to the verifier without regenerating the Python extraction.
+The manifest checks expected verdicts and also requires
+`vc.ackermann-constraints: 0` for gather good jobs and dynamic-add jobs.
+For those cases, static alias resolution is an expected capability.
 
-This study supplies two useful kinds of gate:
+This counter bound caught a regression that verdicts alone missed. A
+change to SeaM's address comparison left the gather proof passing but
+generated 11,280 memory-consistency constraints where there had been none.
+The bound now makes that change fail the benchmark gate. See
+[Benchmarks and gates](../reference/benchmarks.md).
 
-- **Behavior gates:** under the recorded model and input contract, the
-  good kernel passes and the relevant mutants fail with replayed
-  counterexamples. These target tile-offset mistakes, missed updates,
-  incorrect accumulation and modeled bounds violations.
-- **Simplification gates:** the gather good jobs and dynamic-add jobs
-  require `vc.ackermann-constraints: 0`. For these jobs, static alias
-  resolution is an expected capability, not merely a speed bonus.
-
-The second kind already caught a SeaM regression. A change to address
-comparison left the gather verdict unchanged but generated 11,280
-memory-consistency constraints where there had been none. A verdict-only
-gate would have missed it; the counter bound fails the benchmark on that
-change. See [Benchmarks and gates](../reference/benchmarks.md).
-
-The exported `.mlir` suite gates changes to **Sea-MLIR**. To gate changes
-to an **NKI kernel**, regenerate the jobs from the changed source, review
-changes to the extraction or contract, and rerun the controls. Keeping an
-old exported job green says nothing about new Python code.
-
-For an NKI developer, the immediate use is a focused regression check
-around a data-movement refactor: changed tile sizes, partial-tile handling,
-runtime loop advancement or indexed updates. The remaining practical
-questions are which production shapes and API operations matter, whether
-the modeled contracts match callers, and how much of the real execution
-semantics the gate must cover. The current results establish useful
-checks for these three slices, with clear boundaries for extending them.
+This is evidence for a gate on the verifier: a demonstrated regression,
+a measurable expectation and a rerunnable check. It does not establish
+the value of gating changes to the NKI source, which is the separate
+engineering question above.
