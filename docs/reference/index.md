@@ -11,7 +11,7 @@
   pointers and memory are shown.
 - [Profiles](profiles.md): option files for `sea-vc`.
 - [The reducer](reducer.md): `sea-reduce` and `sea-reduce-test`.
-- [Benchmarks and gates](benchmarks.md): the benchmark suites, their
+- [Verifier benchmarks and gates](benchmarks.md): the benchmark suites, their
   manifests, and the gate.
 - [SeaM export](seam-export.md): `sea-seam-export` and its JSON format.
 - [Known limitations](limitations.md).

@@ -38,14 +38,8 @@ do the claims C1 to C6 of the harness hold?
 
 ## How the check follows the C code
 
-The jobs use Firedancer commit `37c658197`. Their C harnesses and extracted
-programs are in the [benchmark repository](https://github.com/seahorn/sea-mlir-bench/tree/main/firedancer).
-An agent writes the contract, chooses the environment assumptions and
-constructs deliberate regressions. Clang and SeaHorn compile the harness
-and selected source into Sea-MLIR; Sea-MLIR checks the resulting program
-and replays violating inputs. The export settings and source transformations
-are recorded in the family's
-[provenance](https://github.com/seahorn/sea-mlir-bench/blob/main/firedancer/PROVENANCE.md).
+See [Firedancer source and extraction](index.md#firedancer-source-and-extraction)
+for the pinned revision, harnesses and shared frontend pipeline.
 
 The agent writes a model of the target slot and an invariant for the
 queue and map membership. The harness starts from any state satisfying
@@ -69,7 +63,8 @@ model boundary is part of the result, not an implementation detail to hide.
 | four mutants, one revert of `071c0006` | `sat` | 1 s to 14 s |
 | `step-reach-sz`, `step-reach-trim` | `sat` | 599 s, 7 s |
 
-The bounded runs did not finish for one operation. The inductive step
+Directly checking executions from initialization did not finish even
+for one operation within the benchmark limits. The inductive step
 proves C1 to C6 for any number of the modeled fragment/cancel operations
 in the fixed configuration, under the assumptions below.
 
@@ -78,9 +73,9 @@ in the fixed configuration, under the assumptions below.
 We would pilot a gate around fragment trimming, destination bounds and
 cancel bookkeeping. These are stateful operations on network-supplied
 inputs, and a mistake can affect a different payload or a later call.
-There is concrete regression evidence: the family includes a historical
-revert, and the planted off-by-one and trim mistakes fail the claims they
-were designed to challenge.
+The historical revert of `071c00065` checks that reordered fragments do
+not cancel reassembly. Planted off-by-one and trim mistakes also fail
+the claims they were designed to challenge.
 
 The invariant is particularly useful for maintenance. Removing a map entry
 on cancel may look like bookkeeping, but leaving it behind can violate
@@ -89,9 +84,9 @@ looks right. Checking both the operation's result and the state it leaves
 protects that relationship through a refactor.
 
 The reported costs make a focused pilot plausible, although some
-consistency and reachability jobs take minutes. Regenerate from changed
-C source, retain the native base check and map-contract assumptions, and
-run the relevant regression controls. This is a conditional gate for the
+consistency and reachability jobs take minutes. Follow the
+[application CI workflow](../agents/index.md#5-regenerate-and-check-in-ci),
+retaining the native base check and map-contract assumptions. This is a conditional gate for the
 modeled operations; extending it to prepare, publish or larger layouts
 requires additional work.
 

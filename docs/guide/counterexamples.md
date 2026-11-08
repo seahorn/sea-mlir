@@ -47,7 +47,8 @@ validate: checked=157 mismatches=0 dontcare=1
   values. A `sat` verdict alone is not enough.
 
 In this example, the input length is 1 and the byte is `0xc0`. The mutant
-writes three bytes where the contract permits at most two. The failure is
+writes three bytes, violating the loop-cut invariant
+`w - w0 ≤ 2*(r - r0)` for one consumed byte. The failure is
 in the loop-cut program: the iteration starts from an arbitrary state
 satisfying the invariant. The decode table is also modeled, so its chosen
 entries need not match the actual table. See the

@@ -35,6 +35,8 @@ class MLIRLexer(RegexLexer):
 
 def format_fence(source, language, class_name, options, md, **kwargs):
     """Use Material's token palette, with a class for terminal styling."""
+    # These fences support plain code only. SuperFences options such as
+    # title, hl_lines and linenums are not rendered by this formatter.
     lexer = MLIRLexer() if language == "mlir" else BashSessionLexer()
     return highlight(
         source,
@@ -47,5 +49,6 @@ def on_config(config):
     """Install fence formatters without a separately installed lexer package."""
     fences = config["mdx_configs"].setdefault("pymdownx.superfences", {})
     custom = fences.setdefault("custom_fences", [])
+    custom[:] = [fence for fence in custom if fence["name"] not in ("mlir", "console")]
     for language in ("mlir", "console"):
         custom.append({"name": language, "class": language, "format": format_fence})

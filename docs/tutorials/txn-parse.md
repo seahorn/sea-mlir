@@ -1,16 +1,15 @@
 # Firedancer: transaction parsing
 
-Why is an 854-byte descriptor buffer large enough for a 1232-byte
-transaction? The answer depends on more than the largest field count.
+Why do 854 bytes suffice for the descriptor of a 1232-byte transaction? The answer depends on more than the largest field count.
 Instructions and address tables compete for bytes in the input, and a
 check that rejects an empty address table contributes to the output-size
 bound. Relaxing that check can make the descriptor too large even though
 the transaction still fits on the wire.
 
 This case study checks `fd_txn_parse_core`, which turns an untrusted Solana
-transaction payload into a descriptor used by later code. The proof made
-that dependency explicit: the existing bound is tight, and the empty-table
-check is part of why it holds. We also check input reads and the extents
+transaction payload into a descriptor used by later code. The header
+already derives the 854-byte bound from tables that each load one account.
+The proof connects that derivation to the parser's empty-table check. We also check input reads and the extents
 and indices that downstream code receives.
 
 ## The question
@@ -23,14 +22,8 @@ indices).
 
 ## From parser source to a check
 
-The jobs use Firedancer commit `37c658197`. Their C harnesses and extracted
-programs are in the [benchmark repository](https://github.com/seahorn/sea-mlir-bench/tree/main/firedancer).
-An agent writes the contract, chooses the environment assumptions and
-constructs deliberate regressions. Clang and SeaHorn compile the harness
-and selected source into Sea-MLIR; Sea-MLIR checks the resulting program
-and replays violating inputs. The export settings and source transformations
-are recorded in the family's
-[provenance](https://github.com/seahorn/sea-mlir-bench/blob/main/firedancer/PROVENANCE.md).
+See [Firedancer source and extraction](index.md#firedancer-source-and-extraction)
+for the pinned revision, harnesses and shared frontend pipeline.
 
 The harness provides arbitrary payload bytes up to the 1232-byte limit
 and checks the parser's reads, writes and returned descriptor. The agent
@@ -41,8 +34,9 @@ to copies of the parser; the selected code outside the loops is unchanged.
 
 The result concerns the descriptor and memory properties stated here,
 not whether every accepted transaction is valid under all Solana rules.
-The jobs also retain their reported memory-model assumptions; explicit
-read and write checks must be read alongside those assumptions.
+The verifier also assumes that low-level accesses stay within their
+allocated objects. These results are conditional on that assumption; the
+explicit read and write checks do not independently discharge it.
 
 ## A constant the proof explained
 
@@ -58,9 +52,15 @@ descriptor needs 862 bytes.
 
 A mutant removes the check that a table has an entry. With the writes
 contract asserted and 34 bytes per table (`txn-pf-legacy-mut-alt-empty-w34`),
-the mutant gives a counterexample: table 25 is written past the buffer.
-So 854 is a tight bound, and it holds because of a check whose role in the
-bound the code does not state.
+the mutant gives a counterexample in the loop-cut program: table 25 is
+written past the buffer. That replay alone does not establish a reachable
+parser execution. The payload arithmetic supplies the connection: a
+1232-byte transaction has room for 64 empty instructions and 25 empty
+tables, whose descriptor needs `22 + 640 + 25*8 = 862` bytes, exceeding 854.
+
+The header's derivation uses 24 tables that each load one account. The
+proof ties that premise to the empty-table rejection; the mutant and the
+size calculation show why removing the rejection invalidates the bound.
 
 ## The proofs
 
@@ -92,9 +92,10 @@ checks, and the legacy writes job did not finish within the limit. A pilot
 should retain that distinction instead of claiming complete read/write
 coverage for both formats.
 
-The exported jobs reproduce these results. A gate on future parser edits
-must regenerate them, review any changed loop invariant and keep the
-mutants aimed at the obligation they violate. Fuzzing and parser fixtures
+For future parser edits, follow the
+[application CI workflow](../agents/index.md#5-regenerate-and-check-in-ci).
+Review changed loop invariants and keep mutants aimed at the obligation
+they violate. Fuzzing and parser fixtures
 remain useful for concrete payloads and broader format behavior; this
 check preserves the mathematical relationship behind the buffer size.
 

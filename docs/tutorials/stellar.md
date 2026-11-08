@@ -46,10 +46,13 @@ commits with symbolic entry values and flags. It checks
   exist and the key is outside the read-write set.
 - Otherwise replace the payload with the incoming value, while preserving
   the `mIsNew` flag established when the global entry was first tracked.
+- Leave the global entry dirty after a committed change, under the
+  global-TTL-dirty premise needed for write-back.
 - Complete the modeled scope operations without an exception.
 
 The harness checks presence, payload and metadata, not just the TTL
-number. Separate jobs check the dirty flag needed for write-back and
+number. The contract job also checks the dirty flag;
+`ttl-no-global-dirty-K1` shows why its premise is needed. Separate jobs
 compare forward and reverse commit orders under the caller premises.
 Order independence alone would be too weak: consistently discarding every
 bump would also be order independent.
@@ -133,8 +136,9 @@ a native C++ regression should instantiate it with valid transactions.
 ## Where we would try a regression gate
 
 The TTL merge is a strong candidate for a focused CI gate. There is a
-known consequential failure mode—losing a requested lifetime extension—and
-history shows that a scope/callback refactor can reintroduce it while
+known failure mode: losing a paid lifetime extension can let an entry
+expire or be archived earlier than requested. History shows that a
+scope/callback refactor can reintroduce it while
 leaving the arithmetic intact. The intended result is small and stable:
 retain the maximum legal read-only bump and the correct entry metadata.
 The checked two- and three-cluster instances are also cheap enough to
@@ -144,7 +148,8 @@ We would start with the fixed caller-aware jobs, the historical revert as
 a control, and a native C++ test of two valid clusters committing in both
 orders. The native test would connect the source to the port; the symbolic
 jobs would cover all values admitted by the bounded harness, including
-value orderings a single concrete example does not cover. Keep the
+combinations of entry presence, `mIsNew`, read-write-set membership and
+value orderings that a single concrete example does not cover. Keep the
 contract check as well as the order comparison: neither subsumes the
 other.
 
@@ -188,7 +193,7 @@ jobs and harness in the benchmark.
 | `ttl-`, `comm-` | Parallel TTL commit | Merge results match the contract; forward and reverse orders agree under the recorded caller premises. |
 | `part-` | Parallel transaction-set builder | Different bins have no conflicting transactions; cluster membership and resource accounting remain consistent. |
 | `conf-` | Footprint-to-conflict construction | Every required conflict is present and the relation is symmetric; distinct-key hash collisions are allowed. |
-| `fee-` | Transaction-set fee totals | Saturated totals equal the exact sum capped at `INT64_MAX`; a historical overflow fix supplies a control. |
+| `fee-` | Transaction-set fee totals | For nonnegative fees, saturated totals equal the exact sum capped at `INT64_MAX`; a historical overflow fix supplies a control. |
 | `val-` | Cross-cluster validator | The cross-cluster check accepts exactly the stages without cross-cluster read/write conflicts, within the modeled domain. |
 
 These are separate bounded checks. In particular, a fee-total theorem does

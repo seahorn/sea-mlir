@@ -55,7 +55,7 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 ## lit
 
 Every test must pass. The oracles among them are protected: they are not
-weakened to make a change pass ([Rules for contributors](rules.md#tests-and-oracles)).
+weakened to make a change pass ([Sea-MLIR contributor rules](rules.md#tests-and-oracles)).
 lit also runs small fuzz campaigns.
 
 ## The release check
@@ -87,7 +87,7 @@ is a bug; reduce it ([Minimizing a problem](minimizing.md)).
 ## Benchmarks
 
 The benchmark suites live in their own repository and are connected to a
-checkout on demand ([Benchmarks and gates](../reference/benchmarks.md)):
+checkout on demand ([Verifier benchmarks and gates](../reference/benchmarks.md)):
 
 ```bash
 just bench-connect        # clone or link the suites into bench/work/

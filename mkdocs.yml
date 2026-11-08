@@ -86,7 +86,7 @@ nav:
   - Applications:
       - tutorials/index.md
       - NKI kernels: tutorials/nki.md
-      - "Inductive proof: FD-FRAG": tutorials/inductive-proof.md
+      - "Firedancer: QUIC fragment reassembly": tutorials/inductive-proof.md
       - Stellar: tutorials/stellar.md
       - "Firedancer: HPACK": tutorials/firedancer.md
       - "Firedancer: transaction parsing": tutorials/txn-parse.md

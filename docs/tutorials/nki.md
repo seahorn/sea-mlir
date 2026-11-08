@@ -60,8 +60,11 @@ This surrogate lets us check which values a kernel reads, combines and
 writes without introducing floating-point reasoning. It can expose a
 missing contribution or an update to the wrong cell. It does not establish
 numerical correctness, rounding behavior or equivalence for arbitrary
-payload operations. Its algebra can also hide mistakes: swapping operands
-of a commutative addition will pass. The functional claim is therefore
+payload operations. Its algebra can also hide mistakes: bit-vector
+addition is associative,
+so regrouping an accumulation preserves its result. Floating-point
+addition is not associative; the same regrouping can change its result.
+The functional claim is therefore
 about the kernel under this explicit payload model.
 
 ## From Python to Sea-MLIR
@@ -201,8 +204,8 @@ The existing tests suggest a concrete place to start. At the pinned
 revision, dynamic add's
 [test input generator](https://github.com/aws-neuron/nki-library/blob/ad2f1b921d8e5949fa3b9a186e5f9130269353dc/test/integration/nkilib/experimental/dynamic_shapes/test_dynamic_elementwise_add.py)
 sets `num_m_tiles` to the full capacity, `M/P`. The symbolic check covers
-every legal count at each selected shape: zero, an early stop and full
-capacity. It also checks that an early stop leaves the remaining rows
+every legal count at each selected shape: zero, full capacity, and
+intermediate stopping points when the shape has more than one row tile. It also checks that an early stop leaves the remaining rows
 untouched. This directly exercises the runtime behavior that distinguishes
 the kernel from a static elementwise add.
 
@@ -397,14 +400,15 @@ proved. Read `seam.inb` alongside the verdict.
 The exported programs are fixed inputs to Sea-MLIR, so they can gate
 changes to the verifier without regenerating the Python extraction.
 The manifest checks expected verdicts and also requires
-`vc.ackermann-constraints: 0` for gather good jobs and dynamic-add jobs.
+`vc.ackermann-constraints: 0` for gather good and precondition-dropped
+jobs, and dynamic-add jobs.
 For those cases, static alias resolution is an expected capability.
 
-This counter bound caught a regression that verdicts alone missed. A
+The constraint counter exposed a regression that verdicts alone missed. A
 change to SeaM's address comparison left the gather proof passing but
 generated 11,280 memory-consistency constraints where there had been none.
 The bound now makes that change fail the benchmark gate. See
-[Benchmarks and gates](../reference/benchmarks.md).
+[Verifier benchmarks and gates](../reference/benchmarks.md).
 
 This is evidence for a gate on the verifier: a demonstrated regression,
 a measurable expectation and a rerunnable check. It does not establish

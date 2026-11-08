@@ -54,9 +54,10 @@ that loop:
 - every result states the assumptions it depends on.
 
 The agent saves the harness, extraction command, assumptions and expected
-results, together with a profile of solver and encoding options. CI
-regenerates the verification jobs from each source revision and runs them
-with that profile. When a check fails or stops finishing, the agent can
+results, together with a profile of solver and encoding options. In the
+intended CI workflow, each source revision regenerates the verification
+jobs and runs them with that profile. When a check fails or stops
+finishing, the agent can
 inspect the change and revise the proof setup. The aim is to reuse the
 verification work across ordinary code changes.
 

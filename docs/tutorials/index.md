@@ -39,7 +39,8 @@ sea-vc firedancer/hpack-huff-proof.mlir --lower --seam --widen-memory=4
 
 The jobs and the sample output on these pages are from the benchmark at
 commit `f14be40`. The times shown are from single runs and vary between
-machines and runs.
+machines and runs. Transcripts illustrate that recorded snapshot; replay
+counts and source locations can differ with the build and solver model.
 
 ## How a job is made
 
@@ -59,6 +60,21 @@ commits, compiler flags and export settings of its jobs. The NKI jobs are
 made differently: a Python harness traces the kernels into the `sea`
 dialect directly. The pages describe each harness in prose; the exported
 `.mlir` file is what `sea-vc` checks.
+
+## Firedancer source and extraction
+
+The jobs use Firedancer commit `37c658197`. Their C harnesses and extracted
+programs are in the [benchmark repository](https://github.com/seahorn/sea-mlir-bench/tree/main/firedancer).
+An agent writes the contract, chooses the environment assumptions and
+constructs deliberate regressions. Clang and SeaHorn compile the harness
+and selected source into Sea-MLIR; Sea-MLIR checks the resulting program
+and replays violating inputs. The export settings and source transformations
+are recorded in the family's
+[provenance](https://github.com/seahorn/sea-mlir-bench/blob/main/firedancer/PROVENANCE.md).
+
+For gates on changed application code, follow the
+[regeneration and controls workflow](../agents/index.md#5-regenerate-and-check-in-ci).
+Fixed exports check the verifier against the same input.
 
 ## Three kinds of job
 

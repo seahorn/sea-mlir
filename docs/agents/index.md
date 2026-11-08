@@ -136,4 +136,4 @@ whether other jobs were running.
 - Whether a `sat` is a bug of the system. A `sat` from a harness with
   havocked inputs is a statement about a function's contract until the
   callers' invariants are in the harness ([Stellar](../tutorials/stellar.md)).
-- Whether an oracle may accept something new ([Rules for contributors](rules.md)).
+- Whether an oracle may accept something new ([Sea-MLIR contributor rules](rules.md)).

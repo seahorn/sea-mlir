@@ -16,8 +16,9 @@ on a model rather than the real decode table.
 ## The contract
 
 The harness calls the decoder once, from an arbitrary valid state, on an
-input whose length $n$ is arbitrary up to `NMAX`, and asserts four claims:
+input whose length $n$ is arbitrary up to `NMAX`, and asserts five claims:
 
+- the decoder reads exactly the input range;
 - the decoder writes at most $2n$ bytes;
 - the state after the call is valid;
 - the call returns $n$, or an error only if it is the final call;
@@ -31,14 +32,8 @@ proof does not stop after a fixed number of decoder iterations.
 
 ## From decoder source to a check
 
-The jobs use Firedancer commit `37c658197`. Their C harnesses and extracted
-programs are in the [benchmark repository](https://github.com/seahorn/sea-mlir-bench/tree/main/firedancer).
-An agent writes the contract, chooses the environment assumptions and
-constructs deliberate regressions. Clang and SeaHorn compile the harness
-and selected source into Sea-MLIR; Sea-MLIR checks the resulting program
-and replays violating inputs. The export settings and source transformations
-are recorded in the family's
-[provenance](https://github.com/seahorn/sea-mlir-bench/blob/main/firedancer/PROVENANCE.md).
+See [Firedancer source and extraction](index.md#firedancer-source-and-extraction)
+for the pinned revision, harnesses and shared frontend pipeline.
 
 The harness supplies arbitrary bytes and a valid starting decoder state.
 It checks the writes and return value against the contract above. To cover
@@ -64,11 +59,10 @@ observations at the benchmark snapshot, not a CI timing guarantee.
 ## The other HPACK jobs
 
 The family has 22 HPACK jobs: the Huffman decoder (`hpack-huff-*`), the
-skip function `fd_hpack_skip` (`hpack-skip-*`), and the reader
+skip function `fd_hpack_skip_feed` (`hpack-skip-*`), and the reader
 `fd_hpack_rd_next` (`hpack-rd-*`), each with a proof, reach jobs and
 mutants. Two jobs revert parts of Firedancer commit `791176436`; both give
-counterexamples. The `fd_hpack_rd_next` proof took 16 s when the
-expectations were established.
+counterexamples.
 
 ## Where a regression gate would help
 
@@ -81,11 +75,9 @@ protect behavior that has needed fixing, rather than a property chosen
 only because it was easy to prove.
 
 The experiment's costs support trying these checks on relevant changes.
-A usable gate would regenerate from the changed C source, keep the real-table
-check beside the symbolic proof, and require the regression controls to
-fail as expected. It would complement integration tests of actual decoded
-headers. The exported programs already let us rerun the verifier, but an
-unchanged export cannot protect a new version of the C code.
+Use the [application CI workflow](../agents/index.md#5-regenerate-and-check-in-ci),
+keeping the real-table check beside the symbolic proof. Integration tests
+of actual decoded headers cover behavior beyond this contract.
 
 ---
 

@@ -1,8 +1,9 @@
 # Firedancer: HTTP/2 flow control
 
 A peer can reduce the initial stream window while a gRPC stream is open.
-The stream may then have sent more data than the new window allows. Its
-next WINDOW_UPDATE must repay that debt before it can send again. Keeping
+The stream may then have sent more data than the new window allows.
+Subsequent WINDOW_UPDATE frames must repay that debt before it can send
+again. Keeping
 only a nonnegative “bytes available” counter loses this distinction.
 
 Firedancer represents the effective send window with a counter and a
@@ -27,18 +28,16 @@ rules from RFC 9113 section 6.9 independently of the handler's code.
 Each job runs one operation from an arbitrary state satisfying the
 accounting invariant, with one connection and up to two streams. It checks
 both the resulting windows and the required errors. This covers arbitrary
-values at that step, rather than a short list of packet examples.
+values at that step, rather than a short list of packet examples. These
+are single-step preservation checks: no initialization base case is
+checked, and the DATA-received step remains unresolved. Unlike the
+[reassembly proof](inductive-proof.md), this is not yet a complete
+inductive argument over operation sequences.
 
 ## What code is checked
 
-The jobs use Firedancer commit `37c658197`. Their C harnesses and extracted
-programs are in the [benchmark repository](https://github.com/seahorn/sea-mlir-bench/tree/main/firedancer).
-An agent writes the contract, chooses the environment assumptions and
-constructs deliberate regressions. Clang and SeaHorn compile the harness
-and selected source into Sea-MLIR; Sea-MLIR checks the resulting program
-and replays violating inputs. The export settings and source transformations
-are recorded in the family's
-[provenance](https://github.com/seahorn/sea-mlir-bench/blob/main/firedancer/PROVENANCE.md).
+See [Firedancer source and extraction](index.md#firedancer-source-and-extraction)
+for the pinned revision, harnesses and shared frontend pipeline.
 
 The selected code includes the HTTP/2 handlers and the real gRPC
 flow-control callbacks, extracted from `fd_grpc_client.c`. The callbacks
@@ -65,7 +64,11 @@ the connection live. Deliberately dropping debt creation or repayment is
 also caught. These controls exercise the boundary between valid progress
 and a required protocol error.
 
-We recommend exploring a CI gate around these accounting transitions.
+Losing debt can make the client send beyond the peer's permitted window,
+causing the peer to reject the traffic with FLOW_CONTROL_ERROR. A missed
+31-bit limit check instead keeps a connection live when the protocol
+requires it to fail. We recommend exploring a CI gate around these
+accounting transitions.
 The protocol gives a stable reference while implementation changes can
 move responsibility between HTTP/2 and gRPC. The historical limit fix and
 the debt controls identify concrete behavior to preserve. Most of the
@@ -75,8 +78,8 @@ WINDOW_UPDATE and expand after measuring regeneration and runtime costs.
 Keep integration tests for packet handling and payload behavior. The
 symbolic gate adds coverage over window values and update sizes under its
 state invariant; it does not replace those tests. To protect changed
-source, the gate must regenerate the exported jobs and retain both failing
-regression controls and checks that the interesting states are reachable.
+source, follow the [application CI workflow](../agents/index.md#5-regenerate-and-check-in-ci).
+Retain the reachability checks for interesting window states.
 
 ---
 
@@ -93,8 +96,8 @@ $E_s[k]$ for what the peer allows the client to send, and $R_c$ and
 $R_s[k]$ for what the client allows the peer. It builds an arbitrary state
 of the connection and its streams, computes the ghost windows from the
 client's counters (a send window is the counter minus its debt), and
-assumes the invariant that relates them. Then it runs one operation, a separate job for each frame kind. For
-the connection WINDOW_UPDATE:
+assumes the invariant that relates them. Then it runs one operation,
+with a separate job for each frame kind. For the connection WINDOW_UPDATE:
 
 ```c
   uint raw = nd_uint(); uchar pl[4];
