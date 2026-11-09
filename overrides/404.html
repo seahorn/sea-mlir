@@ -1,0 +1,16 @@
+{% extends "main.html" %}
+
+{% block content %}
+  <h1>Page not found</h1>
+  <p>
+    There is no page at this address. It may have moved when the
+    documentation was reorganized.
+  </p>
+  <ul>
+    <li><a href="{{ config.site_url }}">Home page</a></li>
+    <li><a href="{{ config.site_url }}guide/getting-started/">Get started</a></li>
+    <li><a href="{{ config.site_url }}tutorials/">Applications</a></li>
+    <li><a href="{{ config.site_url }}reference/">Reference</a></li>
+  </ul>
+  <p>Or search the documentation: press <kbd>/</kbd> or use the search box above.</p>
+{% endblock %}
