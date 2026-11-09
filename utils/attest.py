@@ -75,7 +75,7 @@ OPTIONS:
   --dry-run           run the gates, print the statuses instead of posting them
   --perf-runs N       vcc gate runs per side for bench-perf (default 1; medians);
                       after a bench-perf failure, rerun with --perf-runs 3 to rule out noise
-  --repo OWNER/NAME   default: from the origin remote
+  --repo OWNER/NAME   default: from the `public` remote if present, else `origin`
 OUTPUT: `key: value` lines; one `status: <context> <state> <description>` per gate, then
   `posted:` or `would-post:` lines (statuses are posted at the end, after the tree is
   checked again; a build failure is a check-sea failure). EXIT: 0 every gate passed, 1 a gate failed,
@@ -111,7 +111,7 @@ def repo_slug(url):
     """OWNER/NAME of a GitHub remote URL (https or ssh form)."""
     m = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$", url)
     if not m:
-        raise Refuse(f"origin is not a GitHub URL: {url} (--repo)")
+        raise Refuse(f"remote is not a GitHub URL: {url} (--repo)")
     return f"{m.group(1)}/{m.group(2)}"
 
 
@@ -389,7 +389,10 @@ def attest(a):
     sha, dirty = tree_state()
     if dirty:
         raise Refuse("the tree is dirty (commit, stash or remove untracked files)")
-    a.repo = a.repo or repo_slug(git("remote", "get-url", "origin"))
+    # Statuses belong on the published repository: the `public` remote when a
+    # checkout has one (development in a private mirror), else `origin`.
+    remote = "public" if "public" in git("remote").split() else "origin"
+    a.repo = a.repo or repo_slug(git("remote", "get-url", remote))
     only = [g for g in (a.only.split(",") if a.only else GATES) if g]
     bad = [g for g in only if g not in GATES]
     if bad:
@@ -612,7 +615,9 @@ def main():
     p.add_argument("--perf-runs", type=int, default=1)
     p.add_argument("--perf-threshold", type=float, default=10.0, help="percent")
     p.add_argument("--par", type=int, default=4)
-    p.add_argument("--repo", help="OWNER/NAME (default: the origin remote)")
+    p.add_argument(
+        "--repo", help="OWNER/NAME (default: the public remote, else origin)"
+    )
     a = p.parse_args(argv)
     a.cmake_args = cmake_args
     if a.agent:
