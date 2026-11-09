@@ -241,8 +241,10 @@ configuration, and inline suppressions cannot disable that scan.
 A finding refuses publication. A missing gitleaks installation emits a
 warning unless `--strict` (or `SEA_PUBLISH_STRICT=1`) makes it an error.
 An unreadable terms file, invalid regex, or scanner failure is always an
-error. Terms are optional; without `--terms` or `SEA_PRIVACY_TERMS`, only
-the generic privacy patterns run. The tool prints locations and pattern
+error. Terms are optional: `--terms`, else `SEA_PRIVACY_TERMS`, else an
+untracked `.privacy-terms` in the worktree or the main worktree (shared by
+linked worktrees); without any of them, only the generic privacy patterns
+run. The tool prints locations and pattern
 categories, never matching content. It also redacts terms from filenames
 and suppresses raw scanner diagnostics.
 

@@ -31,8 +31,8 @@ USAGE: python3 utils/publish.py BRANCH [--remote public] [--terms FILE] [--stric
 CHECKS: full content of every added/changed file in each commit, filenames,
   and commit messages; symlink targets are blobs, never followed. Merge
   changes are compared against every parent. The matcher is privacy-check.py.
-  --terms or SEA_PRIVACY_TERMS supplies optional private regexes; no default
-  terms file is loaded. gitleaks scans the same range with its built-in rules,
+  --terms or SEA_PRIVACY_TERMS supplies optional private regexes; otherwise
+  an untracked .privacy-terms in this worktree or the main worktree is used. gitleaks scans the same range with its built-in rules,
   ignoring repository configuration and suppressing raw scanner output.
   Missing gitleaks warns; --strict (or SEA_PUBLISH_STRICT=1) makes it an error.
 OUTPUT: key: value lines; findings name commit, file, line, category only.
@@ -305,6 +305,23 @@ def hook(checker, remote, url):
     return result
 
 
+def default_terms(root):
+    """The untracked .privacy-terms of the main worktree, if present.
+
+    privacy-check.py reads ROOT/.privacy-terms; linked worktrees share the
+    main worktree's file, so a gate run in any of them loads the same terms.
+    """
+    common = Path(
+        os.fsdecode(
+            git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        ).strip()
+    )
+    for candidate in (root / ".privacy-terms", common.parent / ".privacy-terms"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def install_hook(root):
     destination = Path(
         os.fsdecode(git(root, "rev-parse", "--git-path", "hooks/pre-push")).strip()
@@ -355,6 +372,8 @@ def main():
         if args.pre_push and not public_url(args.pre_push[1]):
             print("publish-check: non-public remote; skipped")
             return 0
+        if args.terms is None:
+            args.terms = default_terms(root)
         checker = Checker(root, args.terms, args.strict)
         if args.pre_push:
             return hook(checker, *args.pre_push)
