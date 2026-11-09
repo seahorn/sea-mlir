@@ -166,6 +166,14 @@ documentation and Lean proofs, and reviewed one another's work, under the
 direction of [Arie Gurfinkel](https://ece.uwaterloo.ca/~agurfink/)
 (University of Waterloo), who designed sea-mlir and leads the project.
 
+### Acknowledgments
+
+This work is supported by Anthropic through the Claude Team plan for
+scientists, which provides access to Claude, and by OpenAI through
+ChatGPT for Academic Researchers, which provides access to Codex.
+Anthropic and OpenAI do not endorse this project. Claude is a trademark
+of Anthropic; Codex and OpenAI are trademarks of OpenAI.
+
 ## License
 
 Apache License v2.0 with LLVM Exceptions
