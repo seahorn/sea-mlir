@@ -148,8 +148,13 @@ class Checker:
                 continue
             if kind != b"blob":
                 raise GateError("unsupported changed Git object")
-            text = git(self.root, "cat-file", "blob", spec).decode("utf-8", "replace")
-            count += self.scan_text(sha, path, text)
+            data = git(self.root, "cat-file", "blob", spec)
+            # Binary blobs are skipped, as in privacy-check.py: decoding them
+            # as text yields spurious matches (font tables, images).
+            # gitleaks still scans them for secrets.
+            if b"\0" in data:
+                continue
+            count += self.scan_text(sha, path, data.decode("utf-8", "replace"))
         return count
 
     def scan_secrets(self, revision_range):

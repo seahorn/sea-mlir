@@ -134,6 +134,11 @@ sys.exit(code)
     tip = save()
     result = run("--check-range", base, tip, code=1)
     assert leak in result.stdout and "local-term" in result.stdout
+    # Binary blobs are not decoded as text (a font table once matched a
+    # review-label rule); their names are still checked.
+    git("checkout", "-q", "-b", "binary", clean)
+    (repo / "font.bin").write_bytes(b"\0\x01\n# R12 table\n")
+    run("--check-range", clean, save())
     git("checkout", "-q", "-b", "message", clean)
     git("commit", "--allow-empty", "-qm", secret)
     run("--check-range", clean, "HEAD", code=1)
