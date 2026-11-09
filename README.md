@@ -7,6 +7,14 @@
   Bit-precise programs in a small MLIR dialect · SMT-backed proofs · every counterexample replayed
 </p>
 
+<p align="center">
+  <a href="https://seahorn.github.io/sea-mlir/"><img src="https://img.shields.io/badge/docs-seahorn.github.io%2Fsea--mlir-blue" alt="Documentation"></a>
+  <a href="https://github.com/seahorn/sea-mlir/releases/latest"><img src="https://img.shields.io/github/v/release/seahorn/sea-mlir" alt="Latest release"></a>
+  <a href="https://github.com/seahorn/sea-mlir/actions/workflows/ci.yml"><img src="https://github.com/seahorn/sea-mlir/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0%20WITH%20LLVM--exception-green" alt="License: Apache-2.0 WITH LLVM-exception"></a>
+  <a href="https://github.com/seahorn/sea-mlir-bench"><img src="https://img.shields.io/badge/benchmarks-sea--mlir--bench-lightgrey" alt="Benchmarks"></a>
+</p>
+
 ---
 
 sea-mlir checks assertions in programs written in the `sea` dialect: control
@@ -114,6 +122,8 @@ Details, dependencies, installation and the release gates:
 
 ## 🗺️ Documentation
 
+The documentation site: **https://seahorn.github.io/sea-mlir/**
+
 - ⛵ [Get started](docs/guide/getting-started.md): a first proof, reading the
   output, counterexamples, proof controls
 - 🐟 [Applications](docs/tutorials/index.md): NKI kernels, an inductive
@@ -122,7 +132,7 @@ Details, dependencies, installation and the release gates:
   output formats, profiles, SeaM
 - 🐙 [For agents](docs/agents/index.md): running the tools, gates, rules
 
-The documentation is also a [MkDocs](https://www.mkdocs.org/) site:
+The site is built with [MkDocs](https://www.mkdocs.org/) from `docs/`;
 `just docs-serve` previews it locally.
 
 ## 🛠️ Development
