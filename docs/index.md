@@ -102,3 +102,13 @@ proofs cover.
 - [Applications](tutorials/index.md): NKI kernels, an inductive proof,
   Stellar, Firedancer.
 - [For agents](agents/index.md): build a harness, explore an encoding, and preserve the check in CI.
+
+## Acknowledgments
+
+sea-mlir is developed with AI coding agents, Claude (Anthropic) and Codex
+(OpenAI), under the direction of Arie Gurfinkel (University of Waterloo).
+This work is supported by Anthropic through the Claude Team plan for
+scientists, which provides access to Claude, and by OpenAI through
+ChatGPT for Academic Researchers, which provides access to Codex.
+Anthropic and OpenAI do not endorse this project. Claude is a trademark
+of Anthropic; Codex and OpenAI are trademarks of OpenAI.
