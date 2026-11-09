@@ -139,6 +139,31 @@ sys.exit(code)
     git("checkout", "-q", "-b", "binary", clean)
     (repo / "font.bin").write_bytes(b"\0\x01\n# R12 table\n")
     run("--check-range", clean, save())
+    # Without --terms, the untracked .privacy-terms of the main worktree is
+    # loaded, also from a linked worktree.
+    (repo / ".git" / "info" / "exclude").write_text(".privacy-terms\n")
+    (repo / ".privacy-terms").write_text(secret + "\n")
+    linked = top / "linked"
+    git("worktree", "add", "-q", "--detach", str(linked), tip)
+    for root in (repo, linked):
+        default = subprocess.run(
+            [
+                sys.executable,
+                str(publish),
+                "--root",
+                str(root),
+                "--check-range",
+                base,
+                tip,
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert default.returncode == 1, default.stdout + default.stderr
+        assert secret not in default.stdout + default.stderr
+    git("worktree", "remove", "--force", str(linked))
+    (repo / ".privacy-terms").unlink()
     git("checkout", "-q", "-b", "message", clean)
     git("commit", "--allow-empty", "-qm", secret)
     run("--check-range", clean, "HEAD", code=1)
