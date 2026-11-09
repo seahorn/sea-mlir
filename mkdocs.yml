@@ -5,6 +5,7 @@
 # ODS by `just docs-dialect` (utils/gen-dialect-doc.sh) and committed.
 
 site_name: sea-mlir
+site_url: https://seahorn.github.io/sea-mlir/
 site_description: A verification toolkit for low-level code, built for AI agents as well as people.
 repo_name: seahorn/sea-mlir
 repo_url: https://github.com/seahorn/sea-mlir
