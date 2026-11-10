@@ -256,6 +256,11 @@ struct RunResult {
   /// through a branch sea-merge-asserts put in its place
   /// (kMergedAssertLocName), else `at`'s own. Set for AssertFailed.
   std::optional<mlir::Location> assertLoc;
+  /// The op that stands for that assert: the branch sea-merge-asserts put
+  /// in its place (the one assertLoc comes from), else the failing
+  /// sea.assert. It carries the assert's id (kAssertIdAttr), if any. Set
+  /// with assertLoc (a MemoryError that reached a failing assert too).
+  mlir::Operation *assertOp = nullptr;
   static constexpr unsigned kBranchPathLength = 5;
   /// The output of the print ops the run executed (RunOptions::prints),
   /// and the number of records dropped past RunOptions::printLimit.

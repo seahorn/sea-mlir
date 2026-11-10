@@ -45,6 +45,7 @@ The main lines of `sea-vc`:
 | `seam.ptrint-violated: <where> addr= [obj=] bits= stored=` | `--ptr-companion=check`, `sat`: a split pointer load in the replay that reads bits other than the pointer last stored there |
 | `seam.ptrint-unstored: <where> addr= [obj=] bits=` | `--ptr-companion=check`, `sat`: a split pointer load from a cell no pointer was stored to |
 | `seam.ptrint-replay: loads= holds= violated= unstored=` | `--ptr-companion=check`, `sat`: the split pointer loads of the replay; the `sat` is confirmed if one fails |
+| `replay.original: status= at= match= nondets= cells= defaulted= unmapped=` | `--replay-original`, `sat`: the input program before any pass, run on the model's inputs; `match=yes` if it fails the same assertion ([below](#replay-on-the-original-program)) |
 
 `sea-vc --agent` lists every line, including all counters.
 
@@ -55,6 +56,61 @@ The lines of `sea-run`: `program:`, `nondet:` and `memread:` (with an
 error), `deferred:` (with `--defer-memory-errors`, when the run went past a
 memory-safety violation) and `steps:`. See
 [Deferred memory errors](fuzzing.md#deferred-memory-errors).
+
+### Replay on the original program
+
+`--replay-original` checks the lowering on each counterexample. The replay
+validates the model against the lowered program, the one the VC was made
+from; a pass that changes what the program does gives a model that the
+lowered program confirms. So after a confirmed `sat`, `sea-vc` also runs
+the input program as it was before any pass, with the model's inputs:
+
+- a nondet value by its site: the op kind, the site number and the
+  callee (a `sea.struct.nondet` is the `sea.nondet` of the same site after
+  `sea-scalarize-structs`). The number alone is not enough: a pass may
+  reuse the number of an op it dropped;
+- a memory cell lazily, when the run reads it: a cell `<object>+<offset>`
+  of an abstract memory is the model's cell at the object's placed base
+  (its `sea.segment`) plus the offset; a byte of a memory widened to
+  aligned words is its byte of the word (little-endian); a `sea.memhavoc`
+  the lowering dropped (`sea-drop-fresh-memhavoc`) reads its chain's
+  initial `sea.mem.nondet` (through block arguments), as the lowered
+  program does.
+
+Inputs the model leaves unconstrained (`defaulted`) and sites or objects
+the lowered program no longer has (`unmapped`, for example a load folded
+away or an object never accessed) read as 0. The run defers memory-safety
+violations, as `sea-run --defer-memory-errors` does.
+
+The check passes (`match=yes`) when the run fails the same assertion:
+`assert-failed`, or `memory-error` that reached that assertion. Before
+the clone, each `sea.assert` gets an id, the attribute `sea.assert_id`;
+`sea-merge-asserts` copies it onto the branches it makes of the assert,
+so both runs name the failing assert by its id, also when two asserts
+share a location or have none. If a pass rebuilt that branch without
+the attribute, the assert is compared by its location, and only if no
+other assert has that location.
+Otherwise:
+
+- `match=undetermined`, warning `vc.replay-original-undetermined`, exit
+  status unchanged: the interpreter cannot run the original program on
+  these inputs (`ptr.to_int` before placement, a pointer load from nondet
+  cells), or the run loaded an earlier memory version, which the in-place
+  interpreter reads right only if the program's Mem-SSA claim holds; or
+  the run read an `unmapped` input; or the assert cannot be told apart;
+- `match=no` after a memory-safety violation: exit 4
+  (`vc.replay-original-memory-error`). Placement gives the program a
+  meaning where the abstract program has an error;
+- `match=no`: exit 6 (`vc.replay-original-mismatch`). A pass of the
+  lowering is wrong, or the program's behavior depends on where placement
+  puts its objects (a pointer one past the end of an object compared with
+  the next object).
+
+It is off by default. It runs only on `sat`, costs one interpreter run, and
+adds the `replay.original:` line. Without a lowering (`--lower` or
+`--sink-assumes`) it prints `replay.original: skipped (...)`, and the same
+for the check jobs (`--check-align`, `--check-ptr-index`,
+`--ptr-companion=check`), whose assertions are not the program's.
 
 ### Where a counterexample fails
 
@@ -134,6 +190,7 @@ The record kinds of `sea-vc`:
 | `no-clobber-violated` | `loc` |
 | `ptrint` | `status` (`violated` or `unstored`), `at`, `addr`, [`obj`, `off`], `bits`, [`stored`] |
 | `ptrint-replay` | `loads`, `holds`, `violated`, `unstored` |
+| `replay-original` | `status`, `at`, `match`, `nondets`, `cells`, `defaulted`, `unmapped`, [`earlier_version_loads`], [`expected`, `got`, `message`] (not a match); skipped: `status` `skipped`, `reason` |
 | `smt2` | the query (with `--smt2`) |
 | `print`, `print.mem`, `print.mem.row`, `print.scope`, `print.object`, `print.note`, `print.truncated` | see [Counterexample notation](print.md) and `sea-vc --agent` |
 
@@ -169,8 +226,9 @@ other output is unchanged. The benchmark harness runs with it.
 | 1 | error: bad input, not in BMC form, unsupported operation, replay impossible |
 | 2 | `sat`, but the replay disagrees with the model (a value differs, or the run shows no failure of the property: `vc.replay-no-failure`): a bug, or a load of an earlier memory version whose cell was overwritten (counted as `interp.earlier-version-loads`) |
 | 3 | `unknown`, including a timeout or a memory limit |
-| 4 | with `--seam`: a `sat` whose replay leaves an object; the in-bounds assumption does not hold, the answer is inconclusive, and the program has a memory-safety error |
+| 4 | with `--seam`: a `sat` whose replay leaves an object; the in-bounds assumption does not hold, the answer is inconclusive, and the program has a memory-safety error. With `--replay-original`: the original program's run makes a memory-safety violation and does not fail the same assertion |
 | 5 | with `--seam-check`: an invalid rewrite; a bug, and the verdict is not to be trusted. It takes precedence over 0, 2, 3 and 4, not over 1 |
+| 6 | with `--replay-original`: `sat` confirmed on the lowered program, but the original program on the same inputs does not fail the same assertion: the lowering changed what the program does (a bug in a pass, or a program whose behavior depends on where placement puts its objects) |
 
 | tool | exit codes |
 |---|---|

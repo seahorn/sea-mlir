@@ -134,7 +134,11 @@ python3 utils/bench.py establish public/stellar             # (re)establish expe
 only with `gate hard`), with each configuration of `--config` (comma
 separated): `default` (the manifest's defaults), `default+CFG` (defaults
 plus `bench/configs/CFG.yaml`'s args and solver), or `CFG` alone. A job's
-own `args` are appended. Per-job timeout: the configuration's, capped by
+own `args` are appended, then `--replay-original` when the sea-vc has the
+option (the gate prints `replay-original: on`; `--no-replay-original` turns
+it off): each `sat` is also replayed on the program before the lowering
+([Replay on the original program](reference/output-formats.md#replay-on-the-original-program)).
+Per-job timeout: the configuration's, capped by
 the job's tier (smoke 60 s, quick 300 s). At most `--par` (default 4) jobs
 in parallel.
 
@@ -150,6 +154,8 @@ The gate fails (exit 1) on
 - a verdict other than `expected` for a sat / unsat job (a flip is `WRONG`,
   a timeout / unknown / error is `unsolved`);
 - `replay-mismatch` (sea-vc rc 2: the model does not replay);
+- `lowering-mismatch` (sea-vc rc 6: the program before the lowering does
+  not fail the assertion of the lowered program's `sat`);
 - `DISAGREE-SAT-UNSAT`: two configurations solve a job differently.
 - a counter outside its bound (configuration `default`; `FAIL: counter`,
   counted as `counter-failures`; see counter expectations above).

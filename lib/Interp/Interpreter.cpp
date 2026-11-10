@@ -500,6 +500,7 @@ private:
                                     : lastOpLoc;
     if (status == RunStatus::AssertFailed) {
       result.assertLoc = mergedAssertLoc ? *mergedAssertLoc : at->getLoc();
+      result.assertOp = mergedAssertLoc ? mergedAssertOp : at;
       Value cond;
       if (mergedAssertLoc)
         cond = mergedCond;
@@ -655,6 +656,7 @@ private:
       if (isa<BrOp>(op) && mergedAssertLoc)
         return;
       mergedAssertLoc = n.getChildLoc();
+      mergedAssertOp = &op;
       mergedAssertFile = f;
       // the original assert's condition, when the cond_br takes its
       // landing (false) side
@@ -665,6 +667,7 @@ private:
       return;
     }
     mergedAssertLoc.reset();
+    mergedAssertOp = nullptr;
     mergedAssertFile.reset();
     mergedCond = {};
     if (!f)
@@ -884,6 +887,8 @@ private:
   /// The original assert of the last branch taken, if sea-merge-asserts
   /// made it (see noteBranch).
   std::optional<Location> mergedAssertLoc;
+  /// The branch it came from.
+  Operation *mergedAssertOp = nullptr;
   /// Its file location, if any.
   std::optional<FileLineColLoc> mergedAssertFile;
   /// Its condition, when the run took the branch to the merged assert's

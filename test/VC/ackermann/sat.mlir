@@ -9,6 +9,9 @@
 // RUN: %if yices %{ sea-vc %s --lower --seam --ackermannize=on --solver=yices 2>&1 | FileCheck %s %}
 // RUN: sea-vc %s --lower --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=OFF
 // RUN: sea-vc %s --lower --seam 2>&1 | FileCheck %s --check-prefix=AUTO
+// The model, cells included, also fails the program before the lowering.
+// RUN: sea-vc %s --lower --seam --ackermannize=on --replay-original 2>&1 | FileCheck %s --check-prefix=ORIG
+// ORIG: replay.original: status=assert-failed {{.*}} match=yes
 // CHECK: vc.ackermann: on
 // CHECK: vc.ackermann-constraints: {{[1-9][0-9]*}}
 // CHECK: result: sat

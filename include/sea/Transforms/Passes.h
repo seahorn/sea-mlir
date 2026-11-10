@@ -41,6 +41,11 @@ std::unique_ptr<mlir::Pass> createSinkAssumesPass(unsigned *moved = nullptr);
 /// the branches it puts in the assert's place (`loc("sea.assert"(<loc>))`):
 /// the interpreter reports it as the failing assert, not as a branch.
 inline constexpr llvm::StringLiteral kMergedAssertLocName = "sea.assert";
+/// A stable id of a sea.assert (an i64 discardable attribute; sea-vc
+/// --replay-original sets it before the lowering). sea-merge-asserts copies
+/// it onto the branches it makes of the assert, and RunResult::assertOp
+/// is the op that carries it for the failing assert.
+inline constexpr llvm::StringLiteral kAssertIdAttr = "sea.assert_id";
 /// sea-lower-ptr-index: sea.ptr.index -> mul / add / ptr.add (the no-wrap
 /// flags dropped; docs/design/PtrIndex.md).
 std::unique_ptr<mlir::Pass> createLowerPtrIndexPass();

@@ -20,7 +20,10 @@ exit) and checks, for each:
      computed value equal to the model's (sea-vc exit code 0, else 2), and
      the counterexample's inputs also fail the original, unlowered program
      (validates the lowering passes: splitting wide accesses, expanding
-     intrinsics);
+     intrinsics): sea-vc --replay-original must report match=yes (it fails
+     the same assertion; exit 6 if not) or match=undetermined (counted:
+     `replay-original: undetermined=<n>`), and sea-run on the inputs
+     sea-vc prints must fail it too;
   3. unsat: random interpreter runs never fail the assertion (a failing run
      would be a bogus unsat, the dangerous direction);
   4. the original program and its lowering (sea-opt --sea-vc-lower, what
@@ -655,6 +658,7 @@ def main():
 
     rng = random.Random(args.seed)
     stats = {"sat": 0, "unsat": 0}
+    undetermined = 0  # sat runs whose replay.original is match=undetermined
     failures = []
     with tempfile.TemporaryDirectory() as tmp:
         for i in range(args.n):
@@ -682,7 +686,11 @@ def main():
                 + (("bitwuzla",) if args.bitwuzla else ())
                 for v in variants
             ]:
-                r = run([args.sea_vc, path, f"--solver={solver}", "--lower"] + vflags)
+                r = run(
+                    [args.sea_vc, path, f"--solver={solver}", "--lower"]
+                    + ["--replay-original"]
+                    + vflags
+                )
                 res = field(r.stdout, "result")
                 verdicts[solver + vname] = res
                 if solver == "z3" and not vname:
@@ -693,9 +701,30 @@ def main():
                     problem = (
                         f"{solver}{vname}: replay disagrees with the model\n" + r.stdout
                     )
+                elif r.returncode == 6:
+                    problem = (
+                        f"{solver}{vname}: the original program does not fail the "
+                        "assertion of the lowered program's counterexample "
+                        "(--replay-original)\n" + r.stdout
+                    )
                 elif r.returncode != 0:
                     problem = (
                         f"{solver}{vname}: exit {r.returncode}\n{r.stdout}{r.stderr}"
+                    )
+                elif (
+                    res == "sat"
+                    and (ro := (field(r.stdout, "replay.original") or ""))
+                    and "match=undetermined" in ro
+                ):
+                    # the replay decides nothing (sea-vc warns); counted
+                    undetermined += 1
+                elif res == "sat" and "match=yes" not in (
+                    field(r.stdout, "replay.original") or ""
+                ):
+                    problem = (
+                        f"{solver}{vname}: sat, but no replay.original: match=yes\n"
+                        + r.stdout
+                        + r.stderr
                     )
             if not problem and verdicts["z3"] == "sat":
                 # sea-vc replays the lowered program; the counterexample must
@@ -761,6 +790,7 @@ def main():
         f"programs: {args.n} sat: {stats['sat']} unsat: {stats['unsat']} "
         f"failures: {len(failures)}"
     )
+    print(f"replay-original: undetermined={undetermined}")
     sys.exit(1 if failures else 0)
 
 

@@ -41,6 +41,10 @@ Analysis, Conditional Soundness, and Proving the Absence of Errors*, SAS
   rewrite) are bugs in sea-mlir. So is a crash, or a
   `<pass>.postcondition` error. Reduce and report them; do not interpret
   the verdict.
+- Exit status 6 (`--replay-original`): the program before the lowering
+  does not fail the assertion of the lowered program's confirmed `sat`. A
+  pass of the lowering changed the program, unless the program depends on
+  where placement puts its objects. Reduce and report it.
 - Exit status 4 under `--seam` means that the program leaves an object on
   the model's inputs: a memory-safety error, and an inconclusive answer.
 

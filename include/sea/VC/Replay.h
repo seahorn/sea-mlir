@@ -111,6 +111,44 @@ RunResult replayPrints(ProgramOp program, solver::Model &model, SeaOpSem &sem,
 ReplayResult replayAndValidate(ProgramOp program, solver::Model &model,
                                SeaOpSem &sem, OpSemContext &ctx);
 
+/// A run of the original program (the input before the lowering, sea-vc
+/// --replay-original) on the inputs of the model of the lowered one, and
+/// where each input came from. The origins (NondetRead / CellRead::origin):
+///  - `model`: the model's value, read lazily through the lowered program's
+///    op of the same site: nondet sites are stable across the lowering; a
+///    cell `<object>+<offset>` of an abstract memory is the cell at the
+///    object's placed base (its sea.segment) plus the offset; a byte of a
+///    widened memory (aligned k-byte words) is its byte of the word,
+///    little-endian;
+///  - `default`: the model leaves it unconstrained (ModelSource): 0;
+///  - `unmapped`: the lowered program has no op of that site (folded away)
+///    or no segment of that object (an object it never accesses): 0. A
+///    memhavoc the lowering dropped (sea-drop-fresh-memhavoc: a fresh
+///    object's) reads its cells from its chain's sea.mem.nondet, as the
+///    lowered program does (origin `model`).
+/// The run defers memory-safety violations (RunOptions::deferMemoryErrors):
+/// one that reaches the failing assert ends as MemoryError.
+struct OriginalReplay {
+  RunResult run;
+  uint64_t nondets = 0, cells = 0; ///< inputs read
+  uint64_t defaulted = 0;          ///< origin default
+  uint64_t unmapped = 0;           ///< origin unmapped
+};
+
+/// Gives every sea.assert of `program` a stable id (kAssertIdAttr: 0, 1,
+/// ... in program order), before the clone of sea-vc --replay-original,
+/// so that a run of the original program and of the lowered one name the
+/// same assert by the same id, also when asserts share a location or have
+/// none.
+void tagAsserts(ProgramOp program);
+
+/// The id of the failing assert of `run` (RunResult::assertOp), if any.
+std::optional<uint64_t> assertIdOf(const RunResult &run);
+
+OriginalReplay replayOriginal(ProgramOp original, ProgramOp lowered,
+                              solver::Model &model, SeaOpSem &sem,
+                              OpSemContext &ctx);
+
 /// The cause of a failed validation when it is the program's own Mem-SSA
 /// no-clobber claim, not the VC (docs/design/Memory.md, "Loads of a version
 /// after its consumer"): the loads of an earlier memory version the run

@@ -64,5 +64,9 @@ sea.program @main {
 // OFF-NOT: print:
 // OFF: validate:
 
+// Kept at the end: other tests pin the line numbers above.
+// RUN: sea-vc %s --lower --print-refs=strong --replay-original | FileCheck %s --check-prefix=ORIG
+// ORIG: replay.original: status=assert-failed {{.*}} match=yes
+
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

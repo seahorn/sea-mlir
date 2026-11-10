@@ -6,6 +6,7 @@
 #include "sea/VC/Replay.h"
 
 #include "sea/Expr/ExprAPInt.hh"
+#include "sea/Transforms/Passes.h"
 
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "llvm/ADT/DenseSet.h"
@@ -294,6 +295,212 @@ ReplayResult replayAndValidate(ProgramOp program, solver::Model &model,
   }
   result.run = interpret(program, source, options);
   return result;
+}
+
+namespace {
+/// The inputs of the original program from the model of the lowered one
+/// (OriginalReplay).
+class OriginalSource : public NondetSource {
+public:
+  OriginalSource(ProgramOp lowered, solver::Model &model, SeaOpSem &sem,
+                 OpSemContext &ctx)
+      : inner(model, sem, ctx) {
+    // a site is not enough: a pass may reuse the number of an op it
+    // dropped (sea-lower-fat-pointers after a dropped memhavoc); the key is
+    // the kind, the site and the callee / name. A key two ops share maps
+    // to none (unmapped).
+    lowered.walk([&](Operation *op) {
+      if (auto seg = dyn_cast<SegmentOp>(op)) {
+        bases[seg.getName()] = seg.getBase();
+        return;
+      }
+      if (std::optional<Key> k = keyOf(op)) {
+        auto [it, inserted] = sites.try_emplace(*k, op);
+        if (!inserted)
+          it->second = nullptr;
+      }
+    });
+  }
+
+  FailureOr<llvm::APInt> get(NondetOp op, std::string &origin,
+                             std::string &error) override {
+    return bySite(op.getSite(), op.getCallee(),
+                  op.getType().getIntOrFloatBitWidth(), origin, error);
+  }
+  FailureOr<llvm::APInt> get(StructNondetOp op, std::string &origin,
+                             std::string &error) override {
+    // sea-scalarize-structs: one sea.nondet of the same site and bits
+    return bySite(op.getSite(), op.getCallee(), op.getBitsWidth(), origin,
+                  error);
+  }
+
+  FailureOr<llvm::APInt> getCell(Operation *siteOp, const llvm::APInt &addr,
+                                 StringRef object, unsigned cellWidth,
+                                 std::string &origin,
+                                 std::string &error) override {
+    Operation *low = lookup(siteOp);
+    // a memhavoc the lowering dropped (sea-drop-fresh-memhavoc): the lowered
+    // program reads these cells from the chain's initial memory
+    if (!low && isa<MemHavocOp>(siteOp))
+      if (Operation *root = chainRoot(siteOp->getOperand(0)))
+        low = lookup(root);
+    if (!low)
+      return unmapped(cellWidth, origin);
+    auto memTy = cast<MemType>(low->getResult(0).getType());
+    auto idxTy = dyn_cast<AddrType>(memTy.getIndex());
+    if (!idxTy) {
+      error = "the lowered memory of site " +
+              std::to_string(memSiteOf(siteOp)) + " is not address-indexed";
+      return failure();
+    }
+    llvm::APInt at = addr.zextOrTrunc(idxTy.getWidth());
+    if (!object.empty()) {
+      auto it = bases.find(object);
+      if (it == bases.end())
+        return unmapped(cellWidth, origin); // never accessed after lowering
+      at = it->second.zextOrTrunc(idxTy.getWidth()) + at;
+    }
+    unsigned lowWidth = memTy.getCell().getWidth();
+    if (lowWidth == cellWidth)
+      return inner.getCell(low, at, "", cellWidth, origin, error);
+    // sea-widen-memory: aligned k-byte words over byte cells
+    if (memTy.getLayout() != MemLayout::aligned || lowWidth % cellWidth) {
+      error = "cell of memory site " + std::to_string(memSiteOf(siteOp)) +
+              ": i" + std::to_string(cellWidth) +
+              " in the original program, i" + std::to_string(lowWidth) +
+              " in the lowered one (not an aligned word of such cells)";
+      return failure();
+    }
+    unsigned k = lowWidth / cellWidth;
+    uint64_t byte = at.urem(k);
+    FailureOr<llvm::APInt> word =
+        inner.getCell(low, at - byte, "", lowWidth, origin, error);
+    if (failed(word))
+      return failure();
+    return word->extractBits(cellWidth, byte * cellWidth);
+  }
+
+private:
+  using Key = std::tuple<StringRef, uint64_t, std::string>;
+  /// the op kind (a sea.struct.nondet: the sea.nondet it becomes), site
+  /// and callee / name of a nondet site
+  static std::optional<Key> keyOf(Operation *op) {
+    if (auto nd = dyn_cast<NondetOp>(op))
+      return Key{NondetOp::getOperationName(), nd.getSite(),
+                 nd.getCallee().str()};
+    if (auto mn = dyn_cast<MemNondetOp>(op))
+      return Key{MemNondetOp::getOperationName(), mn.getSite(),
+                 mn.getName().str()};
+    if (auto mh = dyn_cast<MemHavocOp>(op))
+      return Key{MemHavocOp::getOperationName(), mh.getSite(), ""};
+    return std::nullopt;
+  }
+  Operation *lookup(Operation *origOp) {
+    std::optional<Key> k = keyOf(origOp);
+    return k ? find(*k) : nullptr;
+  }
+  Operation *find(const Key &k) {
+    auto it = sites.find(k);
+    return it == sites.end() ? nullptr : it->second;
+  }
+  FailureOr<llvm::APInt> bySite(uint64_t site, StringRef callee, unsigned width,
+                                std::string &origin, std::string &error) {
+    auto low = dyn_cast_or_null<NondetOp>(
+        find(Key{NondetOp::getOperationName(), site, callee.str()}));
+    if (!low || low.getType().getIntOrFloatBitWidth() != width)
+      return unmapped(width, origin);
+    return inner.get(low, origin, error);
+  }
+  static FailureOr<llvm::APInt> unmapped(unsigned width, std::string &origin) {
+    origin = "unmapped";
+    return llvm::APInt(width, 0);
+  }
+  /// the sea.mem.nondet a memory version descends from through its
+  /// updates and the incoming values of block arguments (as
+  /// sea-drop-fresh-memhavoc walks them); none if the paths reach
+  /// different roots or anything else (a sea.mem.const)
+  static Operation *chainRoot(Value mem) {
+    Operation *root = nullptr;
+    llvm::DenseSet<Value> seen;
+    SmallVector<Value> work{mem};
+    while (!work.empty()) {
+      Value v = work.pop_back_val();
+      if (!seen.insert(v).second)
+        continue;
+      if (auto arg = dyn_cast<BlockArgument>(v)) {
+        Block *b = arg.getOwner();
+        if (b->hasNoPredecessors())
+          return nullptr;
+        for (auto p = b->pred_begin(); p != b->pred_end(); ++p) {
+          auto br = dyn_cast<BranchOpInterface>((*p)->getTerminator());
+          Value in = br ? br.getSuccessorOperands(
+                              p.getSuccessorIndex())[arg.getArgNumber()]
+                        : Value();
+          if (!in)
+            return nullptr;
+          work.push_back(in);
+        }
+        continue;
+      }
+      Operation *def = v.getDefiningOp();
+      if (isa<MemNondetOp>(def)) {
+        if (root && root != def)
+          return nullptr;
+        root = def;
+        continue;
+      }
+      if (!isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(def))
+        return nullptr;
+      work.push_back(def->getOperand(0));
+    }
+    return root;
+  }
+
+  ModelSource inner;
+  std::map<Key, Operation *> sites;
+  llvm::StringMap<llvm::APInt> bases;
+};
+} // namespace
+
+void tagAsserts(ProgramOp program) {
+  uint64_t n = 0;
+  Builder b(program.getContext());
+  program.walk(
+      [&](AssertOp a) { a->setAttr(kAssertIdAttr, b.getI64IntegerAttr(n++)); });
+}
+
+std::optional<uint64_t> assertIdOf(const RunResult &run) {
+  if (!run.assertOp)
+    return std::nullopt;
+  auto id = run.assertOp->getAttrOfType<IntegerAttr>(kAssertIdAttr);
+  if (!id)
+    return std::nullopt;
+  return id.getInt();
+}
+
+OriginalReplay replayOriginal(ProgramOp original, ProgramOp lowered,
+                              solver::Model &model, SeaOpSem &sem,
+                              OpSemContext &ctx) {
+  OriginalSource source(lowered, model, sem, ctx);
+  RunOptions options;
+  options.prints = false;
+  options.deferMemoryErrors = true;
+  options.warnEarlierVersion = false; // counted: RunResult::earlierVersionLoads
+  OriginalReplay r;
+  r.run = interpret(original, source, options);
+  auto count = [&](StringRef origin) {
+    r.defaulted += origin == "default";
+    r.unmapped += origin == "unmapped";
+  };
+  for (const NondetRead &rd : r.run.reads) {
+    ++r.nondets;
+    count(rd.origin);
+  }
+  for (const CellRead &cr : r.run.cellReads) {
+    ++r.cells;
+    count(cr.origin);
+  }
+  return r;
 }
 
 SmallVector<Operation *> noClobberSuspects(const ReplayResult &replay) {

@@ -1,0 +1,294 @@
+// sea-vc --replay-original: a sat confirmed on the lowered program is also
+// run on the input program before any pass, with the model's inputs; it must
+// fail the same assertion.
+// RUN: split-file %s %t
+
+// Cells of an abstract memory: <object>+<offset> at the placed base.
+// RUN: sea-vc %t/cell.mlir --lower --replay-original | FileCheck %s --check-prefix=CELL
+// RUN: sea-vc %t/cell.mlir --lower --seam --replay-original | FileCheck %s --check-prefix=CELL
+// CELL: result: sat
+// CELL: replay: assert-failed
+// CELL: replay.original: status=assert-failed at={{.*}}cell.mlir:13:3 match=yes nondets=1 cells=1 defaulted=0 unmapped=0
+
+// Off by default.
+// RUN: sea-vc %t/cell.mlir --lower | FileCheck %s --check-prefix=OFF
+// OFF: result: sat
+// OFF-NOT: replay.original
+
+// A word of a widened memory: its bytes, little-endian.
+// RUN: sea-vc %t/wide.mlir --lower --widen-memory=4 --replay-original | FileCheck %s --check-prefix=WIDE
+// WIDE: memread: site=0 {{.*}} width=32
+// WIDE: replay.original: status=assert-failed {{.*}} match=yes nondets=0 cells=4 defaulted=0 unmapped=0
+
+// A memhavoc the lowering dropped (a fresh object's): its cells come from
+// the chain's initial memory, as in the lowered program.
+// RUN: sea-vc %t/havoc.mlir --lower --replay-original | FileCheck %s --check-prefix=HAVOC
+// HAVOC: replay.original: status=assert-failed {{.*}} match=yes nondets=0 cells=1 defaulted=0 unmapped=0
+
+// A program whose behavior depends on placement (one past the end of a is
+// b): the lowered program fails, the abstract one does not. Exit 6.
+// RUN: bash -c 'sea-vc %t/compare.mlir --lower --replay-original > %t.cmp.out 2> %t.cmp.err; test $? -eq 6'
+// RUN: FileCheck %s --check-prefix=CMP < %t.cmp.out
+// RUN: FileCheck %s --check-prefix=CMP-ERR < %t.cmp.err
+// CMP: replay: assert-failed
+// CMP: replay.original: status=halted at=- match=no
+// CMP: replay.original: expected: {{.*}}compare.mlir:16:3
+// CMP-ERR: [vc.replay-original-mismatch]
+
+// An access past its object: placement reads the next bytes, the abstract
+// program has a memory-safety error (deferred; the load reads 0). Exit 4.
+// RUN: bash -c 'sea-vc %t/oob.mlir --lower --replay-original > %t.oob.out 2> %t.oob.err; test $? -eq 4'
+// RUN: FileCheck %s --check-prefix=OOB < %t.oob.out
+// RUN: FileCheck %s --check-prefix=OOB-ERR < %t.oob.err
+// OOB: replay: assert-failed
+// OOB: replay.original: status=memory-error at=- match=no
+// OOB-ERR: [vc.replay-original-memory-error]
+
+// ptr.to_int before placement: the interpreter cannot run the original
+// program; undetermined, a warning, the exit status stays.
+// RUN: sea-vc %t/toint.mlir --lower --replay-original 2>&1 | FileCheck %s --check-prefix=INT
+// INT: replay.original: status=error at=- match=undetermined
+// INT: [vc.replay-original-undetermined]
+
+// A concrete memory: cells by address. Without a lowering it is the same
+// program.
+// RUN: sea-vc %t/concrete.mlir --lower --replay-original | FileCheck %s --check-prefix=CONC
+// CONC: replay.original: status=assert-failed {{.*}} match=yes nondets=1 cells=1 defaulted=0 unmapped=0
+// RUN: sea-vc %t/concrete.mlir --replay-original | FileCheck %s --check-prefix=SKIP
+// SKIP: result: sat
+// SKIP: replay.original: skipped (no lowering
+
+// A dropped memhavoc after a memory join: the root through the block
+// argument. A memhavoc on a sea.mem.const chain stays (not fresh).
+// RUN: sea-vc %t/havoc-phi.mlir --lower --replay-original | FileCheck %s --check-prefix=HPHI
+// HPHI: replay.original: status=assert-failed {{.*}} match=yes {{.*}}unmapped=0
+// RUN: sea-vc %t/havoc-const.mlir --lower --replay-original | FileCheck %s --check-prefix=HCONST
+// HCONST: replay.original: status=assert-failed {{.*}} match=yes {{.*}}unmapped=0
+
+// sea-lower-fat-pointers gives a companion the number of the dropped
+// memhavoc (site 3): a site is mapped by kind and name too.
+// RUN: sea-vc %t/siteclash.mlir --lower --replay-original | FileCheck %s --check-prefix=CLASH
+// CLASH: replay.original: status=assert-failed {{.*}} match=yes {{.*}}unmapped=0
+
+// Two asserts at one location, or with none: told apart by their ids. The
+// placed program fails the second (one past the end of a is b), the
+// abstract one the first: exit 6.
+// RUN: bash -c 'sea-vc %t/same-loc.mlir --lower --replay-original > %t.same.out 2>&1; test $? -eq 6'
+// RUN: FileCheck %s --check-prefix=IDS < %t.same.out
+// RUN: bash -c 'sea-vc %t/no-loc.mlir --lower --replay-original > %t.noloc.out 2>&1; test $? -eq 6'
+// RUN: FileCheck %s --check-prefix=IDS < %t.noloc.out
+// IDS: replay.original: status=assert-failed {{.*}} match=no
+// IDS: replay.original: expected: {{.*}} assert=1
+// IDS: replay.original: got: {{.*}} assert=0
+// IDS: [vc.replay-original-mismatch]
+
+// jsonl carries the same line.
+// RUN: sea-vc %t/compare.mlir --lower --replay-original > %t.cmp.txt || true
+// RUN: sea-vc %t/compare.mlir --lower --replay-original --format=jsonl > %t.cmp.jsonl || true
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.cmp.txt --jsonl %t.cmp.jsonl \
+// RUN:   --require replay-original:status,at,match,nondets,cells,defaulted,unmapped,expected,got
+// REQUIRES: z3
+
+//--- cell.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %p = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [2] : i64
+  %c3 = sea.const 3 : i64
+  %o = sea.and %i, %c3 : i64
+  %q = sea.ptr.add %p, %o : !sea.ptr<64>, i64
+  %x = sea.load %m0[%q] : !m -> i8
+  %k = sea.const 42 : i8
+  %ok = sea.icmp ne, %x, %k : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- wide.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c8 = sea.const 8 : i64
+  %c4 = sea.const 4 : i64
+  %p = sea.malloc %c8 align 8 [1] : i64 -> !sea.ptr<64>
+  %q = sea.ptr.add %p, %c4 : !sea.ptr<64>, i64
+  %x = sea.load %m0[%q] align 4 : !m -> i32
+  %k = sea.const 0x01020304 : i32
+  %ok = sea.icmp ne, %x, %k : i32
+  sea.assert %ok
+  sea.halt
+}
+
+//--- havoc.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %p = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %m1 = sea.memhavoc %m0[%p], %c4 [2] inplace : !m
+  %x = sea.load %m1[%p] : !m -> i8
+  %k = sea.const 9 : i8
+  %ok = sea.icmp ne, %x, %k : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- compare.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @ope {
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 16 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c16 align 16 [2] : i64 -> !sea.ptr<64>
+  %c = sea.malloc %c16 align 16 [3] : i64 -> !sea.ptr<64>
+  %v7 = sea.const 7 : i8
+  %m1 = sea.store %m0[%b], %v7 inplace : !m, i8
+  %e = sea.ptr.add %a, %c16 : !sea.ptr<64>, i64
+  %eq = sea.ptr.cmp eq, %e, %b : !sea.ptr<64>
+  %s = sea.select %eq, %b, %c : !sea.ptr<64>
+  %x = sea.load %m1[%s] : !m -> i8
+  %ok = sea.icmp eq, %x, %z : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- oob.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %p = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [2] : i64
+  %lo = sea.icmp uge, %i, %c4 : i64
+  sea.assume %lo
+  %c8 = sea.const 8 : i64
+  %hi = sea.icmp ult, %i, %c8 : i64
+  sea.assume %hi
+  %q = sea.ptr.add %p, %i : !sea.ptr<64>, i64
+  %x = sea.load %m0[%q] : !m -> i8
+  %k = sea.const 3 : i8
+  %ok = sea.icmp ne, %x, %k : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- concrete.mlir
+!m = !sea.mem<!sea.addr<8>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %ai = sea.nondet "a" [1] : i8
+  %a = sea.addr.from_int %ai : i8 to !sea.addr<8>
+  %x = sea.load %m0[%a] : !m -> i8
+  %k = sea.const 5 : i8
+  %ok = sea.icmp ne, %x, %k : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- toint.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 16 [1] : i64 -> !sea.ptr<64>
+  %ia = sea.ptr.to_int %a : !sea.ptr<64> to i64
+  %z = sea.const 0 : i64
+  %ok = sea.icmp eq, %ia, %z : i64
+  sea.assert %ok
+  sea.halt
+}
+
+//--- havoc-phi.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c = sea.nondet "c" [5] : i1
+  %c1 = sea.const 1 : i64
+  %g = sea.malloc %c1 align 1 [6] : i64 -> !sea.ptr<64>
+  %v = sea.const 1 : i8
+  sea.cond_br %c, ^l, ^r
+^l:
+  %m1 = sea.store %m0[%g], %v inplace : !m, i8
+  sea.br ^j(%m1 : !m)
+^r:
+  sea.br ^j(%m0 : !m)
+^j(%mj: !m):
+  %c4 = sea.const 4 : i64
+  %p = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %m2 = sea.memhavoc %mj[%p], %c4 [2] inplace : !m
+  %x = sea.load %m2[%p] : !m -> i8
+  %k = sea.const 9 : i8
+  %ok = sea.icmp ne, %x, %k : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- havoc-const.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %z = sea.const 9 : i8
+  %m0 = sea.mem.const %z : !m
+  %c4 = sea.const 4 : i64
+  %p = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %m1 = sea.memhavoc %m0[%p], %c4 [2] inplace : !m
+  %x = sea.load %m1[%p] : !m -> i8
+  %k = sea.const 9 : i8
+  %ok = sea.icmp ne, %x, %k : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- siteclash.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %c8 = sea.const 8 : i64
+  %p = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %q = sea.malloc %c8 align 8 [2] : i64 -> !sea.ptr<64>
+  %m1 = sea.memhavoc %m0[%p], %c4 [3] inplace : !m
+  %m2 = sea.store %m1[%q], %p inplace : !m, !sea.ptr<64>
+  %r = sea.load %m2[%q] : !m -> !sea.ptr<64>
+  %b = sea.ptr.base %r : !sea.ptr<64>
+  %x = sea.load %m2[%b] : !m -> i8
+  %k = sea.const 9 : i8
+  %ok = sea.icmp ne, %x, %k : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- same-loc.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 16 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c16 align 16 [2] : i64 -> !sea.ptr<64>
+  %e = sea.ptr.add %a, %c16 : !sea.ptr<64>, i64
+  %eq = sea.ptr.cmp eq, %e, %b : !sea.ptr<64>
+  sea.assert %eq loc("x.c":5:3)
+  %t = sea.const 1 : i1
+  %ne = sea.xor %eq, %t : i1
+  sea.assert %ne loc("x.c":5:3)
+  sea.halt
+}
+
+//--- no-loc.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 16 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c16 align 16 [2] : i64 -> !sea.ptr<64>
+  %e = sea.ptr.add %a, %c16 : !sea.ptr<64>, i64
+  %eq = sea.ptr.cmp eq, %e, %b : !sea.ptr<64>
+  sea.assert %eq loc(unknown)
+  %t = sea.const 1 : i1
+  %ne = sea.xor %eq, %t : i1
+  sea.assert %ne loc(unknown)
+  sea.halt
+}
+
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

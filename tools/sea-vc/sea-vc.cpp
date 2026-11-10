@@ -108,6 +108,15 @@ static cl::opt<bool> lowerOpt(
              "=false keeps every op)"),
     cl::init(true));
 
+static cl::opt<bool> replayOriginalOpt(
+    "replay-original",
+    cl::desc("With --lower (or --sink-assumes), on sat: also run the input "
+             "program as it was before any pass on the model's inputs "
+             "(nondet sites; cells <object>+<offset> at the placed bases) "
+             "and check that it fails the same assertion "
+             "(replay.original:; exit 6 if not: a lowering bug)"),
+    cl::init(false));
+
 static cl::opt<unsigned> widenMemory(
     "widen-memory",
     cl::desc("With --lower: give byte memories whose accesses are all "
@@ -688,7 +697,8 @@ static cl::opt<bool> vcgenOnly(
 static sea::log::Tag logPhase(
     "vc.phase", 1,
     "the start and end of each sea-vc phase (lower, encode, simplify, "
-    "solver-term, ackermann, solve, replay); the end with time and sizes");
+    "solver-term, ackermann, solve, replay, replay-original); the end with "
+    "time and sizes");
 static sea::log::Tag logSolve("vc.solve", 1,
                               "each solver call of the verdict: backend, "
                               "result, time, Expr nodes made so far");
@@ -698,7 +708,7 @@ static cl::opt<bool> progress(
     cl::desc("Log the start and end of each phase on stderr, or the log "
              "file: an alias of --log=vc.phase (=false: vc.phase:0) (lower, "
              "encode, simplify, solver-term, "
-             "ackermann, solve, replay)"),
+             "ackermann, solve, replay, replay-original)"),
     cl::init(false), cl::cb<void, bool>([](bool on) {
       sea::log::select(on ? "vc.phase" : "vc.phase:0", "--progress");
     }));
@@ -1487,6 +1497,41 @@ OUTPUT (stdout, `key: value` lines):
                                   pointer loads the run executed; the sat
                                   is confirmed (exit 0) iff one fails, else
                                   vc.replay-no-failure, exit 2)
+  replay.original: status=<s> at=<file:line:col|-> match=yes|no|undetermined
+      nondets=<n> cells=<n> defaulted=<n> unmapped=<n> [earlier-version-loads=<n>]
+                                  (--replay-original, sat confirmed by the
+                                  replay above: the input program as it
+                                  was before any pass, run on the model's
+                                  inputs (nondets by site; a cell
+                                  <object>+<offset> at the object's placed
+                                  base; widened words split little-endian),
+                                  deferring memory-safety violations.
+                                  match=yes: it fails the same assertion
+                                  (status assert-failed, or memory-error
+                                  that reached it): the same id, which
+                                  each sea.assert gets before the clone
+                                  (attribute sea.assert_id, kept by
+                                  sea-merge-asserts on its branches); an
+                                  assert without one by its location, if
+                                  no other
+                                  assert has it. defaulted: inputs the
+                                  model leaves unconstrained, unmapped:
+                                  sites (kind, number, callee / name) or
+                                  objects the lowered program has not;
+                                  both read as 0. undetermined: the
+                                  interpreter cannot run it (ptr.to_int
+                                  before placement, ...), it loads an
+                                  earlier memory version, it read an
+                                  unmapped input, or the assert cannot be
+                                  told apart: warning
+                                  vc.replay-original-undetermined, exit
+                                  unchanged. no: exit 6, or 4 after a
+                                  memory-safety violation. Not a match:
+                                  `replay.original: expected: <loc>
+                                  [assert=<id>]`, `got:`, `message:` lines
+                                  follow)
+  replay.original: skipped (<reason>)   (no lowering ran, a check job, or
+                                  --ptr-companion=check)
   assume.memset-bound: count=<n> bound=<K>   (n > 0: --lower without --seam
                                   expanded n symbolic-length memsets /
                                   memmoves with assume(len <= K), the
@@ -1754,6 +1799,10 @@ Kinds and fields:
   mismatch      def (`<op> <loc>`), type, interp, model (null: none),
                 [obj + off] (an address: the object it points into)
   no-clobber-violated  loc (the load's file:line:col)
+  replay-original  (--replay-original) status, at, match, nondets, cells,
+                defaulted, unmapped, [earlier_version_loads], [expected,
+                got, message] (not a match); skipped: status `skipped`,
+                reason; one record for the `replay.original:` lines
   smt2          (--smt2) the query in text; the statistics follow as
                 records on stdout (text mode: stderr)
   print         path (scope.tag[.leaf|[i]]), [scope], [at], [at_inlined],
@@ -1804,7 +1853,14 @@ hold, the answer is inconclusive, the program has a memory-safety error
 (`seam.inb-violation: <message>`, `seam.inb-violation-at: <loc>`; the
 abstract program is run with the model's nondet values, and only a run that
 reads no nondet memory cell is the model's execution: otherwise
-`seam.inb-violation: undetermined (...)` and the replay's own status).
+`seam.inb-violation: undetermined (...)` and the replay's own status);
+with --replay-original also: the original program's run went past a
+memory-safety violation and did not fail the same assertion
+(vc.replay-original-memory-error). 6 (--replay-original) sat confirmed on
+the lowered program, but the original program on the same inputs does not
+fail the same assertion (vc.replay-original-mismatch): the lowering changed
+what the program does, a bug in a pass, or a program whose behavior depends
+on placement (a pointer compare across objects).
 )";
 
 /// --version: the solvers linked in (their library versions at run time)
@@ -2108,6 +2164,14 @@ int main(int argc, char **argv) {
                      "(each drops the program's asserts): run one at a time");
     return 1;
   }
+  // --replay-original: the input before any pass of sea-vc
+  // (each assert tagged with its id first, in both copies: tagAsserts)
+  OwningOpRef<ModuleOp> originalModule;
+  if (replayOriginalOpt) {
+    for (auto p : module->getOps<sea::ProgramOp>())
+      sea::tagAsserts(p);
+    originalModule = module->clone();
+  }
   if (printRefs != sea::PrintRefs::AsIs) {
     PassManager pm(&context);
     sea::addPrintRefsPass(pm, printRefs);
@@ -2186,6 +2250,173 @@ int main(int argc, char **argv) {
   // a sat answer under A-PTRINT: rerun with the exact companion (the
   // counterexample may rest on the premise)
   constexpr int kRetryExactCompanion = -3;
+  // --replay-original: the confirmed counterexample of the lowered program,
+  // run on the input program as it was before any pass (sea::replayOriginal).
+  // It must fail the same assertion (its own location, stopLocOf): else the
+  // lowering changed what the program does on these inputs (exit 6). A run
+  // that went past a memory-safety violation (deferred) and fails elsewhere
+  // has an error placement defines and the abstract program does not: exit 4.
+  auto replayOnOriginal = [&](sea::solver::Model &replayModel,
+                              sea::SeaOpSem &sem, sea::OpSemContext &ctx,
+                              const sea::RunResult &lowRun,
+                              bool ptrIntCheck) -> int {
+    const char *skip = nullptr;
+    if (!lower && !sinkAssumes)
+      skip = "no lowering: the same program";
+    else if (checkAlign || checkPtrIndex)
+      skip = "a check job: its assertions are not the program's";
+    else if (ptrIntCheck)
+      skip = "--ptr-companion=check: the property is A-PTRINT";
+    if (skip) {
+      sea::out::Record rec("replay-original");
+      rec.str("status", "skipped").str("reason", skip);
+      rec.text = std::string("replay.original: skipped (") + skip + ")";
+      gOut->emit(rec);
+      gOut->flush();
+      return 0;
+    }
+    sea::ProgramOp orig;
+    for (auto p : originalModule->getOps<sea::ProgramOp>())
+      if (p.getSymName() == program.getSymName())
+        orig = p;
+    if (!orig) {
+      sea::diag::error("vc.replay-original-impossible",
+                       "no program named '" + program.getSymName().str() +
+                           "' in the input");
+      return 1;
+    }
+    Phase phase("replay-original");
+    sea::OriginalReplay o =
+        sea::replayOriginal(orig, program, replayModel, sem, ctx);
+    std::optional<Location> origLoc =
+        o.run.status == sea::RunStatus::MemoryError &&
+                o.run.reachedStatus == sea::RunStatus::AssertFailed
+            ? sea::reachedLocOf(o.run)
+        : o.run.status == sea::RunStatus::AssertFailed ? sea::stopLocOf(o.run)
+                                                       : std::nullopt;
+    std::optional<Location> lowLoc = sea::stopLocOf(lowRun);
+    auto locText = [](std::optional<Location> l) {
+      std::string t = l ? sea::formatLoc(*l) : "";
+      return t.empty() ? std::string("-") : t;
+    };
+    auto posText = [](std::optional<Location> l) {
+      std::optional<FileLineColLoc> f = l ? sea::fileLocOf(*l) : std::nullopt;
+      return f ? sea::fileLocText(*f) : std::string("-");
+    };
+    // The same assert: by the id tagAsserts gave it (before the clone).
+    // Without ids on both sides (a pass rebuilt the branch that carried
+    // it), by
+    // its location text only when no other assert of the original shares
+    // it and it is not empty: else the assert cannot be told apart.
+    std::optional<uint64_t> origId =
+        origLoc ? sea::assertIdOf(o.run) : std::nullopt;
+    std::optional<uint64_t> lowId =
+        lowLoc ? sea::assertIdOf(lowRun) : std::nullopt;
+    bool match = false, ambiguous = false;
+    if (origId && lowId) {
+      match = *origId == *lowId;
+    } else if (origLoc && lowLoc) {
+      std::string text = locText(lowLoc);
+      unsigned same = 0;
+      orig.walk([&](sea::AssertOp a) { same += locText(a.getLoc()) == text; });
+      ambiguous = text == "-" || same != 1;
+      match = !ambiguous && locText(origLoc) == text;
+    }
+    // Not a verdict on the lowering: the interpreter cannot run the original
+    // program on these inputs (ptr.to_int before placement, a pointer load
+    // of nondet cells, a limit), or the run read an earlier memory version
+    // (the in-place interpreter is right only if the program's Mem-SSA
+    // no-clobber claim holds; the lowered program's replay validates it,
+    // this one has no model of the original to compare with).
+    const char *undetermined = nullptr;
+    if (ambiguous)
+      undetermined = "the failing assert has no id and its location is empty "
+                     "or shared with another assert";
+    else if (!match && o.unmapped)
+      undetermined = "inputs the lowered program has no site or object for "
+                     "read as 0 (unmapped)";
+    else if (!match && o.run.status == sea::RunStatus::Error &&
+             !sea::isMemorySafetyKind(o.run.errorKind))
+      undetermined = "the original program cannot be run on these inputs";
+    else if (!match && !o.run.earlierVersionLoads.empty())
+      undetermined = "the original program loads an earlier memory version "
+                     "(a Mem-SSA no-clobber claim the in-place interpreter "
+                     "cannot check)";
+    const char *matchText = match          ? "yes"
+                            : undetermined ? "undetermined"
+                                           : "no";
+    SEA_PHASE_END(phase)
+        .kv("status", sea::stringifyRunStatus(o.run.status))
+        .kv("match", matchText);
+    {
+      sea::out::Record rec("replay-original");
+      rec.str("status", sea::stringifyRunStatus(o.run.status))
+          .str("at", posText(origLoc))
+          .str("match", matchText)
+          .num("nondets", o.nondets)
+          .num("cells", o.cells)
+          .num("defaulted", o.defaulted)
+          .num("unmapped", o.unmapped);
+      raw_string_ostream os(rec.text);
+      os << "replay.original: status=" << sea::stringifyRunStatus(o.run.status)
+         << " at=" << posText(origLoc) << " match=" << matchText
+         << " nondets=" << o.nondets << " cells=" << o.cells
+         << " defaulted=" << o.defaulted << " unmapped=" << o.unmapped;
+      if (!o.run.earlierVersionLoads.empty()) {
+        os << " earlier-version-loads=" << o.run.earlierVersionLoads.size();
+        rec.num("earlier_version_loads", o.run.earlierVersionLoads.size());
+      }
+      if (!match) {
+        auto withId = [&](std::optional<Location> l,
+                          std::optional<uint64_t> id) {
+          return locText(l) + (id ? " assert=" + std::to_string(*id) : "");
+        };
+        os << "\nreplay.original: expected: " << withId(lowLoc, lowId)
+           << "\nreplay.original: got: " << withId(origLoc, origId);
+        rec.str("expected", withId(lowLoc, lowId))
+            .str("got", withId(origLoc, origId));
+        if (!o.run.message.empty()) {
+          os << "\nreplay.original: message: " << o.run.message;
+          rec.str("message", o.run.message);
+        }
+      }
+      gOut->emit(rec);
+    }
+    gOut->flush();
+    if (match)
+      return 0;
+    if (undetermined) {
+      sea::diag::warn("vc.replay-original-undetermined",
+                      Twine("sat, but the replay on the original program "
+                            "decides nothing: ") +
+                          undetermined +
+                          (o.run.message.empty() ? "" : ": " + o.run.message));
+      return 0;
+    }
+    if (o.run.deferredCount) {
+      sea::diag::error(
+          "vc.replay-original-memory-error",
+          "sat, but the original program makes a memory-safety violation on "
+          "the model's inputs (" +
+              o.run.deferredMessage +
+              ") and then does not fail the same assertion: placement "
+              "defines what the program does not; the answer is "
+              "inconclusive and the program has a memory-safety error",
+          o.run.deferredAt ? std::optional<Location>(o.run.deferredAt->getLoc())
+                           : std::nullopt);
+      return 4;
+    }
+    sea::diag::error(
+        "vc.replay-original-mismatch",
+        "sat, and the lowered program's replay confirms it, but the original "
+        "program on the same inputs ends " +
+            sea::stringifyRunStatus(o.run.status) + " at " + locText(origLoc) +
+            ", not at the failing assertion " + locText(lowLoc) +
+            ": the lowering changed what the program does (a bug in a pass, "
+            "or a program whose behavior depends on where placement puts "
+            "its objects, such as a pointer compare across objects)");
+    return 6;
+  };
   CompanionMode companionMode = ptrCompanion;
   bool strideOn = ackStride;
   unsigned vcRuns = 0; // vc.phase run=
@@ -4031,6 +4262,8 @@ int main(int argc, char **argv) {
     }
     if (ackModel && ackModel->inconsistent())
       return 2;
+    if (originalModule)
+      return replayOnOriginal(replayModel, sem, ctx, replay.run, ptrIntCheck);
     return 0;
   };
   int rc = runVc(seamInb, seam && seamInb, "");
