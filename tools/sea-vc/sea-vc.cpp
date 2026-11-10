@@ -119,6 +119,20 @@ static cl::opt<bool> addr0IsNull(
              "warning vc.addr0-is-null-off)"),
     cl::init(true));
 
+enum class MemhavocNull { Noop, Error };
+static cl::opt<MemhavocNull> memhavocNull(
+    "memhavoc-null",
+    cl::desc("sea.memhavoc of the null pointer in an abstract program, in "
+             "the lowering (sea-guard-null-memhavoc) and the replays: "
+             "noop (default; an open semantics decision, counted as "
+             "`assume.memhavoc-null-noop: uses=<n>`, warning "
+             "interp.memhavoc-null-noop) or error (a memory-safety error, "
+             "as any access through null)"),
+    cl::values(clEnumValN(MemhavocNull::Noop, "noop", "a no-op"),
+               clEnumValN(MemhavocNull::Error, "error",
+                          "a memory-safety error")),
+    cl::init(MemhavocNull::Noop));
+
 static cl::opt<bool> replayOriginalOpt(
     "replay-original",
     cl::desc("With --lower (or --sink-assumes), on sat: also run the input "
@@ -1543,6 +1557,19 @@ OUTPUT (stdout, `key: value` lines):
                                   follow)
   replay.original: skipped (<reason>)   (no lowering ran, a check job, or
                                   --ptr-companion=check)
+  assume.memhavoc-null-noop: vc sites=<n>   (n > 0: --lower of an abstract
+                                  program guarded n memhavocs whose pointer
+                                  may be null (sea-guard-null-memhavoc): the
+                                  VC runs them only when it is not null, as
+                                  the interpreter; --memhavoc-null=error:
+                                  no guard, the VC havocs from address 0)
+  assume.memhavoc-null-noop: uses=<n>   (after replay.original or
+                                  seam.inb-violation, n > 0: memhavocs of
+                                  null its run executed as no-ops, an open
+                                  semantics decision; BRUNCH_STAT
+                                  assume.memhavoc-null-noop-uses;
+                                  --memhavoc-null=error: a memory-safety
+                                  error)
   assume.addr0-is-null: uses=<n>   (after replay.original, n > 0: steps
                                   of its run that rested on the named
                                   assumption addr0-is-null, address 0 is
@@ -2236,7 +2263,8 @@ int main(int argc, char **argv) {
         /*fold=*/true, widenMemory,
         /*expandMemSet=*/!seam && !lambdaMem, widenMemoryReport,
         /*keepByteWide=*/seam && seamWide, checkAlign,
-        checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt);
+        checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt,
+        memhavocNull == MemhavocNull::Noop);
     if (failed(configurePM(pm)) || failed(pm.run(*module)))
       return 1;
     SEA_PHASE_END(lowerPhase)
@@ -2275,6 +2303,12 @@ int main(int argc, char **argv) {
     if (seg.getKind() == "null")
       nullUses += std::distance(seg->use_begin(), seg->use_end());
   });
+  // the memhavocs sea-guard-null-memhavoc guarded (memhavoc of null is a
+  // no-op in the VC too)
+  uint64_t nullGuards = 0;
+  if (auto n =
+          program->getAttrOfType<IntegerAttr>(sea::kMemhavocNullGuardsAttr))
+    nullGuards = n.getInt();
   // the memhavocs sea-drop-fresh-memhavoc dropped under A-INB
   uint64_t dropFreshInb = 0;
   if (auto n = program->getAttrOfType<IntegerAttr>(sea::kDropFreshInbAttr))
@@ -2343,7 +2377,8 @@ int main(int argc, char **argv) {
     }
     Phase phase("replay-original");
     sea::OriginalReplay o =
-        sea::replayOriginal(orig, program, replayModel, sem, ctx, addr0IsNull);
+        sea::replayOriginal(orig, program, replayModel, sem, ctx, addr0IsNull,
+                            memhavocNull == MemhavocNull::Noop);
     std::optional<Location> origLoc =
         o.run.status == sea::RunStatus::MemoryError &&
                 o.run.reachedStatus == sea::RunStatus::AssertFailed
@@ -2438,9 +2473,19 @@ int main(int argc, char **argv) {
       }
       gOut->emit(rec);
     }
-    if (o.run.addr0IsNullUses)
+    if (o.run.addr0IsNullUses) {
       gOut->emit(sea::out::parseLine("assume.addr0-is-null: uses=" +
                                      std::to_string(o.run.addr0IsNullUses)));
+      brunchStat(vout(), "assume.addr0-is-null-uses",
+                 Twine(o.run.addr0IsNullUses));
+    }
+    if (o.run.memhavocNullNoopUses) {
+      gOut->emit(
+          sea::out::parseLine("assume.memhavoc-null-noop: uses=" +
+                              std::to_string(o.run.memhavocNullNoopUses)));
+      brunchStat(vout(), "assume.memhavoc-null-noop-uses",
+                 Twine(o.run.memhavocNullNoopUses));
+    }
     gOut->flush();
     if (match)
       return 0;
@@ -3295,6 +3340,10 @@ int main(int argc, char **argv) {
       // target: no check discharges it)
       if (lower)
         os << "assume.addr0-is-null: vc null-uses=" << nullUses << "\n";
+      // the open decision memhavoc(null) = no-op, in the VC: the memhavocs
+      // whose pointer may be null run only when it is not
+      if (nullGuards)
+        os << "assume.memhavoc-null-noop: vc sites=" << nullGuards << "\n";
       if (sem.seam()) {
         // the assumption the answer depends on, always visible
         if (inb)
@@ -3344,14 +3393,19 @@ int main(int argc, char **argv) {
         auto [key, value] = line.split(": ");
         if (key == "seam.inb" || key.starts_with("assume.")) {
           // a leading state word (assumed / off / vc), then the k=v
-          // tokens: `<key> <state>`, `<key>-<k> <v>` (words of notes in
+          // tokens: `<key> <state>`, `<key>-<k> <v>` (notes in
           // parentheses are left out)
           SmallVector<StringRef> words;
           value.split(words, ' ', -1, /*KeepEmpty=*/false);
+          bool inNote = false; // a parenthesised note: left out whole
           for (auto [i, w] : llvm::enumerate(words)) {
+            if (inNote || w.starts_with("(")) {
+              inNote = !w.ends_with(")");
+              continue;
+            }
             auto [k, v] = w.split('=');
-            if (!v.empty() && !k.starts_with("("))
-              brunchStat(os, key + "-" + k, v.rtrim(')'));
+            if (!v.empty())
+              brunchStat(os, key + "-" + k, v);
             else if (i == 0)
               brunchStat(os, key, w);
           }
@@ -3998,7 +4052,8 @@ int main(int argc, char **argv) {
                    : solvedModel;
     Phase replayPhase("replay");
     sea::ReplayResult replay =
-        sea::replayAndValidate(program, replayModel, sem, ctx, addr0IsNull);
+        sea::replayAndValidate(program, replayModel, sem, ctx, addr0IsNull,
+                               memhavocNull == MemhavocNull::Noop);
     SEA_PHASE_END(replayPhase)
         .kv("status", sea::stringifyRunStatus(replay.run.status))
         .kv("checked", replay.checked)
@@ -4104,6 +4159,7 @@ int main(int argc, char **argv) {
       sea::RunOptions printOptions;
       printOptions.printLimit = printLimit;
       printOptions.addr0IsNull = addr0IsNull;
+      printOptions.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
       sea::RunResult printed =
           sea::replayPrints(program, replayModel, sem, ctx, printOptions);
       sea::printPrintRecords(*gOut, printed, printMode, printLocs);
@@ -4259,9 +4315,13 @@ int main(int argc, char **argv) {
       }
       sea::RunOptions absOptions;
       absOptions.addr0IsNull = addr0IsNull;
+      absOptions.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
       sea::RunResult abs = sea::interpret(absProg, inputs, absOptions);
       if (abs.addr0IsNullUses)
         vout() << "assume.addr0-is-null: uses=" << abs.addr0IsNullUses << "\n";
+      if (abs.memhavocNullNoopUses)
+        vout() << "assume.memhavoc-null-noop: uses=" << abs.memhavocNullNoopUses
+               << "\n";
       if (sea::isOutOfObjectAccess(abs)) {
         vout() << "seam.inb-violation: " << abs.message << "\n";
         if (abs.at)

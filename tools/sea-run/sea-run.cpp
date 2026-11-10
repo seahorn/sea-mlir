@@ -171,6 +171,19 @@ static cl::opt<bool> addr0IsNull(
              "environments)"),
     cl::init(true));
 
+enum class MemhavocNull { Noop, Error };
+static cl::opt<MemhavocNull> memhavocNull(
+    "memhavoc-null",
+    cl::desc("sea.memhavoc of the null pointer in an abstract program: "
+             "noop (default; an open semantics decision, counted as "
+             "`assume.memhavoc-null-noop: uses=<n>`, warning "
+             "interp.memhavoc-null-noop) or error (a memory-safety error, "
+             "as any access through null)"),
+    cl::values(clEnumValN(MemhavocNull::Noop, "noop", "a no-op"),
+               clEnumValN(MemhavocNull::Error, "error",
+                          "a memory-safety error")),
+    cl::init(MemhavocNull::Noop));
+
 static cl::opt<bool> fuzzSites(
     "fuzz-sites",
     cl::desc("List the input sites (nondet values, memory sources) and exit"),
@@ -230,6 +243,9 @@ non-zero, and reading a pointer cell as an integer stop it too (no
 addresses before placement: limits, never deferred), except for null under
 addr0-is-null (default on: address 0 is null; zero bytes read as a pointer
 are null, null's bytes read as an integer are 0, ptr.to_int of null is 0).
+A sea.memhavoc of the null pointer (offset 0) is a no-op by default (an open
+semantics decision: counted, warned interp.memhavoc-null-noop;
+--memhavoc-null=error makes it a memory-safety error).
 
 DEFERRED (--defer-memory-errors; docs/reference/fuzzing.md): a run may
 reach a memory-safety violation and later an assume that blocks it
@@ -325,6 +341,11 @@ OUTPUT (stdout, one `key: value` per line, stable order):
                                     bytes loaded as a pointer, null's bytes
                                     loaded as an integer, ptr.to_int of null;
                                     --addr0-is-null=false: they stop the run)
+  assume.memhavoc-null-noop: uses=<n>   (n > 0: memhavocs of the null
+                                    pointer the run executed as no-ops, an
+                                    open semantics decision;
+                                    --memhavoc-null=error: a memory-safety
+                                    error)
 Values print as unsigned decimal. assume-blocked means the run is
 infeasible (not a bug); assert-failed means the run reached a failing
 sea.assert (a bug if the inputs are feasible).
@@ -497,6 +518,12 @@ prints; the fuzzer checks the replay ends the same way), then stat lines:
   fuzz.deferred: <runs> memory-error=<n> assume-blocked=<n> step-limit=<n>
                  error=<n>       (--defer-memory-errors: runs that went
                                  past a violation, by final status)
+  fuzz.assumptions: addr0-is-null=<uses> addr0-is-null-runs=<n>
+                    memhavoc-null-noop=<uses> memhavoc-null-noop-runs=<n>
+                                 (any > 0: what the trials rested on, the
+                                 assumption addr0-is-null and the open
+                                 decision memhavoc(null) = no-op; also in
+                                 a failure file's `# assume:` header)
   fuzz.coverage: blocks=<n> blocks-total=<n> edges=<n> assumes=<n>
                  assumes-total=<n>  (edges include the entry; assumes:
                                      sea.assume ops that held at least once)
@@ -583,6 +610,9 @@ Response (kind "response"): request (1-based line count), [id], then the
 fields of a jsonl status record (status, loc = the at: line, at / op /
 path = assert-at / assert-op / assert-path, reached*, message, deferred*;
 text = the status lines of a plain run), and:
+  addr0_is_null, memhavoc_null_noop   the run's uses of the assumption
+                        addr0-is-null and of the open decision
+                        memhavoc(null) = no-op (0: none)
   blocked, blocked_at   assume-blocked: the id and <where> of the
                         blocking op; join on the id (the number of
                         --fuzz-sites' fuzz.assume line), not on the
@@ -691,6 +721,9 @@ static void printRun(sea::out::Emitter &out, sea::ProgramOp program,
   if (r.addr0IsNullUses)
     out.emit(sea::out::parseLine("assume.addr0-is-null: uses=" +
                                  std::to_string(r.addr0IsNullUses)));
+  if (r.memhavocNullNoopUses)
+    out.emit(sea::out::parseLine("assume.memhavoc-null-noop: uses=" +
+                                 std::to_string(r.memhavocNullNoopUses)));
 }
 
 /// One record: the status and where the run stopped (the status / at /
@@ -834,6 +867,7 @@ static int runFuzz(sea::ProgramOp program) {
   fo.keepGoing = keepGoing;
   fo.deferMemoryErrors = deferMemoryErrors;
   fo.addr0IsNull = addr0IsNull;
+  fo.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
   fo.outDir = fuzzOut;
   fo.maxSteps = maxSteps;
   FailureOr<sea::FuzzReport> rep = sea::fuzz(program, seeds, fo, error);
@@ -853,6 +887,7 @@ static int runFuzz(sea::ProgramOp program) {
     options.maxSteps = maxSteps;
     options.deferMemoryErrors = deferMemoryErrors;
     options.addr0IsNull = addr0IsNull;
+    options.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
     options.prints = printMode != sea::PrintMode::Off;
     options.printLimit = printLimit;
     sea::RunResult r = sea::interpret(program, source, options);
@@ -929,6 +964,11 @@ static int runFuzz(sea::ProgramOp program) {
          << rep->deferredStatusCount[static_cast<unsigned>(st)];
     os << "\n";
   }
+  if (rep->addr0IsNullUses || rep->memhavocNullNoopUses)
+    os << "fuzz.assumptions: addr0-is-null=" << rep->addr0IsNullUses
+       << " addr0-is-null-runs=" << rep->addr0IsNullRuns
+       << " memhavoc-null-noop=" << rep->memhavocNullNoopUses
+       << " memhavoc-null-noop-runs=" << rep->memhavocNullNoopRuns << "\n";
   os << "fuzz.coverage: blocks=" << rep->blocksHit
      << " blocks-total=" << rep->blocksTotal << " edges=" << rep->edgesHit
      << " assumes=" << rep->assumesPassed
@@ -1077,6 +1117,7 @@ static int runServe(sea::ProgramOp program) {
   fo.maxSteps = maxSteps;
   fo.deferMemoryErrors = deferMemoryErrors;
   fo.addr0IsNull = addr0IsNull;
+  fo.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
   sea::FuzzServer server(program, fo);
   sea::out::Emitter out(outs(), sea::out::Format::Jsonl);
   uint64_t requests = 0, errors = 0;
@@ -1111,6 +1152,8 @@ static int runServe(sea::ProgramOp program) {
     if (id)
       rec.set("id", formatv("{0}", *id).str());
     rec.add(st.fields);
+    rec.num("addr0_is_null", r.addr0IsNullUses)
+        .num("memhavoc_null_noop", r.memhavocNullNoopUses);
     if (res->blocked) {
       std::string at = sea::formatLoc(r.at->getLoc());
       rec.num("blocked", *res->blocked)
@@ -1260,6 +1303,7 @@ int main(int argc, char **argv) {
   options.printLimit = printLimit;
   options.deferMemoryErrors = deferMemoryErrors;
   options.addr0IsNull = addr0IsNull;
+  options.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
   sea::out::Emitter out(outs(), outFormat);
   // `value: <op> <loc> : <type> = `
   auto traceHead = [&](Value val, sea::out::Record &rec) {

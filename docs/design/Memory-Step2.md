@@ -79,6 +79,26 @@ integer (type punning), like `ptr.to_int`, stops the abstract interpreter
 with an error; these programs are checked only after placement, where
 addresses exist.
 
+**Open decision: `sea.memhavoc` of null is a no-op.** SeaHorn programs
+havoc a buffer after an allocation that may fail (`memhavoc(p, n)` with
+`p` null). The interpreter runs a memhavoc whose pointer is null itself
+(offset 0) as a no-op (`RunOptions::memhavocNullNoop`; `--memhavoc-null=
+noop|error` in sea-run and sea-vc, default `noop`). `null + k` is an
+address computed from null, a different case, and stays an error, as
+does a non-null range outside its object. The choice is not in the formal
+semantics yet and is kept visible: each use counts
+(`assume.memhavoc-null-noop: uses=<n>`, BRUNCH_STAT
+`assume.memhavoc-null-noop-uses` in sea-vc) and warns
+`interp.memhavoc-null-noop` once. The VC follows the same rule:
+`sea-guard-null-memhavoc` (in the lowering of abstract programs, after
+`sea-drop-fresh-memhavoc`) puts a memhavoc whose pointer may be null in a
+block of its own, entered only when the pointer is not null, so every
+encoding (store chains, lambdas, SeaM's range terms) leaves memory alone
+for null; sea-vc reports `assume.memhavoc-null-noop: vc sites=<n>`.
+Without the guard (`=error`) the VC would havoc the cells from address 0
+on, which in the compact layout (objects from address 1) are the first
+object's: a spurious `sat`.
+
 **Decided: the named assumption `addr0-is-null`.** Address 0
 is the null pointer. This is almost always true, and false in some
 embedded and kernel environments. Under it the abstract interpreter

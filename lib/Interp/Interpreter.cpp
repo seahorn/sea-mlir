@@ -1257,8 +1257,20 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
   // deferMemoryErrors: an update with a violation does nothing (checked
   // before the length limit: a violation is the program's, whatever the
   // length)
+  // memhavoc(NULL, n), as after a failed allocation: a no-op under
+  // RunOptions::memhavocNullNoop (an open semantics decision, counted and
+  // warned), before any range check or limit. Only null itself: null + k
+  // is an address computed from null, a different case, and stays an
+  // error. A placed program havocs address 0, as the VC does.
+  bool nullNoop = false;
+  if (auto mh = dyn_cast<MemHavocOp>(op);
+      mh && options.memhavocNullNoop && isa<PtrType>(mh.getAddr().getType()) &&
+      !env.lookup(mh.getLen()).isZero()) {
+    Ptr p = ptrs.lookup(mh.getAddr());
+    nullNoop = p.obj == 0 && p.off.getBitWidth() && p.off.isZero();
+  }
   bool skip = false;
-  if (options.deferMemoryErrors) {
+  if (options.deferMemoryErrors && !nullNoop) {
     LogicalResult inObject = success();
     if (auto st = dyn_cast<StoreOp>(op)) {
       Buffer &b = *mems.lookup(mem);
@@ -1310,6 +1322,15 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
   Buffer &buf = **b;
   if (skip)
     return success(); // the new version is the old contents
+  if (nullNoop) {
+    ++result.memhavocNullNoopUses;
+    diag::warn("interp.memhavoc-null-noop",
+               "sea.memhavoc of the null pointer runs as a no-op (an open "
+               "semantics decision; --memhavoc-null=error makes it a "
+               "memory-safety error)",
+               op.getLoc());
+    return success(); // the new version is the old contents
+  }
 
   // Modification tracking: a tracked update that writes at least one byte
   // marks its object.

@@ -1,8 +1,11 @@
 // The substitute effects of deferred violations: an update (store, memset,
 // memmove, memhavoc) with a violation does nothing, so the memory keeps its
 // contents; a bad free does nothing; a load reads 0 or the null pointer.
+// (The memhavoc of null is a violation under --memhavoc-null=error; by
+// default it is a no-op, test/Interp/ptr/memhavoc-null.test.)
 // Every violation is counted, the first is reported.
-// RUN: not sea-run %s --program=updates --defer-memory-errors | FileCheck %s --check-prefix=UPD
+// RUN: not sea-run %s --program=updates --defer-memory-errors --memhavoc-null=error | FileCheck %s --check-prefix=UPD
+// RUN: not sea-run %s --program=updates --defer-memory-errors | FileCheck %s --check-prefix=UPD0
 // RUN: not sea-run %s --program=frees --defer-memory-errors | FileCheck %s --check-prefix=FREE
 // RUN: not sea-run %s --program=ptr_load --defer-memory-errors | FileCheck %s --check-prefix=PTR
 // RUN: not sea-run %s --program=move_src --defer-memory-errors | FileCheck %s --check-prefix=MOVE
@@ -11,10 +14,14 @@
 // The assert holds (the in-bounds byte is intact); the run is a finding at
 // the first violation.
 // UPD: status: memory-error
-// UPD-NEXT: at: loc({{.*}}updates.mlir":[[@LINE+16]]
+// UPD-NEXT: at: loc({{.*}}updates.mlir":[[@LINE+20]]
 // UPD-NEXT: reached: halted
 // UPD-NEXT: message: memory access out of bounds: offset 4 in stack.1 of size 4
 // UPD-NEXT: deferred: 4 kind=out-of-bounds
+// By default the memhavoc of null is a no-op: one violation fewer.
+// UPD0: status: memory-error
+// UPD0: deferred: 3 kind=out-of-bounds
+// UPD0: assume.memhavoc-null-noop: uses=1
 !pm = !sea.mem<!sea.ptr<64>, i8>
 sea.program @updates {
   %z0 = sea.const 0 : i8

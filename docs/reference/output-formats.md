@@ -47,6 +47,8 @@ The main lines of `sea-vc`:
 | `seam.ptrint-replay: loads= holds= violated= unstored=` | `--ptr-companion=check`, `sat`: the split pointer loads of the replay; the `sat` is confirmed if one fails |
 | `assume.a-inb: drop-fresh-memhavoc=<n>` | `--lower` of an abstract program dropped n memhavocs of fresh objects whose no-op rests on A-INB (also without `--seam` and with `--seam-inb=0`); a separate memory-safety check discharges it |
 | `assume.addr0-is-null: vc null-uses=<n>` | `--lower`: placement puts the null object at address 0, so the VC identifies null with address 0 (n: uses of its segment); a fact about the target, not discharged |
+| `assume.memhavoc-null-noop: vc sites=<n>` | `--lower`: memhavocs whose pointer may be null, guarded so that the VC runs them only when it is not (`--memhavoc-null=noop`) |
+| `assume.memhavoc-null-noop: uses=<n>` | after `replay.original:` (and in `sea-run`): memhavocs of the null pointer the run executed as no-ops, an open semantics decision (`--memhavoc-null`) |
 | `assume.addr0-is-null: uses=<n>` | after `replay.original:` (and in `sea-run`): steps of the run that rested on the assumption that address 0 is null; only when there are any |
 | `replay.original: status= at= match= nondets= cells= defaulted= unmapped=` | `--replay-original`, `sat`: the input program before any pass, run on the model's inputs; `match=yes` if it fails the same assertion ([below](#replay-on-the-original-program)) |
 

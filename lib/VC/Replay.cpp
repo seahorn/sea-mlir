@@ -260,7 +260,7 @@ private:
 
 ReplayResult replayAndValidate(ProgramOp program, solver::Model &model,
                                SeaOpSem &sem, OpSemContext &ctx,
-                               bool addr0IsNull) {
+                               bool addr0IsNull, bool memhavocNullNoop) {
   ReplayResult result;
   ModelSource source(model, sem, ctx);
   RunOptions options;
@@ -269,6 +269,7 @@ ReplayResult replayAndValidate(ProgramOp program, solver::Model &model,
   // and without them
   options.prints = false;
   options.addr0IsNull = addr0IsNull;
+  options.memhavocNullNoop = memhavocNullNoop;
   options.warnEarlierVersion = false; // counted: interp.earlier-version-loads
   options.onValue = [&](Value v, const llvm::APInt &interp) {
     ++result.checked;
@@ -482,12 +483,14 @@ std::optional<uint64_t> assertIdOf(const RunResult &run) {
 
 OriginalReplay replayOriginal(ProgramOp original, ProgramOp lowered,
                               solver::Model &model, SeaOpSem &sem,
-                              OpSemContext &ctx, bool addr0IsNull) {
+                              OpSemContext &ctx, bool addr0IsNull,
+                              bool memhavocNullNoop) {
   OriginalSource source(lowered, model, sem, ctx);
   RunOptions options;
   options.prints = false;
   options.deferMemoryErrors = true;
   options.addr0IsNull = addr0IsNull;
+  options.memhavocNullNoop = memhavocNullNoop;
   options.warnEarlierVersion = false; // counted: RunResult::earlierVersionLoads
   OriginalReplay r;
   r.run = interpret(original, source, options);

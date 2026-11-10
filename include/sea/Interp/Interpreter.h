@@ -292,6 +292,9 @@ struct RunResult {
   llvm::SmallVector<mlir::Operation *> earlierVersionLoads;
   /// Steps that rested on addr0-is-null (RunOptions::addr0IsNull).
   uint64_t addr0IsNullUses = 0;
+  /// The memhavocs of null the run executed as no-ops
+  /// (RunOptions::memhavocNullNoop).
+  uint64_t memhavocNullNoopUses = 0;
 };
 
 /// The file location in `loc` (directly, or inside a name / fused /
@@ -438,6 +441,14 @@ struct RunOptions {
   /// Each such step counts (RunResult::addr0IsNullUses). Off: they stop
   /// the run, as without it.
   bool addr0IsNull = true;
+  /// sea.memhavoc of the null pointer (offset 0) in an abstract program:
+  /// a no-op (default; sea-run / sea-vc --memhavoc-null=noop) or a
+  /// memory-safety error, as any access through null (=error). An open
+  /// semantics decision, kept visible: each such memhavoc counts
+  /// (RunResult::memhavocNullNoopUses) and warns interp.memhavoc-null-noop
+  /// once. null + k (k != 0) and a non-null range outside its object stay
+  /// errors; a placed program havocs address 0 as the VC does.
+  bool memhavocNullNoop = true;
 };
 
 //===- Counterexample printing (docs/design/Print.md) ---------------------===//

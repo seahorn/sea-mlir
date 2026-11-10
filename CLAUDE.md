@@ -67,7 +67,9 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   `sea-print-strengthen` / `sea-print-weaken` (counterexample print ops,
   weak = by name vs strong = SSA operands, docs/design/Print.md),
   `sea-drop-fresh-memhavoc` (memhavoc of an object nothing wrote since its
-  allocation is a no-op: removed; others stay); all run before placement
+  allocation is a no-op: removed; others stay), `sea-guard-null-memhavoc`
+  (a memhavoc whose pointer may be null runs only when it is not: the open
+  decision memhavoc(null) = no-op, `--memhavoc-null`); all run before placement
   in the lowering of abstract programs. `Passes.cpp`: registration and
   the VC lowering order (what `sea-vc --lower` runs; upstream `sccp`
   first, to fold values computed from constants; upstream `cse` after it

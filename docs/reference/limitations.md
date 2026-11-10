@@ -30,6 +30,17 @@
   drop-fresh-memhavoc=<n>`, also without `--seam`. A separate
   memory-safety check of the program would discharge it; sea-mlir has
   none yet.
+- Open semantics decision: `sea.memhavoc` of the null pointer is a no-op
+  in the interpreter (`--memhavoc-null=noop`, the default; `=error` makes
+  it a memory-safety error). It is not part of the formal semantics yet,
+  and its consequences are not fully understood, so every run that relies
+  on it prints `assume.memhavoc-null-noop: uses=<n>` and warns
+  `interp.memhavoc-null-noop`. Only null itself: `null + k` and a non-null
+  range outside its object stay errors. The VC follows the same rule: the
+  lowering runs a memhavoc whose pointer may be null only when it is not
+  (`sea-guard-null-memhavoc`, `assume.memhavoc-null-noop: vc sites=<n>`).
+  With `=error` the VC havocs the cells from address 0 on, which may be
+  the first object's in the compact layout.
 - Address 0 is the null pointer (`addr0-is-null`). Placement puts the null
   object at address 0, so every VC of a lowered program rests on it
   (`assume.addr0-is-null: vc null-uses=<n>`), and the replays recover null

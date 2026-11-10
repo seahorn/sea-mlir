@@ -110,7 +110,8 @@ RunResult replayPrints(ProgramOp program, solver::Model &model, SeaOpSem &sem,
 
 ReplayResult replayAndValidate(ProgramOp program, solver::Model &model,
                                SeaOpSem &sem, OpSemContext &ctx,
-                               bool addr0IsNull = true);
+                               bool addr0IsNull = true,
+                               bool memhavocNullNoop = true);
 
 /// A run of the original program (the input before the lowering, sea-vc
 /// --replay-original) on the inputs of the model of the lowered one, and
@@ -148,7 +149,8 @@ std::optional<uint64_t> assertIdOf(const RunResult &run);
 
 OriginalReplay replayOriginal(ProgramOp original, ProgramOp lowered,
                               solver::Model &model, SeaOpSem &sem,
-                              OpSemContext &ctx, bool addr0IsNull = true);
+                              OpSemContext &ctx, bool addr0IsNull = true,
+                              bool memhavocNullNoop = true);
 
 /// The cause of a failed validation when it is the program's own Mem-SSA
 /// no-clobber claim, not the VC (docs/design/Memory.md, "Loads of a version

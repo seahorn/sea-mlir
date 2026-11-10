@@ -96,6 +96,8 @@ struct FuzzOptions {
   bool deferMemoryErrors = false;
   /// RunOptions::addr0IsNull in every trial.
   bool addr0IsNull = true;
+  /// RunOptions::memhavocNullNoop in every trial.
+  bool memhavocNullNoop = true;
   /// Write failing and new-coverage inputs here (empty: none). The
   /// directory must be new or empty.
   std::string outDir;
@@ -150,6 +152,11 @@ struct FuzzReport {
   /// Per blocking site (sea.assume, sea.unreachable): the runs it
   /// blocked; most first, then program order.
   std::vector<std::pair<mlir::Operation *, uint64_t>> blocked;
+  /// The named assumption and the open decision the trials rested on:
+  /// totals of RunResult::addr0IsNullUses / memhavocNullNoopUses, and the
+  /// runs with any.
+  uint64_t addr0IsNullUses = 0, addr0IsNullRuns = 0;
+  uint64_t memhavocNullNoopUses = 0, memhavocNullNoopRuns = 0;
 };
 
 /// Fuzzes `program`: first the seeds, in order, then mutated entries.
