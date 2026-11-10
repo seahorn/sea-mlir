@@ -1,15 +1,18 @@
-// A run that stops with an error (an access out of its object) is recorded
-// per op and does not stop the fuzzer; its first input replays to the
-// same error.
+// Without --defer-memory-errors, a run that stops at a memory-safety check
+// (status error: an access out of its object) is recorded per op as a
+// fuzz.memory-check, not a finding, and does not stop the fuzzer; its first
+// input replays to the same error.
 // RUN: rm -rf %t && sea-run %s --fuzz=500 --seed=3 --fuzz-out=%t | FileCheck %s
-// RUN: cat %t/error-*.txt > %t.err
+// RUN: cat %t/memory-check-*.txt > %t.err
 // RUN: not sea-run %s --input-file=%t.err 2>&1 | FileCheck %s --check-prefix=REPLAY
 
 // CHECK-NOT: status:
-// CHECK: fuzz.error: {{[0-9]+}} trial={{[0-9]+}} file={{.*}}error-{{[0-9]+}}.txt op=sea.load at={{.*}}error.mlir:[[@LINE+13]]
-// CHECK-NEXT: fuzz.error-message: {{.*}}out of bounds
+// CHECK-NOT: fuzz.limit
+// CHECK: fuzz.memory-check: {{[0-9]+}} trial={{[0-9]+}} file={{.*}}memory-check-{{[0-9]+}}.txt op=sea.load at={{.*}}error.mlir:[[@LINE+14]]
+// CHECK-NEXT: fuzz.memory-check-message: {{.*}}out of bounds
+// CHECK-NOT: fuzz.limit
 // CHECK: fuzz.trials: 500
-// CHECK: fuzz.status: halted={{[1-9][0-9]*}} assert-failed=0 assume-blocked=0 step-limit=0 error={{[1-9][0-9]*}}
+// CHECK: fuzz.status: halted={{[1-9][0-9]*}} assert-failed=0 assume-blocked=0 step-limit=0 error={{[1-9][0-9]*}}{{$}}
 // REPLAY: status: error
 // REPLAY-NEXT: at: loc({{.*}}error.mlir":[[@LINE+8]]
 !pm = !sea.mem<!sea.ptr<64>, i8>

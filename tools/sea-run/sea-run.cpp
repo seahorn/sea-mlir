@@ -12,7 +12,8 @@
 //   steps: 9
 //
 // Exit code 0 when the run ended (halted, assert-failed, assume-blocked,
-// step-limit), 1 on an error.
+// step-limit), 4 on a memory-safety finding (memory-error, with
+// --defer-memory-errors), 1 on an error.
 //
 //===----------------------------------------------------------------------===//
 
@@ -147,6 +148,14 @@ static cl::opt<bool> keepGoing("keep-going",
                                         "counting failures"),
                                cl::init(false));
 
+static cl::opt<bool> deferMemoryErrors(
+    "defer-memory-errors",
+    cl::desc("Go on past a memory-safety violation (null, out of bounds, "
+             "freed, bad free); it is a finding (status memory-error, exit 4) "
+             "only if the run then reaches the end or a failing assert, not "
+             "if an assume blocks it"),
+    cl::init(false));
+
 static cl::opt<bool> agent("agent",
                            cl::desc("Print a terse guide for agents and exit"),
                            cl::init(false));
@@ -174,6 +183,7 @@ TYPICAL:
   sea-run m.mlir --program=main             # pick one of several programs
   sea-run p.mlir --input-file=f.txt         # inputs from a corpus file
   sea-run p.mlir --fuzz=10000 --seed=1 --fuzz-out=out   # fuzz (see FUZZING)
+  sea-run p.mlir --defer-memory-errors      # classify memory errors (DEFERRED)
 
 INPUTS: a module with sea.program ops. --input values are decimal, negative
 decimal, or 0x-hex, and must fit the nondet's width (a negative v means
@@ -185,9 +195,29 @@ segment map: stack.<site>, heap.<site>, global.<name>). Cells are asked
 lazily, only when read; --missing applies to them too.
 
 ABSTRACT PROGRAMS (!sea.ptr) run directly: pointers are (object, offset);
-null, freed and out-of-bounds accesses stop the run with an error;
-ptr.to_int, ptr.from_int of non-zero, and reading a pointer cell as an
-integer stop it too (no addresses before placement).
+null, freed and out-of-bounds accesses, double free and a free of a
+pointer that is not a heap object's start (memory safety) stop the run with
+an error (--defer-memory-errors: see DEFERRED); ptr.to_int, ptr.from_int of
+non-zero, and reading a pointer cell as an integer stop it too (no
+addresses before placement: limits, never deferred).
+
+DEFERRED (--defer-memory-errors; docs/reference/fuzzing.md): a run may
+reach a memory-safety violation and later an assume that blocks it
+(late assumptions: unified assumes, prophecy variables): infeasible, not a
+bug. With the flag the run records the first violation, counts them, and
+goes on: a load reads 0 (a pointer load: null), a store / memset / memmove
+/ memhavoc with a violation does nothing, a bad free does nothing. These
+substitutes pick one continuation and only decide whether a later assume
+holds. Assumed: past the first violation any behaviour is allowed; a
+finding = the violation is reached on an exact prefix and some continuation
+reaches the end (blocked may hide a finding; none is made up). Not a VC
+counterexample with array semantics past it: an out-of-bounds store is
+dropped here, sea-vc's arrays read it back. At the end: assume-blocked (infeasible),
+with `deferred:`; reaching sea.halt or a failing sea.assert: status
+memory-error at the first violation (a failing assert after it is not
+reported separately: its condition may depend on the substitutes), exit 4;
+step-limit / error: not classified, with `deferred:`. Layout errors and
+limits are never deferred.
 
 MEMORY: executed in place. Every memory update must be marked `inplace`
 and consume the current version of its chain, else status: error.
@@ -216,7 +246,7 @@ OUTPUT (stdout, one `key: value` per line, stable order):
                 [inlined-at=..] [at_name=..] [base=..]
   print.note: <unmatched sea.print.end>
   print.truncated: <records dropped by --print-limit>
-  status: halted|assert-failed|assume-blocked|step-limit|error
+  status: halted|assert-failed|assume-blocked|step-limit|memory-error|error
   at: <loc of the op that ended the run>   (a failing assert: the
                                     original assert of a sea-merge-asserts
                                     program, its whole MLIR location)
@@ -251,7 +281,14 @@ OUTPUT (stdout, one `key: value` per line, stable order):
                                     else that of the last op before it
                                     in its block; else, like an
                                     unlocated sea.br, it is left out)
-  message: <why, for error>
+  reached: halted|assert-failed at=<where>
+                                    (memory-error: the op that made the
+                                    violation reachable; at: is the
+                                    violation)
+  message: <why, for error and memory-error>
+  deferred: <n> kind=null|out-of-bounds|use-after-free|double-free|bad-free
+            at=<where>              (--defer-memory-errors, a run that went
+                                    past n violations: the first one)
   steps: <ops executed>
 Values print as unsigned decimal. assume-blocked means the run is
 infeasible (not a bug); assert-failed means the run reached a failing
@@ -334,9 +371,12 @@ Kinds and fields:
                 [ptr] (the pointer token)
   status        status, [loc] (at:), [at] [at_inlined] [at_name]
                 (assert-at), [op] [op_inlined] [op_name] (assert-op),
-                [path] (array) [path_inlined], [message]; one
-                record for the status /
-                at / assert-* / message lines (text has several lines)
+                [path] (array) [path_inlined], [reached] [reached_at]
+                [reached_at_inlined] [reached_at_name], [message],
+                [deferred] [deferred_kind] [deferred_at]
+                [deferred_at_inlined] [deferred_at_name]; one
+                record for the status / at / assert-* / reached /
+                message / deferred lines (text has several lines)
   stat          key, value: `steps`; the fuzz.* lines (key, value and
                 their k=v fields)
   print         path (scope.tag[.leaf|[i]]), [scope], [at], [at_inlined],
@@ -370,18 +410,21 @@ values. The dictionary is the program's integer constants used by
 comparisons and arithmetic, +-1, sized to the site's width
 (--fuzz-dict=false: none). A site has one value per trial, as with
 --input. An input that reaches a new block, edge or passed sea.assume
-joins the corpus. The fuzzer stops at the first assert failure
-(--keep-going: counts them instead). A run that stops with status: error
-(out of bounds, through null, an access off a word of a word-layout
-memory, an interpreter limit, unsupported op; a broken `align` promise
-is a warning, interp.align-promise, not an error) is recorded per op and never stops it: those check the
-model's verification assumptions, or show what the interpreter cannot run.
+joins the corpus. The fuzzer stops at the first failure: an assert
+failure, or with --defer-memory-errors a memory-safety finding (status
+memory-error) (--keep-going: counts them instead). A run that stops with
+status: error is recorded per op and never stops it: a memory-safety
+check (fuzz.memory-check; without --defer-memory-errors, so feasibility is
+unknown) or a limit (fuzz.limit: an interpreter limit, unsupported op, an
+access off a word of a word-layout memory; never a finding; warning
+fuzz.limit once). A broken `align` promise is a warning,
+interp.align-promise, not an error.
 Same --seed and corpus = same run (--fuzz-time: best effort, the trial
 count depends on speed).
   --corpus=DIR|FILE,...  seed entries, run first, in order (directory:
                          its files by name)
   --fuzz-out=DIR         (new or empty) writes failure-<trial>.txt /
-                         error-<trial>.txt
+                         memory-check-<trial>.txt / limit-<trial>.txt
                          (the first trial of each failing / erring op)
                          and cov-<trial>.txt (new coverage), as corpus
                          files
@@ -391,19 +434,33 @@ Corpus file: one assignment per line, `<site>=<v>`, `<site>@<addr>=<v>`,
 `memread:` line of a sea-run or sea-vc output (site, addr, value fields);
 `#` comments and blank lines are skipped, other `key: ...` lines (the rest
 of a saved run) are skipped and counted. A saved run is a seed.
-Output of --fuzz: the first assert failure as a plain run on its input
-(the lines of OUTPUT; what --input-file=<its file> prints; the fuzzer
-checks the replay ends the same way), then stat lines:
+Output of --fuzz: the first failure as a plain run on its input
+(the lines of OUTPUT; what --input-file=<its file> [--defer-memory-errors]
+prints; the fuzzer checks the replay ends the same way), then stat lines:
   fuzz.failure: <runs> trial=<first> [file=<path>] at=<where>
                                  (per failing sea.assert)
-  fuzz.error: <runs> trial=<first> [file=<path>] op=<op> [site=<n>]
+  fuzz.memory-safety: <runs> trial=<first> [file=<path>] op=<op>
+                      [site=<n>] at=<where>
+  fuzz.memory-safety-message: <message of the first>
+                                 (--defer-memory-errors: per op with a
+                                 memory-safety finding)
+  fuzz.memory-check: <runs> trial=<first> [file=<path>] op=<op> [site=<n>]
+                     at=<where>
+  fuzz.memory-check-message: <message of the first>
+                                 (per op that stopped a run at a
+                                 memory-safety check; site: the op's site,
+                                 if it has one)
+  fuzz.limit: <runs> trial=<first> [file=<path>] op=<op> [site=<n>]
               at=<where>
-  fuzz.error-message: <message of the first>
-                                 (per op that stopped a run with an error;
-                                 site: the op's site, if it has one)
+  fuzz.limit-message: <message of the first>
+                                 (per op that stopped a run at a limit or
+                                 a layout error)
   fuzz.trials: <n> seeds=<n> time=<s> execs/s=<n>
   fuzz.status: halted=<n> assert-failed=<n> assume-blocked=<n>
-               step-limit=<n> error=<n>
+               step-limit=<n> error=<n> [memory-error=<n>]
+  fuzz.deferred: <runs> memory-error=<n> assume-blocked=<n> step-limit=<n>
+                 error=<n>       (--defer-memory-errors: runs that went
+                                 past a violation, by final status)
   fuzz.coverage: blocks=<n> blocks-total=<n> edges=<n> assumes=<n>
                  assumes-total=<n>  (edges include the entry; assumes:
                                      sea.assume ops that held at least once)
@@ -419,9 +476,13 @@ summary of repeats at exit (--log=warn.<kind>:2 prints each); "Error: ...
 [kind]" (red) when the run stops with status: error. Logs: --log, SEA_LOG
 (docs/reference/logging.md).
 
-STATUS CODES: 0 the run ended (any status but error); 1 error (bad input,
-missing nondet value, unsupported op). --fuzz: 0 when the trials ran
-(failures are in the output), 1 on a bad option or corpus, an unwritable
+STATUS CODES: 0 the run ended (any status but error or memory-error); 4
+memory-error (--defer-memory-errors: a memory-safety violation on a run
+that reached the end or a failing assert; like sea-vc's 4 (A-INB), plus
+double free and bad free); 1 error (bad
+input, missing nondet value, unsupported op). --fuzz: 0 when the trials ran
+(assert failures are in the output), 4 when there is a memory-safety
+finding (fuzz.memory-safety), 1 on a bad option or corpus, an unwritable
 --fuzz-out, or a failure that does not replay (fuzz.replay-mismatch).
 )";
 
@@ -514,9 +575,29 @@ static void printRun(sea::out::Emitter &out, sea::ProgramOp program,
         sea::addLocFields(rec, "op", *r.assertLoc);
       sea::addPathFields(rec, r.branchPath);
     }
+    if (r.status == sea::RunStatus::MemoryError) {
+      // the end or failing assert the run reached past the violation
+      std::optional<Location> reached = sea::reachedLocOf(r);
+      std::string l = reached ? sea::formatLoc(*reached) : "";
+      os << "\nreached: " << sea::stringifyRunStatus(r.reachedStatus)
+         << " at=" << (l.empty() ? "-" : l);
+      rec.str("reached", sea::stringifyRunStatus(r.reachedStatus));
+      if (reached)
+        sea::addLocFields(rec, "reached_at", *reached);
+    }
     if (!r.message.empty()) {
       os << "\nmessage: " << r.message;
       rec.str("message", r.message);
+    }
+    if (r.deferredCount) {
+      // --defer-memory-errors: the violations the run went past
+      std::string l = sea::formatLoc(r.deferredAt->getLoc());
+      os << "\ndeferred: " << r.deferredCount
+         << " kind=" << sea::stringifyRunErrorKind(r.deferredKind)
+         << " at=" << (l.empty() ? "-" : l);
+      rec.num("deferred", r.deferredCount)
+          .str("deferred_kind", sea::stringifyRunErrorKind(r.deferredKind));
+      sea::addLocFields(rec, "deferred_at", r.deferredAt->getLoc());
     }
     out.emit(rec);
   }
@@ -542,6 +623,7 @@ static int runFuzz(sea::ProgramOp program) {
   fo.seed = seed;
   fo.dictionary = fuzzDict;
   fo.keepGoing = keepGoing;
+  fo.deferMemoryErrors = deferMemoryErrors;
   fo.outDir = fuzzOut;
   fo.maxSteps = maxSteps;
   FailureOr<sea::FuzzReport> rep = sea::fuzz(program, seeds, fo, error);
@@ -550,14 +632,16 @@ static int runFuzz(sea::ProgramOp program) {
 
   sea::out::Emitter out(outs(), outFormat);
   raw_ostream &os = out.lines();
-  // The first assert failure, as a plain run on its input: what
-  // `sea-run --input-file=<its file>` prints.
+  // The first failure, as a plain run on its input: what
+  // `sea-run --input-file=<its file>` prints (with --defer-memory-errors
+  // for a memory-error).
   if (!rep->failures.empty()) {
     const sea::FuzzFailure &f = rep->failures.front();
     sea::InputSource source;
     sea::addAssignments(source, f.input);
     sea::RunOptions options;
     options.maxSteps = maxSteps;
+    options.deferMemoryErrors = deferMemoryErrors;
     options.prints = printMode != sea::PrintMode::Off;
     options.printLimit = printLimit;
     sea::RunResult r = sea::interpret(program, source, options);
@@ -576,23 +660,35 @@ static int runFuzz(sea::ProgramOp program) {
     std::string at = f.at ? sea::formatLoc(f.at->getLoc()) : "";
     return at.empty() ? std::string("-") : at;
   };
-  for (const sea::FuzzFailure &f : rep->failures) {
-    os << "fuzz.failure: " << f.count << " trial=" << f.trial;
+  // `<key>: <runs> trial=<n> [file=<path>] [op=<op> [site=<n>]] at=<where>`
+  auto head = [&](StringRef key, const sea::FuzzFailure &f, bool op) {
+    os << key << ": " << f.count << " trial=" << f.trial;
     if (!f.file.empty())
       os << " file=" << f.file;
-    os << " at=" << where(f) << "\n";
-  }
-  for (const sea::FuzzFailure &f : rep->errors) {
-    os << "fuzz.error: " << f.count << " trial=" << f.trial;
-    if (!f.file.empty())
-      os << " file=" << f.file;
-    if (f.at) {
+    if (op && f.at) {
       os << " op=" << f.at->getName();
       if (auto site = f.at->getAttrOfType<IntegerAttr>("site"))
         os << " site=" << site.getInt();
     }
     os << " at=" << where(f) << "\n";
-    os << "fuzz.error-message: " << f.message << "\n";
+  };
+  bool memoryFinding = false;
+  for (const sea::FuzzFailure &f : rep->failures)
+    if (f.status == sea::RunStatus::AssertFailed)
+      head("fuzz.failure", f, false);
+  for (const sea::FuzzFailure &f : rep->failures)
+    if (f.status == sea::RunStatus::MemoryError) {
+      memoryFinding = true;
+      head("fuzz.memory-safety", f, true);
+      os << "fuzz.memory-safety-message: " << f.message << "\n";
+    }
+  for (const sea::FuzzFailure &f : rep->memoryChecks) {
+    head("fuzz.memory-check", f, true);
+    os << "fuzz.memory-check-message: " << f.message << "\n";
+  }
+  for (const sea::FuzzFailure &f : rep->limits) {
+    head("fuzz.limit", f, true);
+    os << "fuzz.limit-message: " << f.message << "\n";
   }
   double rate = rep->seconds > 0 ? rep->trials / rep->seconds : 0;
   os << "fuzz.trials: " << rep->trials << " seeds=" << rep->seedTrials
@@ -605,7 +701,23 @@ static int runFuzz(sea::ProgramOp program) {
         sea::RunStatus::Error})
     os << " " << sea::stringifyRunStatus(st) << "="
        << rep->statusCount[static_cast<unsigned>(st)];
+  if (deferMemoryErrors)
+    os << " memory-error="
+       << rep->statusCount[static_cast<unsigned>(sea::RunStatus::MemoryError)];
   os << "\n";
+  if (deferMemoryErrors) {
+    // the runs that went past a violation, by how they ended
+    uint64_t runs = 0;
+    for (uint64_t n : rep->deferredStatusCount)
+      runs += n;
+    os << "fuzz.deferred: " << runs;
+    for (sea::RunStatus st :
+         {sea::RunStatus::MemoryError, sea::RunStatus::AssumeBlocked,
+          sea::RunStatus::StepLimit, sea::RunStatus::Error})
+      os << " " << sea::stringifyRunStatus(st) << "="
+         << rep->deferredStatusCount[static_cast<unsigned>(st)];
+    os << "\n";
+  }
   os << "fuzz.coverage: blocks=" << rep->blocksHit
      << " blocks-total=" << rep->blocksTotal << " edges=" << rep->edgesHit
      << " assumes=" << rep->assumesPassed
@@ -622,7 +734,7 @@ static int runFuzz(sea::ProgramOp program) {
        << " at=" << (at.empty() ? "-" : at) << "\n";
   }
   out.flush();
-  return 0;
+  return memoryFinding ? 4 : 0;
 }
 int main(int argc, char **argv) {
   InitLLVM y(argc, argv);
@@ -698,6 +810,7 @@ int main(int argc, char **argv) {
   options.maxSteps = maxSteps;
   options.prints = printMode != sea::PrintMode::Off;
   options.printLimit = printLimit;
+  options.deferMemoryErrors = deferMemoryErrors;
   sea::out::Emitter out(outs(), outFormat);
   // `value: <op> <loc> : <type> = `
   auto traceHead = [&](Value val, sea::out::Record &rec) {
@@ -753,5 +866,5 @@ int main(int argc, char **argv) {
                           : std::nullopt);
     return 1;
   }
-  return 0;
+  return r.status == sea::RunStatus::MemoryError ? 4 : 0;
 }

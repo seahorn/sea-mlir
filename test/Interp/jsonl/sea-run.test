@@ -49,5 +49,16 @@
 // RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.fuzz.txt --jsonl %t.fuzz.jsonl \
 // RUN:   --require status:status --require stat:key,value,trial,at --require stat:key,blocks,blocks-total,edges
 
+// --defer-memory-errors: a memory-error (reached, deferred) and a fuzz
+// memory-safety finding.
+// RUN: not sea-run %S/../defer/reached.mlir --program=assert --input=0=9 --defer-memory-errors > %t.mem.txt
+// RUN: not sea-run %S/../defer/reached.mlir --program=assert --input=0=9 --defer-memory-errors --format=jsonl > %t.mem.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.mem.txt --jsonl %t.mem.jsonl \
+// RUN:   --require status:status,loc,reached,reached_at,message,deferred,deferred_kind,deferred_at
+// RUN: not sea-run %S/../fuzz/memory-safety.mlir --program=reach --fuzz=100 --seed=1 --defer-memory-errors > %t.fmem.txt
+// RUN: not sea-run %S/../fuzz/memory-safety.mlir --program=reach --fuzz=100 --seed=1 --defer-memory-errors --format=jsonl > %t.fmem.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.fmem.txt --jsonl %t.fmem.jsonl \
+// RUN:   --require status:status,reached --require stat:key,value,trial,op,at
+
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

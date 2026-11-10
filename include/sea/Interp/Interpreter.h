@@ -128,11 +128,38 @@ enum class RunStatus {
   AssertFailed,  ///< a sea.assert saw 0
   AssumeBlocked, ///< a sea.assume saw 0: the execution is infeasible
   StepLimit,     ///< ran out of steps (the program may loop)
-  Error,         ///< could not continue (missing input, unknown op)
+  /// RunOptions::deferMemoryErrors: the run made a memory-safety violation
+  /// and then reached sea.halt or a failing sea.assert (a finding: the
+  /// violation is on a run no assume blocks; RunResult::reachedAt)
+  MemoryError,
+  Error, ///< could not continue (missing input, unknown op)
   // the last value: sea::kRunStatusCount (Fuzz.h) counts them
 };
 
 llvm::StringRef stringifyRunStatus(RunStatus status);
+
+/// Why a run stopped with RunStatus::Error, or the kind of a memory-safety
+/// violation (RunStatus::MemoryError, a deferred one).
+enum class RunErrorKind {
+  None,
+  // memory safety (isMemorySafetyKind): the program's error
+  NullAccess,   ///< an access through the null pointer
+  OutOfBounds,  ///< an access out of its object's bounds
+  UseAfterFree, ///< an access to a freed object
+  DoubleFree,   ///< sea.free of a freed object
+  BadFree,      ///< sea.free of a pointer that is not a heap object's start
+  // not memory safety: never deferred
+  Layout, ///< a word-layout memory accessed off a word, or not matching
+  Limit,  ///< the interpreter cannot run it: a length limit, ptr.to_int
+          ///< before placement, an unsupported op, a missing input, ...
+};
+
+/// `null`, `out-of-bounds`, `use-after-free`, `double-free`, `bad-free`,
+/// `layout`, `limit` (`none`).
+llvm::StringRef stringifyRunErrorKind(RunErrorKind kind);
+
+/// Null, out-of-bounds, use-after-free, double free, bad free.
+bool isMemorySafetyKind(RunErrorKind kind);
 
 /// The value a run read for a sea.nondet or a sea.struct.nondet.
 struct NondetRead {
@@ -236,6 +263,23 @@ struct RunResult {
   uint64_t printsTruncated = 0;
   /// The objects of the run (index 0: the abstract null object).
   std::vector<ObjectInfo> objects;
+  /// The kind of the error (status Error; RunErrorKind::Limit unless the
+  /// interpreter named another) or of the violation (status MemoryError).
+  RunErrorKind errorKind = RunErrorKind::None;
+  /// RunOptions::deferMemoryErrors: the memory-safety violations the run
+  /// went past, and the first one (op, kind, message). A run with any
+  /// ends as MemoryError if it reaches sea.halt or a failing sea.assert
+  /// (at = the violation's op), else keeps its status (assume-blocked:
+  /// infeasible, not a finding; step-limit, error: not classified).
+  uint64_t deferredCount = 0;
+  mlir::Operation *deferredAt = nullptr;
+  RunErrorKind deferredKind = RunErrorKind::None;
+  std::string deferredMessage;
+  /// MemoryError: the op that made the violation reachable (the sea.halt or
+  /// the failing sea.assert), and which of the two it was. A failing
+  /// assert's location is assertLoc, as for AssertFailed.
+  mlir::Operation *reachedAt = nullptr;
+  RunStatus reachedStatus = RunStatus::Halted;
   /// The sea.load ops that read an earlier memory version (warning
   /// interp.load-earlier-version), each once, in the order first executed:
   /// the in-place interpreter read the current contents, right only if the
@@ -264,6 +308,10 @@ llvm::SmallVector<mlir::FileLineColLoc> inlinedAtOf(mlir::Location loc);
 /// shows it: for a failing assert the original assert's
 /// (RunResult::assertLoc), else `at`'s own; none without `at`.
 std::optional<mlir::Location> stopLocOf(const RunResult &result);
+
+/// MemoryError: the location of the op that made the violation reachable
+/// (a failing assert: RunResult::assertLoc), else none.
+std::optional<mlir::Location> reachedLocOf(const RunResult &result);
 
 /// The name of a NameLoc at the top of `loc` (directly, or one of a fused
 /// location's; the marker sea-merge-asserts puts on branches is looked
@@ -367,6 +415,13 @@ struct RunOptions {
   /// Called after each sea.assume whose condition held (unset: one test
   /// per assume).
   std::function<void(AssumeOp)> onAssume;
+  /// Defer memory-safety violations (sea-run --defer-memory-errors): record
+  /// the first (and count them) and go on, so a later assume can show the
+  /// run infeasible. A load past a violation reads 0 (a pointer: null); a
+  /// store, memset, memmove, memhavoc or free with a violation does nothing.
+  /// Classification: RunResult::deferredCount. Layout errors and limits
+  /// still stop the run.
+  bool deferMemoryErrors = false;
 };
 
 //===- Counterexample printing (docs/design/Print.md) ---------------------===//
@@ -430,10 +485,17 @@ void printPrintRecords(out::Emitter &out, const RunResult &result,
 RunResult interpret(ProgramOp program, NondetSource &nondets,
                     const RunOptions &options = {});
 
-/// Did the run stop at a memory-safety error: an access out of its object's
-/// bounds, through the null pointer, or to a freed object (abstract programs
+/// Did the run stop at a memory-safety error (status Error, or a deferred
+/// violation that was reached: MemoryError): an access out of its object's
+/// bounds, through the null pointer, or to a freed object, a double free, a
+/// free of a pointer that is not a heap object's start (abstract programs
 /// only: a placed program has no objects to check against)?
 bool isMemorySafetyError(const RunResult &result);
+
+/// Did the run stop (status Error) at an access outside every object: null,
+/// out of bounds, or to a freed object (the accesses A-INB rules out; not a
+/// bad free)?
+bool isOutOfObjectAccess(const RunResult &result);
 
 } // namespace sea
 

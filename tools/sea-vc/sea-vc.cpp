@@ -3903,7 +3903,7 @@ int main(int argc, char **argv) {
         inputs.set(rd.site, std::string(text));
       }
       sea::RunResult abs = sea::interpret(absProg, inputs);
-      if (sea::isMemorySafetyError(abs)) {
+      if (sea::isOutOfObjectAccess(abs)) {
         vout() << "seam.inb-violation: " << abs.message << "\n";
         if (abs.at)
           vout() << "seam.inb-violation-at: " << abs.at->getLoc() << "\n";

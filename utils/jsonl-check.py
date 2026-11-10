@@ -159,8 +159,15 @@ def render(r):
                 + "assert-path: "
                 + " <- ".join(pos + inlined_at(c) for pos, c in zip(f["path"], sites))
             )
+        if "reached" in f:
+            lines.append("reached: %s at=%s" % (f["reached"], where("reached_at")))
         if "message" in f:
             lines.append("message: " + f["message"])
+        if "deferred" in f:
+            lines.append(
+                "deferred: %s kind=%s at=%s"
+                % (f["deferred"], f["deferred_kind"], where("deferred_at"))
+            )
         if k == "status":
             # sea-run: assert-at comes after at:
             order = [
@@ -169,7 +176,9 @@ def render(r):
                 "assert-at",
                 "assert-op",
                 "assert-path",
+                "reached",
                 "message",
+                "deferred",
             ]
             lines.sort(
                 key=lambda l: next(i for i, o in enumerate(order) if l.startswith(o))
