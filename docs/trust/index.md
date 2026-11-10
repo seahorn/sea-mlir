@@ -1,16 +1,19 @@
 # Why trust it
 
-A verifier is trusted for its answers, and an answer is only as good as
-the path from the program to the query the solver sees. sea-mlir treats
-checking that path as part of the work, not as a step after it. Every
-part of the pipeline comes with a check that can show it wrong, built
-together with the part.
+sea-mlir is built on a conviction: AI agents can build verification
+tools that are correct and that people can trust.
 
-Building a check has found more bugs than running one. A check must state
-exactly what it compares, and writing that statement raises questions the
-specification left open. Answering them has found bugs that every existing
-test passed. A question that has no answer yet becomes a named
-assumption, and every run that depends on it says so.
+For that, quality assurance is as important as functionality. A check
+does more than find bugs. Building one means stating exactly what it
+compares, and that statement refines and hardens the specification. A
+sharper specification leads to better questions and better theorems, and
+in the end to a better tool.
+
+Each part of the specification gets the techniques that fit it: unit
+tests, fuzzing, equivalence checking, coverage and, for the foundations,
+formal proofs in Lean. Each technique has its own strengths and
+weaknesses. Together they make a tool that is both efficient and
+trusted.
 
 What this means for an answer from `sea-vc`:
 
