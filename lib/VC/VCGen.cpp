@@ -231,6 +231,11 @@ LogicalResult VCGen::genVc(ProgramOp program, OpSemContext &ctx) {
       execTime += secondsSince(t0);
     }
     isEntry = false;
+    guards[bb] = bbV;
+    // -- reachability (setReach): neither end of a path constrains the
+    // -- blocks before it
+    if (reach)
+      continue;
     // -- the unique exit is asserted to always be reachable
     if (isa<HaltOp>(bb->getTerminator()))
       ctx.addSide(bbV);

@@ -20,6 +20,7 @@ $ sea-vc --log=help
 log tags (--log=<pattern>[:<level>]; level 1 flow, 2 object, 3 detail; docs/reference/logging.md):
   lower.pass     1  each pass of a pass manager sea-vc runs (--lower, --sink-assumes, --print-refs): ops before and after, time
   vc.phase       1  the start and end of each sea-vc phase (lower, encode, simplify, solver-term, ackermann, solve, replay); the end with time and sizes
+  vc.reach       2  each sea-vc --reach query: target, answer, solve and replay time
   vc.solve       1  each solver call of the verdict: backend, result, time, Expr nodes made so far
   vc.store-read  3  a SymStore key read before any write (its initial value made)
   warn.<kind>    2  every occurrence of warning <kind>, not only the first
@@ -50,6 +51,7 @@ To see what a solver receives, use `--smt2`, not a log.
 | `vc.phase` | 1 | `sea-vc` | the start and end of each phase |
 | `lower.pass` | 1 | `sea-vc` | one pass run |
 | `vc.solve` | 1 | `sea-vc` | one solver call of the verdict |
+| `vc.reach` | 2 | `sea-vc` | `--reach`: one target's query (answer, solve time) and replay (status, time) |
 | `vc.store-read` | 3 | `sea-vc` | a memory key read before any write |
 | `canon.fold` | 2 | all (canonicalize) | one fold of a sea canonicalizer: `assume-true`, `assume-false`, `assert-true`, `assert-false`, `br-merge`, `load-stored` |
 | `fuzz.run` | 1, 2 | `sea-run` | `--fuzz`: start and end (1); each trial that reached new coverage (2) |

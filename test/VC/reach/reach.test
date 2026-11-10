@@ -1,0 +1,307 @@
+// sea-vc --reach (lib/VC/Reach.cpp): per check site of the lowered program,
+// whether an execution reaches its top with every earlier assume holding.
+// Each reachable answer is replayed in sea-vc (replay=reached) and here by
+// sea-run on the witness file; each unreachable one is shown by hand.
+// RUN: split-file %s %t
+
+// Assumes in one block: one before the target holds (x = 42 for the second
+// site), one after it does not count (the second site is reachable although
+// it contradicts the first; the assert after both is not).
+// RUN: rm -rf %t/w && sea-vc %t/chain.mlir --reach --reach-witness=%t/w | FileCheck %s --check-prefix=CHAIN
+// CHAIN: reach.config: kind=checks solver={{incremental|separate}}
+// CHAIN: reach: {{.*}}chain.mlir:5:3 reachable op=sea.assume replay=reached {{.*}}at={{.*}}chain.mlir:5:3
+// CHAIN: reach: {{.*}}chain.mlir:7:3 reachable op=sea.assume replay=reached
+// CHAIN: reach: {{.*}}chain.mlir:9:3 unreachable op=sea.assert
+// CHAIN: reach.summary: targets=3 reachable=2 unreachable=1 unknown=0
+// The witness of the second site: x = 42, and the run stops at that site.
+// RUN: FileCheck %s --check-prefix=W1 < %t/w/reach-1.txt
+// W1: nondet: site=0 callee=x width=8 value=42
+// RUN: sea-run %t/chain.mlir --input-file=%t/w/reach-1.txt | FileCheck %s --check-prefix=RUN1
+// RUN1: status: assume-blocked
+// RUN1: at: loc("{{.*}}chain.mlir":7:3)
+// The same with a solver per target, and the same in blocks.
+// RUN: sea-vc %t/chain.mlir --reach --reach-incremental=false | FileCheck %s --check-prefix=CHAIN
+// RUN: sea-vc %t/chain.mlir --reach=blocks | FileCheck %s --check-prefix=CHAINB
+// CHAINB: reach: {{.*}}chain.mlir:2:{{[0-9]+}} reachable op=block replay=reached
+// CHAINB: reach.summary: targets=1 reachable=1
+
+// Behind a contradiction: the then-path needs x > 5 and x < 3, so its
+// second site is reachable (the contradiction is the site itself) and the
+// site after it is not; the else-block is reachable, and its witness takes
+// the else edge.
+// RUN: rm -rf %t/w && sea-vc %t/contra.mlir --lower --reach --reach-witness=%t/w 2>&1 | FileCheck %s --check-prefix=CONTRA
+// CONTRA: reach: contra.c:3:1 reachable op=sea.assume replay=reached
+// CONTRA: reach: contra.c:5:1 reachable op=sea.assume replay=reached
+// CONTRA: reach: contra.c:5:5 unreachable op=sea.assume
+// CONTRA: reach: contra.c:7:1 reachable op=sea.assume replay=reached witness={{.*}}reach-3.txt
+// CONTRA: reach: contra.c:9:1 reachable op=sea.assert replay=reached
+// CONTRA: reach.summary: targets=5 reachable=4 unreachable=1 unknown=0
+// RUN: sea-run %t/contra.mlir --input-file=%t/w/reach-3.txt | FileCheck %s --check-prefix=RUN2
+// RUN2: status: assert-failed
+// RUN2: assert-op: contra.c:9:1
+// Blocks: the block after the contradiction is unreachable, by name of its
+// first located op.
+// RUN: sea-vc %t/contra.mlir --lower --reach=blocks 2>&1 | FileCheck %s --check-prefix=CONTRAB
+// CONTRAB: reach: contra.c:2:1 reachable op=block
+// CONTRAB: reach: contra.c:3:1 reachable op=block
+// CONTRAB: reach: contra.c:5:4 unreachable op=block
+// CONTRAB: reach: contra.c:6:1 reachable op=block
+// CONTRAB: reach.summary: targets={{[0-9]+}} reachable={{[0-9]+}} unreachable=1 unknown=0
+
+// An assume of constant false, folded by the lowering: its site is the
+// sea.unreachable at its location (reachable: the guard is not vacuous);
+// what followed it in the block is gone, and the assert, left in a block
+// without predecessors, is unreachable by the CFG.
+// RUN: sea-vc %t/folded.mlir --lower --reach 2>&1 | FileCheck %s --check-prefix=FOLD
+// FOLD: fold.assume-false
+// FOLD: vc.fold: assume-false=1 assert-false=0
+// FOLD: reach: folded.c:4:5 reachable op=sea.assume replay=reached
+// FOLD: reach: folded.c:6:5 reachable op=sea.unreachable replay=reached
+// FOLD-NOT: folded.c:8:5
+// FOLD: unreachable op=sea.assert reason=cfg
+// FOLD: reach.summary: targets=3 reachable=2 unreachable=1 unknown=0
+// The same behind a contradiction: the folded site is unreachable.
+// RUN: sea-vc %t/folded-dead.mlir --lower --reach 2>&1 | FileCheck %s --check-prefix=FOLDD
+// FOLDD: reach: folded.c:4:5 reachable op=sea.assume
+// FOLDD: reach: folded.c:5:5 reachable op=sea.assume
+// FOLDD: reach: folded.c:6:5 unreachable op=sea.unreachable
+
+// Inlined positions and unlocated sites in ids.
+// RUN: sea-vc %t/ids.mlir --reach | FileCheck %s --check-prefix=IDS
+// IDS: reach: callee.c:2:3@caller.c:9:1 reachable op=sea.assume {{.*}}at=callee.c:2:3 inlined-at=caller.c:9:1
+// IDS: reach: unlocated#0 reachable op=sea.assume {{.*}}at=-
+// IDS: reach: callee.c:2:3@caller.c:9:1#2 reachable op=sea.assume
+// IDS: reach: unlocated#1 reachable op=sea.assert
+
+// jsonl: the same lines; a reach record per target.
+// RUN: sea-vc %t/contra.mlir --lower --reach > %t/c.txt 2>/dev/null
+// RUN: sea-vc %t/contra.mlir --lower --reach --format=jsonl > %t/c.jsonl 2>/dev/null
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t/c.txt --jsonl %t/c.jsonl \
+// RUN:   --require reach:id,status,op,replay,time,at --require stat:key,targets,reachable,unreachable,unknown
+// RUN: FileCheck %s --check-prefix=JSONL < %t/c.jsonl
+// JSONL: {"kind":"reach","id":"contra.c:5:5","status":"unreachable","op":"sea.assume","time":{{[0-9.]+}},"at":"contra.c:5:5",
+// JSONL-NOT: "kind":"result"
+
+// An rlimit too small for any query: unknown, status 3.
+// RUN: not sea-vc %t/chain.mlir --reach --reach-rlimit=1 --brunch-stats | FileCheck %s --check-prefix=RLIM
+// RLIM: reach: {{.*}}chain.mlir:5:3 unknown op=sea.assume reason=rlimit
+// RLIM: reach.summary: targets=3 reachable=0 unreachable=0 unknown=3
+// RLIM: BRUNCH_STAT status 3
+
+// Ids of sites without a source position use the .mlir file's basename,
+// not the path it was given by.
+// RUN: sea-vc %t/chain.mlir --reach | FileCheck %s --check-prefix=BASE
+// BASE: reach: chain.mlir:5:3 reachable
+
+// The witness says which program it replays on.
+// RUN: FileCheck %s --check-prefix=HDR < %t/w/reach-0.txt
+// HDR: # replays on: the lowered program
+
+// Under --seam (A-INB assumed), each model also runs on the input program,
+// whose accesses are checked against their objects (as for a
+// counterexample, vc.seam-inb-spurious): a model whose run leaves an
+// object before its target is replay=memory-error, status 4, though the
+// placed replay reaches the target (oob) or disagrees with the model
+// (incons, whose run must not count against the unreachable assert).
+// The site before the out-of-bounds store stands.
+// RUN: not sea-vc %t/oob.mlir --lower --seam --reach --brunch-stats 2>&1 | FileCheck %s --check-prefix=OOB
+// OOB: vc.reach-replay-memory-error
+// OOB: reach: o.c:2:1 reachable op=sea.assume replay=reached
+// OOB: reach: o.c:3:1 reachable op=sea.assume replay=memory-error
+// OOB: BRUNCH_STAT status 4
+// RUN: not sea-vc %t/incons.mlir --lower --seam --reach --brunch-stats 2>&1 | FileCheck %s --check-prefix=INCONS
+// INCONS-NOT: vc.reach-inconsistent
+// INCONS-NOT: vc.reach-replay-mismatch
+// INCONS: reach: n.c:3:1 reachable op=sea.assume replay=memory-error
+// INCONS: reach: n.c:4:1 unreachable op=sea.assert
+// INCONS: BRUNCH_STAT status 4
+
+// The reach runs use the interpreter options of the safety replays: a
+// memhavoc of the null pointer is a no-op by default, counted as an
+// assumption the answers rest on; with --memhavoc-null=error the run
+// leaves an object before the targets.
+// RUN: sea-vc %t/mh.mlir --lower --seam --reach 2>/dev/null | FileCheck %s --check-prefix=MHNOOP
+// MHNOOP: reach: h.c:3:1 reachable op=sea.assume replay=reached
+// MHNOOP: reach.summary:
+// MHNOOP-NEXT: assume.memhavoc-null-noop: uses={{[1-9]}}
+// RUN: not sea-vc %t/mh.mlir --lower --seam --reach --memhavoc-null=error --brunch-stats 2>/dev/null | FileCheck %s --check-prefix=MHERR
+// MHERR: reach: h.c:3:1 reachable op=sea.assume replay=memory-error
+// MHERR-NOT: assume.memhavoc-null-noop
+// MHERR: BRUNCH_STAT status 4
+
+// The checks of the answers, on planted faults (test-only
+// --x-reach-plant): a VC without the assume facts answers sites behind a
+// blocking assume reachable, and the run does not get there; a target
+// whose guard is forced false is reached by the runs of earlier targets; a
+// model value that differs from the run.
+// RUN: not sea-vc %t/chain.mlir --reach --x-reach-plant=skip-assumes --brunch-stats 2>&1 | FileCheck %s --check-prefix=PNR
+// PNR: vc.reach-replay-not-reached
+// PNR: reach: chain.mlir:9:3 reachable op=sea.assert replay=not-reached
+// PNR: BRUNCH_STAT status 2
+// RUN: not sea-vc %t/ids.mlir --reach --x-reach-plant=block-last --brunch-stats 2>&1 | FileCheck %s --check-prefix=PINC
+// PINC: vc.reach-inconsistent
+// PINC: reach: unlocated#1 unreachable op=sea.assert
+// PINC: BRUNCH_STAT status 2
+// RUN: not sea-vc %t/chain.mlir --reach --x-reach-plant=mismatch --brunch-stats 2>&1 | FileCheck %s --check-prefix=PMM
+// PMM: vc.reach-replay-mismatch
+// PMM: reach: chain.mlir:5:3 reachable op=sea.assume replay=mismatch mismatches=1
+// PMM-NOT: vc.reach-inconsistent
+// PMM: BRUNCH_STAT status 2
+
+// Options that do not combine with --reach.
+// RUN: not sea-vc %t/chain.mlir --reach --sink-assumes 2>&1 | FileCheck %s --check-prefix=OPT1
+// OPT1: --sink-assumes
+// RUN: not sea-vc %t/chain.mlir --reach --smt2 2>&1 | FileCheck %s --check-prefix=OPT2
+// OPT2: not with --smt2
+// RUN: not sea-vc %t/chain.mlir --reach-rlimit=5 2>&1 | FileCheck %s --check-prefix=OPT3
+// OPT3: need --reach
+// REQUIRES: z3
+
+//--- chain.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %c42 = sea.const 42 : i8
+  %a = sea.icmp eq, %x, %c42 : i8
+  sea.assume %a
+  %b = sea.icmp ne, %x, %c42 : i8
+  sea.assume %b
+  %f = sea.const 0 : i1
+  sea.assert %f
+  sea.halt
+}
+
+//--- contra.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("contra.c":2:1)
+  %c5 = sea.const 5 : i8
+  %c3 = sea.const 3 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8 loc("contra.c":2:2)
+  sea.cond_br %big, ^then, ^else loc("contra.c":2:3)
+^then:
+  sea.assume %big loc("contra.c":3:1)
+  %small = sea.icmp ult, %x, %c3 : i8 loc("contra.c":4:1)
+  sea.assume %small loc("contra.c":5:1)
+  sea.br ^then2 loc("contra.c":5:2)
+^then2:
+  %ne5 = sea.icmp ne, %x, %c5 : i8 loc("contra.c":5:4)
+  sea.assume %ne5 loc("contra.c":5:5)
+  sea.br ^join loc("contra.c":5:6)
+^else:
+  %e = sea.icmp ne, %x, %c3 : i8 loc("contra.c":6:1)
+  sea.assume %e loc("contra.c":7:1)
+  sea.br ^join loc("contra.c":7:2)
+^join:
+  %f = sea.const 0 : i1 loc("contra.c":8:1)
+  sea.assert %f loc("contra.c":9:1)
+  sea.halt
+}
+
+//--- folded.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %z = sea.const 0 : i8
+  %nz = sea.icmp ne, %x, %z : i8 loc("folded.c":3:5)
+  sea.assume %nz loc("folded.c":4:5)
+  %f = sea.const 0 : i1 loc("folded.c":6:1)
+  sea.assume %f loc("folded.c":6:5)
+  sea.assume %nz loc("folded.c":8:5)
+  sea.br ^bb1
+^bb1:
+  %g = sea.const 0 : i1
+  sea.assert %g
+  sea.halt
+}
+
+//--- folded-dead.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %z = sea.const 0 : i8
+  %nz = sea.icmp ne, %x, %z : i8 loc("folded.c":3:5)
+  sea.assume %nz loc("folded.c":4:5)
+  %ez = sea.icmp eq, %x, %z : i8 loc("folded.c":5:1)
+  sea.assume %ez loc("folded.c":5:5)
+  %f = sea.const 0 : i1 loc("folded.c":6:1)
+  sea.assume %f loc("folded.c":6:5)
+  sea.br ^bb1
+^bb1:
+  %g = sea.const 0 : i1
+  sea.assert %g
+  sea.halt
+}
+
+//--- ids.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc(unknown)
+  %t = sea.const 1 : i8 loc(unknown)
+  %c = sea.icmp uge, %x, %t : i8 loc(unknown)
+  sea.assume %c loc(callsite("callee.c":2:3 at "caller.c":9:1))
+  sea.assume %c loc(unknown)
+  sea.assume %c loc(callsite("callee.c":2:3 at "caller.c":9:1))
+  %f = sea.const 0 : i1 loc(unknown)
+  sea.assert %f loc(unknown)
+  sea.halt loc(unknown)
+}
+
+//--- oob.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %c4 = sea.const 4 : i64
+  %a = sea.malloc %c4 align 1 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c4 align 1 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64 loc("o.c":1:1)
+  %ge = sea.icmp uge, %i, %c4 : i64
+  sea.assume %ge loc("o.c":2:1)
+  %v = sea.const 7 : i8
+  %p = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %m1 = sea.store %m0[%p], %v inplace : !m, i8
+  %y = sea.load %m1[%b] : !m -> i8
+  %e = sea.icmp eq, %y, %z : i8
+  sea.assume %e loc("o.c":3:1)
+  %f = sea.const 0 : i1
+  sea.assert %f loc("o.c":4:1)
+  sea.halt
+}
+
+//--- incons.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %c4 = sea.const 4 : i64
+  %a = sea.malloc %c4 align 1 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c4 align 1 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64 loc("n.c":1:1)
+  %e4 = sea.icmp eq, %i, %c4 : i64
+  sea.assume %e4 loc("n.c":2:1)
+  %v = sea.const 7 : i8
+  %p = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %m1 = sea.store %m0[%p], %v inplace : !m, i8
+  %y = sea.load %m1[%b] : !m -> i8
+  %e = sea.icmp eq, %y, %v : i8
+  sea.assume %e loc("n.c":3:1)
+  %f = sea.const 0 : i1
+  sea.assert %f loc("n.c":4:1)
+  sea.halt
+}
+
+//--- mh.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %c4 = sea.const 4 : i64
+  %n = sea.ptr.null : !sea.ptr<64>
+  %m1 = sea.memhavoc %m0[%n], %c4 [5] inplace : !m loc("h.c":1:1)
+  %x = sea.nondet "x" [6] : i8 loc("h.c":2:1)
+  %one = sea.const 1 : i8
+  %e = sea.icmp eq, %x, %one : i8
+  sea.assume %e loc("h.c":3:1)
+  %f = sea.const 0 : i1
+  sea.assert %f loc("h.c":4:1)
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -4,6 +4,7 @@
 add_mlir_library(SeaVC
   Names.cpp
   OpSem.cpp
+  Reach.cpp
   Replay.cpp
   SymStore.cpp
   VCGen.cpp
