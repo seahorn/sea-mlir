@@ -28,6 +28,7 @@ $ sea-run p.mlir --fuzz=10000 --seed=1 --fuzz-out=out
 | `--defer-memory-errors` | go on past memory-safety violations; one is a failure only if the run reaches the end (see below) |
 | `--input-file=<file>` | run once on a corpus file (without `--fuzz`) |
 | `--max-steps=<n>` | the step limit of each trial |
+| `--fuzz-sites` | list the input sites and exit, without running (see [For agents](#for-agents)) |
 
 All trials run in one process: the program is parsed once.
 
@@ -174,7 +175,7 @@ fuzz.trials: 32 seeds=0 time=0.001 execs/s=54659
 fuzz.status: halted=1 assert-failed=1 assume-blocked=30 step-limit=0 error=0
 fuzz.coverage: blocks=3 blocks-total=3 edges=3 assumes=1 assumes-total=1
 fuzz.corpus: 3 seeds=0 skipped-lines=0 files=3 dictionary=6
-fuzz.blocked: 30 op=sea.assume at=p.mlir:5:3
+fuzz.blocked: 30 op=sea.assume at=p.mlir:5:3 sites=0 cond=(eq s0 1234)
 ```
 
 | line | meaning |
@@ -191,7 +192,7 @@ fuzz.blocked: 30 op=sea.assume at=p.mlir:5:3
 | `fuzz.deferred: <runs> memory-error=.. assume-blocked=.. step-limit=.. error=..` | `--defer-memory-errors`: the runs that went past a violation, by how they ended |
 | `fuzz.coverage: blocks=<n> blocks-total=<n> edges=<n> assumes=<n> assumes-total=<n>` | blocks entered, edges taken (the entry counts as one), `sea.assume` ops passed at least once |
 | `fuzz.corpus: <entries> seeds=<files> skipped-lines=<n> files=<n> dictionary=<n>` | corpus entries at the end, seed files read, lines of saved runs that are not inputs, files written, dictionary size |
-| `fuzz.blocked: <runs> op=<op> at=<where>` | one per `sea.assume` or `sea.unreachable` that blocked runs, most first |
+| `fuzz.blocked: <runs> op=<op> at=<where> [sites=<n,...> cond=<expr>]` | one per `sea.assume` or `sea.unreachable` that blocked runs, most first; for a `sea.assume`, its condition over the input sites (see [For agents](#for-agents)) |
 
 `<where>` is a location as in the `assert-at:` line: the source position,
 then `inlined-at=` and `name=` when there are any. With `--format=jsonl`,
@@ -200,6 +201,108 @@ each line is a `stat` record ([Output formats](output-formats.md)).
 The `fuzz.blocked` lines show which assumptions stop the runs. A harness
 whose runs are almost all blocked by one assume tests little beyond it:
 that assume is the one to look at, or to seed past with a corpus entry.
+
+## For agents
+
+Two outputs let a program outside `sea-mlir` (an agent's script, say) see
+why runs are blocked and choose inputs to get past them, without reading
+the IR.
+
+`--fuzz-sites` lists the input sites of the program, in program order,
+and exits without running it:
+
+```console
+$ sea-run placed.mlir --fuzz-sites
+fuzz.site: 0 callee=region.0 width=8 input=memory op=sea.mem.nondet at=placed.mlir:50:11 name=sm15
+...
+fuzz.site: 6 callee=nd_size_t width=64 input=value op=sea.nondet at=seahorn/lib/byte_buf_helper.c:19:18 name=_4
+fuzz.site: 7 callee=nd_size_t width=64 input=value op=sea.nondet at=seahorn/lib/byte_buf_helper.c:20:18 name=_5
+fuzz.site: 8 callee=nd_malloc_is_fail width=1 input=value op=sea.nondet at=seahorn/lib/sea_allocators.c:11:10 name=_13
+...
+fuzz.sites: 17 value=7 memory=10
+```
+
+(the vcc job `byte_buf_append`, lowered as in
+[Programs that do not run](#programs-that-do-not-run)).
+
+
+| field | meaning |
+|---|---|
+| value | the site number: the key of `--input` and corpus assignments |
+| `callee` | the nondet function (`sea.nondet`, `sea.struct.nondet`), the memory's name (`sea.mem.nondet`), or `-` (`sea.memhavoc`) |
+| `width` | the value's width in bits; for a memory, the width of a cell |
+| `input` | `value`: one value per run (`<site>=<v>`); `memory`: one value per cell read (`<site>@<addr>=<v>`) |
+| `op` | the operation |
+| `at` | its location, as in `<where>` (with `inlined-at=` and `name=` when there are any) |
+
+The last line, `fuzz.sites: <n> value=<n> memory=<n>`, counts them; `0`
+means the program reads no input. `sea.ptr.nondet` is not listed: it
+makes a fresh object and takes no input. `--fuzz-sites` refuses the
+options that would have no effect (`--fuzz`, `--fuzz-time`, `--input`,
+`--input-file`, `--trace`, `--seed`, `--max-steps`,
+`--defer-memory-errors`).
+
+Each `fuzz.blocked` line of a `sea.assume` ends with the assume's
+condition written over the input sites:
+
+```text
+fuzz.blocked: 3054 op=sea.assume at=seahorn/lib/byte_buf_helper.c:21:5 sites=6,7 cond=(ule s6 s7)
+fuzz.blocked: 2837 op=sea.assume at=seahorn/lib/byte_buf_helper.c:22:5 sites=7 cond=(ult s7 11)
+fuzz.blocked: 922 op=sea.assume at=seahorn/jobs/byte_buf_append/aws_byte_buf_append_harness.c:13:5 sites=- cond=?
+```
+
+Read it as: the assume holds when site 6 is at most site 7 (unsigned),
+and when site 7 is below 11. Corpus entries with `7` in 0..10 and `6` at
+most `7` pass both. The third assume's condition is a value merged from
+several paths, so the walk stops at once.
+
+`cond` is an s-expression:
+
+- `s<N>`: the value of input site N;
+- a number: a constant, in unsigned decimal (so -1 in 8 bits is 255);
+  a placed object's base address is a constant too;
+- `(<pred> a b)`: a comparison, with the predicate of `sea.icmp` (`eq`,
+  `ne`, `ult`, `ule`, `ugt`, `uge`, `slt`, `sle`, `sgt`, `sge`); it
+  compares at the width of its operands;
+- `(<op> a ...)`: an operation whose value the text fully shows, named
+  as in the IR without `sea.`: the arithmetic and bitwise operations,
+  min and max, the overflow tests, `concat`, `select`, `struct.create`,
+  the `addr.*` operations, and `ptr.add`, `ptr.diff`, `ptr.null`. The
+  `nsw` and `nuw` promises show as `.nsw` and `.nuw` (`(add.nsw a b)`).
+  Operations that change the width carry the result width:
+  `(zext:64 a)`, `(trunc:8 a)`, `(extract:8 a <low>)`;
+- `(struct.extract s <index>)`, `(struct.insert s v <index>)`,
+  `(global @<name>)`, `(func_addr @<name>)`, and `(ptr.index <base>
+  <indices> strides=<s,...> offset=<n>)` with `inbounds`, `nusw`, `nuw`
+  when set;
+- `(load:<w> s<N>@<addr>)`: a `w`-bit load from the memory of site N, a
+  `sea.mem.nondet` whose only users are loads, so the cells are still
+  the inputs; it reads the cells at `addr` and after, low byte first;
+- `?`: where the walk stopped.
+
+`sites` lists the sites that `cond` names, or `-` for none. `cond` is the
+last field and runs to the end of the line, because it holds spaces; in
+`--format=jsonl`, `sites` and `cond` are string fields.
+
+The condition is computed once per blocking assume, from the program text,
+when the report prints; the trials do not pay for it. It is a backward walk
+from the assume's operand, not a symbolic execution. It stops with `?` at:
+
+- any operation not listed above: other memory reads (a load from a
+  memory that an update uses, even in place), operations with effects
+  such as allocations, and operations whose value depends on more than
+  their operands (`ptr.base`, `ptr.dereferenceable`, `ptr.to_int`);
+  also a listed operation with an attribute the text does not show;
+- a block argument with more than one incoming value (a value merged
+  from several paths, such as the result of `a && b` in C); a block
+  argument with a single incoming value is followed;
+- an operation more than 6 levels below the condition (sites and
+  constants are shown at any depth);
+- any node past the 40th.
+
+The condition says nothing about the path to the assume: a run that does
+not reach it is not blocked by it. `cond=0` is an assume of a constant
+false: no input passes it, so the code after it is unreachable.
 
 ## Corpus files
 
