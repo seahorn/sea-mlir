@@ -12,6 +12,10 @@ loads of i32 and of pointers, pointer compares and int casts of pointers, and
 asserts a pointer compare. Not an oracle (test/README.md): a second check of
 --seam against the plain VC.
 
+  --seam --seam-inb=0 is free of A-INB here only because the generator makes
+  no memhavoc: the lowering's dropped memhavocs (assume.a-inb) rest on A-INB
+  even without it, and a run that reports one is a problem.
+
   --accesses=bases  every access is at an object's base: A-INB holds, so
                     plain, --seam and --seam --seam-inb=0 must give the same
                     verdict, and no run may fall back to no A-INB.
@@ -1462,6 +1466,11 @@ def main():
         unconditional = {n: v for n, v in verdicts.items() if n not in conditional}
         if len(set(unconditional.values())) > 1:
             problems.append("verdicts differ")
+        # the agreement of plain and --seam-inb=0 holds only without A-INB:
+        # no dropped memhavoc may rest on it (the generator makes none)
+        for n, r in res.items():
+            if re.search(r"^assume\.a-inb:", r[3], re.M):
+                problems.append(f"{n}: the lowering rests on A-INB (assume.a-inb)")
         for name in asks_inb:
             if in_bounds and inb_state(res[name][3]) == "fallback":
                 problems.append(

@@ -79,6 +79,48 @@ integer (type punning), like `ptr.to_int`, stops the abstract interpreter
 with an error; these programs are checked only after placement, where
 addresses exist.
 
+**Open decision: `sea.memhavoc` of null is a no-op.** SeaHorn programs
+havoc a buffer after an allocation that may fail (`memhavoc(p, n)` with
+`p` null). The interpreter runs a memhavoc whose pointer is null itself
+(offset 0) as a no-op (`RunOptions::memhavocNullNoop`; `--memhavoc-null=
+noop|error` in sea-run and sea-vc, default `noop`). `null + k` is an
+address computed from null, a different case, and stays an error, as
+does a non-null range outside its object. The choice is not in the formal
+semantics yet and is kept visible: each use counts
+(`assume.memhavoc-null-noop: uses=<n>`, BRUNCH_STAT
+`assume.memhavoc-null-noop-uses` in sea-vc) and warns
+`interp.memhavoc-null-noop` once. The VC follows the same rule:
+`sea-guard-null-memhavoc` (in the lowering of abstract programs, after
+`sea-drop-fresh-memhavoc`) puts a memhavoc whose pointer may be null in a
+block of its own, entered only when the pointer is not null, so every
+encoding (store chains, lambdas, SeaM's range terms) leaves memory alone
+for null; sea-vc reports `assume.memhavoc-null-noop: vc sites=<n>`.
+Without the guard (`=error`) the VC would havoc the cells from address 0
+on, which in the compact layout (objects from address 1) are the first
+object's: a spurious `sat`.
+
+**Decided: the named assumption `addr0-is-null`.** Address 0
+is the null pointer. This is almost always true, and false in some
+embedded and kernel environments. Under it the abstract interpreter
+recovers null where only bytes or an address are known:
+
+- all-zero integer bytes loaded as a pointer are the null pointer (C code
+  that zeroes a struct with `memset` and reads a pointer field from it);
+- the bytes of a stored null pointer loaded as an integer are 0;
+- `ptr.to_int` of the null pointer (offset 0) is 0. `ptr.from_int` of 0
+  is null without the assumption.
+
+Every other mix of pointers and integers still stops the run. The run
+counts the steps that rested on the assumption (`RunResult::addr0IsNullUses`;
+`assume.addr0-is-null: uses=<n>` in `sea-run` and in the replays of
+`sea-vc`). It is on by default; `--addr0-is-null=false` turns it off, and
+those steps stop the run again. The VC has no switch: placement puts the
+null object at address 0 (`sea.segment "null" base 0`), so every placed
+program, and every VC, already identifies null with address 0
+([SeaM-null](SeaM-null.md)); sea-vc reports it after a lowering as
+`assume.addr0-is-null: vc null-uses=<n>`, and `--addr0-is-null=false`
+changes its replays only.
+
 ### Abstract interpreter
 
 Pointers are (object id, offset) pairs; each object is its own host array

@@ -219,6 +219,7 @@ short:
 | 3 | unknown (including `--timeout`) |
 | 4 | `--seam`: sat that does not replay because the program leaves an object with the model's inputs. A-INB does not hold, the answer is inconclusive, and the program has a memory-safety error. |
 | 5 | `--seam-check`: an invalid rewrite. A bug, so do not trust the verdict. |
+| 6 | `--replay-original`: sat on the lowered program, but the original program does not fail the same assertion on the same inputs: the lowering changed the program (a bug, or a program that depends on placement). |
 
 Where a counterexample fails (`sea-vc` after `replay: assert-failed`,
 `sea-run` after `status: assert-failed`):
@@ -311,6 +312,15 @@ the check jobs below is run.
     address space.
 - **Bounded memset**: a symbolic-length memset is expanded up to a bound,
   with an explicit assume. It is reported as `assume.memset-bound`.
+- **Dropped memhavocs**: `--lower` of an abstract program removes a
+  memhavoc of a fresh object (a no-op). That rests on A-INB when an access
+  of another object, or the memhavoc itself, could reach the object after
+  placement; it is reported as `assume.a-inb: drop-fresh-memhavoc=<n>`,
+  also without `--seam`; a separate memory-safety check of the program
+  would discharge it (sea-mlir has none yet).
+- **Null at address 0** (`addr0-is-null`): placement puts null at address
+  0, reported as `assume.addr0-is-null: vc`; a fact about the target, not
+  discharged.
 - **`--ptr-companion=assume`** (off by default) adds the A-PTRINT
   assumption, which is reported.
 - `--seam-check` checks each SeaM rewrite against its stated premises with
@@ -424,3 +434,5 @@ proved rules. Format and lanes: [SeamExport.md](SeamExport.md).
    tag, or a result with its exit status. Attach the reduced program.
 4. Exit 2 (replay disagrees with the model) and exit 5 (an invalid
    rewrite) are always bugs. So is a crash, or `<pass>.postcondition`.
+   Exit 6 (`--replay-original`) is one unless the program depends on
+   where placement puts its objects.

@@ -41,6 +41,11 @@ std::unique_ptr<mlir::Pass> createSinkAssumesPass(unsigned *moved = nullptr);
 /// the branches it puts in the assert's place (`loc("sea.assert"(<loc>))`):
 /// the interpreter reports it as the failing assert, not as a branch.
 inline constexpr llvm::StringLiteral kMergedAssertLocName = "sea.assert";
+/// A stable id of a sea.assert (an i64 discardable attribute; sea-vc
+/// --replay-original sets it before the lowering). sea-merge-asserts copies
+/// it onto the branches it makes of the assert, and RunResult::assertOp
+/// is the op that carries it for the failing assert.
+inline constexpr llvm::StringLiteral kAssertIdAttr = "sea.assert_id";
 /// sea-lower-ptr-index: sea.ptr.index -> mul / add / ptr.add (the no-wrap
 /// flags dropped; docs/design/PtrIndex.md).
 std::unique_ptr<mlir::Pass> createLowerPtrIndexPass();
@@ -90,6 +95,16 @@ std::unique_ptr<mlir::Pass> createExpandMemSetPass();
 /// each sea.assume(n <= K) it adds: the bounded expansions, an
 /// under-approximation sea-vc reports (assume.memset-bound).
 inline constexpr llvm::StringLiteral kMemSetBoundAttr = "sea.memset_bound";
+/// On the sea.program: the number of memhavocs sea-drop-fresh-memhavoc
+/// dropped whose soundness rests on A-INB (an i64; absent: none). sea-vc
+/// reports it as `assume.a-inb: drop-fresh-memhavoc=<n>`.
+/// On the sea.program: the number of memhavocs sea-guard-null-memhavoc
+/// guarded (their pointer may be null). sea-vc reports it as
+/// `assume.memhavoc-null-noop: vc sites=<n>`.
+inline constexpr llvm::StringLiteral kMemhavocNullGuardsAttr =
+    "sea.memhavoc_null_guards";
+inline constexpr llvm::StringLiteral kDropFreshInbAttr =
+    "sea.a_inb.drop_fresh_memhavoc";
 
 /// sea-split-critical-edges: a new block on every critical edge.
 std::unique_ptr<mlir::Pass> createSplitCriticalEdgesPass();
@@ -109,6 +124,9 @@ std::unique_ptr<mlir::Pass> createLowerFatPointersPass();
 /// sea-drop-fresh-memhavoc: memhavoc of an object nothing wrote since its
 /// allocation is a no-op: removed.
 std::unique_ptr<mlir::Pass> createDropFreshMemHavocPass();
+/// sea-guard-null-memhavoc: a memhavoc whose pointer may be null runs only
+/// when it is not (memhavoc of null is a no-op; GuardNullMemHavoc.cpp).
+std::unique_ptr<mlir::Pass> createGuardNullMemHavocPass();
 
 /// sea-widen-memory: byte memories whose accesses are all k-aligned whole
 /// words get k-byte cells (aligned word layout).
@@ -139,7 +157,8 @@ void buildVCLoweringPipeline(mlir::OpPassManager &pm, bool abstract,
                              unsigned widenMemory = 0, bool expandMemSet = true,
                              bool widenReport = false,
                              bool keepByteWide = false, bool checkAlign = false,
-                             unsigned checkPtrIndex = 0, bool opt = true);
+                             unsigned checkPtrIndex = 0, bool opt = true,
+                             bool memhavocNullNoop = true);
 
 /// Attaches the `lower.pass` log (one level-1 event per pass run: ops
 /// before and after, time; lib/Transforms/PassLog.cpp) to \p pm. Costs a

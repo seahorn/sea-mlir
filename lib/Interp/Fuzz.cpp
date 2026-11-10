@@ -329,6 +329,8 @@ public:
     report.dictionarySize = dict.size();
     runOptions.maxSteps = options.maxSteps;
     runOptions.deferMemoryErrors = options.deferMemoryErrors;
+    runOptions.addr0IsNull = options.addr0IsNull;
+    runOptions.memhavocNullNoop = options.memhavocNullNoop;
     runOptions.facts = programFactsOf(program);
     runOptions.prints = false;
     runOptions.onBlock = [this](Block *from, Block *to) {
@@ -492,6 +494,10 @@ private:
     if (r.status == RunStatus::MemoryError)
       os << "# replay with: sea-run --defer-memory-errors --input-file=<this "
             "file>\n";
+    // what the run rested on (the replay needs the same options)
+    if (r.addr0IsNullUses || r.memhavocNullNoopUses)
+      os << "# assume: addr0-is-null=" << r.addr0IsNullUses
+         << " memhavoc-null-noop=" << r.memhavocNullNoopUses << "\n";
     for (const Assignment &a : assignmentsOf(e))
       os << formatAssignment(a) << "\n";
     ++report.filesWritten;
@@ -532,6 +538,10 @@ LogicalResult Fuzzer::trial(Entry preset,
     return failure();
   }
   ++report.statusCount[static_cast<unsigned>(r.status)];
+  report.addr0IsNullUses += r.addr0IsNullUses;
+  report.addr0IsNullRuns += r.addr0IsNullUses != 0;
+  report.memhavocNullNoopUses += r.memhavocNullNoopUses;
+  report.memhavocNullNoopRuns += r.memhavocNullNoopUses != 0;
   if (r.deferredCount)
     ++report.deferredStatusCount[static_cast<unsigned>(r.status)];
   if (r.status == RunStatus::AssumeBlocked && r.at)

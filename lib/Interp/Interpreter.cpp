@@ -500,6 +500,7 @@ private:
                                     : lastOpLoc;
     if (status == RunStatus::AssertFailed) {
       result.assertLoc = mergedAssertLoc ? *mergedAssertLoc : at->getLoc();
+      result.assertOp = mergedAssertLoc ? mergedAssertOp : at;
       Value cond;
       if (mergedAssertLoc)
         cond = mergedCond;
@@ -655,6 +656,7 @@ private:
       if (isa<BrOp>(op) && mergedAssertLoc)
         return;
       mergedAssertLoc = n.getChildLoc();
+      mergedAssertOp = &op;
       mergedAssertFile = f;
       // the original assert's condition, when the cond_br takes its
       // landing (false) side
@@ -665,6 +667,7 @@ private:
       return;
     }
     mergedAssertLoc.reset();
+    mergedAssertOp = nullptr;
     mergedAssertFile.reset();
     mergedCond = {};
     if (!f)
@@ -884,6 +887,8 @@ private:
   /// The original assert of the last branch taken, if sea-merge-asserts
   /// made it (see noteBranch).
   std::optional<Location> mergedAssertLoc;
+  /// The branch it came from.
+  Operation *mergedAssertOp = nullptr;
   /// Its file location, if any.
   std::optional<FileLineColLoc> mergedAssertFile;
   /// Its condition, when the run took the branch to the merged assert's
@@ -1174,6 +1179,15 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
       cells.push_back(*v);
     }
     if (isa<PtrType>(ld.getType())) {
+      // addr0-is-null (RunOptions::addr0IsNull): all-zero integer bytes are
+      // the null pointer
+      if (options.addr0IsNull && llvm::all_of(cells, [](const CellValue &c) {
+            return !c.ptr && c.bits.isZero();
+          })) {
+        ++result.addr0IsNullUses;
+        ptrs[ld.getResult()] = Ptr{0, APInt::getZero(width)};
+        return success();
+      }
       for (unsigned i = 0; i < n; ++i)
         if (!cells[i].ptr || cells[i].piece != i ||
             !(*cells[i].ptr == *cells[0].ptr)) {
@@ -1185,14 +1199,22 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
       return success();
     }
     APInt bits = APInt::getZero(width);
+    bool nullBytes = false; // counted once per load
     for (unsigned i = 0; i < n; ++i) {
       if (cells[i].ptr) {
+        // addr0-is-null: the bytes of the null pointer are 0
+        if (options.addr0IsNull && cells[i].ptr->obj == 0 &&
+            cells[i].ptr->off.isZero()) {
+          nullBytes = true;
+          continue; // bits stay 0
+        }
         error = "load of a pointer cell as an integer: pointers have no "
                 "address before placement";
         return failure();
       }
       bits.insertBits(cells[i].bits, i * buf.cellWidth);
     }
+    result.addr0IsNullUses += nullBytes;
     define(ld.getResult(), bits);
     if (trackProv && cells[0].prov) {
       bool whole = true;
@@ -1235,8 +1257,20 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
   // deferMemoryErrors: an update with a violation does nothing (checked
   // before the length limit: a violation is the program's, whatever the
   // length)
+  // memhavoc(NULL, n), as after a failed allocation: a no-op under
+  // RunOptions::memhavocNullNoop (an open semantics decision, counted and
+  // warned), before any range check or limit. Only null itself: null + k
+  // is an address computed from null, a different case, and stays an
+  // error. A placed program havocs address 0, as the VC does.
+  bool nullNoop = false;
+  if (auto mh = dyn_cast<MemHavocOp>(op);
+      mh && options.memhavocNullNoop && isa<PtrType>(mh.getAddr().getType()) &&
+      !env.lookup(mh.getLen()).isZero()) {
+    Ptr p = ptrs.lookup(mh.getAddr());
+    nullNoop = p.obj == 0 && p.off.getBitWidth() && p.off.isZero();
+  }
   bool skip = false;
-  if (options.deferMemoryErrors) {
+  if (options.deferMemoryErrors && !nullNoop) {
     LogicalResult inObject = success();
     if (auto st = dyn_cast<StoreOp>(op)) {
       Buffer &b = *mems.lookup(mem);
@@ -1288,6 +1322,15 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
   Buffer &buf = **b;
   if (skip)
     return success(); // the new version is the old contents
+  if (nullNoop) {
+    ++result.memhavocNullNoopUses;
+    diag::warn("interp.memhavoc-null-noop",
+               "sea.memhavoc of the null pointer runs as a no-op (an open "
+               "semantics decision; --memhavoc-null=error makes it a "
+               "memory-safety error)",
+               op.getLoc());
+    return success(); // the new version is the old contents
+  }
 
   // Modification tracking: a tracked update that writes at least one byte
   // marks its object.
@@ -1542,7 +1585,15 @@ LogicalResult Interpreter::execPtr(Operation &op, std::string &error) {
     define(pd.getResult(), APInt(1, ok));
     return success();
   }
-  if (isa<PtrToIntOp>(op)) {
+  if (auto ti = dyn_cast<PtrToIntOp>(op)) {
+    // addr0-is-null: the address of the null pointer is 0
+    Ptr p = ptrOf(ti.getPtr());
+    if (options.addr0IsNull && p.obj == 0 && p.off.isZero()) {
+      ++result.addr0IsNullUses;
+      define(ti.getResult(),
+             APInt::getZero(ti.getType().getIntOrFloatBitWidth()));
+      return success();
+    }
     error = "ptr.to_int: pointers have no address before placement";
     return failure();
   }

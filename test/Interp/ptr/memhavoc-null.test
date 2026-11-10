@@ -1,0 +1,108 @@
+// sea.memhavoc of the null pointer: a no-op by default, counted and
+// warned (an open semantics decision); --memhavoc-null=error makes it a
+// memory-safety error. A non-null range outside its object stays an error.
+// RUN: split-file %s %t
+// RUN: sea-run %t/null.mlir --input=1=0 2>&1 | FileCheck %s --check-prefix=NOOP
+// NOOP: [interp.memhavoc-null-noop]
+// NOOP: status: halted
+// NOOP: assume.memhavoc-null-noop: uses=1
+// RUN: not sea-run %t/null.mlir --input=1=0 --memhavoc-null=error 2>&1 | FileCheck %s --check-prefix=ERR
+// ERR: status: error
+// ERR-NOT: assume.memhavoc-null-noop
+// The non-null side is a real havoc.
+// RUN: sea-run %t/null.mlir --input=1=1,2@heap.3+0=5 | FileCheck %s --check-prefix=HAVOC
+// HAVOC: status: assert-failed
+// HAVOC-NOT: assume.memhavoc-null-noop
+// null + k stays an error.
+// RUN: not sea-run %t/nullk.mlir 2>&1 | FileCheck %s --check-prefix=NULLK
+// NULLK: status: error
+// RUN: not sea-run %t/oob.mlir 2>&1 | FileCheck %s --check-prefix=OOB
+// OOB: status: error
+// OOB: message: memory access
+// The VC follows the rule (sea-guard-null-memhavoc): with c = 0 the
+// memhavoc of null leaves every object alone. Without the guard
+// (=error) the VC havocs from address 0, which is the first object in
+// the compact layout: sat, and the original program has a memory-safety
+// error there (exit 4).
+// RUN: sea-vc %t/compact.mlir --lower --replay-original | FileCheck %s --check-prefix=VCNOOP
+// VCNOOP: assume.memhavoc-null-noop: vc sites=1
+// VCNOOP: result: unsat
+// RUN: sea-vc %t/compact.mlir --lower --seam | FileCheck %s --check-prefix=VCNOOP-SEAM
+// VCNOOP-SEAM: result: unsat
+// RUN: bash -c 'sea-vc %t/compact.mlir --lower --replay-original --memhavoc-null=error > %t.err.out 2>&1; test $? -eq 4'
+// RUN: FileCheck %s --check-prefix=VCERR < %t.err.out
+// VCERR-NOT: assume.memhavoc-null-noop: vc
+// VCERR: result: sat
+// VCERR: replay: assert-failed
+// VCERR: replay.original: status=memory-error
+// VCERR: [vc.replay-original-memory-error]
+// REQUIRES: z3
+
+//--- null.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %one = sea.const 1 : i8
+  %a = sea.malloc %c4 align 4 [3] : i64 -> !sea.ptr<64>
+  %c = sea.nondet "c" [1] : i1
+  %n = sea.ptr.null : !sea.ptr<64>
+  %p = sea.select %c, %a, %n : !sea.ptr<64>
+  %m1 = sea.store %m0[%a], %one inplace : !m, i8
+  %m2 = sea.memhavoc %m1[%p], %c4 [2] inplace : !m
+  %x = sea.load %m2[%a] : !m -> i8
+  %ok = sea.icmp eq, %x, %one : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- nullk.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %n = sea.ptr.null : !sea.ptr<64>
+  %q = sea.ptr.add %n, %c4 : !sea.ptr<64>, i64
+  %m1 = sea.memhavoc %m0[%q], %c4 [2] inplace : !m
+  sea.halt
+}
+
+//--- oob.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %c8 = sea.const 8 : i64
+  %a = sea.malloc %c4 align 4 [3] : i64 -> !sea.ptr<64>
+  %m1 = sea.memhavoc %m0[%a], %c8 [2] inplace : !m
+  sea.halt
+}
+
+//--- compact.mlir
+// 16-bit pointers, align-1 objects: the first object starts at address 1
+!m = !sea.mem<!sea.ptr<16>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i16
+  %c1 = sea.const 1 : i16
+  %one = sea.const 1 : i8
+  %b = sea.malloc %c4 align 1 [3] : i16 -> !sea.ptr<16>
+  %a = sea.malloc %c4 align 1 [4] : i16 -> !sea.ptr<16>
+  %n = sea.ptr.null : !sea.ptr<16>
+  %b1 = sea.ptr.add %b, %c1 : !sea.ptr<16>, i16
+  %m1 = sea.store %m0[%b1], %one inplace : !m, i8
+  %m1a = sea.store %m1[%a], %one inplace : !m, i8
+  %c = sea.nondet "c" [1] : i1
+  %p = sea.select %c, %a, %n : !sea.ptr<16>
+  %m2 = sea.memhavoc %m1a[%p], %c4 [2] inplace : !m
+  %x = sea.load %m2[%b1] : !m -> i8
+  %ok = sea.icmp eq, %x, %one : i8
+  %t = sea.const 1 : i1
+  %nc = sea.xor %c, %t : i1
+  sea.assume %nc
+  sea.assert %ok
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

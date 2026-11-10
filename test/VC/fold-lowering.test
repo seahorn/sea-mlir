@@ -7,10 +7,10 @@
 // lowering without it); at exactly 2^w units it is.
 // RUN: sea-opt %t/wrap.mlir --canonicalize | FileCheck %s --check-prefix=KEPT
 // RUN: sea-opt %t/wrap8.mlir --canonicalize | FileCheck %s --check-prefix=KEPT
-// RUN: sea-vc %t/wrap.mlir --lower | FileCheck %s --check-prefix=SAT
-// RUN: sea-vc %t/wrap8.mlir --lower | FileCheck %s --check-prefix=SAT
-// RUN: sea-opt %t/wrap.mlir --canonicalize | sea-vc - --lower --lower-opt=false | FileCheck %s --check-prefix=SAT
-// RUN: sea-opt %t/wrap8.mlir --canonicalize | sea-vc - --lower --lower-opt=false | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/wrap.mlir --lower --replay-original | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/wrap8.mlir --lower --replay-original | FileCheck %s --check-prefix=SAT
+// RUN: sea-opt %t/wrap.mlir --canonicalize | sea-vc - --lower --lower-opt=false --replay-original | FileCheck %s --check-prefix=SAT
+// RUN: sea-opt %t/wrap8.mlir --canonicalize | sea-vc - --lower --lower-opt=false --replay-original | FileCheck %s --check-prefix=SAT
 // RUN: sea-run %t/wrap.mlir --input=1=0 | FileCheck %s --check-prefix=FAIL
 // RUN: sea-opt %t/fits.mlir --canonicalize | FileCheck %s --check-prefix=FWD
 // RUN: sea-vc %t/fits.mlir --lower --lower-opt=false | FileCheck %s --check-prefix=UNSAT
@@ -20,10 +20,10 @@
 // i16 cells at a 1-bit address) and k64.
 // RUN: sea-opt %t/k1b.mlir --canonicalize | FileCheck %s --check-prefix=KEPT
 // RUN: sea-opt %t/k2b.mlir --canonicalize | FileCheck %s --check-prefix=KEPT
-// RUN: sea-opt %t/k1b.mlir --canonicalize | sea-vc - --lower --lower-opt=false | FileCheck %s --check-prefix=SAT
-// RUN: sea-opt %t/k2b.mlir --canonicalize | sea-vc - --lower --lower-opt=false | FileCheck %s --check-prefix=SAT
-// RUN: sea-vc %t/k1b.mlir --lower | FileCheck %s --check-prefix=SAT
-// RUN: sea-vc %t/k2b.mlir --lower | FileCheck %s --check-prefix=SAT
+// RUN: sea-opt %t/k1b.mlir --canonicalize | sea-vc - --lower --lower-opt=false --replay-original | FileCheck %s --check-prefix=SAT
+// RUN: sea-opt %t/k2b.mlir --canonicalize | sea-vc - --lower --lower-opt=false --replay-original | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/k1b.mlir --lower --replay-original | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/k2b.mlir --lower --replay-original | FileCheck %s --check-prefix=SAT
 // RUN: sea-opt %t/k2.mlir --canonicalize | FileCheck %s --check-prefix=FWD
 // RUN: sea-opt %t/k16.mlir --canonicalize | FileCheck %s --check-prefix=FWD
 // RUN: sea-opt %t/k64.mlir --canonicalize | FileCheck %s --check-prefix=FWD
@@ -33,15 +33,17 @@
 // FWD-NOT: sea.load
 // SAT: result: sat
 // SAT: replay: assert-failed
+// SAT: replay.original: status=assert-failed {{.*}}match=yes
 // UNSAT: result: unsat
 // FAIL: status: assert-failed
 
 // The block merge keeps the branches sea-merge-asserts marks: with the
 // halt path blocked, every other branch on the failing path merges away,
 // and the replay still names the original assert.
-// RUN: sea-vc %t/marker.mlir --lower | FileCheck %s --check-prefix=MARK
+// RUN: sea-vc %t/marker.mlir --lower --replay-original | FileCheck %s --check-prefix=MARK
 // MARK: replay: assert-failed
 // MARK: replay: assert-op: {{.*}}marker.mlir:8:3{{$}}
+// MARK: replay.original: status=assert-failed {{.*}}marker.mlir:8:3 match=yes
 // REQUIRES: z3
 
 //--- wrap.mlir

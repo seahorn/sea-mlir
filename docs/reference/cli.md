@@ -56,6 +56,9 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | option | effect |
 |---|---|
 | `--seam-check[=<N>]` | check every SeaM rule firing (or $N$ of them) with the solver; exit 5 if one is invalid |
+| `--memhavoc-null=noop\|error` | `sea.memhavoc` of the null pointer: a no-op (default; in the lowering, `sea-guard-null-memhavoc` guards every memhavoc whose pointer may be null, `assume.memhavoc-null-noop: vc sites=<n>`, and in the replays, counted and warned) or a memory-safety error (no guard: the VC havocs from address 0) |
+| `--addr0-is-null=false` | the replays only, without the named assumption that address 0 is null (default on). The VC identifies null with address 0 either way (placement; `assume.addr0-is-null: vc`), and sea-vc warns `vc.addr0-is-null-off` |
+| `--replay-original` | with `--lower` or `--sink-assumes`, on `sat`: also run the input program before any pass on the model's inputs; exit 6 if it does not fail the same assertion ([Replay on the original program](output-formats.md#replay-on-the-original-program)) |
 | `--check-align` | with `--lower`: assert every `align` promise instead of the program's assertion |
 | `--check-ptr-index` | with `--lower`: assert every no-wrap promise of pointer arithmetic that is used |
 | `--ptr-companion=check` | with `--seam`, opaque pointers: check A-PTRINT (a split pointer load reads the pointer last stored at its address) instead of the program's assertions; `unsat` prints `seam.ptrint: holds`, a confirmed `sat` lists the failing loads (`seam.ptrint-violated`, `seam.ptrint-unstored`) and exits 0 |
@@ -97,6 +100,8 @@ sea-run <file.mlir> [options]
 | `--fuzz=<n>`, `--fuzz-time=<s>` | fuzz: run trials on generated inputs ([Fuzzing](fuzzing.md)) |
 | `--fuzz-sites` | list the input sites and the assumes with their conditions, and exit ([For agents](fuzzing.md#for-agents)) |
 | `--fuzz-serve` | run on inputs sent as JSON lines on stdin, one response per line ([Driving the fuzzer from Python](fuzzing.md#driving-the-fuzzer-from-python)) |
+| `--memhavoc-null=noop\|error` | `sea.memhavoc` of the null pointer: a no-op (default; an open semantics decision, counted as `assume.memhavoc-null-noop: uses=<n>` and warned) or a memory-safety error |
+| `--addr0-is-null=false` | turn off the named assumption that address 0 is the null pointer (default on): zero bytes loaded as a pointer, a null pointer's bytes loaded as an integer, and `ptr.to_int` of null then stop the run; on, each such step counts (`assume.addr0-is-null: uses=<n>`) ([Memory-Step2](../design/Memory-Step2.md)) |
 | `--defer-memory-errors` | go on past a memory-safety violation; a finding only if the run then reaches the end or a failing assertion (not if an assume blocks it, nor at the step limit or an interpreter limit) ([Deferred memory errors](fuzzing.md#deferred-memory-errors)) |
 
 Abstract programs, with pointers into unplaced objects, run directly:

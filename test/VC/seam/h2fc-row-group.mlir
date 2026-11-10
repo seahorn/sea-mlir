@@ -7,6 +7,8 @@
 // (row.smap-group), and no ite-merge fires. Counters, not time.
 // RUN: sea-vc %s --lower --lower-opt=false --seam --widen-memory=4 --vcgen-only --seam-stats --seam-row-group=0 | FileCheck %s --check-prefix=OFF
 // RUN: sea-vc %s --lower --lower-opt=false --seam --widen-memory=4 --vcgen-only --seam-stats | FileCheck %s --check-prefix=ON
+// RUN: sea-vc %s --lower --seam --widen-memory=4 --replay-original | FileCheck %s --check-prefix=ORIG
+// ORIG: replay.original: status=assert-failed {{.*}} match=yes
 // OFF: seam.rule.bv.ite-merge: {{[1-9][0-9]+}}
 // ON-NOT: bv.ite-merge
 // ON: seam.rule.row.smap-group: {{[1-9][0-9]+}}

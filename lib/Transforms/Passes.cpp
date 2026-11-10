@@ -209,6 +209,7 @@ void registerPasses() {
   registerPass([] { return createLowerTrackingPass(); });
   registerPass([] { return createLowerFatPointersPass(); });
   registerPass([] { return createDropFreshMemHavocPass(); });
+  registerPass([] { return createGuardNullMemHavocPass(); });
   registerPass([] { return createSplitWideAccessPass(); });
   registerPass([] { return createMergeAssertsPass(); });
   registerPass([] { return createSinkAssumesPass(); });
@@ -241,8 +242,8 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
                              bool nativeMulOverflow, bool fold,
                              unsigned widenMemory, bool expandMemSet,
                              bool widenReport, bool keepByteWide,
-                             bool checkAlign, unsigned checkPtrIndex,
-                             bool opt) {
+                             bool checkAlign, unsigned checkPtrIndex, bool opt,
+                             bool memhavocNullNoop) {
   OpPassManager &prog = pm.nest<ProgramOp>();
   prog.addPass(createApplyTrackingPass());
   if (fold)
@@ -253,6 +254,10 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
   if (abstract) {
     // object metadata, while pointers still know their objects
     prog.addPass(createDropFreshMemHavocPass());
+    // memhavoc of null is a no-op (an open semantics decision, as in the
+    // interpreter): explicit in the program, for every VC encoding
+    if (memhavocNullNoop)
+      prog.addPass(createGuardNullMemHavocPass());
     prog.addPass(createLowerTrackingPass());
     prog.addPass(createLowerFatPointersPass());
     prog.addPass(createPlaceStaticPass());

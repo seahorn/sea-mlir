@@ -20,7 +20,8 @@
 // (the first one on its path); the landing block's location names it.
 // The cond_br and the landing br carry the assert's location wrapped as
 // loc("sea.assert"(<loc>)) (kMergedAssertLocName): a replay reports it as
-// the failing assert, not as a branch of the source.
+// the failing assert, not as a branch of the source. Both carry the
+// assert's id attribute (kAssertIdAttr), if it has one.
 //
 // Contract.
 //   Accepts: a program with any asserts and halts (loops are fine: the
@@ -167,7 +168,13 @@ void MergeAssertsPass::runOnOperation() {
     b.setInsertionPointToStart(cont);
     AssumeOp::create(b, aloc, cond);
     b.setInsertionPoint(a);
-    CondBrOp::create(b, brLoc, cond, ValueRange{}, ValueRange{}, cont, land);
+    auto cbr = CondBrOp::create(b, brLoc, cond, ValueRange{}, ValueRange{},
+                                cont, land);
+    // the assert's id (kAssertIdAttr), on both branches made of it
+    if (Attribute id = a->getAttr(kAssertIdAttr)) {
+      cbr->setAttr(kAssertIdAttr, id);
+      land->getTerminator()->setAttr(kAssertIdAttr, id);
+    }
     a.erase();
   }
   // postcondition: one assert, right before the only halt

@@ -59,7 +59,9 @@ COMMANDS:
   bench.py compare <dirA> [<dirB>] [-a CONFIG] [-b CONFIG]   (dir: path, name under results/, or `latest`)
 OUTPUT of run: stats.csv (job config rep wall cpu status verdict + every BRUNCH_STAT key),
   logs/<config>/<job>.<rep>.{out,err}, manifest.yaml (sea-vc sha256, git rev/dirty, configs, host, date), rows.jsonl.
-  verdict: sat unsat unknown timeout memout error inb-violation (rc 4) replay-mismatch (rc 2).
+  verdict: sat unsat unknown timeout memout error inb-violation (rc 4) replay-mismatch (rc 2)
+  lowering-mismatch (rc 6: --replay-original, the input program does not fail the lowered sat's assertion),
+  original-memory-error (rc 4 with replay.original match=no: the input program makes a memory-safety violation).
 compare prints `key: value` lines; verdict disagreements first, `DISAGREE-SAT-UNSAT` is a soundness bug.
 --no-record on gate: no gate record ($SEA_BENCH_HOME/gates); results and logs stay in $SEA_BENCH_HOME/results (attest reads them).
 SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SEA_BENCH_SUITES (colon-separated)
@@ -79,7 +81,10 @@ SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SE
     config `default` = the manifest's defaults (+ job args); `default+CFG` adds bench/configs/CFG.yaml's args
     and solver; CFG alone replaces the defaults. Job timeout = min(config timeout, tier cap: smoke 60,
     quick 300, else the config's).
+    Every run gets --replay-original when the sea-vc has it (`replay-original: on|off` line; --no-replay-original:
+    off): a sat is also replayed on the program before the lowering.
     FAILS (exit 1) on: verdict != expected (sat/unsat jobs; timeout/unknown counts), replay-mismatch (rc 2),
+    lowering-mismatch (rc 6), original-memory-error (rc 4 under --replay-original) on a gated job,
     error / inb-violation / memout on a gated job, sat vs unsat between two configs (DISAGREE-SAT-UNSAT),
     and (`FAIL: counter ...`, counted apart as counter-failures) a solved job of config `default` whose
     counter breaks its bound or is missing from the output (--no-counters: skip). --tag T: only jobs tagged T
@@ -357,14 +362,25 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
     out, err = open(base + ".out").read(), open(base + ".err").read()
     parse_stats(out, stats)
     parse_stats(err, stats)
+    # --replay-original: yes | no | undetermined | skipped (the first line)
+    m = re.search(
+        r"^replay\.original: (?:status=\S+ at=\S+ match=(\S+)|(skipped))", out, re.M
+    )
+    replay_original = (m.group(1) or m.group(2)) if m else None
     if killed or rc == -signal.SIGXCPU or rc == -signal.SIGKILL:
         verdict = "timeout"
     elif rc in (0, 3):
         verdict = stats.get("result", "error")
+    elif rc == 4 and replay_original == "no":
+        # --replay-original: the input program makes a memory-safety
+        # violation and fails no assertion of the lowered sat
+        verdict = "original-memory-error"
     elif rc == 4:
         verdict = "inb-violation"
     elif rc == 2:
         verdict = "replay-mismatch"
+    elif rc == 6:
+        verdict = "lowering-mismatch"
     elif (
         "bad_alloc" in err
         or "memory" in err.lower()
@@ -381,6 +397,7 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
         "cpu": round(ru.ru_utime + ru.ru_stime, 3),
         "status": rc,
         "verdict": verdict,
+        "replay_original": replay_original,
         "maxrss_mb": round(ru.ru_maxrss / 1024),
         "log": base,
     }
@@ -900,7 +917,9 @@ def wait_for_machine(a):
         time.sleep(1)  # stagger starts
 
 
-def run_suite(tasks, cfgnames, vc, a, outdir, tier_cap, done=None, prior=()):
+def run_suite(
+    tasks, cfgnames, vc, a, outdir, tier_cap, done=None, prior=(), extra_args=()
+):
     rows = list(prior)
     lock = threading.Lock()
     jl = open(outdir + "/rows.jsonl", "w")
@@ -913,7 +932,7 @@ def run_suite(tasks, cfgnames, vc, a, outdir, tier_cap, done=None, prior=()):
         if (f"{sn}.{fam}.{j}", c) in have:
             return
         cfg = gate_config(c, m)
-        cfg = dict(cfg, args=cfg["args"] + list(v.get("args") or []))
+        cfg = dict(cfg, args=cfg["args"] + list(v.get("args") or []) + list(extra_args))
         if a.mem:
             cfg["mem"] = a.mem
         wait_for_machine(a)
@@ -975,6 +994,17 @@ def find_vc(a):
     return vc
 
 
+def vc_has_option(vc, name):
+    """Does sea-vc VC know --NAME (its --help-hidden lists it)?"""
+    try:
+        out = subprocess.run(
+            [vc, "--help-hidden"], capture_output=True, text=True, timeout=60
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return re.search(rf"--{re.escape(name)}\b", out) is not None
+
+
 def cmd_gate(a):
     if a.tier not in TIERS:
         sys.exit(f"bench: tier must be one of {TIERS}")
@@ -996,6 +1026,19 @@ def cmd_gate(a):
         f"gate: {a.tier} configs={','.join(cfgs)} jobs={len(tasks)} runs={len(tasks) * len(cfgs)} par={a.par}"
     )
     print(f"sea-vc: {vc}")
+    # a sat is also replayed on the program before the lowering (sea-vc --replay-original);
+    # a sea-vc without the option (an older base of bench-perf) runs without it
+    replay_orig = not a.no_replay_original and vc_has_option(vc, "replay-original")
+    print(
+        "replay-original: "
+        + (
+            "on"
+            if replay_orig
+            else "off"
+            if a.no_replay_original
+            else "off (unsupported by sea-vc)"
+        )
+    )
     print(f"out: {outdir}", flush=True)
 
     def done(r):
@@ -1005,7 +1048,16 @@ def cmd_gate(a):
             )
 
     t0 = time.monotonic()
-    rows = run_suite(tasks, cfgs, vc, a, outdir, True, done)
+    rows = run_suite(
+        tasks,
+        cfgs,
+        vc,
+        a,
+        outdir,
+        True,
+        done,
+        extra_args=["--replay-original"] if replay_orig else [],
+    )
     write_csv(outdir, rows)
     fails, slow, solved, cfails = [], [], [], []
     nbounds = 0
@@ -1014,15 +1066,19 @@ def cmd_gate(a):
         by_job.setdefault(r["job"], []).append(r)
         exp, v, tier = r["expected"], r["verdict"], r["tier"]
         key = f"{r['job']} config={r['config']}"
-        if v == "replay-mismatch":
-            fails.append(f"replay-mismatch {key} expected={exp}")
+        if v in ("replay-mismatch", "lowering-mismatch"):
+            fails.append(f"{v} {key} expected={exp}")
         elif exp in SOLVED and v != exp:
             fails.append(
                 f"{'WRONG' if v in SOLVED else 'unsolved'} {key} verdict={v} expected={exp}"
             )
         elif exp == "unknown-ok" and v in SOLVED:
             solved.append(f"{key} verdict={v}")
-        elif exp == "unknown-ok" and v in ("error", "inb-violation") and tier != "hard":
+        elif (
+            exp == "unknown-ok"
+            and v in ("error", "inb-violation", "original-memory-error")
+            and tier != "hard"
+        ):
             fails.append(f"{v} {key} expected={exp}")
         # completeness: counter bounds, for a run that answered as expected (a wrong or missing verdict is
         # reported above); the default configuration only (other options change the counts)
@@ -1078,6 +1134,12 @@ def cmd_gate(a):
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
     wall = time.monotonic() - t0
     print("verdicts: " + " ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+    if replay_orig:
+        ro = [r.get("replay_original") for r in rows]
+        print(
+            f"replay-original: match={ro.count('yes')} undetermined={ro.count('undetermined')}"
+            f" mismatch={ro.count('no')} skipped={ro.count('skipped')}"
+        )
     print(f"failures: {len(fails)}")
     print(f"counter-bounds: {nbounds}")
     print(f"counter-failures: {len(cfails)}")
@@ -1323,6 +1385,11 @@ def main():
     )
     g.add_argument(
         "--tag", help="only jobs with this tag (canary: the small cross-family gate)"
+    )
+    g.add_argument(
+        "--no-replay-original",
+        action="store_true",
+        help="run without sea-vc --replay-original",
     )
     g.add_argument("-v", "--verbose", action="store_true")
     g.set_defaults(f=cmd_gate)

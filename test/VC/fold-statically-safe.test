@@ -32,24 +32,26 @@
 // SeaHorn's error marker, the only assert, `assert false` right before
 // the halt: reaching it is the failure, not a statically failing check; no
 // fold.assert-false.
-// RUN: sea-vc %t/marker.mlir --lower 2>&1 | FileCheck %s --check-prefix=MARKER
+// RUN: sea-vc %t/marker.mlir --lower --replay-original 2>&1 | FileCheck %s --check-prefix=MARKER
 // MARKER-NOT: fold.assert-false
 // MARKER-NOT: vc.fold
 // MARKER: result: sat
 // MARKER: replay: assert-failed
+// MARKER: replay.original: status=assert-failed {{.*}}match=yes
 
 // A located check that sccp folded to 0 is reported even as the only
 // assert right before the halt: the marker has no source location.
-// RUN: sea-vc %t/located.mlir --lower 2>&1 | FileCheck %s --check-prefix=LOCATED
+// RUN: sea-vc %t/located.mlir --lower --replay-original 2>&1 | FileCheck %s --check-prefix=LOCATED
 // LOCATED: real.c":9:5) [fold.assert-false]
 // LOCATED: vc.fold: assume-false=0 assert-false=1
 // LOCATED: result: sat
+// LOCATED: replay.original: status=assert-failed {{.*}}match=yes
 
 // assert(false) reachable and not that marker (code follows it): a finding, the same for the VC and the
 // interpreter; the code after it is dead (folded away, the verdict and
 // the replay stay).
-// RUN: sea-vc %t/reachable.mlir --lower 2>&1 | FileCheck %s --check-prefix=SAT
-// RUN: sea-vc %t/reachable.mlir --lower --lower-opt=false 2>&1 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/reachable.mlir --lower --replay-original 2>&1 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/reachable.mlir --lower --lower-opt=false --replay-original 2>&1 | FileCheck %s --check-prefix=SAT
 // RUN: sea-opt %t/reachable.mlir --canonicalize 2>&1 | FileCheck %s --check-prefix=TRUNC
 // RUN: sea-run %t/reachable.mlir --input=0=0 | FileCheck %s --check-prefix=FAIL
 // SAT: fold.assert-false
@@ -57,6 +59,7 @@
 // SAT: vc.fold: assume-false=0 assert-false=1
 // SAT: result: sat
 // SAT: replay: assert-failed
+// SAT: replay.original: status=assert-failed {{.*}}match=yes
 // TRUNC: fold.assert-false
 // TRUNC: sea.assert
 // TRUNC-NEXT: sea.halt

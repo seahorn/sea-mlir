@@ -19,6 +19,7 @@ add_mlir_library(SeaTransforms
   LowerTracking.cpp
   LowerFatPointers.cpp
   DropFreshMemHavoc.cpp
+  GuardNullMemHavoc.cpp
   SplitWideAccess.cpp
   WrapFlags.cpp
   PrintRefs.cpp

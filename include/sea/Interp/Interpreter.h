@@ -256,6 +256,11 @@ struct RunResult {
   /// through a branch sea-merge-asserts put in its place
   /// (kMergedAssertLocName), else `at`'s own. Set for AssertFailed.
   std::optional<mlir::Location> assertLoc;
+  /// The op that stands for that assert: the branch sea-merge-asserts put
+  /// in its place (the one assertLoc comes from), else the failing
+  /// sea.assert. It carries the assert's id (kAssertIdAttr), if any. Set
+  /// with assertLoc (a MemoryError that reached a failing assert too).
+  mlir::Operation *assertOp = nullptr;
   static constexpr unsigned kBranchPathLength = 5;
   /// The output of the print ops the run executed (RunOptions::prints),
   /// and the number of records dropped past RunOptions::printLimit.
@@ -285,6 +290,11 @@ struct RunResult {
   /// the in-place interpreter read the current contents, right only if the
   /// cell was not clobbered since (Mem-SSA's no-clobber claim, Memory.md).
   llvm::SmallVector<mlir::Operation *> earlierVersionLoads;
+  /// Steps that rested on addr0-is-null (RunOptions::addr0IsNull).
+  uint64_t addr0IsNullUses = 0;
+  /// The memhavocs of null the run executed as no-ops
+  /// (RunOptions::memhavocNullNoop).
+  uint64_t memhavocNullNoopUses = 0;
 };
 
 /// The file location in `loc` (directly, or inside a name / fused /
@@ -422,6 +432,23 @@ struct RunOptions {
   /// Classification: RunResult::deferredCount. Layout errors and limits
   /// still stop the run.
   bool deferMemoryErrors = false;
+  /// The named assumption addr0-is-null (on by default; sea-run / sea-vc
+  /// --addr0-is-null=false: off): address 0 is the null pointer. Almost
+  /// always true; false in some embedded and kernel environments. Under it
+  /// an abstract program recovers null where only bytes or an address are
+  /// known: all-zero integer bytes loaded as a pointer are null, a null
+  /// pointer's bytes loaded as an integer are 0, ptr.to_int of null is 0.
+  /// Each such step counts (RunResult::addr0IsNullUses). Off: they stop
+  /// the run, as without it.
+  bool addr0IsNull = true;
+  /// sea.memhavoc of the null pointer (offset 0) in an abstract program:
+  /// a no-op (default; sea-run / sea-vc --memhavoc-null=noop) or a
+  /// memory-safety error, as any access through null (=error). An open
+  /// semantics decision, kept visible: each such memhavoc counts
+  /// (RunResult::memhavocNullNoopUses) and warns interp.memhavoc-null-noop
+  /// once. null + k (k != 0) and a non-null range outside its object stay
+  /// errors; a placed program havocs address 0 as the VC does.
+  bool memhavocNullNoop = true;
 };
 
 //===- Counterexample printing (docs/design/Print.md) ---------------------===//
