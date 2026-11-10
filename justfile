@@ -38,6 +38,10 @@ release-check build="build-rc" *cmake_args="":
 docs:
     mkdocs build --strict
 
+# QA corpus coverage: line / branch coverage of each validated pass under test/QA and under check-sea, uncovered branches, per-pattern fire counts (utils/qa-coverage.py; a clang coverage build in build-cov, configured from cmake_args when new)
+qa-coverage build="build-cov" lit="" *args="":
+    python3 utils/qa-coverage.py --build {{build}} {{ if lit == "" { "" } else { "--lit " + lit } }} {{args}}
+
 # serve the documentation site with live reload on http://127.0.0.1:8000
 docs-serve addr="127.0.0.1:8000":
     mkdocs serve --dev-addr {{addr}}
