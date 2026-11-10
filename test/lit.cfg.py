@@ -16,7 +16,13 @@ config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.join(config.sea_obj_root, "test")
 config.excludes = ["Inputs", "CMakeLists.txt", "lit.cfg.py"]
 
-llvm_config.with_system_environment(["HOME", "TMP", "TEMP"])
+# LLVM_PROFILE_FILE: a coverage build's profiles (utils/qa-coverage.py)
+llvm_config.with_system_environment(["HOME", "TMP", "TEMP", "LLVM_PROFILE_FILE"])
+# utils/qa-coverage.py's canon.fold events, on its run of test/QA only
+# (--param sea_log=... --param sea_log_file=...); never the ambient SEA_LOG
+for param, var in (("sea_log", "SEA_LOG"), ("sea_log_file", "SEA_LOG_FILE")):
+    if lit_config.params.get(param):
+        config.environment[var] = lit_config.params[param]
 llvm_config.use_default_substitutions()
 
 sea_tools_dir = os.path.join(config.sea_obj_root, "bin")

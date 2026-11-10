@@ -7,6 +7,8 @@
 
 #include "sea/Interp/Interpreter.h"
 
+#include "mlir/IR/Matchers.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Path.h"
@@ -58,9 +60,22 @@ std::vector<ReachTarget> collectReachTargets(ProgramOp program,
       continue;
     }
     for (Operation &op : b)
-      if (isa<AssumeOp, AssertOp, UnreachableOp>(op))
+      if (isa<AssumeOp, AssertOp, UnreachableOp>(op) ||
+          isReachSiteMarker(&op)) {
         add(&op, op.getName().getStringRef(), op.getLoc(),
             positionId(op.getLoc()));
+        ReachTarget &t = targets.back();
+        if (auto a = op.getAttrOfType<IntegerAttr>(kReachSiteAttr))
+          t.site = a.getInt();
+        if (isa<AssumeOp, AssertOp>(op))
+          t.trueCheck = matchPattern(op.getOperand(0), m_One());
+        if (auto p = dyn_cast<PrintOp>(op))
+          t.of = p.getTag().str();
+        // the target before it in this block: T's next target
+        if (targets.size() > 1 && targets[targets.size() - 2].op &&
+            targets[targets.size() - 2].op->getBlock() == &b)
+          targets[targets.size() - 2].nextSite = t.site;
+      }
   }
   // R_T's own target: the id it stands for, taken by no other
   llvm::StringSet<> taken;
@@ -71,6 +86,13 @@ std::vector<ReachTarget> collectReachTargets(ProgramOp program,
       taken.insert(t.id);
       fixed[i] = true;
     }
+  // the failure of an assert (kAssertFailMarker): the id of the check of
+  // its site plus `.fail`, numbered with no other target
+  std::vector<bool> fail(targets.size(), false);
+  for (auto [i, t] : llvm::enumerate(targets))
+    if (auto p = dyn_cast<PrintOp>(t.op);
+        p && !fixed[i] && p.getTag() == kAssertFailMarker)
+      fail[i] = fixed[i] = true;
   // unlocated: by order; a repeated id: #<n> from the second on
   unsigned unlocated = 0;
   llvm::StringMap<unsigned> seen;
@@ -87,6 +109,16 @@ std::vector<ReachTarget> collectReachTargets(ProgramOp program,
       t.id = n > 1 ? base + "#" + std::to_string(n) : base;
     } while (taken.contains(t.id));
   }
+  llvm::DenseMap<int64_t, std::string> siteId;
+  for (auto [i, t] : llvm::enumerate(targets))
+    if (!fail[i] && t.site >= 0)
+      siteId.try_emplace(t.site, t.id);
+  for (auto [i, t] : llvm::enumerate(targets))
+    if (fail[i]) {
+      auto it = siteId.find(t.site);
+      std::string base = it != siteId.end() ? it->second : t.id;
+      t.id = (base.empty() ? "unlocated" : base) + ".fail";
+    }
   return targets;
 }
 

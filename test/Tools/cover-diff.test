@@ -1,0 +1,349 @@
+// utils/cover-diff.py: level 0 (reach coverage of two lowerings, matched
+// by the sea.reach_site and role of each input check, and each assert's
+// failure) and level 1 (query-diff --project-blocks on R_T of each target
+// reachable on both sides).
+// RUN: split-file %s %t
+// RUN: chmod +x %t/fake-vc.py
+// DEFINE: %{cd} = %python %sea_src_root/utils/cover-diff.py --sea-vc %sea_vc --z3 %z3 --par 1
+// The exit code follows the status line (0 pass, 1 DIFF, 3 error, 2
+// unknown; lit's `not` only tells zero from nonzero).
+
+// equal and removed-ok: canonicalize erases a dead block (its assume and
+// the assert are unreachable with --lower-opt=false); level 1 on the
+// targets reachable on both sides; the verdicts agree.
+// RUN: %{cd} --a=--lower-opt=false --b= --level=1 %t/folded.mlir | FileCheck %s --check-prefix=OK
+// OK: target: folded 0/assume equal a=reachable b=reachable
+// OK: target: folded 1/assume equal a=reachable b=reachable
+// OK: target: folded 2/assume removed-ok a=unreachable b=absent
+// OK: target: folded 3/assert removed-ok a=unreachable b=absent
+// OK: target: folded 3/fail removed-ok a=unreachable b=absent
+// OK: verdict: folded equal a=unsat b=unsat
+// OK: level1: folded 0/assume
+// OK: job: folded pass {{.*}}removed-ok=3 removed-true=0 removed-but-reachable=0 unknown=0
+// OK-SAME: level1: equiv=2 diff=0 unknown=0 error=0
+// OK: status: pass
+
+// Checks of true: kept as reach-site markers (sea-vc --reach-keep-sites,
+// the default), so they are equal. Without the markers canonicalize erases
+// them: an assume of true followed by a target in its block is
+// removed-true; one with no target after it in its block is unknown, or
+// removed-true with --unresolved-true=pass.
+// RUN: %{cd} --a=--lower-opt=false --b= %t/true.mlir | FileCheck %s --check-prefix=KEEP
+// KEEP: target: true 0/assume equal a=reachable b=reachable
+// KEEP: target: true 2/assume equal a=reachable b=reachable
+// KEEP: status: pass
+// RUN: not %{cd} --no-keep-sites --a=--lower-opt=false --b= %t/true.mlir | FileCheck %s --check-prefix=TRUE
+// TRUE: target: true 0/assume removed-true a=reachable b=absent cond=true resolved=next
+// TRUE: target: true 2/assume unknown a=reachable b=absent cond=true resolved=unresolved
+// TRUE: status: unknown
+// RUN: %{cd} --no-keep-sites --a=--lower-opt=false --b= --unresolved-true=pass %t/true.mlir | FileCheck %s --check-prefix=TPASS
+// TPASS: target: true 2/assume removed-true {{.*}}resolved=unresolved
+// TPASS: status: pass
+// A check of true whose next target is not equal stands for nothing.
+// RUN: not %{cd} --no-keep-sites --args="--lower --lower-opt=false" %t/tn-a.mlir --b-input=%t/tn-b.mlir | FileCheck %s --check-prefix=TNEXT
+// TNEXT: target: tn-a 0/assume unknown a=reachable b=absent cond=true resolved=unresolved
+// TNEXT: target: tn-a 1/assume DIFF a=reachable b=unreachable
+// TNEXT: status: DIFF
+
+// A DIFF: B blocks the assert (an untagged assume); A's witness, run on B,
+// does not reach it. The assert's failure and the verdicts differ too.
+// RUN: not %{cd} %t/a.mlir --b-input=%t/b-blocked.mlir > %t/diff.txt
+// RUN: FileCheck %s --check-prefix=DF < %t/diff.txt
+// DF: target: a 1/assert DIFF a=reachable b=unreachable witness=a:
+// DF: replay: a 1/assert on=b witness={{.*}} reached=no keys=0/assume
+// DF: target: a 1/fail DIFF a=reachable b=unreachable
+// DF: verdict: a DIFF a=sat b=unsat
+// DF: job: a DIFF {{.*}}untagged=0/1
+// DF: status: DIFF
+
+// Failure keys: the same checks are reached on both sides, but only A's
+// assert can fail (x > 5 against x <= 255); the merged asserts of a
+// two-assert program too.
+// RUN: not %{cd} --level=1 %t/f-a.mlir --b-input=%t/f-b.mlir | FileCheck %s --check-prefix=FAIL
+// FAIL: target: f-a 0/assume equal a=reachable b=reachable
+// FAIL: target: f-a 0/fail DIFF a=reachable b=unreachable
+// FAIL: target: f-a 1/fail equal a=unreachable b=unreachable
+// FAIL: verdict: f-a DIFF a=sat b=unsat
+// FAIL: status: DIFF
+// RUN: not %{cd} --no-verdict %t/f-a.mlir --b-input=%t/f-b.mlir | FileCheck %s --check-prefix=NOV
+// NOV-NOT: verdict:
+// NOV: status: DIFF
+
+// removed-but-reachable: B has no site 1, which is reachable in A.
+// RUN: not %{cd} %t/a2.mlir --b-input=%t/b-removed.mlir > %t/rm.txt
+// RUN: FileCheck %s --check-prefix=RM < %t/rm.txt
+// RM: target: a2 1/assume removed-but-reachable a=reachable b=absent witness=a:
+// RM: replay: a2 1/assume on=b {{.*}}reached=no
+// RM: status: DIFF
+
+// unknown: no runs and an rlimit no query fits in; not a pass.
+// RUN: not %{cd} --fuzz=0 --reach-rlimit=1 --no-verdict %t/a.mlir > %t/unk.txt
+// RUN: FileCheck %s --check-prefix=UNK < %t/unk.txt
+// UNK: target: a {{[01]}}/{{assume|assert|fail}} unknown
+// UNK: status: unknown
+
+// Level 1 sees what level 0 cannot: both sides reach every target, but
+// with other inputs (x > 5 against x > 6).
+// RUN: %{cd} %t/a.mlir --b-input=%t/b-narrow.mlir > %t/l0.txt
+// RUN: FileCheck %s --check-prefix=L0 < %t/l0.txt
+// L0: job: a pass targets=3 equal=3
+// RUN: not %{cd} --level=1 %t/a.mlir --b-input=%t/b-narrow.mlir > %t/l1.txt
+// RUN: FileCheck %s --check-prefix=L1 < %t/l1.txt
+// L1: level1: a 0/assume identical
+// L1: level1: a 1/assert DIFF reason=model
+// L1: level1: a 1/fail DIFF reason=model
+// L1: job: a DIFF {{.*}}level1: equiv=1 diff=2
+// L1: status: DIFF
+
+// No tagged target: unknown, not a pass (an input without checks; a
+// sea-vc that reports no site=). A key with copies is unknown at level 1.
+// A record cover-diff cannot read is the job's error. An unknown verdict
+// makes the job unknown; a safety run that exits 2 (a VC / interpreter
+// mismatch) is an error.
+// RUN: not %{cd} %t/nochecks.mlir | FileCheck %s --check-prefix=NONE
+// NONE: target: nochecks - unknown reason=no-targets
+// NONE: job: nochecks unknown {{.*}}reason=no-targets
+// NONE: status: unknown
+// RUN: not %python %sea_src_root/utils/cover-diff.py --sea-vc %t/fake-vc.py --par 1 --level=1 %t/nosite.mlir %t/copies.mlir %t/badsite.mlir > %t/fake.txt
+// RUN: FileCheck %s --check-prefix=FAKE < %t/fake.txt
+// FAKE: job: nosite unknown {{.*}}untagged=1/1 {{.*}}reason=no-targets
+// FAKE: level1: copies 0/assume unknown reason=copies
+// FAKE: job: copies unknown
+// FAKE: job: badsite error {{.*}}reason=internal:TypeError
+// FAKE: status: error
+// RUN: not %python %sea_src_root/utils/cover-diff.py --sea-vc %t/fake-vc.py --par 1 %t/vunk.mlir %t/vbug.mlir | FileCheck %s --check-prefix=FAKEV
+// FAKEV: verdict: vunk other a=unknown b=unknown
+// FAKEV: job: vunk unknown
+// FAKEV: job: vbug error {{.*}}reason=verdict-sea-vc-exit-2
+// FAKEV: status: error
+
+// --keep keeps each job's files under its full path; jobs that share a
+// basename are named by path.
+// RUN: rm -rf %t/keep %t/d1 %t/d2 && mkdir -p %t/d1 %t/d2 && cp %t/a.mlir %t/d1/x.mlir && cp %t/a.mlir %t/d2/x.mlir
+// RUN: %{cd} --keep=%t/keep %t/d1/x.mlir %t/d2/x.mlir | FileCheck %s --check-prefix=KEEPDIR
+// KEEPDIR: job: {{.*}}d1/x pass
+// KEEPDIR: job: {{.*}}d2/x pass
+// RUN: ls %t/keep | FileCheck %s --check-prefix=KEEPLS
+// KEEPLS: d1_x.mlir
+// KEEPLS: d2_x.mlir
+
+// Refused: an untagged --b-input pair; --reach options (cover-diff sets
+// them).
+// RUN: not %{cd} %t/folded.mlir --b-input=%t/a.mlir 2>&1 | FileCheck %s --check-prefix=UNTAG
+// UNTAG: has no sea.reach_site tags
+// RUN: not %{cd} --args="--lower --reach=blocks" %t/a.mlir 2>&1 | FileCheck %s --check-prefix=NOREACH
+// NOREACH: cover-diff sets the --reach options
+// REQUIRES: z3
+
+//--- folded.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %z = sea.const 0 : i8
+  %nz = sea.icmp ne, %x, %z : i8 loc("folded.c":3:5)
+  sea.assume %nz loc("folded.c":4:5)
+  %f = sea.const 0 : i1 loc("folded.c":6:1)
+  sea.assume %f loc("folded.c":6:5)
+  sea.assume %nz loc("folded.c":8:5)
+  sea.br ^bb1
+^bb1:
+  %g = sea.const 0 : i1
+  sea.assert %g
+  sea.halt
+}
+
+//--- true.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("t.c":1:1)
+  %t = sea.const true
+  sea.assume %t loc("t.c":2:1)
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8 loc("t.c":3:1)
+  sea.assume %big loc("t.c":4:1)
+  sea.assume %t loc("t.c":5:1)
+  %f = sea.const 0 : i1
+  sea.assert %f loc("t.c":6:1)
+  sea.halt
+}
+
+//--- true-last.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i1 loc("t.c":1:1)
+  %t = sea.const true
+  sea.cond_br %x, ^a, ^b loc("t.c":2:1)
+^a:
+  sea.assume %x loc("t.c":3:1)
+  sea.assume %t loc("t.c":4:1)
+  sea.br ^j loc("t.c":4:2)
+^b:
+  sea.br ^j loc("t.c":5:1)
+^j:
+  %f = sea.const 0 : i1
+  sea.assert %f loc("t.c":6:1)
+  sea.halt
+}
+
+//--- a.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("p.c":1:1)
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8 loc("p.c":2:1)
+  sea.assume %big {sea.reach_site = 0 : i64} loc("p.c":3:1)
+  %f = sea.const 0 : i1
+  sea.assert %f {sea.reach_site = 1 : i64} loc("p.c":4:1)
+  sea.halt
+}
+
+//--- b-blocked.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("p.c":1:1)
+  %c5 = sea.const 5 : i8
+  %c3 = sea.const 3 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8 loc("p.c":2:1)
+  sea.assume %big {sea.reach_site = 0 : i64} loc("p.c":3:1)
+  %small = sea.icmp ult, %x, %c3 : i8 loc("p.c":3:2)
+  sea.assume %small loc("p.c":3:3)
+  %f = sea.const 0 : i1
+  sea.assert %f {sea.reach_site = 1 : i64} loc("p.c":4:1)
+  sea.halt
+}
+
+//--- b-narrow.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("p.c":1:1)
+  %c6 = sea.const 6 : i8
+  %big = sea.icmp ugt, %x, %c6 : i8 loc("p.c":2:1)
+  sea.assume %big {sea.reach_site = 0 : i64} loc("p.c":3:1)
+  %f = sea.const 0 : i1
+  sea.assert %f {sea.reach_site = 1 : i64} loc("p.c":4:1)
+  sea.halt
+}
+
+//--- a2.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("p.c":1:1)
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8 loc("p.c":2:1)
+  sea.assume %big {sea.reach_site = 0 : i64} loc("p.c":3:1)
+  sea.assume %big {sea.reach_site = 1 : i64} loc("p.c":3:2)
+  %f = sea.const 0 : i1
+  sea.assert %f {sea.reach_site = 2 : i64} loc("p.c":4:1)
+  sea.halt
+}
+
+//--- b-removed.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("p.c":1:1)
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8 loc("p.c":2:1)
+  sea.assume %big {sea.reach_site = 0 : i64} loc("p.c":3:1)
+  %f = sea.const 0 : i1
+  sea.assert %f {sea.reach_site = 2 : i64} loc("p.c":4:1)
+  sea.halt
+}
+
+//--- dup.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8
+  sea.assume %big {sea.reach_site = 0 : i64}
+  %f = sea.const 0 : i1
+  sea.assert %f {sea.reach_site = 0 : i64}
+  sea.halt
+}
+
+//--- tn-a.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("p.c":1:1)
+  %t = sea.const true
+  sea.assume %t {sea.reach_site = 0 : i64} loc("p.c":2:1)
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8 loc("p.c":2:2)
+  sea.assume %big {sea.reach_site = 1 : i64} loc("p.c":3:1)
+  %f = sea.const 0 : i1
+  sea.assert %f {sea.reach_site = 2 : i64} loc("p.c":4:1)
+  sea.halt
+}
+
+//--- tn-b.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("p.c":1:1)
+  %c5 = sea.const 5 : i8
+  %c3 = sea.const 3 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8 loc("p.c":2:2)
+  %small = sea.icmp ult, %x, %c3 : i8 loc("p.c":2:3)
+  sea.assume %big loc("p.c":2:4)
+  sea.assume %small loc("p.c":2:5)
+  sea.assume %big {sea.reach_site = 1 : i64} loc("p.c":3:1)
+  %f = sea.const 0 : i1
+  sea.assert %f {sea.reach_site = 2 : i64} loc("p.c":4:1)
+  sea.halt
+}
+
+//--- f-a.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("p.c":1:1)
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8 loc("p.c":2:1)
+  sea.assert %big {sea.reach_site = 0 : i64} loc("p.c":4:1)
+  %y = sea.nondet "y" [1] : i8 loc("p.c":5:1)
+  %c1 = sea.const 255 : i8
+  %y1 = sea.icmp ule, %y, %c1 : i8 loc("p.c":6:1)
+  sea.assert %y1 {sea.reach_site = 1 : i64} loc("p.c":7:1)
+  sea.halt
+}
+
+//--- f-b.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("p.c":1:1)
+  %c5 = sea.const 255 : i8
+  %big = sea.icmp ule, %x, %c5 : i8 loc("p.c":2:1)
+  sea.assert %big {sea.reach_site = 0 : i64} loc("p.c":4:1)
+  %y = sea.nondet "y" [1] : i8 loc("p.c":5:1)
+  %c1 = sea.const 255 : i8
+  %y1 = sea.icmp ule, %y, %c1 : i8 loc("p.c":6:1)
+  sea.assert %y1 {sea.reach_site = 1 : i64} loc("p.c":7:1)
+  sea.halt
+}
+
+//--- fake-vc.py
+#!/usr/bin/env python3
+# A stand-in for sea-vc: reach records without sites, with copies, and
+# with a site cover-diff cannot read; a safety verdict without --reach.
+import json
+import sys
+
+args = " ".join(sys.argv)
+if "--reach" not in sys.argv:
+    if "vbug" in args:
+        sys.exit(2)
+    v = "unknown" if "vunk" in args else "unsat"
+    print(json.dumps({"kind": "result", "value": v, "text": "result: " + v}))
+    sys.exit(3 if v == "unknown" else 0)
+recs = []
+if "nosite" in args:
+    recs = [{"kind": "reach", "id": "x", "status": "reachable", "op": "sea.assume"}]
+elif "copies" in args:
+    r = {"kind": "reach", "id": "x", "status": "reachable", "op": "sea.assume", "site": 0}
+    recs = [r, r]
+elif "vunk" in args or "vbug" in args:
+    recs = [{"kind": "reach", "id": "x", "status": "reachable", "op": "sea.assume", "site": 0}]
+elif "badsite" in args:
+    recs = [{"kind": "reach", "id": "x", "status": "reachable", "op": "sea.assume", "site": [0]}]
+for r in recs:
+    r["text"] = "reach: " + r["id"]
+    print(json.dumps(r))
+
+//--- nochecks.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  sea.halt
+}
+
+//--- nosite.mlir
+//--- copies.mlir
+//--- badsite.mlir
+//--- vunk.mlir
+//--- vbug.mlir
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -221,10 +221,12 @@ void CheckPtrIndexPass::runOnOperation() {
     }
   });
   for (AssertOp a : original) {
-    if (assumeAsserts) {
-      b.setInsertionPoint(a);
+    b.setInsertionPoint(a);
+    // the top of a tagged assert stays a reach target (sea-vc --reach)
+    if (Attribute site = a->getAttr(kReachSiteAttr))
+      createReachSiteMarker(b, a.getLoc(), a->getName().getStringRef(), site);
+    if (assumeAsserts)
       AssumeOp::create(b, a.getLoc(), a.getOperand());
-    }
     a.erase();
   }
   if (phi)

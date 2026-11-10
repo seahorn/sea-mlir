@@ -619,7 +619,9 @@ path to the assume is not part of cond.
 REACH (--reach-targets[=checks|blocks]; docs/reference/fuzzing.md, "Reach
 coverage"): which reach targets the run, or the --fuzz trials (corpus files
 first), reached. Targets and ids are sea-vc --reach's (a program's
-sea.assume / sea.assert / sea.unreachable, or blocks); run on the lowered
+sea.assume / sea.assert / sea.unreachable and reach-site markers, the
+sea.print of a check of true kept by sea-vc --reach-keep-sites or an
+assert's failure, or blocks); run on the lowered
 program to get sea-vc --lower --reach's. A target is reached when a run is
 about to execute its op (a block: its first op), every earlier assume
 having held; the rest of the run does not matter. Not with --fuzz-serve,

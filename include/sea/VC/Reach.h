@@ -53,11 +53,15 @@
 namespace sea {
 
 /// On every sea.assume and sea.assert of a module before the lowering (and
-/// before the copy the A-INB check runs, sea-vc --seam): its position in
-/// program order. A target the lowering kept is found in the input
-/// program by it, not by its location, which inlined code repeats.
-inline constexpr llvm::StringLiteral kReachSiteAttr = "sea.reach_site";
-void tagReachSites(mlir::ModuleOp module);
+/// before the copy the A-INB check runs, sea-vc --seam): kReachSiteAttr,
+/// its position in program order. A target the lowering kept is found in
+/// the input program by it, not by its location, which inlined code
+/// repeats; two lowerings of one input match their targets by it
+/// (utils/cover-diff.py). An input that already carries the attribute (a
+/// lowered program, R_T, a hand-tagged pair of programs) keeps its tags:
+/// nothing is retagged, an untagged check stays untagged. Fails (error
+/// vc.reach-site) on a tag that two checks share.
+mlir::LogicalResult tagReachSites(mlir::ModuleOp module);
 
 /// The side conditions, without the negated assertion.
 expr::Expr mkReachQuery(OpSemContext &ctx);
@@ -95,6 +99,10 @@ struct ReachOptions {
   /// assume.addr0-is-null / assume.memhavoc-null-noop: uses=<n>
   bool addr0IsNull = true;
   bool memhavocNullNoop = true;
+  /// false (sea-vc --reach-query=false): no solver; a target no concrete
+  /// run decided is `unknown reason=no-query` (a witness replayed on
+  /// another lowering, utils/cover-diff.py)
+  bool query = true;
   /// TEST ONLY (sea-vc --x-reach-plant=mismatch): count one mismatch on
   /// each replay, to exercise the reporting
   bool plantMismatch = false;

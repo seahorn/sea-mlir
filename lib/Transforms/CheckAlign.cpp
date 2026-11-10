@@ -91,8 +91,15 @@ void CheckAlignPass::runOnOperation() {
       check(op, mv.getSrcAddr(), mv.getSrcAlign());
     }
   });
-  for (AssertOp a : original)
+  OpBuilder mb(&getContext());
+  for (AssertOp a : original) {
+    // the top of a tagged assert stays a reach target (sea-vc --reach)
+    if (Attribute site = a->getAttr(kReachSiteAttr)) {
+      mb.setInsertionPoint(a);
+      createReachSiteMarker(mb, a.getLoc(), a->getName().getStringRef(), site);
+    }
     a.erase();
+  }
 }
 
 } // namespace

@@ -1,0 +1,16 @@
+// QA: validates the lowering's canonicalize and cse folds (sea-vc
+// --lower-opt=false against the default; SeaOps.cpp patterns: block
+// merge, constant assume / assert, a load of a stored value, and upstream
+// cse) on the drop-fresh-memhavoc corpus, Inputs/drop-fresh-memhavoc: programs with memhavocs of fresh and written objects; sea-drop-fresh-memhavoc runs on both sides and is not validated here (it decides semantics, no A/B switch).
+// Each program passes utils/cover-diff.py at level 1: the same check
+// sites, assert failures and verdicts are reachable on both sides, and the
+// same inputs reach each (query-diff --project-blocks on R_T). test-*:
+// programs of the lit tests (positive and edge cases); probe-*: reviewers'
+// adversarial probes (docs/agents/gates.md, "QA corpus").
+// RUN: %python %sea_src_root/utils/cover-diff.py --sea-vc %sea_vc --z3 %z3 --par 2 --level=1 --timeout 300 --a=--lower-opt=false --b= %S/Inputs/drop-fresh-memhavoc | FileCheck %s
+// CHECK: total: jobs={{[0-9]+}} pass={{[0-9]+}} diff=0 unknown=0 error=0
+// CHECK: status: pass
+// REQUIRES: z3
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

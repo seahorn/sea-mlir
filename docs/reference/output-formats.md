@@ -74,6 +74,28 @@ a safety verdict.
   assume of false) are not listed. With `--check-align` or
   `--check-ptr-index`, the one merged assert of the promises is a target
   like any other.
+- `site=<k>` (at the end of the line): the reach site of the target, the
+  position in program order of the input check it stands for. `--reach`
+  tags every `sea.assume` and `sea.assert` of the input with it
+  (`sea.reach_site`) before any pass; an input that already has the
+  attribute keeps its tags, and a tag two checks share is the error
+  `vc.reach-site`. The lowering keeps the tag on the checks it keeps, on
+  the `sea.unreachable` of an assume folded to false (the same top of op)
+  and on the `sea.assume` `sea-merge-asserts` makes of an assert (reached
+  once the assert holds). Checks the lowering makes have none. Two
+  lowerings of one input match their targets by site
+  (`utils/cover-diff.py`). A check of the constant true (which
+  canonicalize erases) also has `cond=true`, and `next=<k>`, the site of
+  the next target in its block, if there is one: the check is reached iff
+  that target is. With `--reach-keep-sites`, canonicalize replaces such a
+  check (tagged) by a reach-site marker, `sea.print "<op>"` with the tag,
+  which is a target too: `op=sea.print ... site=<k> of=<op>` (`of` the
+  check it stands for; jsonl field `of`). With `--reach-failures`, the
+  failure of each tagged assert is a target too: a marker `of=sea.assert.fail`
+  with the assert's site and the id `<assert id>.fail`, alone in a block
+  reached iff an execution reaches the assert with its condition false
+  (`sea-split-assert-failures` before the targets are listed; for a merged
+  assert, the landing block of `sea-merge-asserts`).
 - The id is the target's `file:line:col`, then the call sites it was
   inlined at, each after `@`; a position in the `.mlir` file itself (an op
   the exporter left without a source position) is written with the file's
@@ -149,6 +171,10 @@ failing assert, a memory-safety stop) does not matter.
 | `reach.runs: decided=<n> model-run=<n> solver=<n> cfg=<n> unknown=<n> trials=<n> seeds=<n> inb-violated=<n> time=<s>` | after `reach.summary`: the targets the runs decided, model runs decided, the solver decided, the CFG decided (no path), left unknown; the runs made and their time |
 
 - `reach.config` has `corpus=<n> fuzz=<n>` at its end.
+- `--reach-query=false`: no query at all; a target no run reached is
+  `unknown reason=no-query` (exit status 3), and `reach.config` has
+  `query=0`. `utils/cover-diff.py` runs a witness of one lowering so on
+  another.
 - Under `--seam`, a run that reaches a target also runs on the input
   program, as a model's run does; a run that leaves an object before the
   target, or that leaves one and reaches the target only by a location
@@ -181,7 +207,7 @@ replaced each other `sea.halt` is a target of R_T. Compare R_T programs by
 the attribute, not by the other ids. R_T is the program after `--lower` with the run's options:
 under `--seam` the lowering keeps memset and memmove of symbolic length,
 so run `sea-vc --seam` on it. One `reach.program: <id> op=<op> file=<path>
-at=<where>` line per target, then `reach.programs: <n> dir=<dir>`. `sea-opt
+at=<where> [site=<k>]` line per target, then `reach.programs: <n> dir=<dir>`. `sea-opt
 --sea-reach-target="id=<id>"` builds one R_T.
 
 The lines of `sea-run`: `program:`, `nondet:` and `memread:` (with an
@@ -321,8 +347,8 @@ The record kinds of `sea-vc`:
 | `memread` | `site`, `addr`, `width`, `value`, [`obj`, `off`] |
 | `replay` | `status`, [`at`, `at_inlined`, `at_name`] (assert-at), [`loc`] (`at:`), [`op`, `op_inlined`, `op_name`] (assert-op), [`path`] (most recent first), [`path_inlined`], [`message`] |
 | `validate` | `checked`, `mismatches`, `dontcare` |
-| `reach` | `id`, `status`, `op`, [`via`, `by`] (decided by a run), [`reason`], [`replay`], [`inb`], [`mismatches`], [`witness`], `time`, [`at`, `at_inlined`, `at_name`] |
-| `reach.program` | `id`, `op`, `file`, [`at`, `at_inlined`, `at_name`] (`--reach-programs`) |
+| `reach` | `id`, `status`, `op`, [`via`, `by`] (decided by a run), [`reason`], [`replay`], [`inb`], [`mismatches`], [`witness`], `time`, [`at`, `at_inlined`, `at_name`], [`site`, [`of`], [`cond`, `next`]] |
+| `reach.program` | `id`, `op`, `file`, [`at`, `at_inlined`, `at_name`], [`site`], [`of`] (`--reach-programs`) |
 | `mismatch` | `def`, `type`, `interp`, `model`, [`obj`, `off`] |
 | `no-clobber-violated` | `loc` |
 | `ptrint` | `status` (`violated` or `unstored`), `at`, `addr`, [`obj`, `off`], `bits`, [`stored`] |

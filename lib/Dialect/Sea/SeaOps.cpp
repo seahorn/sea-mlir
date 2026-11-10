@@ -224,7 +224,22 @@ struct SimplifyBr : OpRewritePattern<BrOp> {
   }
 };
 
-/// assume(1): erased. assume(0): the rest of the block cannot execute; the
+/// A check of true with a reach site, under kKeepReachSitesAttr: replaced
+/// by a reach-site marker (isReachSiteMarker) with its site, not erased.
+static bool keepReachSite(Operation *op, PatternRewriter &rewriter) {
+  Attribute site = op->getAttr(kReachSiteAttr);
+  auto prog = op->getParentOfType<ProgramOp>();
+  if (!site || !prog || !prog->hasAttr(kKeepReachSitesAttr))
+    return false;
+  rewriter.setInsertionPoint(op);
+  createReachSiteMarker(rewriter, op->getLoc(), op->getName().getStringRef(),
+                        site);
+  rewriter.eraseOp(op);
+  return true;
+}
+
+/// assume(1): erased (a reach-site marker under kKeepReachSitesAttr).
+/// assume(0): the rest of the block cannot execute; the
 /// block ends there in sea.unreachable (the same meaning: the interpreter
 /// blocks, the VC forbids the block) and the rest becomes a block without
 /// predecessors, which region simplification erases with whatever only it
@@ -236,7 +251,8 @@ struct FoldConstAssume : OpRewritePattern<AssumeOp> {
                                 PatternRewriter &rewriter) const override {
     if (matchPattern(op.getCond(), m_One())) {
       noteFold("assume-true", op.getLoc());
-      rewriter.eraseOp(op);
+      if (!keepReachSite(op, rewriter))
+        rewriter.eraseOp(op);
       return success();
     }
     if (!matchPattern(op.getCond(), m_Zero()) || inDeadBlock(op))
@@ -250,10 +266,14 @@ struct FoldConstAssume : OpRewritePattern<AssumeOp> {
                     op.getLoc());
     noteFold("assume-false", op.getLoc());
     Location loc = op.getLoc();
+    Attribute site = op->getAttr(kReachSiteAttr);
     Block *b = op->getBlock();
     rewriter.splitBlock(b, op->getIterator());
     rewriter.setInsertionPointToEnd(b);
-    UnreachableOp::create(rewriter, loc);
+    auto u = UnreachableOp::create(rewriter, loc);
+    // the same top of op: the assume's reach site (kReachSiteAttr)
+    if (site)
+      u->setAttr(kReachSiteAttr, site);
     return success();
   }
 };
@@ -269,7 +289,8 @@ struct FoldConstAssert : OpRewritePattern<AssertOp> {
                                 PatternRewriter &rewriter) const override {
     if (matchPattern(op.getCond(), m_One())) {
       noteFold("assert-true", op.getLoc());
-      rewriter.eraseOp(op);
+      if (!keepReachSite(op, rewriter))
+        rewriter.eraseOp(op);
       return success();
     }
     if (!matchPattern(op.getCond(), m_Zero()) || inDeadBlock(op))
@@ -774,6 +795,19 @@ Operation *SeaDialect::materializeConstant(OpBuilder &b, Attribute value,
 //===----------------------------------------------------------------------===//
 
 namespace sea {
+
+bool isReachSiteMarker(Operation *op) {
+  auto p = dyn_cast<PrintOp>(op);
+  return p && p.getArgs().empty() && !p.getRef() && p->hasAttr(kReachSiteAttr);
+}
+
+Operation *createReachSiteMarker(OpBuilder &b, Location loc, StringRef of,
+                                 Attribute site) {
+  auto m = PrintOp::create(b, loc, ValueRange{}, b.getStringAttr(of),
+                           StringAttr(), TypeAttr(), StringAttr(), ArrayAttr());
+  m->setAttr(kReachSiteAttr, site);
+  return m;
+}
 
 bool isPrintOp(Operation *op) {
   return isa<PrintOp, PrintMemOp, PrintScopeOp, PrintEndOp>(op);

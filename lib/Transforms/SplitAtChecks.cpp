@@ -38,7 +38,7 @@ namespace sea {
 namespace {
 
 static bool isCheckSite(Operation *op) {
-  return isa<AssumeOp, AssertOp, UnreachableOp>(op);
+  return isa<AssumeOp, AssertOp, UnreachableOp>(op) || isReachSiteMarker(op);
 }
 
 class SplitAtChecksPass
@@ -113,6 +113,52 @@ private:
 };
 
 } // namespace
+
+namespace {
+class SplitAssertFailuresPass
+    : public PassWrapper<SplitAssertFailuresPass, OperationPass<ProgramOp>> {
+public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SplitAssertFailuresPass)
+
+  StringRef getArgument() const final { return "sea-split-assert-failures"; }
+  StringRef getDescription() const final {
+    return "Give the failure of each sea.assert with a reach site a block "
+           "of its own, holding the reach-site marker of the failure "
+           "(sea-vc --reach)";
+  }
+
+  void runOnOperation() override {
+    SmallVector<AssertOp> asserts;
+    getOperation().walk([&](AssertOp a) {
+      if (a->hasAttr(kReachSiteAttr))
+        asserts.push_back(a);
+    });
+    OpBuilder b(&getContext());
+    Region &body = getOperation().getBody();
+    for (AssertOp a : asserts) {
+      Location loc = a.getLoc();
+      Block *head = a->getBlock();
+      Block *chk = head->splitBlock(a);
+      Block *pass = new Block(), *fail = new Block();
+      body.getBlocks().insert(Region::iterator(chk), pass);
+      body.getBlocks().insert(Region::iterator(chk), fail);
+      b.setInsertionPointToEnd(pass);
+      BrOp::create(b, loc, ValueRange{}, chk);
+      b.setInsertionPointToEnd(fail);
+      createReachSiteMarker(b, loc, kAssertFailMarker,
+                            a->getAttr(kReachSiteAttr));
+      BrOp::create(b, loc, ValueRange{}, chk);
+      b.setInsertionPointToEnd(head);
+      CondBrOp::create(b, loc, a.getCond(), ValueRange{}, ValueRange{}, pass,
+                       fail);
+    }
+  }
+};
+} // namespace
+
+std::unique_ptr<Pass> createSplitAssertFailuresPass() {
+  return std::make_unique<SplitAssertFailuresPass>();
+}
 
 std::unique_ptr<Pass> createSplitAtChecksPass(bool blocks, unsigned *splits) {
   return std::make_unique<SplitAtChecksPass>(blocks, splits);

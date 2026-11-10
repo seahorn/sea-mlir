@@ -53,6 +53,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
@@ -108,6 +109,14 @@ static cl::opt<bool> lowerOpt(
              "value), erase dead ops and unreachable blocks; default on; "
              "=false keeps every op)"),
     cl::init(true));
+
+static cl::list<std::string> lowerDisable(
+    "lower-disable",
+    cl::desc("With --lower: leave these optimization passes out of the "
+             "lowering (sccp, cse, canonicalize; "
+             "comma-separated): a lowering with and without one, compared "
+             "by utils/cover-diff.py, validates it"),
+    cl::value_desc("pass,..."), cl::CommaSeparated);
 
 static cl::opt<bool> addr0IsNull(
     "addr0-is-null",
@@ -788,6 +797,27 @@ static cl::opt<bool> reachModelRuns(
              "it reaches whose query is still to come (via=model-run; "
              "default on)"),
     cl::init(true));
+static cl::opt<bool> reachKeepSites(
+    "reach-keep-sites",
+    cl::desc("With --reach: the lowering's canonicalize replaces a tagged "
+             "assume / assert of the constant true by a reach-site marker "
+             "(sea.print with its sea.reach_site; inert in the VC) instead "
+             "of erasing it, so the site stays a target (utils/cover-diff.py)"),
+    cl::init(false));
+static cl::opt<bool> reachFailures(
+    "reach-failures",
+    cl::desc("With --reach: the failure of every tagged assert is a target "
+             "too (op=sea.print of=sea.assert.fail, id <assert id>.fail): "
+             "reached iff an execution reaches the assert with its "
+             "condition false (utils/cover-diff.py)"),
+    cl::init(false));
+static cl::opt<bool> reachQuery(
+    "reach-query",
+    cl::desc("=false: no reach query; the --reach-corpus / --reach-fuzz runs "
+             "decide what they reach, every other target is `unknown "
+             "reason=no-query` (a witness of one lowering replayed on "
+             "another, utils/cover-diff.py)"),
+    cl::init(true));
 static cl::opt<sea::ReachOrder> reachOrder(
     "reach-order", cl::desc("The order of the reach queries"),
     cl::init(sea::ReachOrder::Deepest),
@@ -1136,6 +1166,11 @@ TYPICAL:
                                  #   (default: a model's replay decides the
                                  #   targets it reaches whose query is still
                                  #   to come, via=model-run)
+  sea-vc p.mlir --lower --reach --reach-query=false --reach-corpus=<f>
+                                 #   runs only: what the corpus reaches,
+                                 #   every other target unknown
+                                 #   reason=no-query (a witness of another
+                                 #   lowering, utils/cover-diff.py)
   sea-vc p.mlir --reach --reach-order=program  # query in program order
                                  #   (default deepest: reverse program order,
                                  #   a deep target's model run passes the
@@ -1173,6 +1208,23 @@ TYPICAL:
   sea-vc p.mlir --lower --lower-opt=false  # the lowering without cse /
                                  #   canonicalize: every op stays (A/B of
                                  #   the clean-up)
+  sea-vc p.mlir --lower --lower-disable=canonicalize  # leave
+                                 #   optimization passes out (sccp, cse,
+                                 #   canonicalize; comma-separated): the A
+                                 #   side of a pass validation
+                                 #   (utils/cover-diff.py). Not
+                                 #   sea-drop-fresh-memhavoc: it decides
+                                 #   that a fresh memhavoc is no tracked
+                                 #   write (a semantics decision)
+  sea-vc p.mlir --lower --reach --reach-failures  # also each tagged
+                                 #   assert's failure (reached with its
+                                 #   condition false): op=sea.print
+                                 #   of=sea.assert.fail id=<id>.fail
+  sea-vc p.mlir --lower --reach --reach-keep-sites  # canonicalize keeps a
+                                 #   tagged check of true as a reach-site
+                                 #   marker (sea.print, op=sea.print
+                                 #   of=<op>), a target, instead of
+                                 #   erasing it
   sea-vc p.mlir --lower --widen-memory=8 --widen-memory-report  # a remark
                                  #   per memory: widened, or kept as bytes
                                  #   and the first reason (remark: <loc>:
@@ -1975,20 +2027,37 @@ program they replay on (lowered or input).
 Targets are those of the lowered program: a site the lowering removed (an
 assume of true, the code after an assume of false) is not listed; the
 folded assume of false is the sea.unreachable at its location.
+Reach sites: --reach tags every sea.assume / sea.assert of the input
+before any pass (sea.reach_site = its position in program order; an input
+that has the attribute keeps its tags; a tag two checks share is error
+vc.reach-site). A target whose op carries one reports site=<k>: the
+input check it is (kept), or was (the sea.unreachable of a folded assume;
+the sea.assume sea-merge-asserts makes of an assert, reached once the
+assert holds). Checks the lowering made have none. Two lowerings of one
+input match targets by site (utils/cover-diff.py). With --reach-failures
+the failure of a tagged assert is a target too: a reach-site marker (op=sea.print
+of=sea.assert.fail site=<k>) in a block of its own, reached iff an
+execution reaches the assert with its condition false
+(sea-split-assert-failures; for a merged assert, sea-merge-asserts'
+landing block). A check of the
+constant true (canonicalize erases it) also has cond=true [next=<k>]: k
+is the site of the next target in its block, reached iff it is.
   reach.config: kind=checks|blocks solver=incremental|separate rlimit=<n>
                 splits=<n> model-runs=0|1 order=program|deepest
-                [corpus=<n> fuzz=<n>]
+                [query=0] [corpus=<n> fuzz=<n>]
   reach: <id> reachable|unreachable|unknown op=<sea.assume|sea.assert|
-         sea.unreachable|block> [reason=cfg|rlimit|timeout|guard-free|...]
+         sea.unreachable|block> [reason=cfg|rlimit|timeout|guard-free|
+         no-query|...]
          [replay=reached|mismatch|memory-error|not-reached|error]
          [inb=undetermined]
          [mismatches=<n>] [witness=<file>] time=<s> at=<loc>
+         [site=<k> [cond=true [next=<k>]]]
                                   (one per target, in program order;
                                   reason=cfg: no path from the entry;
                                   replay=reached: the model's run reaches
                                   the target, its values agree up to it)
   reach: <id> reachable op=<op> via=model-run by=<id> [inb=undetermined]
-         [witness=<file>] time=0.000 at=<loc>
+         [witness=<file>] time=0.000 at=<loc> [site=<k>]
                                   (no query: the replay of the model of
                                   target by= reached it; witness: that
                                   model's run)
@@ -2011,7 +2080,7 @@ rest use a fresh solver each (--reach-incremental=false) unless
 to execute a target's op reached it (its prefix is an execution with every
 earlier assume holding; what it does later does not matter):
   reach: <id> reachable op=<op> via=run by=seed:<file>|trial:<n>
-         [inb=undetermined] [witness=<file>] time=0.000 at=<loc>
+         [inb=undetermined] [witness=<file>] time=0.000 at=<loc> [site=<k>]
                                   (no query; by: the first run that reached
                                   it; witness: that corpus file, or with
                                   --reach-witness the trial's inputs)
@@ -2034,7 +2103,7 @@ sea.reach_target attribute); R_T's other targets are numbered on R_T (#n,
 unlocated#k, and the sea.unreachable of each replaced halt is a target).
 R_T of a --lower --seam run keeps symbolic-length
 memset / memmove: run sea-vc --seam on it.
-  reach.program: <id> op=<op> file=<dir>/reach-<k>.mlir at=<loc>
+  reach.program: <id> op=<op> file=<dir>/reach-<k>.mlir at=<loc> [site=<k>]
   reach.programs: <n> dir=<dir>
   The seam.inb / assume.* lines are the assumptions the answers rest on, as
   for a verdict; the reach runs use the safety replays' interpreter options
@@ -2085,10 +2154,10 @@ Kinds and fields:
                 several lines)
   validate      checked, mismatches, dontcare
   reach         id, status, op, [via, by], [reason], [replay], [inb],
-                [mismatches], [witness], time, [at] [at_inlined] [at_name]
-                (--reach; reach.config, reach.summary and reach.runs are
+                [mismatches], [witness], time, [at] [at_inlined] [at_name],
+                [site] (--reach; reach.config, reach.summary and reach.runs are
                 stat records)
-  reach.program id, op, file, [at] [at_inlined] [at_name]
+  reach.program id, op, file, [at] [at_inlined] [at_name], [site]
                 (--reach-programs; reach.programs is a stat record)
   mismatch      def (`<op> <loc>`), type, interp, model (null: none),
                 [obj + off] (an address: the object it points into)
@@ -2238,6 +2307,14 @@ static int writeReachPrograms(ModuleOp module, sea::ProgramOp program,
     rec.text = "reach.program: " + t.id + " op=" + t.opName +
                " file=" + path.str().str() + " at=" + (at.empty() ? "-" : at);
     sea::addLocFields(rec, "at", t.loc);
+    if (t.site >= 0) {
+      rec.num("site", uint64_t(t.site));
+      rec.text += " site=" + std::to_string(t.site);
+    }
+    if (!t.of.empty()) {
+      rec.str("of", t.of);
+      rec.text += " of=" + t.of;
+    }
     gOut->emit(rec);
   }
   vout() << "reach.programs: " << targets.size() << " dir=" << reachPrograms
@@ -2334,19 +2411,44 @@ int main(int argc, char **argv) {
       (reachRlimit || !reachWitness.empty() ||
        reachIncremental.getNumOccurrences() || !reachCorpus.empty() ||
        reachModelRuns.getNumOccurrences() || reachOrder.getNumOccurrences() ||
-       reachFuzz || reachSeed.getNumOccurrences() || !reachPrograms.empty()))
+       reachFuzz || reachSeed.getNumOccurrences() || !reachPrograms.empty() ||
+       reachQuery.getNumOccurrences() || reachKeepSites || reachFailures))
     return fail("--reach-rlimit, --reach-witness, --reach-incremental, "
                 "--reach-model-runs, --reach-order, --reach-corpus, "
-                "--reach-fuzz, --reach-seed and --reach-programs need "
-                "--reach");
+                "--reach-fuzz, --reach-seed, --reach-programs, "
+                "--reach-query, --reach-keep-sites and --reach-failures "
+                "need --reach");
+  if (!reachQuery && reachCorpus.empty() && !reachFuzz)
+    return fail("--reach-query=false decides by runs only: give "
+                "--reach-corpus or --reach-fuzz");
+  unsigned lowerDisableMask = 0;
+  for (const std::string &p : lowerDisable) {
+    unsigned bit = llvm::StringSwitch<unsigned>(p)
+                       .Case("sccp", sea::LowerDisableSccp)
+                       .Case("cse", sea::LowerDisableCse)
+                       .Case("canonicalize", sea::LowerDisableCanonicalize)
+                       .Default(0);
+    if (p == "sea-drop-fresh-memhavoc")
+      return fail("--lower-disable: sea-drop-fresh-memhavoc is a semantics "
+                  "decision, not an optimization: it decides that a "
+                  "memhavoc of a fresh object is no modification (tracking), "
+                  "so the lowering without it means something else");
+    if (!bit)
+      return fail("--lower-disable: '" + p +
+                  "' is not one of sccp, cse, canonicalize");
+    lowerDisableMask |= bit;
+  }
+  if (!lowerDisable.empty() && !lower)
+    return fail("--lower-disable needs --lower");
   if (reachSeed.getNumOccurrences() && !reachFuzz)
     return fail("--reach-seed is the seed of --reach-fuzz");
   if (!reachPrograms.empty() &&
       (!reachCorpus.empty() || reachFuzz || !reachWitness.empty() ||
-       reachRlimit || reachIncremental.getNumOccurrences()))
+       reachRlimit || reachIncremental.getNumOccurrences() ||
+       reachQuery.getNumOccurrences()))
     return fail("--reach-programs writes the R_T programs and exits: not "
                 "with --reach-corpus, --reach-fuzz, --reach-witness, "
-                "--reach-rlimit or --reach-incremental");
+                "--reach-rlimit, --reach-incremental or --reach-query");
   // the corpus, read before any work
   std::vector<sea::CorpusEntryText> reachCorpusEntries;
   for (const std::string &c : reachCorpus) {
@@ -2508,14 +2610,23 @@ int main(int argc, char **argv) {
   // With --seam the answer rests on A-INB. A sat whose replay fails may be
   // an artifact of a program that leaves its objects; the abstract program
   // (every access checked against its object) tells, so keep a copy.
-  OwningOpRef<ModuleOp> abstractModule;
-  if (seam && seamInb && abstract && lower) {
-    // --reach: the targets of the lowered program are found in this copy
-    // by a tag, not by their location (inlined code repeats one)
-    if (reach)
-      sea::tagReachSites(*module);
-    abstractModule = module->clone();
+  // --reach: every check of the input gets its reach site, before any
+  // pass and any copy: the targets of the lowered program are found in the
+  // A-INB copy below by it (not by their location: inlined code repeats
+  // one), and two lowerings of the input match their targets by it
+  // (`site=`, utils/cover-diff.py)
+  if (reach && failed(sea::tagReachSites(*module)))
+    return 1;
+  // --reach-keep-sites: read by the canonicalizer (kKeepReachSitesAttr)
+  for (auto p : module->getOps<sea::ProgramOp>()) {
+    if (reachKeepSites)
+      p->setAttr(sea::kKeepReachSitesAttr, UnitAttr::get(&context));
+    if (reachFailures)
+      p->setAttr(sea::kReachFailuresAttr, UnitAttr::get(&context));
   }
+  OwningOpRef<ModuleOp> abstractModule;
+  if (seam && seamInb && abstract && lower)
+    abstractModule = module->clone();
   // The pointer mode (PtrSort S0), classified on
   // the input program, before the lowering: sea-split-wide-access makes
   // addr.from_int of its own for reassembled pointer loads (to become
@@ -2577,7 +2688,7 @@ int main(int argc, char **argv) {
         /*expandMemSet=*/!seam && !lambdaMem, widenMemoryReport,
         /*keepByteWide=*/seam && seamWide, checkAlign,
         checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt,
-        memhavocNull == MemhavocNull::Noop);
+        memhavocNull == MemhavocNull::Noop, lowerDisableMask);
     if (failed(configurePM(pm)) || failed(pm.run(*module)))
       return 1;
     SEA_PHASE_END(lowerPhase)
@@ -2650,6 +2761,15 @@ int main(int argc, char **argv) {
   std::vector<sea::ReachTarget> reachTargets;
   unsigned reachSplits = 0;
   if (reach) {
+    // --reach-failures: the failure of each tagged assert, a target of
+    // its own (a block with its reach-site marker; the program means the
+    // same)
+    if (reachFailures) {
+      PassManager pm(&context, sea::ProgramOp::getOperationName());
+      pm.addPass(sea::createSplitAssertFailuresPass());
+      if (failed(configurePM(pm)) || failed(pm.run(program)))
+        return 1;
+    }
     reachTargets = sea::collectReachTargets(program, reachKind);
     if (!reachPrograms.empty())
       return writeReachPrograms(*module, program, reachTargets);
@@ -4396,6 +4516,7 @@ int main(int argc, char **argv) {
       ropts.programPath = inputFilename;
       ropts.lowered = lower;
       ropts.plantMismatch = reachPlant == "mismatch";
+      ropts.query = reachQuery;
       ropts.addr0IsNull = addr0IsNull;
       ropts.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
       if (inb && abstractModule)
@@ -4409,6 +4530,8 @@ int main(int argc, char **argv) {
              << " model-runs=" << (reachModelRuns ? 1 : 0) << " order="
              << (reachOrder == sea::ReachOrder::Deepest ? "deepest"
                                                         : "program");
+      if (!reachQuery)
+        vout() << " query=0";
       if (reachRuns)
         vout() << " corpus=" << reachRuns->seedTrials << " fuzz=" << reachFuzz;
       vout() << "\n";

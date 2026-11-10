@@ -115,6 +115,13 @@ std::unique_ptr<mlir::Pass> createSplitCriticalEdgesPass();
 /// starts a block, entered from a block that ends right before it (sea-vc
 /// --reach=checks); `blocks`: every block is split at its front (--reach=
 /// blocks). Adds the splits to `*splits`.
+/// sea-split-assert-failures: before each sea.assert with a reach site k,
+/// `cond_br c, ^pass, ^fail`, ^fail holding the reach-site marker of k's
+/// failure (kAssertFailMarker), both branching to the assert: a reach
+/// target reached iff an execution reaches the assert with c false
+/// (sea-vc --reach-failures). The program means the same (the marker is a
+/// print).
+std::unique_ptr<mlir::Pass> createSplitAssertFailuresPass();
 std::unique_ptr<mlir::Pass> createSplitAtChecksPass(bool blocks = false,
                                                     unsigned *splits = nullptr);
 
@@ -157,6 +164,19 @@ std::unique_ptr<mlir::Pass> createGuardNullMemHavocPass();
 /// words get k-byte cells (aligned word layout).
 std::unique_ptr<mlir::Pass> createWidenMemoryPass();
 
+/// The passes of the VC lowering that sea-vc --lower-disable can leave
+/// out: optimizations, the program stays in the form sea-vc encodes
+/// without them. sccp also folds constant conditions (fold=false of the
+/// pipeline); cse and canonicalize are each of their runs (--lower-opt=false
+/// leaves out all three runs). Not sea-drop-fresh-memhavoc: it also decides
+/// that a memhavoc of a fresh object is no modification (tracking), a
+/// semantics decision.
+enum LowerDisable : unsigned {
+  LowerDisableSccp = 1u << 0,
+  LowerDisableCse = 1u << 1,
+  LowerDisableCanonicalize = 1u << 2,
+};
+
 /// Adds the passes that bring a program into the form sea-vc encodes:
 /// folding constants (sccp; \p fold false leaves it out, for the oracle
 /// that matches values by location), scalarizing structs, placement (if
@@ -176,14 +196,18 @@ std::unique_ptr<mlir::Pass> createWidenMemoryPass();
 /// assume-asserts form); not with checkAlign (each drops the program's
 /// asserts). \p opt: upstream cse after sccp, canonicalize + cse after the
 /// lowerings (sea-vc --lower-opt, default on); sea-split-critical-edges
-/// runs last either way.
+/// runs last either way. \p disable: the optimization passes left out
+/// (LowerDisable bits; sea-vc --lower-disable), each one whose absence
+/// keeps the output in BMC form, so that a lowering with and without it
+/// can be compared (utils/cover-diff.py).
 void buildVCLoweringPipeline(mlir::OpPassManager &pm, bool abstract,
                              bool nativeMulOverflow = false, bool fold = true,
                              unsigned widenMemory = 0, bool expandMemSet = true,
                              bool widenReport = false,
                              bool keepByteWide = false, bool checkAlign = false,
                              unsigned checkPtrIndex = 0, bool opt = true,
-                             bool memhavocNullNoop = true);
+                             bool memhavocNullNoop = true,
+                             unsigned disable = 0);
 
 /// Attaches the `lower.pass` log (one level-1 event per pass run: ops
 /// before and after, time; lib/Transforms/PassLog.cpp) to \p pm. Costs a

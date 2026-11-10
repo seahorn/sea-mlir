@@ -37,6 +37,38 @@ mlir::Operation *nextNonPrintOp(mlir::Operation *op);
 llvm::SmallVector<std::string, 2> printNamesOf(mlir::Value v);
 /// The preferred one of them (the NameLoc's), or none.
 std::optional<std::string> printNameOf(mlir::Value v);
+/// The reach site of a check (an i64 discardable attribute on sea.assume
+/// and sea.assert, set before the lowering by sea::tagReachSites,
+/// sea/VC/Reach.h): the check's position in the input program. The ops a
+/// lowering makes in a check's place keep it: the sea.unreachable of a
+/// folded assume of false (the same top of op), and the sea.assume
+/// sea-merge-asserts makes of an assert (reached once the assert holds).
+inline constexpr llvm::StringLiteral kReachSiteAttr = "sea.reach_site";
+/// On a sea.program (a unit attribute; sea-vc --reach-keep-sites): the
+/// canonicalizer does not erase a tagged assume or assert of the constant
+/// true, it replaces it by a reach-site marker, so that the site stays a
+/// reach target. Without it, the lowering is the normal one.
+inline constexpr llvm::StringLiteral kKeepReachSitesAttr =
+    "sea.keep_reach_sites";
+/// On a sea.program (a unit attribute; sea-vc --reach-failures):
+/// sea-merge-asserts starts the landing block of a tagged assert with the
+/// reach-site marker of its failure (kAssertFailMarker).
+inline constexpr llvm::StringLiteral kReachFailuresAttr = "sea.reach_failures";
+/// A reach-site marker: `sea.print "<op name>"`, a tag line with the
+/// reach site (kReachSiteAttr) of the check of true it replaced (its op
+/// name: sea.assume or sea.assert). Prints are inert (the VC encodes no
+/// term for them); a marker is a reach target (sea/Interp/ReachTargets.h)
+/// at the top of the check it stands for.
+bool isReachSiteMarker(mlir::Operation *op);
+/// The tag of the reach-site marker of an assert's failure: reached iff an
+/// execution reaches the assert with its condition false
+/// (sea-split-assert-failures, sea-merge-asserts' landing block).
+inline constexpr llvm::StringLiteral kAssertFailMarker = "sea.assert.fail";
+/// A reach-site marker for `of` (an op name or kAssertFailMarker) with
+/// reach site `site`, at the builder's insertion point.
+mlir::Operation *createReachSiteMarker(mlir::OpBuilder &b, mlir::Location loc,
+                                       llvm::StringRef of,
+                                       mlir::Attribute site);
 } // namespace sea
 
 #define GET_OP_CLASSES

@@ -22,6 +22,16 @@
 // (`#n`, `unlocated#k`, and the sea.unreachable that replaced each other
 // sea.halt), so they need not match the input's.
 //
+// A reach-site marker (sea.print with a reach site, isReachSiteMarker) is a
+// check target too, op `sea.print`: the top of the check of true the
+// canonicalizer replaced by it under sea-vc --reach-keep-sites.
+//
+// The failure of a tagged assert (its marker, kAssertFailMarker) has the
+// id of the check of its site plus `.fail`.
+//
+// A check target has the reach site (kReachSiteAttr) its op carries: the
+// input check it stands for, the same in every lowering of one input.
+//
 // A target T is reached by a run when the run is about to execute T's op
 // (a block target: its first op): the top of T, every earlier assume
 // having held. What the run does at T or after it does not matter.
@@ -53,6 +63,19 @@ struct ReachTarget {
   mlir::Operation *op = nullptr;
   /// the location reported (`at=`): the op's, a block's first located op's
   mlir::Location loc;
+  /// the reach site of the check (kReachSiteAttr, sea-vc --reach tags the
+  /// input's checks before the lowering), reported as `site=`; -1: none
+  /// (a block, or a check the lowering made)
+  int64_t site = -1;
+  /// the reach site of the next target in the same block (-1: none, or it
+  /// has none); with `trueCheck`, T is reached iff that target is
+  int64_t nextSite = -1;
+  /// an assume or assert of the constant true: it blocks and checks
+  /// nothing (canonicalize erases it), reported as `cond=true`
+  bool trueCheck = false;
+  /// a reach-site marker (isReachSiteMarker, sea-vc --reach-keep-sites):
+  /// the op name of the check of true it replaced, reported as `of=`
+  std::string of;
 };
 
 /// The targets of `program`, in program order (`kind` is not Off).
