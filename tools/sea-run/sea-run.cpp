@@ -22,6 +22,7 @@
 #include "sea/Interp/Fuzz.h"
 #include "sea/Interp/Interpreter.h"
 #include "sea/Interp/ParseInput.h"
+#include "sea/Interp/ReachTargets.h"
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
 #include "sea/Support/Output.h"
@@ -38,9 +39,11 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <iostream>
+#include <set>
 #include <string>
 
 using namespace mlir;
@@ -195,6 +198,26 @@ static cl::opt<bool> fuzzServe(
              "JSON response per line (docs/reference/fuzzing.md)"),
     cl::init(false));
 
+static cl::opt<sea::ReachKind> reachTargets(
+    "reach-targets",
+    cl::desc("Report which reach targets (sea-vc --reach's targets and ids) "
+             "the run, or the --fuzz trials, reached: the top of the op, every "
+             "earlier assume holding"),
+    cl::init(sea::ReachKind::Off), cl::ValueOptional,
+    cl::values(clEnumValN(sea::ReachKind::Off, "off", "none (default)"),
+               clEnumValN(sea::ReachKind::Checks, "checks",
+                          "every sea.assume, sea.assert and sea.unreachable "
+                          "(--reach-targets alone)"),
+               clEnumValN(sea::ReachKind::Checks, "", ""),
+               clEnumValN(sea::ReachKind::Blocks, "blocks", "every block")));
+
+static cl::opt<std::string> reachWitness(
+    "reach-witness",
+    cl::desc("With --fuzz --reach-targets: write the inputs of the trial that "
+             "first reached each target to <dir>/reach-<k>.txt (not for a "
+             "target a --corpus file reached: that file is its witness)"),
+    cl::value_desc("dir"));
+
 static cl::opt<bool> agent("agent",
                            cl::desc("Print a terse guide for agents and exit"),
                            cl::init(false));
@@ -225,6 +248,8 @@ TYPICAL:
   sea-run p.mlir --defer-memory-errors      # classify memory errors (DEFERRED)
   sea-run p.mlir --fuzz-sites               # list the input sites and exit
   sea-run p.mlir --fuzz-serve < reqs.jsonl  # runs on given inputs (see SERVE)
+  sea-run p.mlir --fuzz=10000 --keep-going --corpus=w --reach-targets \
+      --reach-witness=w2                    # reach coverage (see REACH)
 
 INPUTS: a module with sea.program ops. --input values are decimal, negative
 decimal, or 0x-hex, and must fit the nondet's width (a negative v means
@@ -433,6 +458,9 @@ Kinds and fields:
                 [deferred_at_inlined] [deferred_at_name]; one
                 record for the status / at / assert-* / reached /
                 message / deferred lines (text has several lines)
+  reach         id, status (reached|not-reached), op, [by], [witness],
+                [at] [at_inlined] [at_name] (--reach-targets;
+                reach.summary is a stat record)
   stat          key, value: `steps`; the fuzz.* lines (key, value and
                 their k=v fields; fuzz.blocked: sites and cond as
                 strings)
@@ -587,6 +615,30 @@ sites: the sites cond names, ascending (- for none). cond is the last
 field and runs to the end of the line (it holds spaces); jsonl: string
 fields sites and cond. cond=0: an assume of false, nothing passes it. The
 path to the assume is not part of cond.
+
+REACH (--reach-targets[=checks|blocks]; docs/reference/fuzzing.md, "Reach
+coverage"): which reach targets the run, or the --fuzz trials (corpus files
+first), reached. Targets and ids are sea-vc --reach's (a program's
+sea.assume / sea.assert / sea.unreachable, or blocks); run on the lowered
+program to get sea-vc --lower --reach's. A target is reached when a run is
+about to execute its op (a block: its first op), every earlier assume
+having held; the rest of the run does not matter. Not with --fuzz-serve,
+--fuzz-sites, --defer-memory-errors. Use --keep-going with --fuzz (the
+fuzzer stops at the first failure otherwise). After the other lines:
+  reach: <id> reached|not-reached op=<op> [by=seed:<file>|trial:<n>|run]
+         [witness=<file>] at=<where>     (one per target, program order;
+                                         by: the first run that reached it;
+                                         trial: 1-based, seed runs counted;
+                                         run: a plain run)
+  reach.summary: targets=<n> reached=<n> not-reached=<n>
+                 [by-seed=<n> by-trial=<n> witnesses=<n>]   (--fuzz)
+  assume.addr0-is-null: uses=<n>, assume.memhavoc-null-noop: uses=<n>
+                                         (n > 0: the deciding runs', each
+                                         run once)
+--reach-witness=<dir> (with --fuzz): the first trial's inputs per target,
+<dir>/reach-<k>.txt (k: the target's position; a corpus file that reached a
+target is its witness, none written). not-reached is no claim: sea-vc
+--reach decides it.
 
 SERVE (--fuzz-serve; docs/reference/fuzzing.md; utils/fuzz-driver.py is a
 Python driver): parses once, then reads one JSON request per stdin line
@@ -846,6 +898,81 @@ static int listSites(sea::ProgramOp program) {
   return 0;
 }
 
+/// --reach-targets: a `reach` record per target (program order), then
+/// `reach.summary` and the deciding runs' uses of the interpreter's
+/// assumptions. `hits` is parallel to `targets` (a plain run: trial 1 for
+/// every target it reached, `by=run`).
+static int emitReach(sea::out::Emitter &out, ArrayRef<sea::ReachTarget> targets,
+                     ArrayRef<sea::ReachHit> hits, bool plain) {
+  if (!reachWitness.empty())
+    if (std::error_code ec = sys::fs::create_directories(reachWitness))
+      return fail("cannot create '" + reachWitness + "': " + ec.message());
+  unsigned reached = 0, bySeed = 0, byTrial = 0, witnesses = 0;
+  uint64_t addr0 = 0, memhavoc = 0;
+  std::set<uint64_t> deciding;
+  for (auto [k, t] : llvm::enumerate(targets)) {
+    const sea::ReachHit &h = hits[k];
+    std::string at = sea::formatLoc(t.loc);
+    if (at.empty())
+      at = "-";
+    sea::out::Record rec("reach");
+    rec.str("id", t.id).str("status", h.trial ? "reached" : "not-reached");
+    rec.str("op", t.opName);
+    raw_string_ostream os(rec.text);
+    os << "reach: " << t.id << " " << (h.trial ? "reached" : "not-reached")
+       << " op=" << t.opName;
+    if (h.trial) {
+      ++reached;
+      if (deciding.insert(h.trial).second) {
+        addr0 += h.addr0IsNullUses;
+        memhavoc += h.memhavocNullNoopUses;
+      }
+      std::string by = plain            ? "run"
+                       : h.seed.empty() ? "trial:" + std::to_string(h.trial)
+                                        : "seed:" + h.seed;
+      ++(plain || h.seed.empty() ? byTrial : bySeed);
+      rec.str("by", by);
+      os << " by=" << by;
+      if (!plain && h.seed.empty() && !reachWitness.empty()) {
+        SmallString<128> path(reachWitness);
+        llvm::sys::path::append(path, "reach-" + Twine(k) + ".txt");
+        std::vector<std::string> header{
+            "sea-run --reach-targets: " + t.id + " op=" + t.opName +
+                " at=" + at + " trial=" + std::to_string(h.trial),
+            "replays on: " +
+                (inputFilename == "-" ? std::string("<program>")
+                                      : inputFilename.getValue()) +
+                ", with sea-run <program> --input-file=<this file>"};
+        if (h.addr0IsNullUses || h.memhavocNullNoopUses)
+          header.push_back(
+              "assume: addr0-is-null=" + std::to_string(h.addr0IsNullUses) +
+              " memhavoc-null-noop=" + std::to_string(h.memhavocNullNoopUses));
+        std::string error;
+        if (failed(sea::writeCorpusFile(path, header, h.input, error)))
+          return fail(error);
+        ++witnesses;
+        rec.str("witness", path.str());
+        os << " witness=" << path;
+      }
+    }
+    os << " at=" << at;
+    sea::addLocFields(rec, "at", t.loc);
+    out.emit(rec);
+  }
+  raw_ostream &os = out.lines();
+  os << "reach.summary: targets=" << targets.size() << " reached=" << reached
+     << " not-reached=" << targets.size() - reached;
+  if (!plain)
+    os << " by-seed=" << bySeed << " by-trial=" << byTrial
+       << " witnesses=" << witnesses;
+  os << "\n";
+  if (addr0)
+    out.lines() << "assume.addr0-is-null: uses=" << addr0 << "\n";
+  if (memhavoc)
+    out.lines() << "assume.memhavoc-null-noop: uses=" << memhavoc << "\n";
+  return 0;
+}
+
 /// sea-run --fuzz (docs/reference/fuzzing.md): the first failure is
 /// replayed from its input and reported as a plain run; then the `fuzz.*`
 /// stat lines.
@@ -870,6 +997,11 @@ static int runFuzz(sea::ProgramOp program) {
   fo.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
   fo.outDir = fuzzOut;
   fo.maxSteps = maxSteps;
+  std::vector<sea::ReachTarget> targets;
+  if (reachTargets != sea::ReachKind::Off) {
+    targets = sea::collectReachTargets(program, reachTargets);
+    fo.reachTargets = sea::reachTargetOps(targets);
+  }
   FailureOr<sea::FuzzReport> rep = sea::fuzz(program, seeds, fo, error);
   if (failed(rep))
     return fail(error);
@@ -987,6 +1119,9 @@ static int runFuzz(sea::ProgramOp program) {
        << " at=" << (at.empty() ? "-" : at);
     emitBlockerLine(out, line, op);
   }
+  if (reachTargets != sea::ReachKind::Off)
+    if (int rc = emitReach(out, targets, rep->reachHits, /*plain=*/false))
+      return rc;
   out.flush();
   return memoryFinding ? 4 : 0;
 }
@@ -1241,6 +1376,16 @@ int main(int argc, char **argv) {
                 "take --fuzz, --fuzz-time, --input, --input-file, --trace, "
                 "--seed, --max-steps or --defer-memory-errors");
 
+  if (reachTargets != sea::ReachKind::Off &&
+      (fuzzServe || fuzzSites || deferMemoryErrors))
+    return fail("--reach-targets reports exact runs: not with --fuzz-serve, "
+                "--fuzz-sites or --defer-memory-errors (past a substituted "
+                "violation a run is not an execution of the program)");
+  if (!reachWitness.empty() &&
+      (reachTargets == sea::ReachKind::Off || (!fuzzTrials && fuzzTime <= 0)))
+    return fail("--reach-witness needs --reach-targets and --fuzz or "
+                "--fuzz-time (a plain run's witness is its input)");
+
   if (fuzzServe && inputFilename == "-")
     return fail("--fuzz-serve reads requests on stdin; give the program as "
                 "a file");
@@ -1349,9 +1494,33 @@ int main(int argc, char **argv) {
     };
   }
 
+  // --reach-targets: the targets the run reaches the top of
+  std::vector<sea::ReachTarget> targets;
+  std::vector<sea::ReachHit> hits;
+  if (reachTargets != sea::ReachKind::Off) {
+    targets = sea::collectReachTargets(program, reachTargets);
+    hits.resize(targets.size());
+    llvm::DenseMap<Operation *, size_t> index;
+    for (auto [k, t] : llvm::enumerate(targets))
+      index[t.op] = k;
+    options.onOp = [&, index](Operation &op, auto) {
+      if (auto it = index.find(&op); it != index.end())
+        hits[it->second].trial = 1;
+    };
+  }
+
   sea::RunResult r = sea::interpret(program, source, options);
 
   printRun(out, program, r);
+  if (reachTargets != sea::ReachKind::Off) {
+    for (sea::ReachHit &h : hits)
+      if (h.trial) {
+        h.addr0IsNullUses = r.addr0IsNullUses;
+        h.memhavocNullNoopUses = r.memhavocNullNoopUses;
+      }
+    if (int rc = emitReach(out, targets, hits, /*plain=*/true))
+      return rc;
+  }
   out.flush();
   if (r.status == sea::RunStatus::Error) {
     sea::diag::error("interp.stopped", "the interpreter stopped: " + r.message,

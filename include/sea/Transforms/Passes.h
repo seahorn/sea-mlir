@@ -16,6 +16,8 @@ class PassManager;
 
 namespace sea {
 
+class ProgramOp;
+
 /// sea-place-static: lowers abstract pointers to addresses by placing every
 /// object at a constant address (docs/design/Memory-Step2.md) and records
 /// the placement as sea.segment ops; a segment's result (the object's base
@@ -115,6 +117,22 @@ std::unique_ptr<mlir::Pass> createSplitCriticalEdgesPass();
 /// blocks). Adds the splits to `*splits`.
 std::unique_ptr<mlir::Pass> createSplitAtChecksPass(bool blocks = false,
                                                     unsigned *splits = nullptr);
+
+/// sea-reach-target: R_T of the reach target `id` (sea/Interp/ReachTargets.h;
+/// `blocks`: a block target), the program with every assert dropped and an
+/// assert(false) at the top of T (lib/Transforms/ReachTarget.cpp).
+std::unique_ptr<mlir::Pass> createReachTargetPass(std::string id,
+                                                  bool blocks = false);
+std::unique_ptr<mlir::Pass> createReachTargetPass();
+
+/// R_T of the target whose op (a block target: the block's first op) is
+/// `target`, in place; the new assert gets kReachTargetAttr = `id`. Fails
+/// (postcondition) only on a bug.
+mlir::LogicalResult buildReachTargetProgram(ProgramOp program,
+                                            mlir::Operation *target,
+                                            llvm::StringRef id);
+
+/// R_T's sea.assert carries kReachTargetAttr (sea/Interp/ReachTargets.h).
 
 /// sea-apply-tracking: tracking_on/off markers -> `tracked` updates.
 std::unique_ptr<mlir::Pass> createApplyTrackingPass();

@@ -10,6 +10,7 @@ add_mlir_library(SeaTransforms
   ScalarizeStructs.cpp
   SplitCriticalEdges.cpp
   SplitAtChecks.cpp
+  ReachTarget.cpp
   MergeAsserts.cpp
   SinkAssumes.cpp
   LowerPtrIndex.cpp
@@ -34,5 +35,6 @@ add_mlir_library(SeaTransforms
   MLIRIR
   MLIRPass
   MLIRTransforms
+  SeaInterp
   SeaSupport
   )

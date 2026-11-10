@@ -1,0 +1,262 @@
+// sea-vc --reach with concrete runs first (--reach-corpus, --reach-fuzz):
+// corpus files and fuzz trials run on the program the targets are on before
+// any query; a target a run reaches is reachable via=run and not queried,
+// the solver answers the rest. The answers are those of the solver alone.
+// RUN: split-file %s %t
+
+// The solver alone, the reference.
+// RUN: sea-vc %t/contra.mlir --lower --reach 2>/dev/null > %t/solver.txt
+// RUN: grep '^reach: ' %t/solver.txt | cut -d' ' -f2,3 > %t/solver.ans
+
+// A seed that takes the then-branch reaches its two assumes (x = 7 passes
+// the first, the second blocks it); the solver answers the else-branch and
+// the unreachable assume, and the else-branch model's run reaches the
+// assert (via=model-run, no query). The queries use a solver each.
+// RUN: sea-vc %t/contra.mlir --lower --reach --reach-order=program --reach-corpus=%t/then.txt 2>/dev/null > %t/seed.txt
+// RUN: FileCheck %s --check-prefix=SEED < %t/seed.txt
+// SEED: reach.config: kind=checks solver=separate {{.*}} corpus=1 fuzz=0
+// SEED: reach: contra.c:3:1 reachable op=sea.assume via=run by=seed:{{.*}}then.txt witness={{.*}}then.txt time=0.000 at=contra.c:3:1
+// SEED: reach: contra.c:5:1 reachable op=sea.assume via=run by=seed:{{.*}}then.txt
+// SEED: reach: contra.c:5:5 unreachable op=sea.assume time=
+// SEED: reach: contra.c:7:1 reachable op=sea.assume replay=reached
+// SEED: reach: contra.c:9:1 reachable op=sea.assert via=model-run by=contra.c:7:1 time=0.000
+// SEED: reach.summary: targets=5 reachable=4 unreachable=1 unknown=0 queries=2 time={{[0-9.]+}} model-runs=1
+// SEED: reach.runs: decided=2 model-run=1 solver=2 cfg=0 unknown=0 trials=1 seeds=1 inb-violated=0
+// RUN: grep '^reach: ' %t/seed.txt | cut -d' ' -f2,3 | diff %t/solver.ans -
+// An explicit --reach-incremental=true keeps one solver.
+// RUN: sea-vc %t/contra.mlir --lower --reach --reach-corpus=%t/then.txt --reach-incremental=true 2>/dev/null | FileCheck %s --check-prefix=INC
+// INC: reach.config: kind=checks solver=incremental
+// Without concrete runs the default is one solver.
+// RUN: sea-vc %t/contra.mlir --lower --reach 2>/dev/null | FileCheck %s --check-prefix=INC
+
+// Fuzz trials reach every reachable target: one query is left, for the
+// unreachable assume. Witnesses are written for the trials.
+// RUN: rm -rf %t/w && sea-vc %t/contra.mlir --lower --reach --reach-fuzz=200 --reach-witness=%t/w 2>/dev/null > %t/fuzz.txt
+// RUN: FileCheck %s --check-prefix=FUZZ < %t/fuzz.txt
+// FUZZ: reach: contra.c:3:1 reachable op=sea.assume via=run by=trial:{{[0-9]+}} witness={{.*}}reach-0.txt
+// FUZZ: reach: contra.c:5:5 unreachable
+// FUZZ: reach: contra.c:7:1 reachable op=sea.assume via=run by=trial:{{[0-9]+}} witness={{.*}}reach-3.txt
+// FUZZ: reach.summary: targets=5 reachable=4 unreachable=1 unknown=0 queries=1
+// FUZZ: reach.runs: decided=4 model-run=0 solver=1 cfg=0 unknown=0 trials=200 seeds=0
+// RUN: grep '^reach: ' %t/fuzz.txt | cut -d' ' -f2,3 | diff %t/solver.ans -
+// The witnesses replay to their targets, and as a corpus they decide the
+// same targets.
+// RUN: FileCheck %s --check-prefix=W3 < %t/w/reach-3.txt
+// W3: # sea-vc --reach: contra.c:7:1 op=sea.assume at=contra.c:7:1 via=run trial=
+// W3: # replays on: the lowered program
+// RUN: sea-opt %t/contra.mlir --sea-vc-lower --mlir-print-debuginfo > %t/contra-lowered.mlir 2>/dev/null
+// RUN: sea-run %t/contra-lowered.mlir --input-file=%t/w/reach-3.txt --reach-targets | FileCheck %s --check-prefix=RUN3
+// RUN3: reach: contra.c:7:1 reached
+// RUN: sea-vc %t/contra.mlir --lower --reach --reach-corpus=%t/w 2>/dev/null | FileCheck %s --check-prefix=AGAIN
+// AGAIN: reach: contra.c:3:1 reachable op=sea.assume via=run by=seed:{{.*}}reach-
+// AGAIN: reach.runs: decided=4 model-run=0 solver=1 cfg=0 unknown=0 trials=4 seeds=4
+
+// Every target decided by runs: no query. A target behind an infeasible
+// edge is still the CFG's, and the solver's when it is not.
+// RUN: sea-vc %t/chain.mlir --reach --reach-corpus=%t/x42.txt 2>/dev/null | FileCheck %s --check-prefix=CHAIN
+// CHAIN: reach: chain.mlir:5:3 reachable op=sea.assume via=run
+// CHAIN: reach: chain.mlir:7:3 reachable op=sea.assume via=run
+// CHAIN: reach: chain.mlir:9:3 unreachable op=sea.assert time=
+// CHAIN: reach.runs: decided=2 model-run=0 solver=1
+
+// Under --seam a run that reaches a target also runs on the input program:
+// one that leaves an object before the target decides nothing
+// (inb-violated), and the solver's answer stands (replay=memory-error); a
+// model whose run leaves an object decides no other target (model-run=0).
+// RUN: not sea-vc %t/oob.mlir --lower --seam --reach --reach-fuzz=100 --brunch-stats 2>/dev/null | FileCheck %s --check-prefix=OOB
+// OOB: reach: o.c:2:1 reachable op=sea.assume via=run
+// OOB: reach: o.c:3:1 reachable op=sea.assume replay=memory-error
+// OOB: reach.runs: decided={{[0-9]+}} model-run=0 solver={{[0-9]+}} cfg=0 unknown=0 trials=100 seeds=0 inb-violated={{[1-9]}}
+// OOB: BRUNCH_STAT status 4
+
+// The same for a run, at a repeated id (o.c:3:1#2): the run that reaches it
+// leaves an object first, so it decides nothing; the first assume at that
+// location stands.
+// RUN: not sea-vc %t/dup.mlir --lower --seam --reach --reach-fuzz=100 --brunch-stats 2>/dev/null | FileCheck %s --check-prefix=DUP
+// DUP: reach: o.c:3:1 reachable op=sea.assume via=run
+// DUP: reach: o.c:3:1#2 reachable op=sea.assume replay=memory-error
+// DUP: inb-violated={{[1-9]}}
+// DUP: BRUNCH_STAT status 4
+
+// A folded assume of false (sea.unreachable, untagged) at the location of
+// an earlier assume in its block: the run that reaches the earlier one and
+// then leaves an object cannot tell whether it left before the target, so
+// it decides nothing; the answers are the solver's alone (fold2: the same
+// at a location of its own).
+// RUN: not sea-vc %t/fold.mlir --lower --seam --reach --reach-model-runs=false 2>/dev/null | grep '^reach: ' | cut -d' ' -f2,3 > %t/fold.ans
+// RUN: not sea-vc %t/fold.mlir --lower --seam --reach --reach-fuzz=3000 2>/dev/null > %t/fold.txt
+// RUN: grep '^reach: ' %t/fold.txt | cut -d' ' -f2,3 | diff %t/fold.ans -
+// RUN: FileCheck %s --check-prefix=FOLD < %t/fold.txt
+// FOLD: reach: o.c:3:1#2 unreachable op=sea.unreachable
+// RUN: not sea-vc %t/fold.mlir --lower --seam --reach 2>/dev/null | grep '^reach: ' | cut -d' ' -f2,3 | diff %t/fold.ans -
+// RUN: not sea-vc %t/fold2.mlir --lower --seam --reach --reach-model-runs=false 2>/dev/null | grep '^reach: ' | cut -d' ' -f2,3 > %t/fold2.ans
+// RUN: not sea-vc %t/fold2.mlir --lower --seam --reach --reach-fuzz=3000 2>/dev/null | grep '^reach: ' | cut -d' ' -f2,3 | diff %t/fold2.ans -
+// RUN: FileCheck %s --check-prefix=FOLD2 < %t/fold2.ans
+// FOLD2: o.c:3:7 unreachable
+
+// jsonl: the same lines; via and by fields.
+// RUN: sea-vc %t/contra.mlir --lower --reach --reach-corpus=%t/then.txt > %t/c.txt 2>/dev/null
+// RUN: sea-vc %t/contra.mlir --lower --reach --reach-corpus=%t/then.txt --format=jsonl > %t/c.jsonl 2>/dev/null
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t/c.txt --jsonl %t/c.jsonl --require reach:id,status,op,time,at
+// RUN: FileCheck %s --check-prefix=JSONL < %t/c.jsonl
+// JSONL: {"kind":"reach","id":"contra.c:3:1","status":"reachable","op":"sea.assume","via":"run","by":"seed:
+
+// A corpus value that does not fit its site is an error; the options need
+// --reach.
+// RUN: not sea-vc %t/contra.mlir --lower --reach --reach-corpus=%t/bad.txt 2>&1 | FileCheck %s --check-prefix=BAD
+// BAD: [vc.reach-runs]
+// RUN: not sea-vc %t/contra.mlir --reach-fuzz=5 2>&1 | FileCheck %s --check-prefix=NEED
+// NEED: need --reach
+// REQUIRES: z3
+
+//--- then.txt
+0=7
+
+//--- x42.txt
+0=42
+
+//--- bad.txt
+0=4096
+
+//--- chain.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %c42 = sea.const 42 : i8
+  %a = sea.icmp eq, %x, %c42 : i8
+  sea.assume %a
+  %b = sea.icmp ne, %x, %c42 : i8
+  sea.assume %b
+  %f = sea.const 0 : i1
+  sea.assert %f
+  sea.halt
+}
+
+//--- contra.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("contra.c":2:1)
+  %c5 = sea.const 5 : i8
+  %c3 = sea.const 3 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8 loc("contra.c":2:2)
+  sea.cond_br %big, ^then, ^else loc("contra.c":2:3)
+^then:
+  sea.assume %big loc("contra.c":3:1)
+  %small = sea.icmp ult, %x, %c3 : i8 loc("contra.c":4:1)
+  sea.assume %small loc("contra.c":5:1)
+  sea.br ^then2 loc("contra.c":5:2)
+^then2:
+  %ne5 = sea.icmp ne, %x, %c5 : i8 loc("contra.c":5:4)
+  sea.assume %ne5 loc("contra.c":5:5)
+  sea.br ^join loc("contra.c":5:6)
+^else:
+  %e = sea.icmp ne, %x, %c3 : i8 loc("contra.c":6:1)
+  sea.assume %e loc("contra.c":7:1)
+  sea.br ^join loc("contra.c":7:2)
+^join:
+  %f = sea.const 0 : i1 loc("contra.c":8:1)
+  sea.assert %f loc("contra.c":9:1)
+  sea.halt
+}
+
+//--- oob.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %c4 = sea.const 4 : i64
+  %a = sea.malloc %c4 align 1 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c4 align 1 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64 loc("o.c":1:1)
+  %ge = sea.icmp uge, %i, %c4 : i64
+  sea.assume %ge loc("o.c":2:1)
+  %v = sea.const 7 : i8
+  %p = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %m1 = sea.store %m0[%p], %v inplace : !m, i8
+  %y = sea.load %m1[%b] : !m -> i8
+  %e = sea.icmp eq, %y, %z : i8
+  sea.assume %e loc("o.c":3:1)
+  %f = sea.const 0 : i1
+  sea.assert %f loc("o.c":4:1)
+  sea.halt
+}
+
+//--- dup.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %c4 = sea.const 4 : i64
+  %a = sea.malloc %c4 align 1 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c4 align 1 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64 loc("o.c":1:1)
+  %ge = sea.icmp uge, %i, %c4 : i64
+  sea.assume %ge loc("o.c":2:1)
+  %v = sea.const 7 : i8
+  %y0 = sea.load %m0[%b] : !m -> i8
+  %e0 = sea.icmp eq, %y0, %z : i8
+  sea.assume %e0 loc("o.c":3:1)
+  %p = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %m1 = sea.store %m0[%p], %v inplace : !m, i8
+  %y = sea.load %m1[%b] : !m -> i8
+  %e = sea.icmp eq, %y, %v : i8
+  sea.assume %e loc("o.c":3:1)
+  %f = sea.const 0 : i1
+  sea.assert %f loc("o.c":4:1)
+  sea.halt
+}
+
+//--- fold.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %c4 = sea.const 4 : i64
+  %a = sea.malloc %c4 align 1 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c4 align 1 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64 loc("o.c":1:1)
+  %ge = sea.icmp uge, %i, %c4 : i64
+  sea.assume %ge loc("o.c":2:1)
+  %v = sea.const 7 : i8
+  %y0 = sea.load %m0[%b] : !m -> i8
+  %e0 = sea.icmp eq, %y0, %z : i8
+  sea.assume %e0 loc("o.c":3:1)
+  %p = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %m1 = sea.store %m0[%p], %v inplace : !m, i8
+  %y = sea.load %m1[%b] : !m -> i8
+  %e = sea.icmp eq, %y, %v : i8
+  sea.assume %e loc("o.c":5:1)
+  %f = sea.const 0 : i1
+  sea.assume %f loc("o.c":3:1)
+  %t = sea.const 1 : i1
+  sea.assert %t loc("o.c":4:1)
+  sea.halt
+}
+
+//--- fold2.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %c4 = sea.const 4 : i64
+  %a = sea.malloc %c4 align 1 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c4 align 1 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64 loc("o.c":1:1)
+  %ge = sea.icmp uge, %i, %c4 : i64
+  sea.assume %ge loc("o.c":2:1)
+  %v = sea.const 7 : i8
+  %y0 = sea.load %m0[%b] : !m -> i8
+  %e0 = sea.icmp eq, %y0, %z : i8
+  sea.assume %e0 loc("o.c":3:1)
+  %p = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %m1 = sea.store %m0[%p], %v inplace : !m, i8
+  %y = sea.load %m1[%b] : !m -> i8
+  %e = sea.icmp eq, %y, %v : i8
+  sea.assume %e loc("o.c":5:1)
+  %f = sea.const 0 : i1
+  sea.assume %f loc("o.c":3:7)
+  %t = sea.const 1 : i1
+  sea.assert %t loc("o.c":4:1)
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

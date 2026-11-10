@@ -1,0 +1,116 @@
+// sea-run --reach-targets: which reach targets (sea-vc --reach's, with its
+// ids) a run, or the fuzz trials, reached. A target is reached when a run is
+// about to execute its op, every earlier assume having held; a run that an
+// assume then blocks still reached that assume.
+// RUN: split-file %s %t
+
+// A plain run blocked by the first assume reached it, and nothing after.
+// RUN: sea-run %t/g.mlir --input=0=3 --reach-targets | FileCheck %s --check-prefix=BLOCKED
+// BLOCKED: status: assume-blocked
+// BLOCKED: reach: g.c:2:1 reached op=sea.assume by=run at=g.c:2:1
+// BLOCKED: reach: g.c:4:1 not-reached op=sea.assume
+// BLOCKED: reach: g.c:6:1 not-reached op=sea.assert
+// BLOCKED: reach.summary: targets=3 reached=1 not-reached=2{{$}}
+// A run that fails the assert reached it; the deep branch it did not take.
+// RUN: sea-run %t/g.mlir --input=0=20 --reach-targets | FileCheck %s --check-prefix=FAIL
+// FAIL: status: assert-failed
+// FAIL: reach: g.c:2:1 reached
+// FAIL: reach: g.c:4:1 not-reached
+// FAIL: reach: g.c:6:1 reached op=sea.assert by=run
+// Blocks: by the first located op of each block.
+// RUN: sea-run %t/g.mlir --input=0=20 --reach-targets=blocks | FileCheck %s --check-prefix=BLOCKS
+// BLOCKS: reach: g.c:1:1 reached op=block
+// BLOCKS: reach: g.c:4:0 not-reached op=block
+// BLOCKS: reach: g.c:5:1 reached op=block
+// BLOCKS: reach.summary: targets=3 reached=2 not-reached=1
+
+// Fuzzing reaches the deep branch (x = 1234, a dictionary value); each
+// target's first trial is its witness, which replays to the target.
+// RUN: rm -rf %t/w && sea-run %t/g.mlir --fuzz=2000 --keep-going --reach-targets --reach-witness=%t/w | FileCheck %s --check-prefix=FUZZ
+// FUZZ: fuzz.trials: 2000
+// FUZZ: reach: g.c:2:1 reached op=sea.assume by=trial:1 witness={{.*}}reach-0.txt
+// FUZZ: reach: g.c:4:1 reached op=sea.assume by=trial:{{[0-9]+}} witness={{.*}}reach-1.txt
+// FUZZ: reach: g.c:6:1 reached op=sea.assert by=trial:{{[0-9]+}}
+// FUZZ: reach.summary: targets=3 reached=3 not-reached=0 by-seed=0 by-trial=3 witnesses=3
+// RUN: FileCheck %s --check-prefix=W1 < %t/w/reach-1.txt
+// W1: # sea-run --reach-targets: g.c:4:1 op=sea.assume
+// W1: 0=1234
+// RUN: sea-run %t/g.mlir --input-file=%t/w/reach-1.txt --reach-targets | FileCheck %s --check-prefix=REPLAY
+// REPLAY: reach: g.c:4:1 reached op=sea.assume by=run
+
+// A seed corpus runs first: a target a corpus file reaches is reached by it
+// (no witness is written for it); the others by trials.
+// RUN: rm -rf %t/w2 && sea-run %t/g.mlir --fuzz=50 --keep-going --corpus=%t/deep.txt --reach-targets --reach-witness=%t/w2 | FileCheck %s --check-prefix=SEED
+// SEED: reach: g.c:2:1 reached op=sea.assume by=seed:{{.*}}deep.txt at=
+// SEED: reach: g.c:4:1 reached op=sea.assume by=seed:{{.*}}deep.txt at=
+// SEED: reach: g.c:6:1 reached op=sea.assert by=seed:{{.*}}deep.txt at=
+// SEED: reach.summary: targets=3 reached=3 not-reached=0 by-seed=3 by-trial=0 witnesses=0
+
+// Without --reach-targets the fuzzer's output has no reach lines.
+// RUN: sea-run %t/g.mlir --fuzz=50 --keep-going | FileCheck %s --check-prefix=OFF
+// OFF-NOT: {{^}}reach
+
+// The deciding runs' uses of addr0-is-null are reported.
+// RUN: sea-run %t/null.mlir --reach-targets | FileCheck %s --check-prefix=NULL
+// NULL: reach: n.c:3:1 reached
+// NULL: reach.summary:
+// NULL-NEXT: assume.addr0-is-null: uses=1
+
+// jsonl: the same lines.
+// RUN: sea-run %t/g.mlir --fuzz=200 --keep-going --reach-targets > %t/f.txt
+// RUN: sea-run %t/g.mlir --fuzz=200 --keep-going --reach-targets --format=jsonl > %t/f.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t/f.txt --jsonl %t/f.jsonl --require reach:id,status,op,at
+// RUN: FileCheck %s --check-prefix=JSONL < %t/f.jsonl
+// JSONL: {"kind":"reach","id":"g.c:2:1","status":"reached","op":"sea.assume","by":"trial:1","at":"g.c:2:1",
+
+// Not with deferred memory errors (a run past a substituted violation is not
+// an execution), and a witness directory needs fuzzing.
+// RUN: not sea-run %t/g.mlir --input=0=3 --reach-targets --defer-memory-errors 2>&1 | FileCheck %s --check-prefix=DEFER
+// DEFER: not with --fuzz-serve, --fuzz-sites or --defer-memory-errors
+// RUN: not sea-run %t/g.mlir --input=0=3 --reach-targets --reach-witness=%t/x 2>&1 | FileCheck %s --check-prefix=WIT
+// WIT: --reach-witness needs --reach-targets and --fuzz
+
+//--- g.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i32 loc("g.c":1:1)
+  %c10 = sea.const 10 : i32
+  %big = sea.icmp ugt, %x, %c10 : i32
+  sea.assume %big loc("g.c":2:1)
+  %c1234 = sea.const 1234 : i32
+  %eq = sea.icmp eq, %x, %c1234 : i32
+  sea.cond_br %eq, ^deep, ^join loc("g.c":3:1)
+^deep:
+  %t = sea.icmp ne, %x, %c10 : i32 loc("g.c":4:0)
+  sea.assume %t loc("g.c":4:1)
+  sea.br ^join loc("g.c":4:2)
+^join:
+  %c5 = sea.const 5 : i32 loc("g.c":5:1)
+  %lt = sea.icmp ult, %x, %c5 : i32
+  sea.assert %lt loc("g.c":6:1)
+  sea.halt
+}
+
+//--- deep.txt
+0=1234
+
+//--- null.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %c16 = sea.const 16 : i64
+  %s = sea.alloca %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %m1 = sea.memset %m0[%s], %z, %c16 inplace align 8 : !m
+  %c8 = sea.const 8 : i64
+  %f = sea.ptr.add %s, %c8 : !sea.ptr<64>, i64
+  %p = sea.load %m1[%f] align 8 : !m -> !sea.ptr<64>
+  %n = sea.ptr.null : !sea.ptr<64>
+  %ok = sea.ptr.cmp eq, %p, %n : !sea.ptr<64>
+  sea.assume %ok loc("n.c":3:1)
+  %t = sea.const 1 : i1
+  sea.assert %t loc("n.c":4:1)
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

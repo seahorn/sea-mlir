@@ -1,0 +1,152 @@
+// R_T programs (sea-vc --reach-programs, sea-opt --sea-reach-target): for
+// each reach target T, the program with every assert dropped and an
+// assert(false) at T. sea-vc on R_T is sat iff --reach answers T reachable,
+// and T's witness fails R_T's assertion in sea-run.
+// RUN: split-file %s %t
+
+// One R_T per target of the lowered program, then exit (no query).
+// RUN: rm -rf %t/rt && sea-vc %t/contra.mlir --lower --reach --reach-programs=%t/rt 2>/dev/null | FileCheck %s --check-prefix=EMIT
+// EMIT: reach.program: contra.c:3:1 op=sea.assume file={{.*}}reach-0.mlir at=contra.c:3:1
+// EMIT: reach.program: contra.c:5:5 op=sea.assume file={{.*}}reach-2.mlir
+// EMIT: reach.program: contra.c:9:1 op=sea.assert file={{.*}}reach-4.mlir
+// EMIT: reach.programs: 5 dir=
+// EMIT-NOT: reach.summary
+// RUN: rm -rf %t/w && sea-vc %t/contra.mlir --lower --reach --reach-order=program --reach-witness=%t/w 2>/dev/null | FileCheck %s --check-prefix=REACH
+// REACH: reach: contra.c:3:1 reachable
+// REACH: reach: contra.c:5:1 reachable op=sea.assume via=model-run by=contra.c:3:1 witness={{.*}}reach-0.txt
+// REACH: reach: contra.c:5:5 unreachable
+// REACH: reach: contra.c:7:1 reachable
+// REACH: reach: contra.c:9:1 reachable
+// The safety query of each R_T agrees (R_T is in BMC form: sea-vc takes it
+// without --lower).
+// RUN: sea-vc %t/rt/reach-0.mlir 2>/dev/null | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/rt/reach-1.mlir 2>/dev/null | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/rt/reach-2.mlir 2>/dev/null | FileCheck %s --check-prefix=UNSAT
+// RUN: sea-vc %t/rt/reach-3.mlir 2>/dev/null | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/rt/reach-4.mlir 2>/dev/null | FileCheck %s --check-prefix=SAT
+// SAT: result: sat
+// UNSAT: result: unsat
+// The witnesses of --reach fail R_T's assertion at the target's location
+// (5:1's is the run of 3:1's model, which passes through it).
+// RUN: sea-run %t/rt/reach-1.mlir --input-file=%t/w/reach-0.txt | FileCheck %s --check-prefix=W1
+// W1: status: assert-failed
+// W1: assert-op: contra.c:5:1
+// RUN: sea-run %t/rt/reach-3.mlir --input-file=%t/w/reach-3.txt | FileCheck %s --check-prefix=W3
+// W3: status: assert-failed
+// W3: assert-op: contra.c:7:1
+// R_T's own assert has the target's id (its sea.reach_target attribute),
+// also a repeated (#2) or unlocated id; R_T's other targets are numbered on
+// R_T.
+// RUN: sea-vc %t/rt/reach-3.mlir --reach 2>/dev/null | FileCheck %s --check-prefix=IDS
+// IDS: reach: contra.c:7:1 reachable op=sea.assert
+// RUN: rm -rf %t/ri && sea-vc %t/ids.mlir --reach --reach-programs=%t/ri 2>/dev/null | FileCheck %s --check-prefix=RIDS
+// RIDS: reach.program: callee.c:2:3@caller.c:9:1#2 op=sea.assume file={{.*}}reach-2.mlir
+// RIDS: reach.program: unlocated#1 op=sea.assert file={{.*}}reach-3.mlir
+// RUN: sea-vc %t/ri/reach-2.mlir --reach 2>/dev/null | FileCheck %s --check-prefix=RID2
+// RID2: reach: callee.c:2:3@caller.c:9:1 reachable op=sea.assume
+// RID2: reach: callee.c:2:3@caller.c:9:1#2 reachable op=sea.assert
+// RUN: sea-vc %t/ri/reach-3.mlir --reach 2>/dev/null | FileCheck %s --check-prefix=RID3
+// RID3: reach: unlocated#1 reachable op=sea.assert
+// A sea.unreachable that replaced a halt comes before R_T's assert and is
+// numbered after it: the assert keeps unlocated#0.
+// RUN: rm -rf %t/rb2 && sea-vc %t/ids2.mlir --reach --reach-programs=%t/rb2 2>/dev/null | FileCheck %s --check-prefix=RB2
+// RB2: reach.program: unlocated#0 op=sea.assume file={{.*}}reach-0.mlir
+// RUN: sea-vc %t/rb2/reach-0.mlir --reach 2>/dev/null | FileCheck %s --check-prefix=RB2T
+// RB2T: reach: unlocated#1 reachable op=sea.unreachable
+// RB2T: reach: unlocated#0 reachable op=sea.assert
+
+// A folded assume of false (sea.unreachable) as the target; the assert
+// after it is in a block without predecessors and the CFG's.
+// RUN: rm -rf %t/rf && sea-vc %t/folded.mlir --lower --reach --reach-programs=%t/rf 2>/dev/null | FileCheck %s --check-prefix=FOLD
+// FOLD: reach.program: folded.c:6:5 op=sea.unreachable file={{.*}}reach-1.mlir
+// RUN: sea-vc %t/rf/reach-1.mlir 2>/dev/null | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/rf/reach-2.mlir 2>/dev/null | FileCheck %s --check-prefix=UNSAT
+
+// Blocks: the same per block.
+// RUN: rm -rf %t/rb && sea-vc %t/contra.mlir --lower --reach=blocks --reach-programs=%t/rb 2>/dev/null | FileCheck %s --check-prefix=BLK
+// BLK: reach.program: contra.c:5:4 op=block file={{.*}}reach-2.mlir
+// RUN: sea-vc %t/rb/reach-2.mlir 2>/dev/null | FileCheck %s --check-prefix=UNSAT
+// RUN: sea-vc %t/rb/reach-1.mlir 2>/dev/null | FileCheck %s --check-prefix=SAT
+
+// One R_T through sea-opt, from the lowered program: the same answer.
+// RUN: sea-opt %t/contra.mlir --sea-vc-lower --sea-reach-target="id=contra.c:5:5" --mlir-print-debuginfo | sea-vc - 2>/dev/null | FileCheck %s --check-prefix=UNSAT
+
+// --reach-programs takes no query options.
+// RUN: not sea-vc %t/contra.mlir --reach --reach-programs=%t/x --reach-fuzz=3 2>&1 | FileCheck %s --check-prefix=OPT
+// OPT: --reach-programs writes the R_T programs and exits
+// REQUIRES: z3
+
+//--- contra.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("contra.c":2:1)
+  %c5 = sea.const 5 : i8
+  %c3 = sea.const 3 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8 loc("contra.c":2:2)
+  sea.cond_br %big, ^then, ^else loc("contra.c":2:3)
+^then:
+  sea.assume %big loc("contra.c":3:1)
+  %small = sea.icmp ult, %x, %c3 : i8 loc("contra.c":4:1)
+  sea.assume %small loc("contra.c":5:1)
+  sea.br ^then2 loc("contra.c":5:2)
+^then2:
+  %ne5 = sea.icmp ne, %x, %c5 : i8 loc("contra.c":5:4)
+  sea.assume %ne5 loc("contra.c":5:5)
+  sea.br ^join loc("contra.c":5:6)
+^else:
+  %e = sea.icmp ne, %x, %c3 : i8 loc("contra.c":6:1)
+  sea.assume %e loc("contra.c":7:1)
+  sea.br ^join loc("contra.c":7:2)
+^join:
+  %f = sea.const 0 : i1 loc("contra.c":8:1)
+  sea.assert %f loc("contra.c":9:1)
+  sea.halt
+}
+
+//--- folded.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %z = sea.const 0 : i8
+  %nz = sea.icmp ne, %x, %z : i8 loc("folded.c":3:5)
+  sea.assume %nz loc("folded.c":4:5)
+  %f = sea.const 0 : i1 loc("folded.c":6:1)
+  sea.assume %f loc("folded.c":6:5)
+  sea.assume %nz loc("folded.c":8:5)
+  sea.br ^bb1
+^bb1:
+  %g = sea.const 0 : i1
+  sea.assert %g
+  sea.halt
+}
+
+//--- ids.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc(unknown)
+  %t = sea.const 1 : i8 loc(unknown)
+  %c = sea.icmp uge, %x, %t : i8 loc(unknown)
+  sea.assume %c loc(callsite("callee.c":2:3 at "caller.c":9:1))
+  sea.assume %c loc(unknown)
+  sea.assume %c loc(callsite("callee.c":2:3 at "caller.c":9:1))
+  %f = sea.const 0 : i1 loc(unknown)
+  sea.assert %f loc(unknown)
+  sea.halt loc(unknown)
+}
+
+//--- ids2.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc(unknown)
+  %t = sea.const 1 : i8 loc(unknown)
+  %c = sea.icmp uge, %x, %t : i8 loc(unknown)
+  sea.cond_br %c, ^a, ^b loc(unknown)
+^a:
+  sea.assume %c loc(unknown)
+  sea.br ^j loc(unknown)
+^b:
+  sea.br ^j loc(unknown)
+^j:
+  %f = sea.const 0 : i1 loc(unknown)
+  sea.assert %f loc(unknown)
+  sea.halt loc(unknown)
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

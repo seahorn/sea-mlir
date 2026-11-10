@@ -103,6 +103,26 @@ struct FuzzOptions {
   std::string outDir;
   /// Per-trial interpreter options (maxSteps; prints are off in trials).
   uint64_t maxSteps = 1'000'000;
+  /// Reach coverage (sea-run --reach-targets, sea-vc --reach-corpus): the
+  /// target ops (ReachTargets.h); FuzzReport::reachHits says which trial
+  /// first reached the top of each. Not with deferMemoryErrors (past a
+  /// substituted violation a run is not an execution of the program).
+  std::vector<mlir::Operation *> reachTargets;
+};
+
+/// The first trial that reached a reach target (FuzzOptions::reachTargets):
+/// it was about to execute the target's op, every earlier assume having
+/// held. The run's prefix up to there is exact, whatever it did after (a
+/// failing assume or assert, a memory-safety stop, a limit).
+struct ReachHit {
+  /// 1-based; 0: no trial reached the target
+  uint64_t trial = 0;
+  /// a seed trial: its corpus file (CorpusEntryText::name), else empty
+  std::string seed;
+  /// the values the run read (a corpus file of them replays it)
+  std::vector<Assignment> input;
+  /// the run's uses of addr0-is-null and of memhavoc(null) = no-op
+  uint64_t addr0IsNullUses = 0, memhavocNullNoopUses = 0;
 };
 
 /// The trials that failed at one op (a failing assert, a reached memory-safety
@@ -157,6 +177,8 @@ struct FuzzReport {
   /// runs with any.
   uint64_t addr0IsNullUses = 0, addr0IsNullRuns = 0;
   uint64_t memhavocNullNoopUses = 0, memhavocNullNoopRuns = 0;
+  /// Parallel to FuzzOptions::reachTargets.
+  std::vector<ReachHit> reachHits;
 };
 
 /// Fuzzes `program`: first the seeds, in order, then mutated entries.
@@ -174,6 +196,14 @@ mlir::FailureOr<FuzzReport> fuzz(ProgramOp program,
 /// The --input-syntax text of an assignment: `<site>=<value>` or
 /// `<site>@<cell>=<value>`.
 std::string formatAssignment(const Assignment &a);
+
+/// Writes a corpus file: `header` (its lines are written as `# ` comments),
+/// then one assignment per line. Fails (with `error`) when the file cannot
+/// be written.
+mlir::LogicalResult writeCorpusFile(llvm::StringRef path,
+                                    llvm::ArrayRef<std::string> header,
+                                    llvm::ArrayRef<Assignment> input,
+                                    std::string &error);
 
 //===----------------------------------------------------------------------===//
 // Serve mode (sea-run --fuzz-serve): runs on inputs chosen outside

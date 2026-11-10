@@ -7,13 +7,14 @@
 // BMC form, is there an input whose execution reaches the top of T with
 // every earlier assume holding?
 //
-// Targets: the check sites (sea.assume, sea.assert, and sea.unreachable,
-// which is where the lowering leaves an assume of constant false), or every
-// block. They are listed on the program as the VC sees it (after the
-// lowering). Ids are stable for one input and one lowering: the op's file
-// position and the call sites it was inlined at (`f.c:3:5@g.c:9:2`), a
-// block's from its first located op; an op without a position gets
-// `unlocated#<k>` (k in program order); a repeated id gets `#<n>`.
+// Targets and their ids: sea/Interp/ReachTargets.h. They are listed on the
+// program as the VC sees it (after the lowering); ids are stable for one
+// input and one lowering.
+//
+// Concrete runs first (--reach-corpus, --reach-fuzz; runReachRuns): before
+// any query, corpus inputs and fuzz trials run on the same program, and a
+// target some run reaches is reachable (via=run), with that run as its
+// witness. The solver gets only the rest.
 //
 // Encoding: the VC of VCGen with setReach (no exit, no ban on
 // sea.unreachable blocks), whose side conditions only say what holds in a
@@ -36,6 +37,8 @@
 
 #include "sea/Dialect/Sea/SeaOps.h"
 #include "sea/Expr/Smt/Solver.hh"
+#include "sea/Interp/Fuzz.h"
+#include "sea/Interp/ReachTargets.h"
 #include "sea/Support/Output.h"
 #include "sea/VC/VCGen.h"
 
@@ -49,29 +52,30 @@
 
 namespace sea {
 
-enum class ReachKind { Off, Checks, Blocks };
-
-struct ReachTarget {
-  std::string id;
-  /// `sea.assume`, `sea.assert`, `sea.unreachable`; `block` for a block
-  std::string opName;
-  /// the op (a block: its first op): the target is the top of this op
-  mlir::Operation *op = nullptr;
-  /// the location reported (`at=`): the op's, a block's first located op's
-  mlir::Location loc;
-};
-
-/// The targets of `program`, in program order.
-std::vector<ReachTarget> collectReachTargets(ProgramOp program, ReachKind kind);
+/// On every sea.assume and sea.assert of a module before the lowering (and
+/// before the copy the A-INB check runs, sea-vc --seam): its position in
+/// program order. A target the lowering kept is found in the input
+/// program by it, not by its location, which inlined code repeats.
+inline constexpr llvm::StringLiteral kReachSiteAttr = "sea.reach_site";
+void tagReachSites(mlir::ModuleOp module);
 
 /// The side conditions, without the negated assertion.
 expr::Expr mkReachQuery(OpSemContext &ctx);
+
+/// The order of the queries (records are printed in program order).
+enum class ReachOrder { Program, Deepest };
 
 struct ReachOptions {
   /// one solver for every target, check-sat-assuming its guard (else a
   /// fresh solver per target with the guard asserted: z3 answers
   /// check-sat-assuming with its incremental core)
   bool incremental = true;
+  /// a model's run decides every later target it reaches (via=model-run),
+  /// with the A-INB check of each under --seam: no query for them
+  bool modelRuns = true;
+  /// Deepest: reverse program order, so that a model's run passes through
+  /// the targets before its own
+  ReachOrder order = ReachOrder::Deepest;
   /// write each reachable target's inputs here (empty: none)
   std::string witnessDir;
   /// echoed in the replay hint of a witness file
@@ -96,6 +100,54 @@ struct ReachOptions {
   bool plantMismatch = false;
 };
 
+/// The concrete runs before the queries (sea-vc --reach-corpus,
+/// --reach-fuzz): the corpus entries run first, in order, then `fuzzTrials`
+/// fuzz trials (sea-run --fuzz's mutations of them) with seed `seed`.
+struct ReachRunOptions {
+  std::vector<CorpusEntryText> corpus;
+  uint64_t fuzzTrials = 0;
+  uint64_t seed = 0;
+  uint64_t maxSteps = 1'000'000;
+};
+
+/// What the runs decided, per target (parallel to the targets).
+struct ReachRunDecision {
+  bool reached = false;
+  /// `seed:<corpus file>` or `trial:<n>` (the fuzz trial, 1-based, seeds
+  /// counted)
+  std::string by;
+  /// the corpus file that reached it, or the witness written for it
+  /// (ReachOptions::witnessDir), else empty
+  std::string witness;
+  /// under the A-INB check: the input program's run read a nondet memory
+  /// cell and decided nothing (as inb=undetermined of a model's run)
+  bool inbUndetermined = false;
+};
+
+struct ReachRuns {
+  std::vector<ReachRunDecision> decisions;
+  uint64_t trials = 0, seedTrials = 0;
+  double seconds = 0;
+  unsigned decided = 0;
+  /// reached by a run that leaves an object first (the A-INB check): left
+  /// to the solver
+  unsigned inbViolated = 0;
+  /// the deciding runs' uses of the interpreter's assumptions (each run
+  /// once, whole runs)
+  uint64_t addr0Uses = 0, memhavocUses = 0;
+};
+
+/// Runs the corpus and fuzz trials on `program` (in the reach form: after
+/// sea-split-at-checks, the program the queries are about) and decides the
+/// targets they reach, with the options of the reach replays (interpreter
+/// assumptions, the A-INB check, witnesses). Fails with `error` on a corpus
+/// value that does not fit its site or an unwritable witness.
+mlir::FailureOr<ReachRuns> runReachRuns(ProgramOp program,
+                                        llvm::ArrayRef<ReachTarget> targets,
+                                        const ReachRunOptions &runOptions,
+                                        const ReachOptions &options,
+                                        std::string &error);
+
 /// What the driver needs from sea-vc, which owns the solver configuration
 /// and the lowerings of the query.
 struct ReachHooks {
@@ -119,10 +171,15 @@ struct ReachHooks {
 /// replay stopped at a memory-safety error before its target (the answer
 /// rests on A-INB); 2 a replay that disagrees with the model (a bug); 1 an
 /// error; or a code of ReachHooks::withModel.
+///
+/// `runs` (optional): the targets concrete runs decided (runReachRuns) are
+/// reported reachable via=run without a query, and a `reach.runs` line
+/// counts what runs and the solver decided.
 int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
              const VCGen &vcgen, expr::Expr query, SeaOpSem &sem,
              OpSemContext &ctx, const ReachOptions &options,
-             const ReachHooks &hooks, out::Emitter &out);
+             const ReachHooks &hooks, out::Emitter &out,
+             const ReachRuns *runs = nullptr);
 
 } // namespace sea
 

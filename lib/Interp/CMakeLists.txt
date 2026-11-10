@@ -7,6 +7,7 @@ add_mlir_library(SeaInterp
   Interpreter.cpp
   ParseInput.cpp
   Print.cpp
+  ReachTargets.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/sea/Interp

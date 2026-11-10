@@ -64,7 +64,12 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--reach[=checks|blocks]` | instead of the safety query: for each check site (`sea.assume`, `sea.assert`, `sea.unreachable`) or each block of the lowered program, whether an execution reaches it with every earlier assume holding; one `reach:` line per target ([Output formats](output-formats.md#reach)) |
 | `--reach-rlimit=<n>` | with `--reach`: z3's resource limit per query (deterministic); a query over it is `unknown reason=rlimit` |
 | `--reach-witness=<dir>` | with `--reach`: write the inputs of each reachable target's run to `<dir>/reach-<k>.txt`, a `sea-run --input-file` corpus file |
-| `--reach-incremental=false` | with `--reach`: a new solver per target, with the target's guard asserted, instead of one solver that checks each guard as an assumption; z3 answers an assumption with its incremental core, which finds a reachable target faster and can prove an unreachable one much more slowly |
+| `--reach-corpus=<dir|file>,...` | with `--reach`: before any query, run these corpus files (an earlier `--reach-witness` directory, `sea-run --fuzz-out` files) on the program the targets are on; a target a run reaches is `reachable via=run`, not queried ([Concrete runs first](output-formats.md#concrete-runs-first)) |
+| `--reach-fuzz=<n>`, `--reach-seed=<n>` | with `--reach`: after the corpus runs, `n` fuzz trials (seed `--reach-seed`, default 0) before any query; targets they reach are not queried |
+| `--reach-programs=<dir>` | with `--reach`: write R_T, the program with every assert dropped and an `assert(false)` at T, for each target T to `<dir>/reach-<k>.mlir`, and exit; `sea-vc` on R_T answers `sat` iff T is reachable ([R_T programs](output-formats.md#r_t-programs)) |
+| `--reach-incremental=false\|true` | with `--reach`: `false`, a new solver per target, with the target's guard asserted; `true`, one solver that checks each guard as an assumption. z3 answers an assumption with its incremental core, which finds a reachable target faster and can prove an unreachable one much more slowly. Default `true`, and `false` with `--reach-corpus` or `--reach-fuzz` (the queries left are mostly unreachable targets) |
+| `--reach-model-runs=false` | with `--reach`: query every target. By default the replay of a reachable target's model decides every target it reaches whose query is still to come (`via=model-run`) |
+| `--reach-order=program\|deepest` | with `--reach`: the order of the queries; `deepest` (default), reverse program order, so that a model's run passes the targets before its own |
 | `--ptr-companion=check` | with `--seam`, opaque pointers: check A-PTRINT (a split pointer load reads the pointer last stored at its address) instead of the program's assertions; `unsat` prints `seam.ptrint: holds`, a confirmed `sat` lists the failing loads (`seam.ptrint-violated`, `seam.ptrint-unstored`) and exits 0 |
 
 **Output**
@@ -106,6 +111,8 @@ sea-run <file.mlir> [options]
 | `--fuzz-serve` | run on inputs sent as JSON lines on stdin, one response per line ([Driving the fuzzer from Python](fuzzing.md#driving-the-fuzzer-from-python)) |
 | `--memhavoc-null=noop\|error` | `sea.memhavoc` of the null pointer: a no-op (default; an open semantics decision, counted as `assume.memhavoc-null-noop: uses=<n>` and warned) or a memory-safety error |
 | `--addr0-is-null=false` | turn off the named assumption that address 0 is the null pointer (default on): zero bytes loaded as a pointer, a null pointer's bytes loaded as an integer, and `ptr.to_int` of null then stop the run; on, each such step counts (`assume.addr0-is-null: uses=<n>`) ([Memory-Step2](../design/Memory-Step2.md)) |
+| `--reach-targets[=checks|blocks]` | report which reach targets (those of `sea-vc --reach`, with its ids) the run, or the `--fuzz` trials, reached: one `reach:` line per target ([Reach coverage](fuzzing.md#reach-coverage)) |
+| `--reach-witness=<dir>` | with `--fuzz --reach-targets`: the inputs of the first trial that reached each target, as `<dir>/reach-<k>.txt` |
 | `--defer-memory-errors` | go on past a memory-safety violation; a finding only if the run then reaches the end or a failing assertion (not if an assume blocks it, nor at the step limit or an interpreter limit) ([Deferred memory errors](fuzzing.md#deferred-memory-errors)) |
 
 Abstract programs, with pointers into unplaced objects, run directly:
@@ -142,6 +149,7 @@ nondet sites, cast widths, terminators.
 | `sea-opt p.mlir --sea-vc-lower` | the lowering that `sea-vc --lower` runs |
 | `sea-opt p.mlir --sccp` | fold constants |
 | `sea-opt p.mlir --sea-place-static` | place abstract objects at addresses |
+| `sea-opt p.mlir --sea-reach-target="id=<id>"` | R_T of a reach target (an id of `sea-vc --reach`; `kind=blocks` for a block target): every assert dropped, an `assert(false)` at the top of the target, every other `sea.halt` a `sea.unreachable` |
 | `sea-opt p.mlir --mlir-print-debuginfo` | keep locations, and with them print names, between tools |
 | `sea-opt --help` | every pass and option |
 

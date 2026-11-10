@@ -203,6 +203,38 @@ The `fuzz.blocked` lines show which assumptions stop the runs. A harness
 whose runs are almost all blocked by one assume tests little beyond it:
 that assume is the one to look at, or to seed past with a corpus entry.
 
+## Reach coverage
+
+`--reach-targets` (`=checks`, the default, or `=blocks`) reports which
+reach targets the runs reached: the targets of `sea-vc --reach`, with the
+same ids ([Reach](output-formats.md#reach)). A target is reached when a run
+is about to execute its op (a block: its first op), every earlier assume
+having held; what the run does after that does not matter. Run on the
+lowered program (`sea-opt --sea-vc-lower` with `sea-vc`'s options) to get
+the targets of `sea-vc --lower --reach`.
+
+```text
+reach: p.mlir:5:3 reached op=sea.assume by=trial:2 witness=w/reach-0.txt at=p.mlir:5:3
+reach: p.mlir:9:3 not-reached op=sea.assert at=p.mlir:9:3
+reach.summary: targets=2 reached=1 not-reached=1 by-seed=0 by-trial=1 witnesses=1
+```
+
+| line | meaning |
+|---|---|
+| `reach: <id> reached\|not-reached op=<op> [by=seed:<file>\|trial:<n>\|run] [witness=<file>] at=<where>` | one per target, in program order; `by`: the first run that reached it, a `--corpus` file, a trial (1-based, seed runs counted), or `run` for a plain run |
+| `reach.summary: targets=<n> reached=<n> not-reached=<n> [by-seed=<n> by-trial=<n> witnesses=<n>]` | the totals (`by-*` and `witnesses` with `--fuzz`) |
+| `assume.addr0-is-null: uses=<n>`, `assume.memhavoc-null-noop: uses=<n>` | the deciding runs' uses of the assumptions (each run once) |
+
+With `--fuzz`, the lines follow the `fuzz.*` lines. The corpus files run
+first, so a seed corpus and the witnesses of an earlier run count.
+`--reach-witness=<dir>` writes the inputs of the first trial that reached
+each target to `<dir>/reach-<k>.txt` (k: the target's position); a target a
+corpus file reached has that file as its witness. The fuzzer stops at the
+first failing assertion unless `--keep-going`; for coverage, use it. Not
+with `--defer-memory-errors`: past a violation the substitutes make up the
+run, so it is not an execution of the program. `not-reached` says only that
+no run reached the target; `sea-vc --reach` decides it.
+
 ## For agents
 
 Two outputs let a program outside `sea-mlir` (an agent's script, say) see
