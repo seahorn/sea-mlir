@@ -96,12 +96,88 @@ expect("DIFF", old, changed, project=True)
 extra = new.replace("(declare-fun x", "(declare-fun ^bb3_0 () Bool)\n(declare-fun x")
 assert "by=exists" in expect("equiv-sat", old, extra, project=True)
 
-# The Skolem-hint hook is not implemented: it says so.
-try:
-    qd.project_equiv(qd.Query(old), qd.Query(new), hints=({}, {}))
-    raise AssertionError("hints accepted")
-except NotImplementedError:
-    pass
+
+# Skolem hints: block ids (sea-vc's `; sea.block-ids` lines) on both
+# queries replace the quantified check by two quantifier-free ones.
+def ids(text, **guards):
+    return text + "".join(f"; sea.block-ids {g} {i}\n" for g, i in guards.items())
+
+
+def with_ids(text, then, other):
+    return ids(text, **{then: "1", other: "2"})
+
+
+h_old = with_ids(old, "^bb1_0", "^bb2_0")
+h_new = with_ids(new, "^bb2_0", "^bb1_0")
+# a correct hint: by=hints, no quantified check
+assert expect("equiv-sat", h_old, h_new, project=True) == ["by=hints"]
+# --no-hints: the quantified check
+assert "by=exists" in qd.classify(h_old, h_new, z3, True, hints=None)[1]
+# a wrong hint (the ids name the other block) falls back to the quantified
+# check and says which direction failed; still equivalent
+wrong = with_ids(new, "^bb1_0", "^bb2_0")
+d = expect("equiv-sat", h_old, wrong, project=True)
+assert "by=exists" in d and any(x.startswith("hints=old-new:sat") for x in d), d
+# a hint and a real difference: DIFF (the hint check is sat, so is the
+# quantified one)
+d = expect("DIFF", h_old, with_ids(changed, "^bb2_0", "^bb1_0"), project=True)
+assert "by=exists" in d and "hints=old-new:sat" in d, d
+# hand-written hints: a wrong one never passes a real difference, a right
+# one passes the renaming
+o_q, c_q = qd.Query(old), qd.Query(changed)
+for hint in (
+    ({"^bb1_0": "^bb2_0", "^bb2_0": "^bb1_0"},) * 2,
+    ({"^bb1_0": "true", "^bb2_0": "true"},) * 2,
+    ({"^bb1_0": "false", "^bb2_0": "false"},) * 2,
+):
+    got, d = qd.classify(old, changed, z3, True, hints=hint)
+    assert got == "DIFF", (hint, got, d)
+    for name, script in qd.project_equiv(o_q, c_q, hint):
+        assert z3.check(script) == "sat", (hint, name)
+swap = ({"^bb1_0": "^bb2_0", "^bb2_0": "^bb1_0"},) * 2
+assert qd.classify(old, new, z3, True, hints=swap) == ("equiv-sat", ["by=hints"])
+# a merged block: NEW holds ^bb1 and ^bb2 of OLD in one block ^bb1 (ids 1,2)
+M = X + "(declare-fun y () (_ BitVec 8))\n"
+m_old = ids(
+    q(
+        "(and ^bb0_0 (=> ^bb1_0 ^bb0_0) (=> ^bb2_0 ^bb1_0) ^bb2_0"
+        " (=> ^bb1_0 (bvult x #x05)) (=> ^bb2_0 (= y x)))",
+        M + "(declare-fun ^bb0_0 () Bool)\n(declare-fun ^bb1_0 () Bool)\n"
+        "(declare-fun ^bb2_0 () Bool)\n",
+    ),
+    **{"^bb0_0": "0", "^bb1_0": "1", "^bb2_0": "2"},
+)
+m_new = ids(
+    q(
+        "(and ^bb0_0 (=> ^bb1_0 ^bb0_0) ^bb1_0 (=> ^bb1_0 (bvult x #x05))"
+        " (=> ^bb1_0 (= y x)))",
+        M + "(declare-fun ^bb0_0 () Bool)\n(declare-fun ^bb1_0 () Bool)\n",
+    ),
+    **{"^bb0_0": "0", "^bb1_0": "1,2"},
+)
+assert expect("equiv-sat", m_old, m_new, project=True) == ["by=hints"]
+s_, t_, missing = qd.derive_hints(qd.Query(m_old), qd.Query(m_new))
+assert s_ == {"^bb0_0": "^bb0_0", "^bb1_0": "^bb1_0", "^bb2_0": "^bb1_0"}, s_
+assert t_["^bb1_0"] == "(and ^bb1_0 ^bb2_0)" and missing == 0, t_
+# a block the other side erased (input id, held nowhere): false; a derived
+# one the other side never made: no hint, its cases expanded
+e_old = ids(m_old, **{"^bb3_0": "3"}).replace(
+    "(declare-fun x", "(declare-fun ^bb3_0 () Bool)\n(declare-fun x"
+)
+s_, _, _ = qd.derive_hints(qd.Query(e_old), qd.Query(m_new))
+assert s_["^bb3_0"] == "false", s_
+r_old = ids(m_old, **{"^bb3_0": "2.q0"}).replace(
+    "(declare-fun x", "(declare-fun ^bb3_0 () Bool)\n(declare-fun x"
+)
+s_, _, _ = qd.derive_hints(qd.Query(r_old), qd.Query(m_new))
+assert s_["^bb3_0"] is None, s_
+assert expect("equiv-sat", r_old, m_new, project=True) == ["by=hints"]
+# a guard without ids: no hints (reported), the quantified check
+p_old = m_old.replace("; sea.block-ids ^bb2_0 2\n", "")
+d = expect("equiv-sat", p_old, m_new, project=True)
+assert d == ["by=exists", "hints=incomplete:1"], d
+# the comments are not part of the query: identical without them
+assert expect("identical", h_old, old) == []
 
 
 # Derived verdicts (a stub z3 answers in order: OLD, NEW, equivalence).

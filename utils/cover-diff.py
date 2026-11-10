@@ -80,9 +80,18 @@ sides (block guards projected: a forall-exists check). The R_T are paired
 by key, from the reach.program records. identical / order / equiv-sat
 pass; DIFF fails; unknown is unknown; both-unsat and error are errors
 (level 0 answered both reachable).
-Skolem hints (a map from one side's block guards to terms of the other's)
-would make the projected check quantifier-free; they would plug into
-query-diff's project_equiv(hints=...), which refuses them for now.
+Skolem hints: sea-vc --reach gives every input block a stable id before
+any pass (sea.block_ids on its terminator; the passes keep them: a merged
+block holds both lists, split halves the same list, a new block a derived
+id) and R_T keeps them, so each R_T query names the ids of its block
+guards (`; sea.block-ids`). When both queries of a pair carry them,
+query-diff first runs the two quantifier-free checks with the guards of
+one side replaced by terms over the other's (query-diff derive_hints());
+a hint that fails (sat or unknown) falls back to the quantified check, and
+says so (hints=<direction>:<answer>). A hint is checked, not trusted: it
+never makes a pass. Each level1 line says how its pair was proved: by=identical
+(the same query up to order), by=names (equivalent with the guards matched
+by name), by=hints, by=exists. --no-hints: the quantified check only.
 
 Exit: 0 pass; 1 some DIFF (level 0 or 1, or the verdicts); 3 an error
 (sea-vc or z3 failed); 2 some unknown; checked in this order, for a job's
@@ -111,7 +120,7 @@ WHY: a pass must keep which check sites can be reached, except the ones it
 USAGE:
   utils/cover-diff.py --sea-vc <sea-vc> --a="<A args>" --b="<B args>"
       [--args="--lower"] [--fuzz 1000] [--seed 0] [--corpus <dir|file>]
-      [--level 0|1] [--rt-args="<R_T args>"] [--z3 <z3>]
+      [--level 0|1] [--rt-args="<R_T args>"] [--z3 <z3>] [--no-hints]
       [--rlimit 200000000] [--reach-rlimit <n>] [--unresolved-true unknown|pass]
       [--no-verdict]
       [--no-keep-sites] [--par 4] [--timeout 600] [--keep <dir>]
@@ -144,7 +153,9 @@ CLASSES (level 0, per key):
 LEVEL 1 (per key reachable on both sides): query-diff --project-blocks on
   R_T(A) vs R_T(B): identical / order / equiv-sat (the same inputs reach
   T) pass, DIFF fails, unknown, both-unsat / error are errors; a key with
-  copies on a side is unknown (reason=copies).
+  copies on a side is unknown (reason=copies). Block guards: by name, then
+  the Skolem hints from the block ids of the two R_T (quantifier-free,
+  checked), then the quantified check (--no-hints: no hints).
 OUTPUT (stdout, line-oriented):
   config: a=<args> b=<args> args=<args> fuzz=<n> seed=<n> level=<n>
       rt-args=<args> unresolved-true=unknown|pass keep-sites=0|1
@@ -156,7 +167,9 @@ OUTPUT (stdout, line-oriented):
   verdict: <job> equal|DIFF|other a=<result> b=<result>  (other: a side
       unknown or inconclusive: the job is unknown; a sea-vc exit other
       than 0 / 3 / 4 is an error)
-  level1: <job> <site>/<role> <class> [reason=...] [old=.. new=..] [by=exists]
+  level1: <job> <site>/<role> <class> [reason=...] [old=.. new=..]
+      [by=identical|names|hints|exists] [hints=<old-new|new-old>:<answer>
+      | hints=incomplete:<n>]   (hints=: why the quantified check ran)
   job: <job> <pass|DIFF|unknown|error> targets=<n> equal=<n> diff=<n>
       removed-ok=<n> removed-true=<n> removed-but-reachable=<n> unknown=<n>
       untagged=<a>/<b> [level1: equiv=<n> diff=<n> unknown=<n> error=<n>] [reason=<r>]
@@ -164,7 +177,8 @@ OUTPUT (stdout, line-oriented):
   total: jobs=<n> pass=<n> diff=<n> unknown=<n> error=<n>
   targets: equal=<n> diff=<n> removed-ok=<n> removed-true=<n>
       removed-but-reachable=<n> unknown=<n> untagged=<a>/<b>
-  [level1: equiv=<n> diff=<n> unknown=<n> error=<n> pairs=<n>]
+  [level1: equiv=<n> diff=<n> unknown=<n> error=<n> pairs=<n>
+      by-identical=<n> by-names=<n> by-hints=<n> by-exists=<n>]
   status: pass|DIFF|unknown|error
 STATUS: 0 pass; 1 some DIFF; 3 some error; 2 some unknown (checked in
   this order, per job and for the run).
@@ -174,6 +188,9 @@ STATUS: 0 pass; 1 some DIFF; 3 some error; 2 some unknown (checked in
 """
 
 QD = None  # utils/query-diff.py, loaded on first use (level 1)
+L1_CLASSES = ("equiv", "diff", "unknown", "error")
+# and how each equivalence was proved
+L1_KEYS = L1_CLASSES + ("by-identical", "by-names", "by-hints", "by-exists")
 
 
 QD_LOCK = threading.Lock()
@@ -444,7 +461,7 @@ def one(f, a):
             "unknown",
         )
     }
-    l1 = {"equiv": 0, "diff": 0, "unknown": 0, "error": 0}
+    l1 = dict.fromkeys(L1_KEYS, 0)
     untagged = [0, 0]
     verdict, reason = "pass", ""
     work = None
@@ -553,9 +570,24 @@ def one(f, a):
                 if old is None or new is None:
                     cls, det = "error", [f"reason={eo or en}"]
                 else:
-                    cls, det = qd.classify(old, new, z3, project_blocks=True)
+                    cls, det = qd.classify(
+                        old,
+                        new,
+                        z3,
+                        project_blocks=True,
+                        hints="auto" if a.hints else None,
+                    )
+                    if cls in ("identical", "order"):
+                        det = det + ["by=identical"]
+                    elif cls == "equiv-sat" and not any(
+                        x.startswith("by=") for x in det
+                    ):
+                        det = det + ["by=names"]
                 if cls in ("identical", "order", "equiv-sat"):
                     l1["equiv"] += 1
+                    for x in det:
+                        if x.startswith("by="):
+                            l1["by-" + x[3:]] += 1
                 elif cls == "DIFF":
                     l1["diff"] += 1
                 elif cls == "unknown":
@@ -657,6 +689,13 @@ def main():
     )
     ap.add_argument("--z3", default=os.environ.get("SEA_Z3", "z3"))
     ap.add_argument(
+        "--hints",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="level 1: Skolem hints from the R_T block ids before the"
+        " quantified check (default on)",
+    )
+    ap.add_argument(
         "--rlimit", type=int, default=200000000, help="z3 rlimit per level-1 check"
     )
     ap.add_argument(
@@ -708,7 +747,7 @@ def main():
             "unknown",
         )
     }
-    l1t = {"equiv": 0, "diff": 0, "unknown": 0, "error": 0}
+    l1t = dict.fromkeys(L1_KEYS, 0)
     untagged = [0, 0]
     with cf.ThreadPoolExecutor(a.par) as ex:
         for lines, verdict, counts, l1, ut in ex.map(lambda f: one(f, a), files):
@@ -736,7 +775,8 @@ def main():
         print(
             f"level1: equiv={l1t['equiv']} diff={l1t['diff']} "
             f"unknown={l1t['unknown']} error={l1t['error']} "
-            f"pairs={sum(l1t.values())}"
+            f"pairs={sum(l1t[k] for k in L1_CLASSES)} "
+            + " ".join(f"{k}={l1t[k]}" for k in L1_KEYS if k.startswith("by-"))
         )
     # as a job's verdict: DIFF, then error, then unknown
     if verdicts["DIFF"]:

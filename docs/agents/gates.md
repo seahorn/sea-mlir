@@ -161,6 +161,26 @@ the run prints `strict: fail both-unsat=<n> ...` and exits with 3.
 renumbers blocks is then `equiv-sat by=exists`. The check by names runs
 first; the quantified check runs only when it finds a difference.
 
+Skolem hints replace the quantified check when both queries carry block
+ids (`; sea.block-ids` comments: `sea-vc --smt2` on a program lowered
+under `--reach`, such as R_T; [Block ids](../reference/output-formats.md#block-ids)).
+Each guard of one query gets a term over the guards of the other: the
+conjunction of the guards whose blocks hold one of its ids; `false` when
+no block holds one and all are input ids (the other lowering erased the
+block); for an edge block whose edge the other side did not split, the
+conjunction of the guards of its two ends (not exact); otherwise no term,
+and the guard is expanded into its cases (at most 6 per check; more: no
+hints). Two quantifier-free checks follow, `OLD(x, g) and not NEW(x, t(g))`
+and `NEW(x, g') and not OLD(x, s(g'))`; both unsat is `equiv-sat
+by=hints`. Why the terms fit: in a model of a BMC-form query the true
+guards are the blocks of one path from the entry to the halt (an edge is
+`pred && succ`, a `cond_br` block has at most one successor whose
+condition holds, the halt block's guard is asserted), and the blocks that
+share an id are on a path together. The hints are checked, not trusted:
+a wrong one makes its check sat or unknown, and the quantified check runs
+(`by=exists hints=<old-new|new-old>:<answer>`); it never makes a pass.
+`--no-hints` turns them off.
+
 Every z3 check has a resource limit (`--rlimit`, deterministic) and a
 time limit (`--timeout`, a backstop). The sat checks solve the job's own
 query, so the default limit (200 million, about two minutes of z3) is
@@ -208,7 +228,11 @@ What is compared, per input:
 - Level 1 (`--level=1`): for every key reachable on both sides, the
   query-diff classifier with `--project-blocks` on its two R_T programs:
   `equiv-sat` means the same inputs reach the key (for a `fail` key: the
-  same inputs make the assert fail).
+  same inputs make the assert fail). The block guards are matched through
+  the block ids of the two R_T (Skolem hints, above); each `level1:` line
+  says how its pair was proved, `by=identical` (the same query up to
+  order), `by=names`, `by=hints` or `by=exists` (the quantified check),
+  and the totals count each (`--no-hints`: no hints).
 
 | class | meaning |
 |---|---|
