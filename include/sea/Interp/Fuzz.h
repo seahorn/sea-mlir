@@ -86,8 +86,13 @@ struct FuzzOptions {
   /// Use the dictionary (the program's comparison and arithmetic
   /// constants, +-1).
   bool dictionary = true;
-  /// Count assert failures instead of stopping at the first.
+  /// Count failures (assert failures, memory-safety findings) instead of
+  /// stopping at the first.
   bool keepGoing = false;
+  /// RunOptions::deferMemoryErrors in every trial: a memory-safety
+  /// violation on a run that reaches the end or a failing assert is a
+  /// failure (status memory-error); on a run an assume blocks, nothing.
+  bool deferMemoryErrors = false;
   /// Write failing and new-coverage inputs here (empty: none). The
   /// directory must be new or empty.
   std::string outDir;
@@ -95,9 +100,8 @@ struct FuzzOptions {
   uint64_t maxSteps = 1'000'000;
 };
 
-/// A trial that failed an assert, or the first trial that stopped with an
-/// error at an op (status error: out of bounds, through null, misaligned,
-/// past an interpreter limit, unsupported).
+/// The trials that failed at one op (a failing assert, a reached memory-safety
+/// violation) or stopped with an error at one op: the first, and how many.
 struct FuzzFailure {
   uint64_t trial = 0;
   RunStatus status = RunStatus::Error;
@@ -124,20 +128,32 @@ struct FuzzReport {
   uint64_t corpusSize = 0;   // entries in the corpus at the end
   uint64_t filesWritten = 0; // in outDir
   unsigned dictionarySize = 0;
-  /// Assert failures, by the op that ended the run, in order found; the
+  /// Failures, by the op that ended the run, in order found: assert
+  /// failures (status assert-failed) and, with deferMemoryErrors,
+  /// memory-safety findings (status memory-error, at the violation); the
   /// fuzzer stops at the first unless keepGoing.
   std::vector<FuzzFailure> failures;
-  /// Errors, by the op that ended the run, in order found (never stop).
-  std::vector<FuzzFailure> errors;
+  /// Runs that stopped (status error) at a memory-safety check, by op:
+  /// without deferMemoryErrors, so not classified (a later assume might
+  /// block the run). Never stop the fuzzer.
+  std::vector<FuzzFailure> memoryChecks;
+  /// Runs that stopped (status error) at an interpreter limit or a layout
+  /// error, by op. Never findings; never stop the fuzzer.
+  std::vector<FuzzFailure> limits;
+  /// deferMemoryErrors: the runs that went past a violation, per final
+  /// status (memory-error: findings; assume-blocked: infeasible;
+  /// step-limit, error: not classified).
+  uint64_t deferredStatusCount[kRunStatusCount] = {};
   /// Per blocking site (sea.assume, sea.unreachable): the runs it
   /// blocked; most first, then program order.
   std::vector<std::pair<mlir::Operation *, uint64_t>> blocked;
 };
 
 /// Fuzzes `program`: first the seeds, in order, then mutated entries.
-/// Writes failure-<trial>.txt (the first of each assert failure),
-/// error-<trial>.txt (the first of each error) and cov-<trial>.txt (new
-/// coverage) to FuzzOptions::outDir.
+/// Writes failure-<trial>.txt (the first of each failure),
+/// memory-check-<trial>.txt / limit-<trial>.txt (the first of each error)
+/// and cov-<trial>.txt (new coverage) to FuzzOptions::outDir. Warns
+/// fuzz.limit (once, then counted) when trials stop at a limit.
 /// Fails (with `error`) on a seed value that does not fit its site, or an
 /// output file that cannot be written.
 mlir::FailureOr<FuzzReport> fuzz(ProgramOp program,

@@ -49,7 +49,10 @@ The main lines of `sea-vc`:
 The lines of `sea-run`: `program:`, `nondet:` and `memread:` (with an
 `origin`: `input`, `zero` or `random`), `value:` (with `--trace`), the
 `print` lines, `status:`, `at:`, `assert-at:`, `assert-op:`,
-`assert-path:`, `message:` (for an error) and `steps:`.
+`assert-path:`, `reached:` (for a `memory-error`), `message:` (for an
+error), `deferred:` (with `--defer-memory-errors`, when the run went past a
+memory-safety violation) and `steps:`. See
+[Deferred memory errors](fuzzing.md#deferred-memory-errors).
 
 ### Where a counterexample fails
 
@@ -143,9 +146,11 @@ boolean as its `value`.
 
 `sea-run` has `program`, `nondet` and `memread` (with `origin`; a cell of
 an abstract memory has `obj` and `off` instead of `addr`), `value` (with
-`--trace`), `status` (one record for the `status:`, `at:`, `assert-*` and
-`message:` lines, with the location fields of `replay`), `stat` (for
-`steps`), and the print kinds.
+`--trace`), `status` (one record for the `status:`, `at:`, `assert-*`,
+`reached:`, `message:` and `deferred:` lines, with the location fields of
+`replay`; `reached` and `reached_at` for a `memory-error`, `deferred`,
+`deferred_kind` and `deferred_at` for a run that went past a violation),
+`stat` (for `steps`), and the print kinds.
 
 ## BRUNCH statistics
 
@@ -167,7 +172,7 @@ other output is unchanged. The benchmark harness runs with it.
 
 | tool | exit codes |
 |---|---|
-| `sea-run` | 0: the run ended, with any status but `error`; 1: error (bad input, a missing input value, an unsupported operation). `--fuzz`: 0 when the trials ran, failures included; 1 on a bad option or corpus file, or a failure that does not replay |
+| `sea-run` | 0: the run ended, with any status but `error` or `memory-error`; 4: `memory-error` (with `--defer-memory-errors`: a memory-safety violation on a run that reached the end or a failing assertion; like `sea-vc`'s 4 (A-INB), plus double free and bad free); 1: error (bad input, a missing input value, an unsupported operation). `--fuzz`: 0 when the trials ran, assertion failures included; 4 when they found a memory-safety finding (`fuzz.memory-safety`, with `--defer-memory-errors`); 1 on a bad option or corpus file, or a failure that does not replay |
 | `sea-opt` | 0: ok; 1: a parse, verifier or pass failure |
 | `sea-seam-export` | 0: exported; 1: error, nothing on stdout; 3: exported, but some rule firings cannot be expressed |
 | `sea-reduce-test test` | 1: interesting; 0: not interesting |

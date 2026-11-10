@@ -9,6 +9,7 @@
 
 #include "sea/Interp/Fuzz.h"
 
+#include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -310,6 +311,7 @@ public:
       (void)b, ++report.blocksTotal;
     report.dictionarySize = dict.size();
     runOptions.maxSteps = options.maxSteps;
+    runOptions.deferMemoryErrors = options.deferMemoryErrors;
     runOptions.facts = programFactsOf(program);
     runOptions.prints = false;
     runOptions.onBlock = [this](Block *from, Block *to) {
@@ -444,6 +446,9 @@ private:
     }
     os << "# sea-run --fuzz: trial=" << report.trials
        << " status=" << stringifyRunStatus(r.status) << "\n";
+    if (r.status == RunStatus::MemoryError)
+      os << "# replay with: sea-run --defer-memory-errors --input-file=<this "
+            "file>\n";
     for (const Assignment &a : assignmentsOf(e))
       os << formatAssignment(a) << "\n";
     ++report.filesWritten;
@@ -486,10 +491,22 @@ LogicalResult Fuzzer::trial(Entry preset,
     return failure();
   }
   ++report.statusCount[static_cast<unsigned>(r.status)];
+  if (r.deferredCount)
+    ++report.deferredStatusCount[static_cast<unsigned>(r.status)];
   if (r.status == RunStatus::AssumeBlocked && r.at)
     ++blockedBy[r.at];
-  bool failing = r.status == RunStatus::AssertFailed;
+  bool failing =
+      r.status == RunStatus::AssertFailed || r.status == RunStatus::MemoryError;
   bool erring = r.status == RunStatus::Error;
+  // a memory-safety check that stopped the run (no deferMemoryErrors), or
+  // a limit (a layout error included)
+  bool memoryCheck = erring && isMemorySafetyError(r);
+  if (erring && !memoryCheck)
+    diag::warn("fuzz.limit",
+               "a trial stopped at an interpreter limit (not a finding; "
+               "fuzz.limit lines count them per op): " +
+                   r.message,
+               r.at ? std::optional<Location>(r.at->getLoc()) : std::nullopt);
   if (newBlocks || newEdges || newAssumes) {
     corpus.push_back(source.used);
     SEA_LOG(logFuzz, 2)
@@ -506,7 +523,9 @@ LogicalResult Fuzzer::trial(Entry preset,
   }
   if (!failing && !erring)
     return success();
-  std::vector<FuzzFailure> &list = failing ? report.failures : report.errors;
+  std::vector<FuzzFailure> &list = failing       ? report.failures
+                                   : memoryCheck ? report.memoryChecks
+                                                 : report.limits;
   auto it =
       llvm::find_if(list, [&](const FuzzFailure &f) { return f.at == r.at; });
   if (it != list.end()) {
@@ -520,8 +539,10 @@ LogicalResult Fuzzer::trial(Entry preset,
     f.input = assignmentsOf(source.used);
     f.count = 1;
     if (!options.outDir.empty()) {
-      FailureOr<std::string> p =
-          write(failing ? "failure" : "error", source.used, r, error);
+      FailureOr<std::string> p = write(failing       ? "failure"
+                                       : memoryCheck ? "memory-check"
+                                                     : "limit",
+                                       source.used, r, error);
       if (failed(p))
         return failure();
       f.file = *p;
@@ -608,7 +629,8 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
       .kv("blocks-total", report.blocksTotal)
       .kv("corpus", report.corpusSize)
       .kv("failures",
-          report.statusCount[static_cast<unsigned>(RunStatus::AssertFailed)])
+          report.statusCount[static_cast<unsigned>(RunStatus::AssertFailed)] +
+              report.statusCount[static_cast<unsigned>(RunStatus::MemoryError)])
       .kv("errors",
           report.statusCount[static_cast<unsigned>(RunStatus::Error)]);
   return report;

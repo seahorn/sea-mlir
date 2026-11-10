@@ -161,13 +161,59 @@ FailureOr<APInt> InputSource::getCell(Operation *siteOp, const APInt &addr,
   return missingValue(cellWidth, what, origin, error);
 }
 
-// The prefix of every memory-safety error of an abstract program (the
-// interpreter's object checks); isMemorySafetyError keys on it.
+// The prefix of the messages of the access checks of an abstract program
+// (null, out of bounds, freed).
 static constexpr const char *kMemorySafety = "memory access ";
 
+bool isMemorySafetyKind(RunErrorKind kind) {
+  switch (kind) {
+  case RunErrorKind::NullAccess:
+  case RunErrorKind::OutOfBounds:
+  case RunErrorKind::UseAfterFree:
+  case RunErrorKind::DoubleFree:
+  case RunErrorKind::BadFree:
+    return true;
+  case RunErrorKind::None:
+  case RunErrorKind::Layout:
+  case RunErrorKind::Limit:
+    return false;
+  }
+  llvm_unreachable("unknown run error kind");
+}
+
+StringRef stringifyRunErrorKind(RunErrorKind kind) {
+  switch (kind) {
+  case RunErrorKind::None:
+    return "none";
+  case RunErrorKind::NullAccess:
+    return "null";
+  case RunErrorKind::OutOfBounds:
+    return "out-of-bounds";
+  case RunErrorKind::UseAfterFree:
+    return "use-after-free";
+  case RunErrorKind::DoubleFree:
+    return "double-free";
+  case RunErrorKind::BadFree:
+    return "bad-free";
+  case RunErrorKind::Layout:
+    return "layout";
+  case RunErrorKind::Limit:
+    return "limit";
+  }
+  llvm_unreachable("unknown run error kind");
+}
+
 bool isMemorySafetyError(const RunResult &result) {
+  return (result.status == RunStatus::Error ||
+          result.status == RunStatus::MemoryError) &&
+         isMemorySafetyKind(result.errorKind);
+}
+
+bool isOutOfObjectAccess(const RunResult &result) {
   return result.status == RunStatus::Error &&
-         StringRef(result.message).starts_with(kMemorySafety);
+         (result.errorKind == RunErrorKind::NullAccess ||
+          result.errorKind == RunErrorKind::OutOfBounds ||
+          result.errorKind == RunErrorKind::UseAfterFree);
 }
 
 StringRef stringifyRunStatus(RunStatus status) {
@@ -180,6 +226,8 @@ StringRef stringifyRunStatus(RunStatus status) {
     return "assume-blocked";
   case RunStatus::StepLimit:
     return "step-limit";
+  case RunStatus::MemoryError:
+    return "memory-error";
   case RunStatus::Error:
     return "error";
   }
@@ -324,6 +372,14 @@ std::optional<Location> stopLocOf(const RunResult &result) {
   return std::nullopt;
 }
 
+std::optional<Location> reachedLocOf(const RunResult &result) {
+  if (result.status != RunStatus::MemoryError || !result.reachedAt)
+    return std::nullopt;
+  if (result.reachedStatus == RunStatus::AssertFailed && result.assertLoc)
+    return result.assertLoc;
+  return result.reachedAt->getLoc();
+}
+
 void printFileLoc(llvm::raw_ostream &os, FileLineColLoc loc) {
   os << loc.getFilename().getValue() << ":" << loc.getLine() << ":"
      << loc.getColumn();
@@ -466,8 +522,67 @@ private:
       if (!llvm::is_contained(result.branchPath, f))
         result.branchPath.push_back(f);
     }
+    if (status == RunStatus::Error)
+      result.errorKind =
+          errKind == RunErrorKind::None ? RunErrorKind::Limit : errKind;
+    // Deferred violations (RunOptions::deferMemoryErrors): a run that
+    // reaches the end or a failing assert past one is a finding, the first
+    // violation. It is reported instead of the assert failure: the assert's
+    // condition may depend on the substitute values, and the violation came
+    // first (fix it, and the rerun shows the assert).
+    if (result.deferredCount &&
+        (status == RunStatus::Halted || status == RunStatus::AssertFailed)) {
+      result.reachedAt = at;
+      result.reachedStatus = status;
+      result.status = RunStatus::MemoryError;
+      result.at = result.deferredAt;
+      result.message = result.deferredMessage;
+      result.errorKind = result.deferredKind;
+    }
     return result;
   }
+
+  /// RunOptions::deferMemoryErrors and a memory-safety error (errKind, the
+  /// message in `error`) at `op`: records it (the first one in full) and
+  /// returns true; the caller goes on with the op's substitute effect.
+  /// Otherwise returns false (the run stops).
+  ///
+  /// The assumption the classification rests on: past the first violation
+  /// any behaviour is allowed (the abstract model leaves it open; its
+  /// formal semantics is not settled). The substitutes pick one
+  /// continuation, and only decide whether a later assume blocks the run.
+  /// A finding means: the violation is reached on an exact prefix of the
+  /// model, and some continuation reaches the end. Under that assumption a
+  /// blocked run can hide a finding (another continuation might pass the
+  /// assume), and a finding is never made up. A finding need not be a
+  /// counterexample of a VC with array semantics past the violation: an
+  /// out-of-bounds store is dropped here, while sea-vc's arrays read it
+  /// back (store 7 out of bounds, load it, assume it is 0: a finding here,
+  /// infeasible there). Fixed substitutes (0, null, no effect) keep runs
+  /// deterministic, so a finding replays from its input.
+  bool deferViolation(Operation &op, std::string &error) {
+    if (!options.deferMemoryErrors || !isMemorySafetyKind(errKind))
+      return false;
+    if (!result.deferredCount++) {
+      result.deferredAt = &op;
+      result.deferredKind = errKind;
+      result.deferredMessage = error;
+    }
+    errKind = RunErrorKind::None;
+    error.clear();
+    return true;
+  }
+
+  /// Fails (errKind, `error`) unless the range of `len` index units at
+  /// `idx` lies in a live object (abstract pointers; nothing to check for
+  /// an address or an empty range). The check of the cell keys (cells of
+  /// `units` index units), for a whole update at once (deferMemoryErrors:
+  /// an update with a violation does nothing). The message is key()'s,
+  /// at the first cell out of bounds, as the per-cell loops of store,
+  /// memset and memmove report it (memhavoc without the flag reports its
+  /// last byte).
+  LogicalResult checkRange(Value idx, const APInt &len, uint64_t units,
+                           std::string &error);
 
   /// The op that computed the failing condition `cond` (false on the run):
   /// through a chain of sea.and, the first false conjunct's definition.
@@ -774,6 +889,8 @@ private:
   /// Its condition, when the run took the branch to the merged assert's
   /// failing side.
   Value mergedCond;
+  /// The kind of the error being reported (set where it is found).
+  RunErrorKind errKind = RunErrorKind::None;
   llvm::DenseMap<Value, APInt> env;
   llvm::DenseMap<Value, Ptr> ptrs;
   llvm::DenseMap<Value, SmallVector<Leaf>> structs;
@@ -802,11 +919,13 @@ FailureOr<APInt> Interpreter::key(Value idx, uint64_t k, std::string &error,
     return env.lookup(idx) + k;
   Ptr p = ptrs.lookup(idx);
   if (p.obj == 0) {
+    errKind = RunErrorKind::NullAccess;
     error = std::string(kMemorySafety) + "through the null pointer";
     return failure();
   }
   const Object &o = objects[p.obj];
   if (!o.alive) {
+    errKind = RunErrorKind::UseAfterFree;
     error = std::string(kMemorySafety) + "to " + o.name + " after it was freed";
     return failure();
   }
@@ -814,6 +933,7 @@ FailureOr<APInt> Interpreter::key(Value idx, uint64_t k, std::string &error,
   APInt last = off + (span - 1);
   if (off.uge(o.size.zextOrTrunc(off.getBitWidth())) ||
       last.uge(o.size.zextOrTrunc(off.getBitWidth())) || last.ult(off)) {
+    errKind = RunErrorKind::OutOfBounds;
     error = std::string(kMemorySafety) + "out of bounds: offset " +
             llvm::toString(off, 10, false) + " in " + o.name + " of size " +
             llvm::toString(o.size, 10, false);
@@ -821,6 +941,44 @@ FailureOr<APInt> Interpreter::key(Value idx, uint64_t k, std::string &error,
   }
   unsigned w = off.getBitWidth();
   return (APInt(w + 32, p.obj) << w) | off.zext(w + 32);
+}
+
+LogicalResult Interpreter::checkRange(Value idx, const APInt &len,
+                                      uint64_t units, std::string &error) {
+  if (!isa<PtrType>(idx.getType()) || len.isZero())
+    return success();
+  Ptr p = ptrs.lookup(idx);
+  if (p.obj == 0) {
+    errKind = RunErrorKind::NullAccess;
+    error = std::string(kMemorySafety) + "through the null pointer";
+    return failure();
+  }
+  const Object &o = objects[p.obj];
+  if (!o.alive) {
+    errKind = RunErrorKind::UseAfterFree;
+    error = std::string(kMemorySafety) + "to " + o.name + " after it was freed";
+    return failure();
+  }
+  // [off, off + len) within [0, size), without wrapping
+  unsigned w =
+      std::max({p.off.getBitWidth(), len.getBitWidth(), o.size.getBitWidth()}) +
+      1;
+  APInt off = p.off.zext(w), size = o.size.zext(w);
+  if ((off + len.zext(w)).ugt(size)) {
+    // the first cell not wholly inside: the start, or the cell that
+    // crosses (or starts at) the end
+    APInt bad = off;
+    if (off.ult(size)) {
+      APInt u(w, units);
+      bad = off + (size - off).udiv(u) * u;
+    }
+    errKind = RunErrorKind::OutOfBounds;
+    error = std::string(kMemorySafety) + "out of bounds: offset " +
+            llvm::toString(bad.trunc(p.off.getBitWidth()), 10, false) + " in " +
+            o.name + " of size " + llvm::toString(o.size, 10, false);
+    return failure();
+  }
+  return success();
 }
 
 void Interpreter::checkAlign(Operation &op, Value idx,
@@ -858,6 +1016,7 @@ FailureOr<APInt> Interpreter::cellKey(Buffer &b, Value idx, uint64_t k,
   auto [object, off] = splitKey(b, *at);
   if (b.layout == MemLayout::aligned) {
     if (off.urem(b.units) != 0) {
+      errKind = RunErrorKind::Layout;
       error = "aligned " + std::to_string(b.units) +
               "-byte word layout: access at " +
               (object.empty() ? "" : object + "+") +
@@ -867,6 +1026,7 @@ FailureOr<APInt> Interpreter::cellKey(Buffer &b, Value idx, uint64_t k,
     if (b.abstract) {
       const Object &o = objects[ptrs.lookup(idx).obj];
       if (o.align % b.units != 0) {
+        errKind = RunErrorKind::Layout;
         error = "aligned " + std::to_string(b.units) +
                 "-byte word layout: " + o.name + " is aligned to " +
                 std::to_string(o.align) + " only";
@@ -881,6 +1041,7 @@ FailureOr<APInt> Interpreter::cellKey(Buffer &b, Value idx, uint64_t k,
     for (APInt other : {*at - d, *at + d})
       if (b.cells.count(other)) {
         auto [o2, off2] = splitKey(b, other);
+        errKind = RunErrorKind::Layout;
         error = "unaligned word layout: the access at " +
                 (object.empty() ? "" : object + "+") +
                 llvm::toString(off, 10, false) + " overlaps the " +
@@ -895,6 +1056,7 @@ FailureOr<uint64_t> Interpreter::rangeCells(Buffer &b, const APInt &len,
                                             StringRef what,
                                             std::string &error) {
   if (len.urem(b.units) != 0) {
+    errKind = RunErrorKind::Layout;
     error = (what + " of " + llvm::toString(len, 10, false) +
              " bytes is not whole " + std::to_string(b.units) + "-byte cells")
                 .str();
@@ -996,8 +1158,16 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
     SmallVector<CellValue> cells;
     for (unsigned i = 0; i < n; ++i) {
       FailureOr<APInt> k = cellKey(buf, ld.getAddr(), i * buf.units, error);
-      if (failed(k))
-        return failure();
+      if (failed(k)) {
+        if (!deferViolation(op, error))
+          return failure();
+        // the substitute: 0, or the null pointer
+        if (isa<PtrType>(ld.getType()))
+          ptrs[ld.getResult()] = Ptr{0, APInt(width, 0)};
+        else
+          define(ld.getResult(), APInt::getZero(width));
+        return success();
+      }
       FailureOr<CellValue> v = read(buf, *k, error);
       if (failed(v))
         return failure();
@@ -1062,10 +1232,40 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
     return failure();
   }
   Value mem = op.getOperand(0);
+  // deferMemoryErrors: an update with a violation does nothing (checked
+  // before the length limit: a violation is the program's, whatever the
+  // length)
+  bool skip = false;
+  if (options.deferMemoryErrors) {
+    LogicalResult inObject = success();
+    if (auto st = dyn_cast<StoreOp>(op)) {
+      Buffer &b = *mems.lookup(mem);
+      unsigned units = bitWidthOf(st.getValue().getType()) / b.cellWidth;
+      inObject = checkRange(st.getAddr(), APInt(64, uint64_t(units) * b.units),
+                            b.units, error);
+    } else if (auto ms = dyn_cast<MemSetOp>(op)) {
+      inObject = checkRange(ms.getAddr(), env.lookup(ms.getLen()),
+                            mems.lookup(mem)->units, error);
+    } else if (auto mv = dyn_cast<MemMoveOp>(op)) {
+      inObject = checkRange(mv.getSrcAddr(), env.lookup(mv.getLen()),
+                            mems.lookup(mv.getSrc())->units, error);
+      if (succeeded(inObject))
+        inObject = checkRange(mv.getAddr(), env.lookup(mv.getLen()),
+                              mems.lookup(mem)->units, error);
+    } else if (auto mh = dyn_cast<MemHavocOp>(op)) {
+      inObject = checkRange(mh.getAddr(), env.lookup(mh.getLen()),
+                            mems.lookup(mem)->units, error);
+    }
+    if (failed(inObject)) {
+      if (!deferViolation(op, error))
+        return failure();
+      skip = true;
+    }
+  }
   // memmove reads its source before the destination is handed over (the
   // source may be the same version).
   SmallVector<CellValue> moved;
-  if (auto mv = dyn_cast<MemMoveOp>(op)) {
+  if (auto mv = dyn_cast<MemMoveOp>(op); mv && !skip) {
     Buffer &src = *mems.lookup(mv.getSrc());
     FailureOr<uint64_t> n =
         rangeCells(src, env.lookup(mv.getLen()), "memmove", error);
@@ -1086,6 +1286,8 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
   if (failed(b))
     return failure();
   Buffer &buf = **b;
+  if (skip)
+    return success(); // the new version is the old contents
 
   // Modification tracking: a tracked update that writes at least one byte
   // marks its object.
@@ -1231,13 +1433,15 @@ LogicalResult Interpreter::execPtr(Operation &op, std::string &error) {
       return success(); // free(NULL) does nothing
     Object &o = objects[p.obj];
     if (!o.alive) {
+      errKind = RunErrorKind::DoubleFree;
       error = "double free of " + o.name;
-      return failure();
+      return deferViolation(op, error) ? success() : failure();
     }
     if (!o.heap || !p.off.isZero()) {
+      errKind = RunErrorKind::BadFree;
       error = "free of a pointer that is not the start of a heap object (" +
               o.name + ")";
-      return failure();
+      return deferViolation(op, error) ? success() : failure();
     }
     o.alive = false;
     return success();
