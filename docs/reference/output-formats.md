@@ -167,7 +167,7 @@ other output is unchanged. The benchmark harness runs with it.
 
 | tool | exit codes |
 |---|---|
-| `sea-run` | 0: the run ended, with any status but `error`; 1: error (bad input, a missing input value, an unsupported operation) |
+| `sea-run` | 0: the run ended, with any status but `error`; 1: error (bad input, a missing input value, an unsupported operation). `--fuzz`: 0 when the trials ran, failures included; 1 on a bad option or corpus file, or a failure that does not replay |
 | `sea-opt` | 0: ok; 1: a parse, verifier or pass failure |
 | `sea-seam-export` | 0: exported; 1: error, nothing on stdout; 3: exported, but some rule firings cannot be expressed |
 | `sea-reduce-test test` | 1: interesting; 0: not interesting |

@@ -87,12 +87,14 @@ sea-run <file.mlir> [options]
 | `--input=<site>=<value>,...` | the value of a nondet site; decimal, negative decimal, or `0x` hex |
 | `--input=<site>@<addr>=<value>` | the value of a memory cell of the memory at that site |
 | `--missing=error|zero|random` | what a site without `--input` gets (default `error`) |
-| `--seed=<n>` | seed for `--missing=random` |
+| `--seed=<n>` | seed for `--missing=random` and `--fuzz` |
 | `--trace` | print every computed value |
 | `--max-steps=<n>` | step limit |
 | `--program=<name>` | the program to run, if the module has several |
 | `--format=text|jsonl` | output format |
 | `--print`, `--print-refs`, `--print-limit`, `--print-locs` | as for `sea-vc` |
+| `--input-file=<file>` | inputs from a corpus file ([Fuzzing](fuzzing.md)) |
+| `--fuzz=<n>`, `--fuzz-time=<s>` | fuzz: run trials on generated inputs ([Fuzzing](fuzzing.md)) |
 
 Abstract programs, with pointers into unplaced objects, run directly:
 pointers are an object and an offset, and a null, freed or out-of-bounds

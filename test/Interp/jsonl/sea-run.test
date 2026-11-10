@@ -43,5 +43,11 @@
 // RUN: FileCheck %s --check-prefix=ABS < %t.abs.jsonl
 // ABS: {"kind":"memread","site":0,"obj":"stack.1","off":2,"width":8,"value":42,"origin":"input","text":"memread: site=0 addr=stack.1+2 width=8 value=42 origin=input"}
 
+// --fuzz: the replayed failure, then the fuzz.* stat lines.
+// RUN: sea-run %S/Inputs/fuzz.mlir --fuzz=2000 --seed=1 > %t.fuzz.txt
+// RUN: sea-run %S/Inputs/fuzz.mlir --fuzz=2000 --seed=1 --format=jsonl > %t.fuzz.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.fuzz.txt --jsonl %t.fuzz.jsonl \
+// RUN:   --require status:status --require stat:key,value,trial,at --require stat:key,blocks,blocks-total,edges
+
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

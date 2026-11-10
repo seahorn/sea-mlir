@@ -1415,7 +1415,10 @@ LogicalResult Interpreter::jump(Block *dest, ValueRange operands,
 
 RunResult Interpreter::run() {
   Block *block = &program.getBody().front();
+  Block *from = nullptr;
   while (true) {
+    if (options.onBlock)
+      options.onBlock(from, block);
     Block *next = nullptr;
     for (Operation &op : *block) {
       if (++result.steps > options.maxSteps)
@@ -1466,6 +1469,8 @@ RunResult Interpreter::run() {
       if (auto assume = dyn_cast<AssumeOp>(op)) {
         if (env.lookup(assume.getCond()).isZero())
           return finish(RunStatus::AssumeBlocked, &op);
+        if (options.onAssume)
+          options.onAssume(assume);
         continue;
       }
       if (auto check = dyn_cast<AssertOp>(op)) {
@@ -1566,6 +1571,7 @@ RunResult Interpreter::run() {
     if (!next)
       return finish(RunStatus::Error, block->empty() ? nullptr : &block->back(),
                     "block ended without a terminator");
+    from = block;
     block = next;
   }
 }
@@ -1574,16 +1580,23 @@ RunResult Interpreter::run() {
 // Counterexample prints (docs/design/Print.md)
 //===----------------------------------------------------------------------===//
 
-void Interpreter::preparePrints() {
-  bool weak = false;
+ProgramFacts programFactsOf(ProgramOp program) {
+  ProgramFacts f;
   program.walk([&](Operation *op) {
     if (isa<SegmentOp>(op))
-      trackProv = true;
+      f.hasSegments = true;
     if (auto p = dyn_cast<PrintOp>(op))
-      weak |= p.getRef().has_value();
+      f.hasWeakPrints |= p.getRef().has_value();
     if (auto p = dyn_cast<PrintMemOp>(op))
-      weak |= !p.isStrong();
+      f.hasWeakPrints |= !p.isStrong();
   });
+  return f;
+}
+
+void Interpreter::preparePrints() {
+  ProgramFacts facts = options.facts ? *options.facts : programFactsOf(program);
+  trackProv = facts.hasSegments;
+  bool weak = facts.hasWeakPrints;
   // the pointer tokens of RunOptions::onPointer need provenance too
   if (!weak || !options.prints)
     return;

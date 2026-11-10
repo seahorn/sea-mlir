@@ -129,6 +129,7 @@ enum class RunStatus {
   AssumeBlocked, ///< a sea.assume saw 0: the execution is infeasible
   StepLimit,     ///< ran out of steps (the program may loop)
   Error,         ///< could not continue (missing input, unknown op)
+  // the last value: sea::kRunStatusCount (Fuzz.h) counts them
 };
 
 llvm::StringRef stringifyRunStatus(RunStatus status);
@@ -316,8 +317,20 @@ void addPathFields(out::Record &rec,
 void printAssertContext(llvm::raw_ostream &os, llvm::StringRef prefix,
                         const RunResult &result);
 
+/// Facts of a program each run needs before it starts (one walk of the
+/// program). A caller that runs one program many times (sea-run --fuzz)
+/// computes them once and passes them in RunOptions::facts.
+struct ProgramFacts {
+  bool hasSegments = false;   ///< a placed program: track provenance
+  bool hasWeakPrints = false; ///< print ops that name values
+};
+ProgramFacts programFactsOf(ProgramOp program);
+
 struct RunOptions {
   uint64_t maxSteps = 1'000'000;
+  /// programFactsOf(the program), if the caller has it (else each run
+  /// walks the program).
+  std::optional<ProgramFacts> facts;
   /// Largest memset / memmove length (in cells) the interpreter executes.
   uint64_t maxMemOpCells = 1 << 20;
   /// Called with each value the run computes: op results and block arguments
@@ -347,6 +360,13 @@ struct RunOptions {
   std::function<void(mlir::Value, const llvm::APInt *bits,
                      const std::string &token)>
       onPointer;
+  /// Coverage feedback (sea-run --fuzz): called on entry to each block,
+  /// with the block the run came from (null for the entry block). Unset,
+  /// it costs one test per block entered.
+  std::function<void(mlir::Block *from, mlir::Block *to)> onBlock;
+  /// Called after each sea.assume whose condition held (unset: one test
+  /// per assume).
+  std::function<void(AssumeOp)> onAssume;
 };
 
 //===- Counterexample printing (docs/design/Print.md) ---------------------===//

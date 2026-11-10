@@ -18,6 +18,7 @@
 
 #include "sea/Dialect/Sea/SeaDialect.h"
 #include "sea/Dialect/Sea/SeaOps.h"
+#include "sea/Interp/Fuzz.h"
 #include "sea/Interp/Interpreter.h"
 #include "sea/Interp/ParseInput.h"
 #include "sea/Support/Diag.h"
@@ -32,6 +33,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -60,8 +62,8 @@ static cl::opt<sea::InputSource::Missing> missing(
                clEnumValN(sea::InputSource::Missing::Random, "random",
                           "a random value (see --seed)")));
 
-static cl::opt<uint64_t> seed("seed", cl::desc("Seed for --missing=random"),
-                              cl::init(0));
+static cl::opt<uint64_t>
+    seed("seed", cl::desc("Seed for --missing=random and --fuzz"), cl::init(0));
 
 static cl::opt<uint64_t> maxSteps("max-steps", cl::desc("Step limit"),
                                   cl::init(1'000'000));
@@ -107,6 +109,44 @@ static cl::opt<sea::out::Format>
                          clEnumValN(sea::out::Format::Jsonl, "jsonl",
                                     "one JSON object per line (see --agent)")));
 
+static cl::opt<std::string>
+    inputFile("input-file",
+              cl::desc("Read inputs from a corpus file (one --input "
+                       "assignment, or nondet: / memread: line, per line)"),
+              cl::value_desc("file"));
+
+static cl::opt<uint64_t>
+    fuzzTrials("fuzz",
+               cl::desc("Fuzz: run this many trials on generated inputs "
+                        "(docs/reference/fuzzing.md)"),
+               cl::value_desc("N"), cl::init(0));
+
+static cl::opt<double> fuzzTime("fuzz-time",
+                                cl::desc("Fuzz for at most this many seconds"),
+                                cl::value_desc("S"), cl::init(0));
+
+static cl::list<std::string>
+    corpus("corpus",
+           cl::desc("Seed entries for --fuzz: corpus files or "
+                    "directories of them"),
+           cl::value_desc("dir|file"), cl::CommaSeparated);
+
+static cl::opt<std::string>
+    fuzzOut("fuzz-out",
+            cl::desc("Write failing and new-coverage inputs of --fuzz here"),
+            cl::value_desc("dir"));
+
+static cl::opt<bool>
+    fuzzDict("fuzz-dict",
+             cl::desc("Fuzz with the dictionary of the program's constants "
+                      "(default on)"),
+             cl::init(true));
+
+static cl::opt<bool> keepGoing("keep-going",
+                               cl::desc("Fuzz past the first failure, "
+                                        "counting failures"),
+                               cl::init(false));
+
 static cl::opt<bool> agent("agent",
                            cl::desc("Print a terse guide for agents and exit"),
                            cl::init(false));
@@ -132,6 +172,8 @@ TYPICAL:
   sea-run p.mlir --print=tree --print-locs  # the program's prints, indented
   sea-run p.mlir --print-refs=strong        # resolve weak prints to operands
   sea-run m.mlir --program=main             # pick one of several programs
+  sea-run p.mlir --input-file=f.txt         # inputs from a corpus file
+  sea-run p.mlir --fuzz=10000 --seed=1 --fuzz-out=out   # fuzz (see FUZZING)
 
 INPUTS: a module with sea.program ops. --input values are decimal, negative
 decimal, or 0x-hex, and must fit the nondet's width (a negative v means
@@ -295,7 +337,8 @@ Kinds and fields:
                 [path] (array) [path_inlined], [message]; one
                 record for the status /
                 at / assert-* / message lines (text has several lines)
-  stat          key, value: `steps`
+  stat          key, value: `steps`; the fuzz.* lines (key, value and
+                their k=v fields)
   print         path (scope.tag[.leaf|[i]]), [scope], [at], [at_inlined],
                 [at_name], [depth] (tree),
                 and the value: type (iN|ptr|addr), integers fmt + value
@@ -318,13 +361,68 @@ jq one-liners:
   sea-run p.mlir --format=jsonl | jq -r 'select(.kind=="status").status'
   ... | jq -c 'select(.kind=="print") | {path, obj, off, value}'
 
+FUZZING (docs/reference/fuzzing.md): --fuzz=N runs N trials in-process,
+--fuzz-time=S at most S seconds (both: whichever ends first). A trial runs
+the program on generated nondet values: a corpus entry (or none) mutated
+per site and cell (fresh random, bit flip, +-1, 0/1/-1/min/max of the
+width, dictionary); sites the entry does not set get random or dictionary
+values. The dictionary is the program's integer constants used by
+comparisons and arithmetic, +-1, sized to the site's width
+(--fuzz-dict=false: none). A site has one value per trial, as with
+--input. An input that reaches a new block, edge or passed sea.assume
+joins the corpus. The fuzzer stops at the first assert failure
+(--keep-going: counts them instead). A run that stops with status: error
+(out of bounds, through null, an access off a word of a word-layout
+memory, an interpreter limit, unsupported op; a broken `align` promise
+is a warning, interp.align-promise, not an error) is recorded per op and never stops it: those check the
+model's verification assumptions, or show what the interpreter cannot run.
+Same --seed and corpus = same run (--fuzz-time: best effort, the trial
+count depends on speed).
+  --corpus=DIR|FILE,...  seed entries, run first, in order (directory:
+                         its files by name)
+  --fuzz-out=DIR         (new or empty) writes failure-<trial>.txt /
+                         error-<trial>.txt
+                         (the first trial of each failing / erring op)
+                         and cov-<trial>.txt (new coverage), as corpus
+                         files
+  --input-file=F         replays one corpus file (also without --fuzz)
+Corpus file: one assignment per line, `<site>=<v>`, `<site>@<addr>=<v>`,
+`<site>@<object>+<offset>=<v>` (the --input syntax), or a `nondet:` /
+`memread:` line of a sea-run or sea-vc output (site, addr, value fields);
+`#` comments and blank lines are skipped, other `key: ...` lines (the rest
+of a saved run) are skipped and counted. A saved run is a seed.
+Output of --fuzz: the first assert failure as a plain run on its input
+(the lines of OUTPUT; what --input-file=<its file> prints; the fuzzer
+checks the replay ends the same way), then stat lines:
+  fuzz.failure: <runs> trial=<first> [file=<path>] at=<where>
+                                 (per failing sea.assert)
+  fuzz.error: <runs> trial=<first> [file=<path>] op=<op> [site=<n>]
+              at=<where>
+  fuzz.error-message: <message of the first>
+                                 (per op that stopped a run with an error;
+                                 site: the op's site, if it has one)
+  fuzz.trials: <n> seeds=<n> time=<s> execs/s=<n>
+  fuzz.status: halted=<n> assert-failed=<n> assume-blocked=<n>
+               step-limit=<n> error=<n>
+  fuzz.coverage: blocks=<n> blocks-total=<n> edges=<n> assumes=<n>
+                 assumes-total=<n>  (edges include the entry; assumes:
+                                     sea.assume ops that held at least once)
+  fuzz.corpus: <entries> seeds=<files> skipped-lines=<n> files=<written>
+               dictionary=<n>
+  fuzz.blocked: <runs> op=sea.assume|sea.unreachable at=<where>
+                                 (each blocking site, most runs first)
+<where> is a location as in LOCATIONS. Logs: --log=fuzz.run (start, end),
+--log=fuzz.run:2 (each trial that reached new coverage).
+
 DIAGNOSTICS (stderr): "Warning: ... [kind]" (yellow), once per kind, with a
 summary of repeats at exit (--log=warn.<kind>:2 prints each); "Error: ...
 [kind]" (red) when the run stops with status: error. Logs: --log, SEA_LOG
 (docs/reference/logging.md).
 
 STATUS CODES: 0 the run ended (any status but error); 1 error (bad input,
-missing nondet value, unsupported op).
+missing nondet value, unsupported op). --fuzz: 0 when the trials ran
+(failures are in the output), 1 on a bad option or corpus, an unwritable
+--fuzz-out, or a failure that does not replay (fuzz.replay-mismatch).
 )";
 
 static int fail(const Twine &msg) {
@@ -332,139 +430,23 @@ static int fail(const Twine &msg) {
   return 1;
 }
 
-int main(int argc, char **argv) {
-  InitLLVM y(argc, argv);
-  // SEA_LOG / SEA_LOG_FILE, before --log entries override them
-  sea::log::init();
-  // Repeated warnings are summarized at exit, whatever the exit path.
-  struct Summary {
-    ~Summary() { sea::diag::printSummary(); }
-  } summary;
-  sea::setVersionPrinter("sea-run");
-  cl::ParseCommandLineOptions(argc, argv, "Run a sea program\n");
-  if (agent) {
-    outs() << agentGuide;
-    return 0;
-  }
+static std::string locText(Location l) {
+  std::string t;
+  raw_string_ostream os(t);
+  os << l;
+  return t;
+}
 
-  MLIRContext context;
-  context.getOrLoadDialect<sea::SeaDialect>();
-  OwningOpRef<ModuleOp> module = sea::parseInputFile(inputFilename, &context);
-  if (!module)
-    return 1;
-
-  if (printRefs != sea::PrintRefs::AsIs) {
-    PassManager pm(&context);
-    sea::addPrintRefsPass(pm, printRefs);
-    if (failed(pm.run(*module)))
-      return 1;
-  }
-
-  sea::ProgramOp program;
-  for (auto p : module->getOps<sea::ProgramOp>()) {
-    if (!programName.empty() && p.getSymName() != programName)
-      continue;
-    if (program)
-      return fail("several programs; pick one with --program");
-    program = p;
-  }
-  if (!program)
-    return fail(programName.empty() ? "no sea.program in input"
-                                    : "no program named '" + programName + "'");
-
-  sea::InputSource source(missing, seed);
-  for (StringRef in : inputs) {
-    auto [key, value] = in.split('=');
-    auto [siteText, addrText] = key.split('@');
-    if (!addrText.empty()) {
-      // <addr>, or <object>+<offset> for abstract memories.
-      auto [object, offText] = addrText.rsplit('+');
-      if (offText.empty())
-        std::tie(object, offText) = std::make_pair(StringRef(), addrText);
-      uint64_t site;
-      APInt addr;
-      if (siteText.getAsInteger(10, site) || offText.getAsInteger(0, addr) ||
-          value.empty())
-        return fail("bad --input '" + in +
-                    "', expected <site>@<addr>=<value> or "
-                    "<site>@<object>+<offset>=<value>");
-      std::string k = toString(addr, 10, /*Signed=*/false);
-      if (!object.empty())
-        k = (object + "+" + k).str();
-      source.setCell(site, k, value.str());
-      continue;
-    }
-    uint64_t site;
-    if (siteText.getAsInteger(10, site) || value.empty())
-      return fail("bad --input '" + in + "', expected <site>=<value>");
-    source.set(site, value.str());
-  }
-
-  sea::RunOptions options;
-  options.maxSteps = maxSteps;
-  options.prints = printMode != sea::PrintMode::Off;
-  options.printLimit = printLimit;
-  sea::out::Emitter out(outs(), outFormat);
-  sea::log::setFormat(outFormat);
-  auto locText = [](Location l) {
-    std::string t;
-    raw_string_ostream os(t);
-    os << l;
-    return t;
-  };
-  // `value: <op> <loc> : <type> = `
-  auto traceHead = [&](Value val, sea::out::Record &rec) {
-    raw_string_ostream os(rec.text);
-    std::string loc;
-    if (Operation *op = val.getDefiningOp()) {
-      loc = locText(op->getLoc());
-      os << "value: " << op->getName() << " " << loc;
-      rec.str("def", op->getName().getStringRef());
-    } else {
-      loc = locText(val.getLoc());
-      os << "value: block-arg " << loc;
-      rec.str("def", "block-arg");
-    }
-    std::string ty;
-    raw_string_ostream ts(ty);
-    ts << val.getType();
-    os << " : " << ty << " = ";
-    rec.str("loc", loc).str("type", ty);
-  };
-  if (trace) {
-    options.onValue = [&](Value val, const APInt &v) {
-      if (isa<sea::AddrType>(val.getType()))
-        return; // with its pointer token (onPointer)
-      sea::out::Record rec("value");
-      traceHead(val, rec);
-      rec.text += toString(v, 10, /*Signed=*/false);
-      rec.integer("value", v);
-      out.emit(rec);
-    };
-    options.onPointer = [&](Value val, const APInt *bits,
-                            const std::string &token) {
-      sea::out::Record rec("value");
-      traceHead(val, rec);
-      if (bits) {
-        rec.text += toString(*bits, 10, /*Signed=*/false) + " ptr=" + token;
-        rec.integer("value", *bits);
-      } else {
-        rec.text += token;
-      }
-      rec.str("ptr", token);
-      out.emit(rec);
-    };
-  }
-
-  sea::RunResult r = sea::interpret(program, source, options);
-
+/// The report of one run: program, its inputs, prints, status, steps.
+static void printRun(sea::out::Emitter &out, sea::ProgramOp program,
+                     const sea::RunResult &r) {
   {
     sea::out::Record rec("program");
     rec.str("name", program.getSymName());
     rec.text = ("program: @" + program.getSymName()).str();
     out.emit(rec);
   }
-  for (sea::NondetRead &rd : r.reads) {
+  for (const sea::NondetRead &rd : r.reads) {
     sea::out::Record rec("nondet");
     rec.num("site", rd.site)
         .str("callee", rd.callee)
@@ -539,6 +521,231 @@ int main(int argc, char **argv) {
     out.emit(rec);
   }
   out.emit(sea::out::parseLine("steps: " + std::to_string(r.steps)));
+}
+
+/// sea-run --fuzz (docs/reference/fuzzing.md): the first failure is
+/// replayed from its input and reported as a plain run; then the `fuzz.*`
+/// stat lines.
+static int runFuzz(sea::ProgramOp program) {
+  if (trace || !inputs.empty() || !inputFile.empty() ||
+      missing.getNumOccurrences())
+    return fail("--fuzz does not take --trace, --input, --input-file or "
+                "--missing");
+  std::vector<sea::CorpusEntryText> seeds;
+  std::string error;
+  for (const std::string &c : corpus)
+    if (failed(sea::readCorpus(c, seeds, error)))
+      return fail(error);
+  sea::FuzzOptions fo;
+  fo.trials = fuzzTrials;
+  fo.seconds = fuzzTime;
+  fo.seed = seed;
+  fo.dictionary = fuzzDict;
+  fo.keepGoing = keepGoing;
+  fo.outDir = fuzzOut;
+  fo.maxSteps = maxSteps;
+  FailureOr<sea::FuzzReport> rep = sea::fuzz(program, seeds, fo, error);
+  if (failed(rep))
+    return fail(error);
+
+  sea::out::Emitter out(outs(), outFormat);
+  raw_ostream &os = out.lines();
+  // The first assert failure, as a plain run on its input: what
+  // `sea-run --input-file=<its file>` prints.
+  if (!rep->failures.empty()) {
+    const sea::FuzzFailure &f = rep->failures.front();
+    sea::InputSource source;
+    sea::addAssignments(source, f.input);
+    sea::RunOptions options;
+    options.maxSteps = maxSteps;
+    options.prints = printMode != sea::PrintMode::Off;
+    options.printLimit = printLimit;
+    sea::RunResult r = sea::interpret(program, source, options);
+    printRun(out, program, r);
+    if (r.status != f.status || r.at != f.at) {
+      out.flush();
+      sea::diag::error("fuzz.replay-mismatch",
+                       "the failing input of trial " + Twine(f.trial) +
+                           " replays to status " +
+                           sea::stringifyRunStatus(r.status) + ", not " +
+                           sea::stringifyRunStatus(f.status));
+      return 1;
+    }
+  }
+  auto where = [](const sea::FuzzFailure &f) {
+    std::string at = f.at ? sea::formatLoc(f.at->getLoc()) : "";
+    return at.empty() ? std::string("-") : at;
+  };
+  for (const sea::FuzzFailure &f : rep->failures) {
+    os << "fuzz.failure: " << f.count << " trial=" << f.trial;
+    if (!f.file.empty())
+      os << " file=" << f.file;
+    os << " at=" << where(f) << "\n";
+  }
+  for (const sea::FuzzFailure &f : rep->errors) {
+    os << "fuzz.error: " << f.count << " trial=" << f.trial;
+    if (!f.file.empty())
+      os << " file=" << f.file;
+    if (f.at) {
+      os << " op=" << f.at->getName();
+      if (auto site = f.at->getAttrOfType<IntegerAttr>("site"))
+        os << " site=" << site.getInt();
+    }
+    os << " at=" << where(f) << "\n";
+    os << "fuzz.error-message: " << f.message << "\n";
+  }
+  double rate = rep->seconds > 0 ? rep->trials / rep->seconds : 0;
+  os << "fuzz.trials: " << rep->trials << " seeds=" << rep->seedTrials
+     << " time=" << format("%.3f", rep->seconds)
+     << " execs/s=" << format("%.0f", rate) << "\n";
+  os << "fuzz.status:";
+  for (sea::RunStatus st :
+       {sea::RunStatus::Halted, sea::RunStatus::AssertFailed,
+        sea::RunStatus::AssumeBlocked, sea::RunStatus::StepLimit,
+        sea::RunStatus::Error})
+    os << " " << sea::stringifyRunStatus(st) << "="
+       << rep->statusCount[static_cast<unsigned>(st)];
+  os << "\n";
+  os << "fuzz.coverage: blocks=" << rep->blocksHit
+     << " blocks-total=" << rep->blocksTotal << " edges=" << rep->edgesHit
+     << " assumes=" << rep->assumesPassed
+     << " assumes-total=" << rep->assumesTotal << "\n";
+  unsigned skipped = 0;
+  for (const sea::CorpusEntryText &s : seeds)
+    skipped += s.skippedLines;
+  os << "fuzz.corpus: " << rep->corpusSize << " seeds=" << seeds.size()
+     << " skipped-lines=" << skipped << " files=" << rep->filesWritten
+     << " dictionary=" << (fuzzDict ? rep->dictionarySize : 0) << "\n";
+  for (auto [op, n] : rep->blocked) {
+    std::string at = sea::formatLoc(op->getLoc());
+    os << "fuzz.blocked: " << n << " op=" << op->getName()
+       << " at=" << (at.empty() ? "-" : at) << "\n";
+  }
+  out.flush();
+  return 0;
+}
+int main(int argc, char **argv) {
+  InitLLVM y(argc, argv);
+  // SEA_LOG / SEA_LOG_FILE, before --log entries override them
+  sea::log::init();
+  // Repeated warnings are summarized at exit, whatever the exit path.
+  struct Summary {
+    ~Summary() { sea::diag::printSummary(); }
+  } summary;
+  sea::setVersionPrinter("sea-run");
+  cl::ParseCommandLineOptions(argc, argv, "Run a sea program\n");
+  if (agent) {
+    outs() << agentGuide;
+    return 0;
+  }
+  if (fuzzTime < 0)
+    return fail("--fuzz-time must not be negative");
+  if (!fuzzTrials && fuzzTime <= 0 &&
+      (!corpus.empty() || !fuzzOut.empty() || keepGoing ||
+       fuzzDict.getNumOccurrences()))
+    return fail("--corpus, --fuzz-out, --fuzz-dict and --keep-going need "
+                "--fuzz or --fuzz-time");
+
+  sea::log::setFormat(outFormat);
+  MLIRContext context;
+  context.getOrLoadDialect<sea::SeaDialect>();
+  OwningOpRef<ModuleOp> module = sea::parseInputFile(inputFilename, &context);
+  if (!module)
+    return 1;
+
+  if (printRefs != sea::PrintRefs::AsIs) {
+    PassManager pm(&context);
+    sea::addPrintRefsPass(pm, printRefs);
+    if (failed(pm.run(*module)))
+      return 1;
+  }
+
+  sea::ProgramOp program;
+  for (auto p : module->getOps<sea::ProgramOp>()) {
+    if (!programName.empty() && p.getSymName() != programName)
+      continue;
+    if (program)
+      return fail("several programs; pick one with --program");
+    program = p;
+  }
+  if (!program)
+    return fail(programName.empty() ? "no sea.program in input"
+                                    : "no program named '" + programName + "'");
+
+  sea::InputSource source(missing, seed);
+  if (!inputFile.empty()) {
+    if (sys::fs::is_directory(inputFile))
+      return fail("--input-file '" + inputFile +
+                  "' is a directory; give one corpus file");
+    std::vector<sea::CorpusEntryText> entries;
+    std::string error;
+    if (failed(sea::readCorpus(inputFile, entries, error)))
+      return fail(error);
+    sea::addAssignments(source, entries.front().assignments);
+  }
+  for (StringRef in : inputs) {
+    sea::Assignment a;
+    std::string expected;
+    if (failed(sea::parseAssignment(in, a, expected)))
+      return fail("bad --input '" + in + "', " + expected);
+    sea::addAssignments(source, a);
+  }
+
+  if (fuzzTrials || fuzzTime > 0)
+    return runFuzz(program);
+
+  sea::RunOptions options;
+  options.maxSteps = maxSteps;
+  options.prints = printMode != sea::PrintMode::Off;
+  options.printLimit = printLimit;
+  sea::out::Emitter out(outs(), outFormat);
+  // `value: <op> <loc> : <type> = `
+  auto traceHead = [&](Value val, sea::out::Record &rec) {
+    raw_string_ostream os(rec.text);
+    std::string loc;
+    if (Operation *op = val.getDefiningOp()) {
+      loc = locText(op->getLoc());
+      os << "value: " << op->getName() << " " << loc;
+      rec.str("def", op->getName().getStringRef());
+    } else {
+      loc = locText(val.getLoc());
+      os << "value: block-arg " << loc;
+      rec.str("def", "block-arg");
+    }
+    std::string ty;
+    raw_string_ostream ts(ty);
+    ts << val.getType();
+    os << " : " << ty << " = ";
+    rec.str("loc", loc).str("type", ty);
+  };
+  if (trace) {
+    options.onValue = [&](Value val, const APInt &v) {
+      if (isa<sea::AddrType>(val.getType()))
+        return; // with its pointer token (onPointer)
+      sea::out::Record rec("value");
+      traceHead(val, rec);
+      rec.text += toString(v, 10, /*Signed=*/false);
+      rec.integer("value", v);
+      out.emit(rec);
+    };
+    options.onPointer = [&](Value val, const APInt *bits,
+                            const std::string &token) {
+      sea::out::Record rec("value");
+      traceHead(val, rec);
+      if (bits) {
+        rec.text += toString(*bits, 10, /*Signed=*/false) + " ptr=" + token;
+        rec.integer("value", *bits);
+      } else {
+        rec.text += token;
+      }
+      rec.str("ptr", token);
+      out.emit(rec);
+    };
+  }
+
+  sea::RunResult r = sea::interpret(program, source, options);
+
+  printRun(out, program, r);
   out.flush();
   if (r.status == sea::RunStatus::Error) {
     sea::diag::error("interp.stopped", "the interpreter stopped: " + r.message,
