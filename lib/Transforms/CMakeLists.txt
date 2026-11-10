@@ -9,6 +9,7 @@ add_mlir_library(SeaTransforms
   PlaceStatic.cpp
   ScalarizeStructs.cpp
   SplitCriticalEdges.cpp
+  SplitAtChecks.cpp
   MergeAsserts.cpp
   SinkAssumes.cpp
   LowerPtrIndex.cpp

@@ -54,6 +54,59 @@ The main lines of `sea-vc`:
 
 `sea-vc --agent` lists every line, including all counters.
 
+### Reach
+
+`sea-vc --reach` (`=checks`, the default, or `=blocks`) asks, for each
+target of the lowered program, whether an execution reaches the top of it
+with every earlier assume holding. It prints no `result:` line: it is not
+a safety verdict.
+
+| line | meaning |
+|---|---|
+| `reach.config: kind=checks|blocks solver=incremental|separate rlimit=<n> splits=<n>` | the run's settings; `splits`: blocks split so that each target has a block right before it |
+| `reach: <id> <status> op=<op> [reason=] [replay=] [mismatches=] [witness=] time=<s> at=<where>` | one target, in program order; `status` is `reachable`, `unreachable` or `unknown` |
+| `reach.summary: targets= reachable= unreachable= unknown= queries= time=` | the totals |
+
+- Targets with `checks`: every `sea.assume`, `sea.assert` and
+  `sea.unreachable` (where the lowering leaves an assume of constant
+  false). With `blocks`: every block, at the location of its first located
+  op. Sites the lowering removed (an assume of true, the code after an
+  assume of false) are not listed. With `--check-align` or
+  `--check-ptr-index`, the one merged assert of the promises is a target
+  like any other.
+- The id is the target's `file:line:col`, then the call sites it was
+  inlined at, each after `@`; a position in the `.mlir` file itself (an op
+  the exporter left without a source position) is written with the file's
+  basename, so copies of one program in different directories give the
+  same ids; `unlocated#<k>` for a target without a position, and `#<n>` on
+  the second and later targets with one id. Ids are stable for one input
+  and one set of options.
+- `reason`: `cfg` (no path from the entry reaches the target), `rlimit`,
+  `timeout`, or the solver's words for an `unknown`.
+- `replay`: each `reachable` target's model is run in the interpreter.
+  `reached`: the run reaches the target and its values agree with the
+  model up to it. `mismatch` or `not-reached` is a bug (exit status 2), so
+  is a run that reaches a target the VC answers `unreachable`
+  (`vc.reach-inconsistent`; only runs that reached their own target, agree
+  with the model and stay inside every object count). `memory-error`: the
+  run leaves an object before the target. Under `--seam` every model is
+  also run on the input program, whose accesses are checked against their
+  objects, as for a counterexample (`vc.seam-inb-spurious`); the answer
+  rests on the in-bounds assumption, which that run breaks (exit status 4).
+  `inb=undetermined`: that check could not decide (the run reads a nondet
+  memory cell).
+- `witness`: with `--reach-witness=<dir>`, the run's `nondet:` and
+  `memread:` lines, which `sea-run --input-file` replays; its header says
+  on which program: the lowered one (with `--lower`; `sea-opt
+  --sea-vc-lower` with the same options) or the input program.
+- An unreachable check site means unsatisfiable preconditions before it,
+  or dead code. The `seam.inb` and `assume.*` lines are the assumptions
+  every answer rests on. The reach runs (the replays and the A-INB check)
+  use the interpreter's options of the safety replays (`--addr0-is-null`,
+  `--memhavoc-null`); after the summary, `assume.addr0-is-null: uses=<n>`
+  and `assume.memhavoc-null-noop: uses=<n>` count the steps of all of them
+  that rested on those assumptions.
+
 The lines of `sea-run`: `program:`, `nondet:` and `memread:` (with an
 `origin`: `input`, `zero` or `random`), `value:` (with `--trace`), the
 `print` lines, `status:`, `at:`, `assert-at:`, `assert-op:`,
@@ -191,6 +244,7 @@ The record kinds of `sea-vc`:
 | `memread` | `site`, `addr`, `width`, `value`, [`obj`, `off`] |
 | `replay` | `status`, [`at`, `at_inlined`, `at_name`] (assert-at), [`loc`] (`at:`), [`op`, `op_inlined`, `op_name`] (assert-op), [`path`] (most recent first), [`path_inlined`], [`message`] |
 | `validate` | `checked`, `mismatches`, `dontcare` |
+| `reach` | `id`, `status`, `op`, [`reason`], [`replay`], [`inb`], [`mismatches`], [`witness`], `time`, [`at`, `at_inlined`, `at_name`] |
 | `mismatch` | `def`, `type`, `interp`, `model`, [`obj`, `off`] |
 | `no-clobber-violated` | `loc` |
 | `ptrint` | `status` (`violated` or `unstored`), `at`, `addr`, [`obj`, `off`], `bits`, [`stored`] |
@@ -234,6 +288,12 @@ other output is unchanged. The benchmark harness runs with it.
 | 4 | with `--seam`: a `sat` whose replay leaves an object; the in-bounds assumption does not hold, the answer is inconclusive, and the program has a memory-safety error. With `--replay-original`: the original program's run makes a memory-safety violation and does not fail the same assertion |
 | 5 | with `--seam-check`: an invalid rewrite; a bug, and the verdict is not to be trusted. It takes precedence over 0, 2, 3 and 4, not over 1 |
 | 6 | with `--replay-original`: `sat` confirmed on the lowered program, but the original program on the same inputs does not fail the same assertion: the lowering changed what the program does (a bug in a pass, or a program whose behavior depends on where placement puts its objects) |
+
+With `--reach` the status is not a verdict: 0 when every target is
+decided and every reachable one replays to it; 3 when some target is
+`unknown`; 4 when a replay stops at a memory-safety violation before its
+target; 2 for a replay that disagrees with the model; 1 for an error. Each
+takes precedence over the ones before it in this list.
 
 | tool | exit codes |
 |---|---|

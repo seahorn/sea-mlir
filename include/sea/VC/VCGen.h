@@ -23,6 +23,8 @@
 
 #include "sea/VC/OpSem.h"
 
+#include "llvm/ADT/DenseMap.h"
+
 namespace sea {
 
 /// Checks the form the VC generator needs, emitting an error per violation:
@@ -65,6 +67,23 @@ public:
   /// The object bases of the encoded program (SeaM; see SeaOpSem).
   const expr::BaseRegistry &baseRegistry() const { return sem.baseRegistry(); }
 
+  /// Reachability encoding (sea-vc --reach, lib/VC/Reach.cpp): the exit
+  /// block is not required to execute and a block ending in sea.unreachable
+  /// is not forbidden. Every constraint left is an implication from a block
+  /// guard to what holds when the block executes (its edges, branch
+  /// conditions and assumes), but for the unguarded ADDR(obj) = base
+  /// equalities of placed objects under --seam, which are definitional (they
+  /// name the layout and hold on every execution), so a model with guard(B)
+  /// true is a path from
+  /// the entry into B on which every assume of B and of the blocks before
+  /// it holds; no block after B constrains it. An op is at the top of its
+  /// block after sea-split-at-checks (sea/VC/Reach.h). Set before genVc.
+  void setReach(bool on) { reach = on; }
+
+  /// The Bool constant of `bb` (true iff the block executes), after genVc;
+  /// null for a block no path from the entry reaches (never encoded).
+  expr::Expr guard(mlir::Block *bb) const { return guards.lookup(bb); }
+
 private:
   expr::Expr computePathCondForBb(mlir::Block &bb,
                                   const llvm::DenseSet<mlir::Block *> &reached,
@@ -72,6 +91,8 @@ private:
 
   SeaOpSem &sem;
   JoinEncoding join;
+  bool reach = false;
+  llvm::DenseMap<mlir::Block *, expr::Expr> guards;
   double execTime = 0, joinTime = 0;
 };
 

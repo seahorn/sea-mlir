@@ -32,6 +32,7 @@
 #include "sea/Transforms/Passes.h"
 
 #include "mlir/Pass/PassManager.h"
+#include "sea/VC/Reach.h"
 #include "sea/VC/Replay.h"
 #include "sea/VC/VCGen.h"
 
@@ -717,6 +718,44 @@ static cl::opt<bool> vcgenOnly(
              "`result: none`, run no solver"),
     cl::init(false));
 
+// --reach (lib/VC/Reach.cpp): reachability of check sites or blocks, not
+// the safety query
+static cl::opt<sea::ReachKind> reachKind(
+    "reach",
+    cl::desc("Decide, per target, whether an execution reaches it with every "
+             "earlier assume holding (one query per target; not the safety "
+             "query, no `result:` line)"),
+    cl::init(sea::ReachKind::Off), cl::ValueOptional,
+    cl::values(clEnumValN(sea::ReachKind::Off, "off",
+                          "the safety query (default)"),
+               clEnumValN(sea::ReachKind::Checks, "checks",
+                          "every sea.assume, sea.assert and sea.unreachable "
+                          "after the lowering (--reach alone)"),
+               clEnumValN(sea::ReachKind::Checks, "", ""),
+               clEnumValN(sea::ReachKind::Blocks, "blocks",
+                          "every block after the lowering")));
+static cl::opt<unsigned> reachRlimit(
+    "reach-rlimit",
+    cl::desc("z3's resource limit per reach query (0: none; deterministic, "
+             "unlike --timeout); a query over it is `unknown reason=rlimit`"),
+    cl::init(0), cl::value_desc("n"));
+static cl::opt<std::string> reachWitness(
+    "reach-witness",
+    cl::desc("Write the inputs of each reachable target's replayed run to "
+             "<dir>/reach-<k>.txt (sea-run --input-file syntax)"),
+    cl::value_desc("dir"));
+// TEST ONLY: plant a fault to exercise --reach's checks of its answers
+// (skip-assumes: the reach query without the assume facts; block-last: the
+// last target's guard forced false; mismatch: one mismatch per replay)
+static cl::opt<std::string> reachPlant("x-reach-plant", cl::Hidden,
+                                       cl::init(""));
+static cl::opt<bool> reachIncremental(
+    "reach-incremental",
+    cl::desc("One solver for every reach query, check-sat-assuming the "
+             "target's guard (default); =false: a new solver per target, "
+             "the guard asserted"),
+    cl::init(true));
+
 // Flow logs (docs/reference/logging.md). Every event is written whole and
 // flushed, so the phase in progress is visible when a run is killed.
 static sea::log::Tag logPhase(
@@ -1014,6 +1053,29 @@ TYPICAL:
                                  #   space, not resident memory): set it
                                  #   above the expected resident size, with
                                  #   headroom
+  sea-vc p.mlir --lower --reach  # REACH: per check site (sea.assume,
+                                 #   sea.assert, sea.unreachable = a folded
+                                 #   assume of false) after the lowering, is
+                                 #   its top reached by an execution on which
+                                 #   every earlier assume holds? One query
+                                 #   per target, each reachable one replayed
+                                 #   (vacuity evidence; not the safety
+                                 #   query: no result: line)
+  sea-vc p.mlir --lower --reach=blocks  # the same per block
+  sea-vc p.mlir --reach --reach-rlimit=300000000  # z3 resource limit per
+                                 #   query (deterministic; over it: unknown
+                                 #   reason=rlimit); --timeout bounds each
+                                 #   query too
+  sea-vc p.mlir --reach --reach-witness=<dir>  # each reachable target's
+                                 #   inputs to <dir>/reach-<k>.txt (k = the
+                                 #   target's position): sea-run <lowered
+                                 #   program> --input-file=<file> reaches it
+  sea-vc p.mlir --reach --reach-incremental=false  # a new solver per target
+                                 #   with the guard asserted, a plain check
+                                 #   (default: one solver, check-sat-assuming
+                                 #   the guard; z3 answers that with its
+                                 #   incremental core: cheaper sat answers,
+                                 #   an unsat one can be much slower)
   sea-vc p.mlir --vcgen-only     # generate and check the VC, print its
                                  #   statistics and result: none; no solver
                                  #   (also not --seam-check / --eq-audit /
@@ -1828,6 +1890,55 @@ MLIR's pass-manager options apply to the lowering: --mlir-print-ir-after-all,
 --mlir-print-ir-after-change, --mlir-timing, --mlir-pass-statistics;
 --mlir-print-ir-module-scope needs --mlir-disable-threading.
 
+REACH (--reach[=checks|blocks]): the VC without the exit requirement and
+without the ban on sea.unreachable blocks; sea-split-at-checks gives each
+target a block right before it (no check site in it but its first op), and
+the query of a target is check-sat-assuming that block's guard (an assume
+before the target holds, one after it does not count). Not with --smt2,
+--vcgen-only, --sink-assumes, --ptr-companion=assume|check. A model that
+breaks a promise of the stride rule (--ack-stride) reruns every query
+without it, as for a counterexample. The records are printed after the
+last query (--log=vc.reach:2 shows each as it is answered). Ids: file:line:col of the op (a block: of its first
+located op), call sites appended with @ (inlined-at), a position in the
+.mlir file by its basename, `unlocated#<k>` without a position, `#<n>` on a
+repeat; stable for one input and options. With --check-align /
+--check-ptr-index the merged assert of the promises is a target too.
+Under --seam each model also runs on the input program with its accesses
+checked (as for a counterexample): a run that leaves an object before the
+target is replay=memory-error (status 4); inb=undetermined: that run read
+a nondet memory cell and decided nothing. Witness headers say which
+program they replay on (lowered or input).
+Targets are those of the lowered program: a site the lowering removed (an
+assume of true, the code after an assume of false) is not listed; the
+folded assume of false is the sea.unreachable at its location.
+  reach.config: kind=checks|blocks solver=incremental|separate rlimit=<n>
+                splits=<n>
+  reach: <id> reachable|unreachable|unknown op=<sea.assume|sea.assert|
+         sea.unreachable|block> [reason=cfg|rlimit|timeout|guard-free|...]
+         [replay=reached|mismatch|memory-error|not-reached|error]
+         [inb=undetermined]
+         [mismatches=<n>] [witness=<file>] time=<s> at=<loc>
+                                  (one per target, in program order;
+                                  reason=cfg: no path from the entry;
+                                  replay=reached: the model's run reaches
+                                  the target, its values agree up to it)
+  reach.summary: targets=<n> reachable=<n> unreachable=<n> unknown=<n>
+                 queries=<n> time=<s>
+  The seam.inb / assume.* lines are the assumptions the answers rest on, as
+  for a verdict; the reach runs use the safety replays' interpreter options
+  (--addr0-is-null, --memhavoc-null), and after reach.summary
+  assume.addr0-is-null: uses=<n> / assume.memhavoc-null-noop: uses=<n>
+  count their steps that rested on them. An unreachable check site is vacuity or dead
+  code; a reachable one has satisfiable preconditions (on A-INB under
+  --seam). Errors: vc.reach-replay-mismatch, vc.reach-replay-not-reached,
+  vc.reach-inconsistent (a replay that reached its own target, agrees
+  with the model and stays in its objects reaches a target the VC answers
+  unreachable): bugs, status 2; warning vc.reach-replay-memory-error.
+  Status: 0 every target decided and every reachable one replayed to it;
+  3 some unknown; 4 a replay stops at a memory-safety error before its
+  target (the answer rests on A-INB); 2 a bug as above; 1 error. Not a
+  safety verdict.
+
 OUTPUT FORMATS (--format=text|jsonl; default text, the lines above):
 jsonl: every stdout line is one JSON object
   {"kind":"<kind>", <fields>..., "text":"<the text line(s)>"}
@@ -1861,6 +1972,9 @@ Kinds and fields:
                 for the `replay:` / `at:` / `message:` lines (text has
                 several lines)
   validate      checked, mismatches, dontcare
+  reach         id, status, op, [reason], [replay], [inb], [mismatches], [witness],
+                time, [at] [at_inlined] [at_name] (--reach; reach.config
+                and reach.summary are stat records)
   mismatch      def (`<op> <loc>`), type, interp, model (null: none),
                 [obj + off] (an address: the object it points into)
   no-clobber-violated  loc (the load's file:line:col)
@@ -2058,6 +2172,23 @@ int main(int argc, char **argv) {
   if (vcgenOnly && smt2)
     return fail("--vcgen-only runs no solver; --smt2 prints the solver's "
                 "query: use one");
+  const bool reach = reachKind != sea::ReachKind::Off;
+  if (!reach && (reachRlimit || !reachWitness.empty() ||
+                 reachIncremental.getNumOccurrences()))
+    return fail("--reach-rlimit, --reach-witness and --reach-incremental "
+                "need --reach");
+  if (reach && (smt2 || vcgenOnly))
+    return fail("--reach runs its own queries: not with --smt2 or "
+                "--vcgen-only");
+  if (reach && sinkAssumes)
+    return fail("--reach: --sink-assumes moves every assume before the "
+                "assertion, which changes what reaches a target");
+  if (reach && (ptrCompanion == CompanionMode::Assume ||
+                ptrCompanion == CompanionMode::Check))
+    return fail("--reach: --ptr-companion=assume|check is not supported "
+                "(use exact or off)");
+  if (reach && reachRlimit && backend != Backend::Z3)
+    return fail("--reach-rlimit is a z3 limit (--solver=z3)");
   if (memLimit) {
     rlim_t bytes = rlim_t(memLimit) << 30;
     struct rlimit rl;
@@ -2327,6 +2458,20 @@ int main(int argc, char **argv) {
     // the chosen program only (a file may hold several)
     PassManager pm(&context, sea::ProgramOp::getOperationName());
     pm.addPass(sea::createSinkAssumesPass(&sunkAssumes));
+    if (failed(configurePM(pm)) || failed(pm.run(program)))
+      return 1;
+  }
+
+  // --reach: the targets of the program the VC encodes (after the lowering),
+  // then a block right before each (sea-split-at-checks): its guard is the
+  // target's reachability
+  std::vector<sea::ReachTarget> reachTargets;
+  unsigned reachSplits = 0;
+  if (reach) {
+    reachTargets = sea::collectReachTargets(program, reachKind);
+    PassManager pm(&context, sea::ProgramOp::getOperationName());
+    pm.addPass(sea::createSplitAtChecksPass(reachKind == sea::ReachKind::Blocks,
+                                            &reachSplits));
     if (failed(configurePM(pm)) || failed(pm.run(program)))
       return 1;
   }
@@ -2640,6 +2785,7 @@ int main(int argc, char **argv) {
         return val;
       };
     sea::VCGen vcgen(sem, joinEncoding);
+    vcgen.setReach(reach);
     lap("setup");
     Phase encodePhase("encode", vcRuns);
     if (failed(vcgen.genVc(program, ctx)))
@@ -2665,7 +2811,20 @@ int main(int argc, char **argv) {
     lap("simplify-sides");
     // the memory values may hold store-maps, which no solver knows: the
     // query goes through the boundary (StoreMap.hh)
-    expr::Expr query = sea::mkQuery(ctx);
+    expr::Expr query = reach ? sea::mkReachQuery(ctx) : sea::mkQuery(ctx);
+    if (reach && reachPlant == "skip-assumes") {
+      const auto &ap = sem.assumeSidePositions();
+      std::set<size_t> skip(ap.begin(), ap.end());
+      expr::ExprVector kept;
+      for (size_t x = 0; x < side.size(); ++x)
+        if (!skip.count(x))
+          kept.push_back(side[x]);
+      query = expr::op::boolop::land(kept, efac);
+    }
+    if (reach && reachPlant == "block-last" && !reachTargets.empty())
+      if (Block *b = reachTargets.back().op->getBlock()->getSinglePredecessor())
+        if (expr::Expr g = vcgen.guard(b))
+          query = expr::mk<expr::AND>(query, expr::op::boolop::lneg(g));
     if (lambdaMem && lambdaFinalSimplify) {
       auto t0 = std::chrono::steady_clock::now();
       sea::EZ3 fz3(efac);
@@ -3925,6 +4084,111 @@ int main(int argc, char **argv) {
     runSeamCheck();
     runEqAudit();
     runXrtCheck();
+    if (reach) {
+      // the reach queries (lib/VC/Reach.cpp); the solver above holds the
+      // query
+      auto limitSolver = [&](sea::solver::Solver &s) {
+        if (!reachRlimit)
+          return;
+        auto &z = static_cast<sea::solver::z3_solver_impl &>(s);
+        sea::ZParams<sea::EZ3> params(z.get_context());
+        params.set("rlimit", unsigned(reachRlimit));
+        if (solveTimeout)
+          params.set("timeout", unsigned(solveTimeout * 1000));
+        z.get_solver().set(params);
+      };
+      sea::ReachHooks hooks;
+      bool first = true;
+      hooks.makeSolver = [&]() -> std::unique_ptr<sea::solver::Solver> {
+        std::unique_ptr<sea::solver::Solver> s;
+        if (first) {
+          first = false;
+          s = std::move(solver);
+        } else {
+          s = makeSolver(/*limits=*/true);
+          if (s && !s->add(query))
+            s = nullptr;
+        }
+        if (s)
+          limitSolver(*s);
+        return s;
+      };
+      // the model of the replay: as for a counterexample (below)
+      hooks.withModel =
+          [&](sea::solver::Solver &s,
+              llvm::function_ref<void(sea::solver::Model &)> use) -> int {
+        auto inner = s.get_model();
+        // as for a counterexample: a model that puts two reads whose
+        // constraint the stride rule dropped at one index breaks a GEP
+        // promise; every query is run again without the rule
+        if (ackOn && strideOn && ack.stats().stridePairs) {
+          expr::AckermannModel probe(*inner, ack);
+          for (size_t a = 0; a < ack.arrays().size(); ++a)
+            (void)probe.function(a);
+          if (probe.strideBroken()) {
+            sea::diag::warn("vc.ack-stride-promise-broken",
+                            "the model breaks a GEP promise the stride rule "
+                            "relied on (a wrapping offset: UB in LLVM); "
+                            "running again without --ack-stride");
+            return kRetryWithoutStride;
+          }
+        }
+        expr::ReadCellsModel cells(*inner, query);
+        std::unique_ptr<expr::AckermannModel> am;
+        if (ackOn)
+          am = std::make_unique<expr::AckermannModel>(cells, ack);
+        std::unique_ptr<expr::xrt::TableModel> xm;
+        if (xlw)
+          xm = std::make_unique<expr::xrt::TableModel>(cells, *xtr, *xlw);
+        sea::solver::Model &solved =
+            am   ? static_cast<sea::solver::Model &>(*am)
+            : xm ? static_cast<sea::solver::Model &>(*xm)
+                 : cells;
+        std::unique_ptr<expr::WordsModel> wm;
+        if (words && words->stats().chosen)
+          wm = std::make_unique<expr::WordsModel>(solved, *words);
+        use(wm ? static_cast<sea::solver::Model &>(*wm) : solved);
+        if (am && am->inconsistent()) {
+          sea::diag::error("vc.ackermann-inconsistent",
+                           "the model of the lowered query is not a function "
+                           "on an array: a bug in the Ackermann lowering");
+          return 2;
+        }
+        return 0;
+      };
+      // z3 says `canceled` for both limits: the rlimit unless the check took
+      // the time of --timeout
+      if (backend == Backend::Z3)
+        hooks.reasonUnknown = [](sea::solver::Solver &s,
+                                 double sec) -> std::string {
+          std::string r = s.reason_unknown();
+          if (r == "timeout" && reachRlimit &&
+              !(solveTimeout && sec >= solveTimeout))
+            return "rlimit";
+          return r;
+        };
+      sea::ReachOptions ropts;
+      ropts.incremental = reachIncremental;
+      ropts.witnessDir = reachWitness;
+      ropts.programPath = inputFilename;
+      ropts.lowered = lower;
+      ropts.plantMismatch = reachPlant == "mismatch";
+      ropts.addr0IsNull = addr0IsNull;
+      ropts.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
+      if (inb && abstractModule)
+        for (auto p : abstractModule->getOps<sea::ProgramOp>())
+          if (p.getSymName() == program.getSymName())
+            ropts.abstractProgram = p;
+      vout() << "reach.config: kind="
+             << (reachKind == sea::ReachKind::Checks ? "checks" : "blocks")
+             << " solver=" << (reachIncremental ? "incremental" : "separate")
+             << " rlimit=" << reachRlimit << " splits=" << reachSplits << "\n";
+      Phase reachPhase("reach");
+      int rc = sea::runReach(program, reachTargets, vcgen, query, sem, ctx,
+                             ropts, hooks, *gOut);
+      SEA_PHASE_END(reachPhase).kv("targets", reachTargets.size());
+      return rc;
+    }
     Phase solvePhase("solve");
     auto solveStart = std::chrono::steady_clock::now();
     sea::solver::SolverResult res = solver->check();

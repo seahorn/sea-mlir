@@ -109,6 +109,13 @@ inline constexpr llvm::StringLiteral kDropFreshInbAttr =
 /// sea-split-critical-edges: a new block on every critical edge.
 std::unique_ptr<mlir::Pass> createSplitCriticalEdgesPass();
 
+/// sea-split-at-checks: every sea.assume, sea.assert and sea.unreachable
+/// starts a block, entered from a block that ends right before it (sea-vc
+/// --reach=checks); `blocks`: every block is split at its front (--reach=
+/// blocks). Adds the splits to `*splits`.
+std::unique_ptr<mlir::Pass> createSplitAtChecksPass(bool blocks = false,
+                                                    unsigned *splits = nullptr);
+
 /// sea-apply-tracking: tracking_on/off markers -> `tracked` updates.
 std::unique_ptr<mlir::Pass> createApplyTrackingPass();
 
