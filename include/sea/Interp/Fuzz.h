@@ -188,6 +188,11 @@ struct InputSite {
 /// sea.ptr.nondet takes no input (a fresh object) and is not one.
 std::vector<InputSite> inputSitesOf(ProgramOp program);
 
+/// The ops that can block a run, in program order: sea.assume and
+/// sea.unreachable. A blocking op's id is its index here (the id of
+/// --fuzz-sites' fuzz.assume lines and of --fuzz-serve's responses).
+std::vector<mlir::Operation *> blockingOpsOf(ProgramOp program);
+
 /// The bounds of describeCondition: values more than this many ops below
 /// the condition, and nodes past this many, render as `?`.
 constexpr unsigned kConditionDepth = 6;

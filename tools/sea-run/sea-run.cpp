@@ -484,15 +484,23 @@ FUZZ SITES (--fuzz-sites: list and exit, no run; not with --fuzz, --input,
 --input-file, --trace, --seed, --max-steps, --defer-memory-errors):
   fuzz.site: <site> callee=<f>|<memory name>|- width=<w>
              input=value|memory op=<op> at=<where>
-  fuzz.sites: <n> value=<n> memory=<n>    (last; 0: no input sites)
+  fuzz.assume: <id> op=sea.assume|sea.unreachable at=<where>
+               [sites=<n,...>|- cond=<expr>]
+                                          (each op that can block a run;
+                                          sea.assume: its condition, see
+                                          COND)
+  fuzz.sites: <n> value=<n> memory=<n> assumes=<n>
+                                          (last; 0: no input sites)
 value: sea.nondet, sea.struct.nondet (one value per run, <site>=<v>);
 memory: sea.mem.nondet, sea.memhavoc (callee -), width = the cell width,
 one value per cell read (<site>@<addr>=<v>). Program order.
-sea.ptr.nondet takes no input: not listed.
+sea.ptr.nondet takes no input: not listed. fuzz.assume: every sea.assume
+and sea.unreachable, program order; <id> is the position in that order
+(the id of --fuzz-serve's blocked and new assumes).
 
-COND (fuzz.blocked of a sea.assume): the assume's condition written over
-the input sites, computed once from the program text when the report
-prints (no cost per trial). A backward walk, not symbolic execution.
+COND (fuzz.blocked and fuzz.assume of a sea.assume): the assume's
+condition written over the input sites, computed from the program text
+when the report prints (no cost per trial). A backward walk, not symbolic execution.
   s<N>                 the value of input site N
   <number>             a constant, unsigned decimal (a placed object's
                        base address too)
@@ -654,7 +662,32 @@ static void printRun(sea::out::Emitter &out, sea::ProgramOp program,
   out.emit(sea::out::parseLine("steps: " + std::to_string(r.steps)));
 }
 
-/// sea-run --fuzz-sites: one `fuzz.site:` line per input site.
+/// Emits `line` (a `key: <n> op=.. at=..` stat line of a blocking op); for
+/// a sea.assume, with ` sites=<n,...>|- cond=<expr>` appended: the
+/// condition over input sites (static). cond is last: it holds spaces, so
+/// the stat record is built here, not parsed.
+static void emitBlockerLine(sea::out::Emitter &out, const std::string &line,
+                            Operation *op) {
+  auto assume = dyn_cast<sea::AssumeOp>(op);
+  if (!assume) {
+    out.lines() << line << "\n";
+    return;
+  }
+  sea::ConditionText c = sea::describeCondition(assume.getCond());
+  std::string sites =
+      c.sites.empty()
+          ? "-"
+          : join(map_range(c.sites,
+                           [](uint64_t s) { return std::to_string(s); }),
+                 ",");
+  sea::out::Record rec = sea::out::parseLine(line);
+  rec.str("sites", sites).str("cond", c.text);
+  rec.text += " sites=" + sites + " cond=" + c.text;
+  out.emit(rec);
+}
+
+/// sea-run --fuzz-sites: one `fuzz.site:` line per input site, one
+/// `fuzz.assume:` line per op that can block a run, then the counts.
 static int listSites(sea::ProgramOp program) {
   sea::out::Emitter out(outs(), outFormat);
   std::vector<sea::InputSite> sites = sea::inputSitesOf(program);
@@ -668,9 +701,19 @@ static int listSites(sea::ProgramOp program) {
                 << " op=" << s.op->getName()
                 << " at=" << (at.empty() ? "-" : at) << "\n";
   }
+  // every op that can block a run, with its condition: plan before fuzzing
+  std::vector<Operation *> blockers = sea::blockingOpsOf(program);
+  for (auto [id, op] : llvm::enumerate(blockers)) {
+    std::string at = sea::formatLoc(op->getLoc());
+    std::string line;
+    raw_string_ostream ls(line);
+    ls << "fuzz.assume: " << id << " op=" << op->getName()
+       << " at=" << (at.empty() ? "-" : at);
+    emitBlockerLine(out, line, op);
+  }
   out.lines() << "fuzz.sites: " << sites.size()
               << " value=" << sites.size() - memories << " memory=" << memories
-              << "\n";
+              << " assumes=" << blockers.size() << "\n";
   out.flush();
   return 0;
 }
@@ -805,24 +848,7 @@ static int runFuzz(sea::ProgramOp program) {
     raw_string_ostream ls(line);
     ls << "fuzz.blocked: " << n << " op=" << op->getName()
        << " at=" << (at.empty() ? "-" : at);
-    auto assume = dyn_cast<sea::AssumeOp>(op);
-    if (!assume) {
-      os << line << "\n";
-      continue;
-    }
-    // the condition over input sites (static, once per blocking assume);
-    // cond last: it holds spaces, so a stat record built here, not parsed
-    sea::ConditionText c = sea::describeCondition(assume.getCond());
-    std::string sites =
-        c.sites.empty()
-            ? "-"
-            : join(map_range(c.sites,
-                             [](uint64_t s) { return std::to_string(s); }),
-                   ",");
-    sea::out::Record rec = sea::out::parseLine(line);
-    rec.str("sites", sites).str("cond", c.text);
-    rec.text += " sites=" + sites + " cond=" + c.text;
-    out.emit(rec);
+    emitBlockerLine(out, line, op);
   }
   out.flush();
   return memoryFinding ? 4 : 0;

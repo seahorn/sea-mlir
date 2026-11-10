@@ -219,7 +219,10 @@ fuzz.site: 6 callee=nd_size_t width=64 input=value op=sea.nondet at=seahorn/lib/
 fuzz.site: 7 callee=nd_size_t width=64 input=value op=sea.nondet at=seahorn/lib/byte_buf_helper.c:20:18 name=_5
 fuzz.site: 8 callee=nd_malloc_is_fail width=1 input=value op=sea.nondet at=seahorn/lib/sea_allocators.c:11:10 name=_13
 ...
-fuzz.sites: 17 value=7 memory=10
+fuzz.assume: 0 op=sea.assume at=seahorn/lib/byte_buf_helper.c:21:5 sites=6,7 cond=(ule s6 s7)
+fuzz.assume: 1 op=sea.assume at=seahorn/lib/byte_buf_helper.c:22:5 sites=7 cond=(ult s7 11)
+...
+fuzz.sites: 17 value=7 memory=10 assumes=10
 ```
 
 (the vcc job `byte_buf_append`, lowered as in
@@ -235,8 +238,17 @@ fuzz.sites: 17 value=7 memory=10
 | `op` | the operation |
 | `at` | its location, as in `<where>` (with `inlined-at=` and `name=` when there are any) |
 
-The last line, `fuzz.sites: <n> value=<n> memory=<n>`, counts them; `0`
-means the program reads no input. `sea.ptr.nondet` is not listed: it
+Then comes one `fuzz.assume` line per operation that can block a run:
+every `sea.assume`, with its condition over the input sites (`sites` and
+`cond`, as in the `fuzz.blocked` lines below), and every
+`sea.unreachable`, without one. They are in program order, and the number
+after `fuzz.assume:` is the position in that order: `--fuzz-serve`
+names assumes by it. So a strategy can be planned from the conditions
+before any run.
+
+The last line, `fuzz.sites: <n> value=<n> memory=<n> assumes=<n>`, counts
+the sites and the `fuzz.assume` lines; `0` sites means the program reads
+no input. `sea.ptr.nondet` is not listed: it
 makes a fresh object and takes no input. `--fuzz-sites` refuses the
 options that would have no effect (`--fuzz`, `--fuzz-time`, `--input`,
 `--input-file`, `--trace`, `--seed`, `--max-steps`,

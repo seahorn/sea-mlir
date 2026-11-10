@@ -57,6 +57,15 @@ std::vector<InputSite> inputSitesOf(ProgramOp program) {
   return out;
 }
 
+std::vector<Operation *> blockingOpsOf(ProgramOp program) {
+  std::vector<Operation *> out;
+  program.walk([&](Operation *op) {
+    if (isa<AssumeOp, UnreachableOp>(op))
+      out.push_back(op);
+  });
+  return out;
+}
+
 namespace {
 
 class CondWriter {
