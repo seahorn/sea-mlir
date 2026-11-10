@@ -156,6 +156,11 @@ static cl::opt<bool> deferMemoryErrors(
              "if an assume blocks it"),
     cl::init(false));
 
+static cl::opt<bool> fuzzSites(
+    "fuzz-sites",
+    cl::desc("List the input sites (nondet values, memory sources) and exit"),
+    cl::init(false));
+
 static cl::opt<bool> agent("agent",
                            cl::desc("Print a terse guide for agents and exit"),
                            cl::init(false));
@@ -184,6 +189,7 @@ TYPICAL:
   sea-run p.mlir --input-file=f.txt         # inputs from a corpus file
   sea-run p.mlir --fuzz=10000 --seed=1 --fuzz-out=out   # fuzz (see FUZZING)
   sea-run p.mlir --defer-memory-errors      # classify memory errors (DEFERRED)
+  sea-run p.mlir --fuzz-sites               # list the input sites and exit
 
 INPUTS: a module with sea.program ops. --input values are decimal, negative
 decimal, or 0x-hex, and must fit the nondet's width (a negative v means
@@ -378,7 +384,8 @@ Kinds and fields:
                 record for the status / at / assert-* / reached /
                 message / deferred lines (text has several lines)
   stat          key, value: `steps`; the fuzz.* lines (key, value and
-                their k=v fields)
+                their k=v fields; fuzz.blocked: sites and cond as
+                strings)
   print         path (scope.tag[.leaf|[i]]), [scope], [at], [at_inlined],
                 [at_name], [depth] (tree),
                 and the value: type (iN|ptr|addr), integers fmt + value
@@ -467,9 +474,52 @@ prints; the fuzzer checks the replay ends the same way), then stat lines:
   fuzz.corpus: <entries> seeds=<files> skipped-lines=<n> files=<written>
                dictionary=<n>
   fuzz.blocked: <runs> op=sea.assume|sea.unreachable at=<where>
-                                 (each blocking site, most runs first)
+                [sites=<n,...>|- cond=<expr>]
+                                 (each blocking site, most runs first;
+                                 sea.assume: its condition, see COND)
 <where> is a location as in LOCATIONS. Logs: --log=fuzz.run (start, end),
 --log=fuzz.run:2 (each trial that reached new coverage).
+
+FUZZ SITES (--fuzz-sites: list and exit, no run; not with --fuzz, --input,
+--input-file, --trace, --seed, --max-steps, --defer-memory-errors):
+  fuzz.site: <site> callee=<f>|<memory name>|- width=<w>
+             input=value|memory op=<op> at=<where>
+  fuzz.sites: <n> value=<n> memory=<n>    (last; 0: no input sites)
+value: sea.nondet, sea.struct.nondet (one value per run, <site>=<v>);
+memory: sea.mem.nondet, sea.memhavoc (callee -), width = the cell width,
+one value per cell read (<site>@<addr>=<v>). Program order.
+sea.ptr.nondet takes no input: not listed.
+
+COND (fuzz.blocked of a sea.assume): the assume's condition written over
+the input sites, computed once from the program text when the report
+prints (no cost per trial). A backward walk, not symbolic execution.
+  s<N>                 the value of input site N
+  <number>             a constant, unsigned decimal (a placed object's
+                       base address too)
+  (<pred> a b)         sea.icmp / addr.cmp / ptr.cmp: eq ne ult ule ugt
+                       uge slt sle sgt sge, at the operands' width
+  (<op> a ...)         an op whose value the rendering fully shows, IR
+                       name without `sea.`: arithmetic, bitwise, min/max,
+                       overflow tests, concat, select, struct.create,
+                       addr.* and ptr.add / ptr.diff / ptr.null; nsw/nuw
+                       as .nsw/.nuw (add.nsw); width changes carry the
+                       result width: (zext:64 a), (trunc:8 a),
+                       (extract:8 a <low>); (struct.extract s <index>),
+                       (struct.insert s v <index>), (global @<name>),
+                       (func_addr @<name>), (ptr.index <base> <indices>
+                       strides=<s,...> offset=<n> [inbounds nusw nuw])
+  (load:<w> s<N>@<a>)  a w-bit load from sea.mem.nondet site N whose
+                       only users are loads (the initial cells a.., low
+                       byte first)
+  ?                    the walk stopped: any other op (memory reads,
+                       ops with effects, ptr.base, ptr.to_int, ...), a
+                       block argument with several incoming values (one
+                       incoming value is followed), an op more than 6
+                       levels down, a node past 40
+sites: the sites cond names, ascending (- for none). cond is the last
+field and runs to the end of the line (it holds spaces); jsonl: string
+fields sites and cond. cond=0: an assume of false, nothing passes it. The
+path to the assume is not part of cond.
 
 DIAGNOSTICS (stderr): "Warning: ... [kind]" (yellow), once per kind, with a
 summary of repeats at exit (--log=warn.<kind>:2 prints each); "Error: ...
@@ -604,6 +654,27 @@ static void printRun(sea::out::Emitter &out, sea::ProgramOp program,
   out.emit(sea::out::parseLine("steps: " + std::to_string(r.steps)));
 }
 
+/// sea-run --fuzz-sites: one `fuzz.site:` line per input site.
+static int listSites(sea::ProgramOp program) {
+  sea::out::Emitter out(outs(), outFormat);
+  std::vector<sea::InputSite> sites = sea::inputSitesOf(program);
+  unsigned memories = 0;
+  for (const sea::InputSite &s : sites) {
+    memories += s.memory;
+    std::string at = sea::formatLoc(s.op->getLoc());
+    out.lines() << "fuzz.site: " << s.site << " callee=" << s.callee
+                << " width=" << s.width
+                << " input=" << (s.memory ? "memory" : "value")
+                << " op=" << s.op->getName()
+                << " at=" << (at.empty() ? "-" : at) << "\n";
+  }
+  out.lines() << "fuzz.sites: " << sites.size()
+              << " value=" << sites.size() - memories << " memory=" << memories
+              << "\n";
+  out.flush();
+  return 0;
+}
+
 /// sea-run --fuzz (docs/reference/fuzzing.md): the first failure is
 /// replayed from its input and reported as a plain run; then the `fuzz.*`
 /// stat lines.
@@ -730,8 +801,28 @@ static int runFuzz(sea::ProgramOp program) {
      << " dictionary=" << (fuzzDict ? rep->dictionarySize : 0) << "\n";
   for (auto [op, n] : rep->blocked) {
     std::string at = sea::formatLoc(op->getLoc());
-    os << "fuzz.blocked: " << n << " op=" << op->getName()
-       << " at=" << (at.empty() ? "-" : at) << "\n";
+    std::string line;
+    raw_string_ostream ls(line);
+    ls << "fuzz.blocked: " << n << " op=" << op->getName()
+       << " at=" << (at.empty() ? "-" : at);
+    auto assume = dyn_cast<sea::AssumeOp>(op);
+    if (!assume) {
+      os << line << "\n";
+      continue;
+    }
+    // the condition over input sites (static, once per blocking assume);
+    // cond last: it holds spaces, so a stat record built here, not parsed
+    sea::ConditionText c = sea::describeCondition(assume.getCond());
+    std::string sites =
+        c.sites.empty()
+            ? "-"
+            : join(map_range(c.sites,
+                             [](uint64_t s) { return std::to_string(s); }),
+                   ",");
+    sea::out::Record rec = sea::out::parseLine(line);
+    rec.str("sites", sites).str("cond", c.text);
+    rec.text += " sites=" + sites + " cond=" + c.text;
+    out.emit(rec);
   }
   out.flush();
   return memoryFinding ? 4 : 0;
@@ -757,6 +848,14 @@ int main(int argc, char **argv) {
        fuzzDict.getNumOccurrences()))
     return fail("--corpus, --fuzz-out, --fuzz-dict and --keep-going need "
                 "--fuzz or --fuzz-time");
+
+  if (fuzzSites &&
+      (fuzzTrials || fuzzTime > 0 || !inputs.empty() || !inputFile.empty() ||
+       trace || seed.getNumOccurrences() || maxSteps.getNumOccurrences() ||
+       deferMemoryErrors.getNumOccurrences()))
+    return fail("--fuzz-sites lists the input sites and exits; it does not "
+                "take --fuzz, --fuzz-time, --input, --input-file, --trace, "
+                "--seed, --max-steps or --defer-memory-errors");
 
   sea::log::setFormat(outFormat);
   MLIRContext context;
@@ -803,6 +902,8 @@ int main(int argc, char **argv) {
     sea::addAssignments(source, a);
   }
 
+  if (fuzzSites)
+    return listSites(program);
   if (fuzzTrials || fuzzTime > 0)
     return runFuzz(program);
 

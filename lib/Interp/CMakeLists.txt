@@ -3,6 +3,7 @@
 
 add_mlir_library(SeaInterp
   Fuzz.cpp
+  FuzzIntrospect.cpp
   Interpreter.cpp
   ParseInput.cpp
   Print.cpp

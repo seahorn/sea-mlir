@@ -165,6 +165,49 @@ mlir::FailureOr<FuzzReport> fuzz(ProgramOp program,
 /// `<site>@<cell>=<value>`.
 std::string formatAssignment(const Assignment &a);
 
+//===----------------------------------------------------------------------===//
+// Introspection (FuzzIntrospect.cpp): what a strategy written outside
+// sea-mlir needs to know about a program, computed statically.
+//===----------------------------------------------------------------------===//
+
+/// An input site: an op that reads values from the nondet source.
+struct InputSite {
+  uint64_t site = 0;
+  /// sea.nondet / sea.struct.nondet: the callee; sea.mem.nondet: its name;
+  /// sea.memhavoc: "-".
+  std::string callee;
+  /// A value: its width (a struct: the bits of its integer leaves); a
+  /// memory: the cell width.
+  unsigned width = 0;
+  bool memory = false;
+  mlir::Operation *op = nullptr;
+};
+
+/// The input sites of `program` in program order: sea.nondet,
+/// sea.struct.nondet (values), sea.mem.nondet, sea.memhavoc (memory).
+/// sea.ptr.nondet takes no input (a fresh object) and is not one.
+std::vector<InputSite> inputSitesOf(ProgramOp program);
+
+/// The bounds of describeCondition: values more than this many ops below
+/// the condition, and nodes past this many, render as `?`.
+constexpr unsigned kConditionDepth = 6;
+constexpr unsigned kConditionNodes = 40;
+
+/// A condition written over input sites (docs/reference/fuzzing.md, "For
+/// agents"): an s-expression with `s<N>` for the value of input site N,
+/// constants in unsigned decimal, `(<op> args)` for pure ops (`(<pred> a
+/// b)` for comparisons), `(load:<w> s<N>@<addr>)` for a load straight from
+/// a sea.mem.nondet, and `?` where the backward walk stops. `sites`: the
+/// input sites it names, ascending.
+struct ConditionText {
+  std::string text;
+  std::vector<uint64_t> sites;
+};
+
+/// Walks back from `cond` through pure ops (and block arguments with one
+/// incoming value) to input sites and constants. Static; no run needed.
+ConditionText describeCondition(mlir::Value cond);
+
 } // namespace sea
 
 #endif // SEA_INTERP_FUZZ_H
