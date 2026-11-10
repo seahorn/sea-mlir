@@ -51,6 +51,7 @@ To see what a solver receives, use `--smt2`, not a log.
 | `lower.pass` | 1 | `sea-vc` | one pass run |
 | `vc.solve` | 1 | `sea-vc` | one solver call of the verdict |
 | `vc.store-read` | 3 | `sea-vc` | a memory key read before any write |
+| `fuzz.run` | 1, 2 | `sea-run` | `--fuzz`: start and end (1); each trial that reached new coverage (2) |
 | `warn.<kind>` | 2 | all | one occurrence of a warning |
 
 `--log='*:1'` selects the level-1 tags: the flow of a run, one event per

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 add_mlir_library(SeaInterp
+  Fuzz.cpp
   Interpreter.cpp
   ParseInput.cpp
   Print.cpp

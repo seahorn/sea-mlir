@@ -129,6 +129,7 @@ enum class RunStatus {
   AssumeBlocked, ///< a sea.assume saw 0: the execution is infeasible
   StepLimit,     ///< ran out of steps (the program may loop)
   Error,         ///< could not continue (missing input, unknown op)
+  // the last value: sea::kRunStatusCount (Fuzz.h) counts them
 };
 
 llvm::StringRef stringifyRunStatus(RunStatus status);

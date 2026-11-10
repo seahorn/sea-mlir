@@ -107,6 +107,7 @@ nav:
       - Command line: reference/cli.md
       - Output formats and exit codes: reference/output-formats.md
       - Logging: reference/logging.md
+      - Fuzzing: reference/fuzzing.md
       - Counterexample notation: reference/print.md
       - Profiles: reference/profiles.md
       - The reducer: reference/reducer.md
