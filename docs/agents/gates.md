@@ -18,6 +18,7 @@ checks below test the verifier and its distribution.
 | fuzz | do the query, SeaM and placement agree with the interpreter on random programs? | `utils/fuzz-vc.py`, `utils/fuzz-seam.py`, `utils/fuzz-place.py` |
 | benchmarks | do the applications keep their expected verdicts and counter bounds? | `just bench-smoke`, `just bench-canary`, `just bench-gate quick` |
 | query diff | does a change that must not change queries keep them? | `utils/query-diff.py` |
+| pass validation | does a lowering change keep which check sites can be reached? | `utils/cover-diff.py` |
 
 ## Lint
 
@@ -169,6 +170,63 @@ by default, so `--par N` uses at most N cores for z3. The exit status is
 0 when every job is `identical`, `order`, `equiv-sat` or `both-unsat`,
 1 on a `DIFF` or `error`, 2 on an `unknown`, and 3 with `--strict` on a
 `both-unsat`, checked in this order.
+
+## Pass validation
+
+A change of the lowering (a fold, a pass, an optimization switched on)
+runs `utils/cover-diff.py`: one `sea-vc`, two configurations A and B of
+the lowering of the same input, compared by reach coverage
+(`sea-vc --reach`, [Reach](../reference/output-formats.md#reach)).
+
+```bash
+python3 utils/cover-diff.py --sea-vc <build>/bin/sea-vc \
+    --args="--lower --widen-memory=8 --seam" --a=--lower-opt=false --b= \
+    bench/work/public/vcc --par 4
+```
+
+`--a` and `--b` are the arguments of each side (`--lower-opt=false`,
+`--lower-disable=sccp|cse|canonicalize`), `--args` those of both.
+
+What is compared, per input:
+
+- Keys. `sea-vc --reach` tags every assume and assert of the input with its
+  position (`sea.reach_site`) before any pass. A key is a site and a role:
+  `assume` (the top of input assume k, or of the `sea.unreachable` its
+  folding to false left), `assert` (the top of input assert k), `assume`
+  of an assert (the assume `sea-merge-asserts` makes of assert k: reached
+  and holds), and `fail` (assert k reached with its condition false;
+  `sea-vc --reach-failures`). Checks the lowering made have no site and
+  are not compared (`untagged=`).
+- Both sides run with `sea-vc --reach-keep-sites`: canonicalize replaces a
+  tagged check of the constant true by a reach-site marker (an inert
+  `sea.print`) instead of erasing it, so the check stays a key on both
+  sides.
+- Level 0 (the default): the reach answer of every key on each side,
+  concrete runs first (`--fuzz`, 1000 trials per side by default; each
+  side draws its own inputs), the solver for the rest; and the two safety
+  verdicts (`sea-vc` without `--reach`; `--no-verdict` leaves them out).
+- Level 1 (`--level=1`): for every key reachable on both sides, the
+  query-diff classifier with `--project-blocks` on its two R_T programs:
+  `equiv-sat` means the same inputs reach the key (for a `fail` key: the
+  same inputs make the assert fail).
+
+| class | meaning |
+|---|---|
+| `equal` | both sides reachable, or both unreachable |
+| `DIFF` | reachable on one side, unreachable on the other |
+| `removed-ok` | on one side only, and unreachable there: dead code the other lowering erased |
+| `removed-true` | (`--no-keep-sites` only) on one side only, a check of the constant true there, and the next target of its block, which is reached iff it is, is equal |
+| `removed-but-reachable` | on one side only, and reachable there: a `DIFF` |
+| `unknown` | an unknown answer decides the class; also a removed check of true with no next target that can stand for it (`--unresolved-true=pass` counts it `removed-true`) |
+
+A job is `DIFF` if some key is, or the verdicts are sat and unsat, or
+level 1 finds a `DIFF`. It is `unknown`, never a pass, when no key is
+tagged on either side (`reason=no-targets`: an input without checks, a
+`sea-vc` without `site=`), and at level 1 when a key has copies on a side
+(`reason=copies`: R_T of one copy is not the target). A `DIFF` with a
+reachable side replays that side's witness on the other side's lowering
+(`replay:` line). The exit status is 1 on a `DIFF`, 3 on an error, 2 on an
+`unknown`, checked in this order, and 0 on a pass.
 
 ## Continuous integration and attestation
 
