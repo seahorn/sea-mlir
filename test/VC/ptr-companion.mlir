@@ -7,7 +7,9 @@
 //    bytes alone already do);
 //  @overwritten: stored, then an integer store over its first byte,
 //    reloaded: c is &X (the companion ignores integer stores) but the guard
-//    does not fold (the load stays exact, unresolved);
+//    does not fold (the load stays exact, unresolved); run with
+//    --lower-opt=false: canonicalize would forward the integer byte to the
+//    split reload's first byte, and the reload is no companion load;
 //  @moved: stored, memmoved to another object, reloaded from the copy: the
 //    companion is copied too (mcopy) and the guard folds.
 // Verdicts are the same with and without the companion, and no load
@@ -16,8 +18,16 @@
 // there"). --ptr-companion=assume drops the guard (seam.ptrint: assumed;
 // @overwritten then answers unsat: the premise fails there, which
 // --ptr-companion=check, the discharge, finds: the guards are the property).
-// RUN: sea-vc %s --lower --program=overwritten --seam --ptr-companion=assume 2>&1 | FileCheck %s --check-prefix=ASSUME
-// RUN: sea-vc %s --lower --program=overwritten --seam --ptr-companion=check 2>&1 | FileCheck %s --check-prefix=VIOL
+// RUN: sea-vc %s --lower --lower-opt=false --program=overwritten --seam --ptr-companion=assume 2>&1 | FileCheck %s --check-prefix=ASSUME
+// Under the default lowering the first byte of the reload is the integer
+// just stored there (forwarded): no companion load, nothing rests on
+// A-PTRINT, and the answer is the exact one.
+// RUN: sea-vc %s --lower --program=overwritten --seam --ptr-companion=assume 2>&1 | FileCheck %s --check-prefix=FWD
+// FWD: vc.ptr-companion: loads=0
+// FWD-NOT: seam.ptrint: assumed
+// FWD: result: sat
+// FWD: replay: assert-failed
+// RUN: sea-vc %s --lower --lower-opt=false --program=overwritten --seam --ptr-companion=check 2>&1 | FileCheck %s --check-prefix=VIOL
 // RUN: sea-vc %s --lower --program=moved --seam --ptr-companion=check 2>&1 | FileCheck %s --check-prefix=HOLDS
 // ASSUME: seam.ptrint: assumed loads=1
 // ASSUME: result: unsat
@@ -31,11 +41,11 @@
 // HOLDS: result: unsat
 // HOLDS: seam.ptrint: holds
 // RUN: sea-vc %s --lower --program=plain --seam --ptr-companion=exact 2>&1 | FileCheck %s --check-prefix=PLAIN
-// RUN: sea-vc %s --lower --program=overwritten --seam --ptr-companion=exact 2>&1 | FileCheck %s --check-prefix=OVER
+// RUN: sea-vc %s --lower --lower-opt=false --program=overwritten --seam --ptr-companion=exact 2>&1 | FileCheck %s --check-prefix=OVER
 // RUN: sea-vc %s --lower --program=moved --seam --ptr-companion=exact 2>&1 | FileCheck %s --check-prefix=MOVED
 // RUN: sea-vc %s --lower --program=moved --seam 2>&1 | FileCheck %s --check-prefix=OFF
 // RUN: sea-vc %s --lower --program=moved --seam --ptr-companion=exact --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
-// RUN: sea-vc %s --lower --program=overwritten --seam --ptr-companion=exact --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
+// RUN: sea-vc %s --lower --lower-opt=false --program=overwritten --seam --ptr-companion=exact --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: not sea-vc %s --lower --program=plain --ptr-companion=exact 2>&1 | FileCheck %s --check-prefix=NEED
 // PLAIN: vc.ptr-companion: loads=1 stores=1 copies=0
 // PLAIN: vc.ptr-companion-arrays: 0

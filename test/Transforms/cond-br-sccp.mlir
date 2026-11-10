@@ -4,9 +4,12 @@
 // Only the executable predecessor contributes to the join's constant value.
 // SCCP: %[[TRUE:.*]] = sea.const true
 // SCCP: sea.assert %[[TRUE]]
+// The pruned program is one block; the join's assert, of a constant true,
+// is erased.
 // PRUNE-NOT: sea.cond_br
 // PRUNE-NOT: sea.nondet "dead"
-// PRUNE: sea.assert
+// PRUNE-NOT: sea.assert
+// PRUNE: sea.halt
 // PRUNE-NOT: sea.cond_br
 // PRUNE-NOT: sea.nondet "dead"
 sea.program @derived {

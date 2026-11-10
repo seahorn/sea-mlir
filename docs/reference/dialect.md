@@ -403,6 +403,10 @@ Syntax:
 operation ::= `sea.assert` $cond attr-dict
 ```
 
+A failing assert stops the execution. Canonicalization: `assert` of 1
+is erased; `assert` of 0 stays and `sea.halt` follows it (the rest of
+the block is dead), with warning fold.assert-false.
+
 #### Operands:
 
 | Operand | Description |
@@ -420,6 +424,10 @@ Syntax:
 ```
 operation ::= `sea.assume` $cond attr-dict
 ```
+
+Canonicalization: `assume` of 1 is erased; `assume` of 0 ends its block
+with `sea.unreachable` (the rest of the block is dead), with warning
+fold.assume-false.
 
 #### Operands:
 
@@ -901,6 +909,12 @@ earlier version is allowed (see Memory.md).
 is LLVM's: a promise, in bytes, that the address is a multiple of it.
 No op's value depends on it; the interpreter reports a broken one
 (interp.align-promise); a pass may drop it.
+
+Canonicalization: a load of an integer from the memory a `sea.store`
+returns, at the same SSA address and of the stored value's type, is
+that value (no alias reasoning; pointer and address values are not
+forwarded, nor an access wider than the address space, which wraps
+over its own cells).
 
 Traits: `AlwaysSpeculatableImplTrait`
 

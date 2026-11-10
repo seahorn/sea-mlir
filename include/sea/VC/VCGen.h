@@ -27,8 +27,15 @@ namespace sea {
 
 /// Checks the form the VC generator needs, emitting an error per violation:
 /// loop-free; one sea.halt; exactly one sea.assert, immediately before the
-/// sea.halt; no critical edges; sea.cond_br targets distinct.
+/// sea.halt; no critical edges; sea.cond_br targets distinct. A program
+/// with neither a sea.halt nor a sea.assert (every path ends in
+/// sea.unreachable) is in the form too: it is statically safe.
 mlir::LogicalResult verifyBmcForm(ProgramOp program);
+
+/// True if no sea.halt is reachable from the entry block (none at all, or
+/// only in blocks no path reaches): no execution reaches the assertion, so
+/// it cannot fail. In BMC form the assert is right before the halt.
+bool isStaticallySafe(ProgramOp program);
 
 /// How a join defines its block arguments (SeaHorn's VCGen has both;
 /// --horn-vcgen-use-ite is the dominant one).

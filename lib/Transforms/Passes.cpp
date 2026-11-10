@@ -47,11 +47,23 @@
 //                                made: folders (evalPureOp), dead pure ops
 //                                and unreachable blocks erased, dead block
 //                                arguments dropped (region simplification
-//                                at its default level, Normal: no block
-//                                merging). Prints: weak ones name values
-//                                and may dangle once a value is erased or
-//                                merged (their contract); strong ones are
-//                                users with an effect, never erased or
+//                                at its default level, Normal: no merging
+//                                of identical blocks); the sea
+//                                canonicalizers: assume / assert of a
+//                                constant (true: erased; false: the rest
+//                                of the block is dead, warnings
+//                                fold.assume-false / fold.assert-false),
+//                                a sea.br into a single-predecessor block
+//                                merges it (not a branch with a source
+//                                position), a load of the value a store
+//                                just wrote at the same SSA address is
+//                                that value (integers). Folding may block
+//                                every path: then the second
+//                                sea-merge-asserts and sea-vc report the
+//                                program statically safe. Prints: weak ones
+//                                name values and may dangle once a value is
+//                                erased or merged (their contract); strong ones
+//                                are users with an effect, never erased or
 //                                merged. A dead sea.segment goes too (no
 //                                pointer refers to its object).
 //   8. sea-split-critical-edges  BMC form, last: after every pass that
@@ -280,7 +292,8 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
   }
   // Constant-branch folding may erase the only assertion and halt. Restore
   // BMC form, including the trivially safe case, after CFG simplification.
-  prog.addPass(createMergeAssertsPass());
+  // The first run reported the constant-false asserts.
+  prog.addPass(createMergeAssertsPass(/*reportConstFalse=*/false));
   // last: canonicalize changes the CFG (erases blocks)
   prog.addPass(createSplitCriticalEdgesPass());
   // sea.ptr.index stays: the VC encodes it (docs/design/PtrIndex.md).

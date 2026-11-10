@@ -6,14 +6,16 @@
 // and the two writes to num collapse. Reads: num is skipped past the store-map
 // (R-SKIP) and hits the single write; the two cells of st are R-HITs: the
 // distinct addresses are 3, the store-map has two entries and the chain below
-// it one. No select and no store reach the solver (Fig. 3.6).
-// RUN: sea-vc %s --lower --widen-memory=4 --seam --seam-stats | FileCheck %s --check-prefix=STATS
+// it one. No select and no store reach the solver (Fig. 3.6). The rule
+// counts are of the three reads as written: --lower-opt=false, else
+// canonicalize forwards the last store's value to the read of st->b.
+// RUN: sea-vc %s --lower --lower-opt=false --widen-memory=4 --seam --seam-stats | FileCheck %s --check-prefix=STATS
 // RUN: sea-vc %s --lower --widen-memory=4 --seam --smt2 | FileCheck %s --check-prefix=SMT
 // RUN: sea-vc %s --lower --widen-memory=4 --seam | FileCheck %s --check-prefix=VERDICT
 // RUN: sea-vc %s --lower --widen-memory=4 --seam --seam-store-map=0 | FileCheck %s --check-prefix=VERDICT
 // RUN: sea-vc %s --lower --widen-memory=4 --seam --seam-inb=0 | FileCheck %s --check-prefix=VERDICT
-// RUN: sea-vc %s --lower --widen-memory=4 --seam --seam-store-map=0 --seam-stats | FileCheck %s --check-prefix=NOSMAP
-// RUN: sea-vc %s --lower --widen-memory=4 --seam --seam-inb=0 --seam-stats | FileCheck %s --check-prefix=NOINB
+// RUN: sea-vc %s --lower --lower-opt=false --widen-memory=4 --seam --seam-store-map=0 --seam-stats | FileCheck %s --check-prefix=NOSMAP
+// RUN: sea-vc %s --lower --lower-opt=false --widen-memory=4 --seam --seam-inb=0 --seam-stats | FileCheck %s --check-prefix=NOINB
 // RUN: not sea-vc %s --lower --seam-store-map=0 2>&1 | FileCheck %s --check-prefix=NOSEAM
 // VERDICT: result: unsat
 // STATS-DAG: seam.rule.smap.new: 1

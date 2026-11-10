@@ -1,7 +1,8 @@
 // vc.seam-inb-violated names the accesses behind the fallback: the store and
 // the load at a numeral offset 12 of an 8-byte object, with the location and
-// the check that failed; then the count.
-// RUN: sea-vc %s --lower --seam 2>&1 | FileCheck %s
+// the check that failed; then the count. --lower-opt=false: canonicalize
+// would forward the stored value to the load.
+// RUN: sea-vc %s --lower --lower-opt=false --seam 2>&1 | FileCheck %s
 // CHECK: vc.seam-inb-violated: at {{.*}}inb-violated-loc.mlir:[[@LINE+13]]:{{[0-9]+}} store: numeral offset outside: offset 12
 // CHECK: vc.seam-inb-violated: at {{.*}}inb-violated-loc.mlir:[[@LINE+13]]:{{[0-9]+}} load: numeral offset outside
 // CHECK: vc.seam-inb-violated-count: 2

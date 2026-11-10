@@ -1,0 +1,160 @@
+// Folding before the VC (the sea canonicalizers in sea-vc --lower): a
+// program whose every path is blocked has no reachable assertion. sea-vc
+// accepts it (statically safe, reported: vc.statically-safe), the fold of
+// the constant-false assume is a warning and a vc.fold count, and the
+// interpreter agrees with the verdict.
+// RUN: split-file %s %t
+
+// The vcc linked_list_insert_after shape: SeaHorn's guard assume(!c) of a
+// check c that folded to true, before the one `assert false`.
+// RUN: sea-vc %t/guard.mlir --lower 2>&1 | FileCheck %s --check-prefix=SAFE
+// RUN: sea-vc %t/guard.mlir --lower --widen-memory=8 --seam 2>&1 | FileCheck %s --check-prefix=SAFE
+// RUN: sea-run %t/guard.mlir | FileCheck %s --check-prefix=BLOCKED
+// SAFE-NOT: fold.assert-false
+// SAFE: fold.assume-false
+// SAFE-NOT: fold.assert-false
+// SAFE: vc.fold: assume-false=1 assert-false=0
+// SAFE: vc.statically-safe:
+// SAFE: result: unsat
+// BLOCKED: status: assume-blocked
+
+// Folded first (sea-opt --canonicalize): no sea.halt and no sea.assert are
+// left; that is BMC form too, statically safe.
+// RUN: sea-opt %t/guard.mlir --canonicalize 2>/dev/null | sea-vc - | FileCheck %s --check-prefix=FOLDED
+// RUN: sea-vc %t/blocked.mlir | FileCheck %s --check-prefix=FOLDED
+// RUN: sea-vc %t/blocked.mlir --sink-assumes | FileCheck %s --check-prefix=FOLDED
+// FOLDED: vc.statically-safe:
+// FOLDED: result: unsat
+// Anything else stays an error.
+// RUN: not sea-vc %t/two-halts.mlir 2>&1 | FileCheck %s --check-prefix=FORM
+// FORM: expected exactly one sea.halt, found 2
+
+// SeaHorn's error marker, the only assert, `assert false` right before
+// the halt: reaching it is the failure, not a statically failing check; no
+// fold.assert-false.
+// RUN: sea-vc %t/marker.mlir --lower 2>&1 | FileCheck %s --check-prefix=MARKER
+// MARKER-NOT: fold.assert-false
+// MARKER-NOT: vc.fold
+// MARKER: result: sat
+// MARKER: replay: assert-failed
+
+// A located check that sccp folded to 0 is reported even as the only
+// assert right before the halt: the marker has no source location.
+// RUN: sea-vc %t/located.mlir --lower 2>&1 | FileCheck %s --check-prefix=LOCATED
+// LOCATED: real.c":9:5) [fold.assert-false]
+// LOCATED: vc.fold: assume-false=0 assert-false=1
+// LOCATED: result: sat
+
+// assert(false) reachable and not that marker (code follows it): a finding, the same for the VC and the
+// interpreter; the code after it is dead (folded away, the verdict and
+// the replay stay).
+// RUN: sea-vc %t/reachable.mlir --lower 2>&1 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/reachable.mlir --lower --lower-opt=false 2>&1 | FileCheck %s --check-prefix=SAT
+// RUN: sea-opt %t/reachable.mlir --canonicalize 2>&1 | FileCheck %s --check-prefix=TRUNC
+// RUN: sea-run %t/reachable.mlir --input=0=0 | FileCheck %s --check-prefix=FAIL
+// SAT: fold.assert-false
+// SAT-NOT: vc.statically-safe
+// SAT: vc.fold: assume-false=0 assert-false=1
+// SAT: result: sat
+// SAT: replay: assert-failed
+// TRUNC: fold.assert-false
+// TRUNC: sea.assert
+// TRUNC-NEXT: sea.halt
+// FAIL: status: assert-failed
+
+// assert(false) behind a constant-false assume: unreachable, safe.
+// RUN: sea-vc %t/unreachable.mlir --lower 2>&1 | FileCheck %s --check-prefix=SAFE2
+// RUN: sea-vc %t/unreachable.mlir --lower --lower-opt=false 2>&1 | FileCheck %s --check-prefix=UNSAT
+// RUN: sea-run %t/unreachable.mlir --input=0=0 | FileCheck %s --check-prefix=BLOCKED
+// SAFE2: fold.assume-false
+// SAFE2: vc.statically-safe:
+// SAFE2: result: unsat
+// UNSAT-NOT: vc.statically-safe
+// UNSAT: result: unsat
+// REQUIRES: z3
+
+//--- guard.mlir
+sea.program @main {
+  sea.br ^bb1
+^bb1:
+  sea.br ^bb2
+^bb2:
+  %t = sea.const 1 : i1 loc("harness.c":47:5)
+  %u = sea.const 1 : i1 loc("harness.c":47:5)
+  %g = sea.xor %t, %u : i1 loc("harness.c":47:5)
+  sea.assume %g loc("harness.c":47:5)
+  sea.br ^bb3 loc("harness.c":47:5)
+^bb3:
+  sea.br ^bb4
+^bb4:
+  %f = sea.const 0 : i1
+  sea.assert %f
+  sea.halt
+}
+
+//--- blocked.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i1
+  sea.assume %x
+  sea.unreachable
+}
+
+//--- two-halts.mlir
+sea.program @main {
+  %c = sea.nondet "c" [0] : i1
+  sea.cond_br %c, ^a, ^b
+^a:
+  sea.halt
+^b:
+  sea.halt
+}
+
+//--- reachable.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %f = sea.const 0 : i1
+  sea.assert %f loc("check.c":5:3)
+  %z = sea.const 0 : i8
+  %nz = sea.icmp ne, %x, %z : i8
+  sea.assume %nz
+  sea.halt
+}
+
+//--- marker.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %z = sea.const 0 : i8
+  %c = sea.icmp eq, %x, %z : i8
+  sea.cond_br %c, ^err, ^ok
+^ok:
+  sea.halt
+^err:
+  %f = sea.const 0 : i1
+  sea.print "at error"
+  sea.assert %f
+  sea.print "after"
+  sea.halt
+}
+
+//--- located.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %one = sea.const 1 : i8
+  %c = sea.icmp ne, %one, %one : i8 loc("real.c":9:5)
+  sea.assert %c loc("real.c":9:5)
+  sea.halt
+}
+
+//--- unreachable.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %t = sea.const 1 : i1
+  %g = sea.xor %t, %t : i1
+  sea.assume %g loc("guard.c":3:3)
+  %f = sea.const 0 : i1
+  sea.assert %f loc("check.c":5:3)
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

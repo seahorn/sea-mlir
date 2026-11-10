@@ -94,6 +94,7 @@ def Sea_UnreachableOp : Sea_Op<"unreachable",
 def Sea_BrOp : Sea_Op<"br", [
     DeclareOpInterfaceMethods<BranchOpInterface>, Pure, Terminator]> {
   let summary = "Unconditional branch";
+  let hasCanonicalizer = 1;
   let arguments = (ins Variadic<AnyType>:$destOperands);
   let successors = (successor AnySuccessor:$dest);
   let assemblyFormat = [{
@@ -126,13 +127,25 @@ def Sea_CondBrOp : Sea_Op<"cond_br", [AttrSizedOperandSegments,
 
 def Sea_AssumeOp : Sea_Op<"assume"> {
   let summary = "Block executions where the condition is 0";
+  let description = [{
+    Canonicalization: `assume` of 1 is erased; `assume` of 0 ends its block
+    with `sea.unreachable` (the rest of the block is dead), with warning
+    fold.assume-false.
+  }];
   let arguments = (ins I1:$cond);
+  let hasCanonicalizer = 1;
   let assemblyFormat = "$cond attr-dict";
 }
 
 def Sea_AssertOp : Sea_Op<"assert"> {
   let summary = "Fail executions where the condition is 0";
+  let description = [{
+    A failing assert stops the execution. Canonicalization: `assert` of 1
+    is erased; `assert` of 0 stays and `sea.halt` follows it (the rest of
+    the block is dead), with warning fold.assert-false.
+  }];
   let arguments = (ins I1:$cond);
+  let hasCanonicalizer = 1;
   let assemblyFormat = "$cond attr-dict";
 }
 
@@ -607,10 +620,17 @@ def Sea_LoadOp : Sea_Op<"load", [Pure, Sea_AddrIndexes<"mem", "addr">]> {
     is LLVM's: a promise, in bytes, that the address is a multiple of it.
     No op's value depends on it; the interpreter reports a broken one
     (interp.align-promise); a pass may drop it.
+
+    Canonicalization: a load of an integer from the memory a `sea.store`
+    returns, at the same SSA address and of the stored value's type, is
+    that value (no alias reasoning; pointer and address values are not
+    forwarded, nor an access wider than the address space, which wraps
+    over its own cells).
   }];
   let arguments = (ins Sea_Mem:$mem, Sea_Index:$addr,
                    OptionalAttr<ConfinedAttr<I64Attr, [IntPositive]>>:$align);
   let results = (outs Sea_BVOrAddr:$result);
+  let hasCanonicalizer = 1;
   let assemblyFormat =
       "$mem `[` $addr `]` (`align` $align^)? attr-dict `:` qualified(type($mem)) `->` qualified(type($result))";
   let hasVerifier = 1;

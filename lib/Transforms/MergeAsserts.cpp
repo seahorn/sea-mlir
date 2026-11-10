@@ -25,6 +25,15 @@
 // Contract.
 //   Accepts: a program with any asserts and halts (loops are fine: the
 //     pass is structural).
+//   Reports: every assert of constant 0 (warning fold.assert-false) but
+//     the error-location marker of SeaHorn's error slice (the only assert,
+//     right before a sea.halt, print ops aside, with no source position:
+//     unknown or a .mlir position); not with report=false,
+//     the lowering's second run, so each is reported once; an assert whose
+//     condition becomes 0 only in the lowering's canonicalize is not
+//     reported: its cond_br folds (the verdict still shows it).
+//   Option: report (default true; sea-opt
+//     --sea-merge-asserts='report=false'): the warnings above.
 //   Produces: one sea.assert, immediately before the only sea.halt, in the
 //     exit block; no other assert, no other halt (checked). A program that
 //     is already in that shape is left alone.
@@ -37,6 +46,7 @@
 #include "sea/Transforms/Passes.h"
 
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Pass/Pass.h"
 
 using namespace mlir;
@@ -49,6 +59,10 @@ class MergeAssertsPass
 public:
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(MergeAssertsPass)
 
+  MergeAssertsPass() = default;
+  MergeAssertsPass(const MergeAssertsPass &other) : PassWrapper(other) {}
+  explicit MergeAssertsPass(bool report) { reportConstFalse = report; }
+
   StringRef getArgument() const final { return "sea-merge-asserts"; }
   StringRef getDescription() const final {
     return "Redirect every sea.assert to one exit block with the only "
@@ -56,6 +70,12 @@ public:
   }
 
   void runOnOperation() override;
+
+  Option<bool> reportConstFalse{
+      *this, "report",
+      llvm::cl::desc("Warn fold.assert-false for each assert of constant 0 "
+                     "(off in the lowering's second run: reported once)"),
+      llvm::cl::init(true)};
 };
 
 void MergeAssertsPass::runOnOperation() {
@@ -64,6 +84,35 @@ void MergeAssertsPass::runOnOperation() {
   SmallVector<HaltOp> halts;
   program.walk([&](AssertOp a) { asserts.push_back(a); });
   program.walk([&](HaltOp h) { halts.push_back(h); });
+  // an assert of constant 0 fails wherever it is reached; once merged it
+  // is a constant cond_br that canonicalize folds silently, so it is
+  // reported here (as the sea.assert canonicalizer reports one it folds).
+  // Not the error-location marker of SeaHorn's error slice: the program's
+  // only assert, of constant 0, right before a sea.halt, with no source
+  // position (reaching it is the failure; the guards on the path are the
+  // checks). A located one is a real check (sccp folded it to 0).
+  auto hasSourcePosition = [](Location loc) {
+    bool found = false;
+    loc->walk([&](Location l) {
+      if (auto f = dyn_cast<FileLineColLoc>(l);
+          f && !f.getFilename().getValue().ends_with(".mlir"))
+        found = true;
+      return found ? WalkResult::interrupt() : WalkResult::advance();
+    });
+    return found;
+  };
+  auto isErrorMarker = [&](AssertOp a) {
+    Operation *next = nextNonPrintOp(a);
+    return asserts.size() == 1 && next && isa<HaltOp>(next) &&
+           !hasSourcePosition(a.getLoc());
+  };
+  for (AssertOp a : asserts)
+    if (reportConstFalse && matchPattern(a.getCond(), m_Zero()) &&
+        !isErrorMarker(a))
+      diag::warn("fold.assert-false",
+                 "assert of constant false: the check fails whenever it is "
+                 "reached",
+                 a.getLoc());
   // already BMC form: one assert right before the one halt
   if (asserts.size() == 1 && halts.size() == 1 &&
       nextNonPrintOp(asserts.front()) == halts.front().getOperation())
@@ -134,8 +183,8 @@ void MergeAssertsPass::runOnOperation() {
 
 } // namespace
 
-std::unique_ptr<Pass> createMergeAssertsPass() {
-  return std::make_unique<MergeAssertsPass>();
+std::unique_ptr<Pass> createMergeAssertsPass(bool reportConstFalse) {
+  return std::make_unique<MergeAssertsPass>(reportConstFalse);
 }
 
 } // namespace sea

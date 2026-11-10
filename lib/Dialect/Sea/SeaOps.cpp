@@ -5,6 +5,8 @@
 
 #include "sea/Dialect/Sea/SeaOps.h"
 #include "sea/Dialect/Sea/Semantics.h"
+#include "sea/Support/Diag.h"
+#include "sea/Support/Log.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Matchers.h"
@@ -131,6 +133,223 @@ struct SimplifyCondBr : OpRewritePattern<CondBrOp> {
 void CondBrOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                            MLIRContext *context) {
   patterns.add<SimplifyCondBr>(context);
+}
+
+//===----------------------------------------------------------------------===//
+// CFG folding: sea.br, sea.assume, sea.assert, sea.load (canonicalize)
+//===----------------------------------------------------------------------===//
+//
+// Each fold that fires is a `canon.fold` event (--log=canon.fold:2: kind and
+// location). A fold of a constant-false assume
+// or assert is also a warning (fold.assume-false / fold.assert-false): it
+// decides what the rest of the block means, so it is never silent.
+
+static sea::log::Tag logFold("canon.fold", 2,
+                             "each fold of the sea canonicalizers (block "
+                             "merge, constant assume / assert, load of a "
+                             "stored value)");
+
+static void noteFold(StringRef kind, Location loc) {
+  SEA_LOG(logFold, sea::log::Object).msg(kind).at(loc);
+}
+
+/// True if `op` is in a block no execution enters (not the entry, no
+/// predecessor): region simplification erases the block, so it is not
+/// folded (and not reported).
+static bool inDeadBlock(Operation *op) {
+  Block *b = op->getBlock();
+  return !b->isEntryBlock() && b->hasNoPredecessors();
+}
+
+/// True if a branch at `loc` must stay: `loc` holds a source position (a
+/// file other than a .mlir one), so the branch is the reach site of a check
+/// for a replay (assert-at, assert-path: the last located op before
+/// SeaHorn's one `assert false`), or it is the marker of sea-merge-asserts
+/// (kMergedAssertLocName).
+static bool keepsBranch(Location loc) {
+  // the branches sea-merge-asserts makes of an assert name it in a replay
+  if (auto n = dyn_cast<NameLoc>(loc);
+      n && n.getName().getValue() == "sea.assert")
+    return true;
+  bool found = false;
+  loc->walk([&](Location l) {
+    if (auto f = dyn_cast<FileLineColLoc>(l);
+        f && !f.getFilename().getValue().ends_with(".mlir"))
+      found = true;
+    return found ? WalkResult::interrupt() : WalkResult::advance();
+  });
+  return found;
+}
+
+namespace {
+/// The block-merge case of upstream cf.br
+/// (mlir/lib/Dialect/ControlFlow/IR/ControlFlowOps.cpp at llvm-project
+/// 93f05d753ad3: simplifyBrToBlockWithSinglePred). Not its pass-through
+/// case (simplifyPassThroughBr): a print op left in a block whose values
+/// folded away keeps the block from being a pass-through one, so the
+/// rewrites and with them the predecessor order of joins (the VC's ite
+/// order) would depend on prints, and the query with them
+/// (docs/design/Print.md: byte-identical; test/VC/print/vc-identical.test).
+/// Nor its uniform-block-argument case. A branch with a source position
+/// or a merged assert's is never erased (keepsBranch).
+struct SimplifyBr : OpRewritePattern<BrOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  /// `br ^succ` where ^succ has this block as its only predecessor: merge
+  /// ^succ into this block, its arguments replaced by the operands.
+  static LogicalResult mergeSinglePred(BrOp op, PatternRewriter &rewriter) {
+    Block *succ = op.getDest();
+    Block *parent = op->getBlock();
+    if (succ == parent || !llvm::hasSingleElement(succ->getPredecessors()) ||
+        keepsBranch(op.getLoc()))
+      return failure();
+    // an operand that is an argument of ^succ itself would be replaced by
+    // itself and dangle once ^succ is gone
+    for (Value v : op.getOperands())
+      if (auto ba = dyn_cast<BlockArgument>(v); ba && ba.getOwner() == succ)
+        return failure();
+    Location loc = op.getLoc();
+    SmallVector<Value> operands(op.getOperands());
+    rewriter.eraseOp(op);
+    rewriter.mergeBlocks(succ, parent, operands);
+    noteFold("br-merge", loc);
+    return success();
+  }
+
+  LogicalResult matchAndRewrite(BrOp op,
+                                PatternRewriter &rewriter) const override {
+    if (inDeadBlock(op))
+      return failure();
+    return mergeSinglePred(op, rewriter);
+  }
+};
+
+/// assume(1): erased. assume(0): the rest of the block cannot execute; the
+/// block ends there in sea.unreachable (the same meaning: the interpreter
+/// blocks, the VC forbids the block) and the rest becomes a block without
+/// predecessors, which region simplification erases with whatever only it
+/// reached.
+struct FoldConstAssume : OpRewritePattern<AssumeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AssumeOp op,
+                                PatternRewriter &rewriter) const override {
+    if (matchPattern(op.getCond(), m_One())) {
+      noteFold("assume-true", op.getLoc());
+      rewriter.eraseOp(op);
+      return success();
+    }
+    if (!matchPattern(op.getCond(), m_Zero()) || inDeadBlock(op))
+      return failure();
+    // [HYP] after N34 the two cases can be told apart
+    sea::diag::warn("fold.assume-false",
+                    "assume of constant false: the rest of the block cannot "
+                    "execute (folded to sea.unreachable); either a proved "
+                    "assertion (a guard assume(!c) of a check c that holds) or "
+                    "vacuity (an unsatisfiable precondition): not told apart",
+                    op.getLoc());
+    noteFold("assume-false", op.getLoc());
+    Location loc = op.getLoc();
+    Block *b = op->getBlock();
+    rewriter.splitBlock(b, op->getIterator());
+    rewriter.setInsertionPointToEnd(b);
+    UnreachableOp::create(rewriter, loc);
+    return success();
+  }
+};
+
+/// assert(1): erased. assert(0): every execution that reaches it fails and
+/// stops there, so the rest of the block is dead: the assert stays and the
+/// block ends in sea.halt right after it (the BMC-form exit shape; not
+/// sea.unreachable, which would forbid the block and so the failure).
+struct FoldConstAssert : OpRewritePattern<AssertOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(AssertOp op,
+                                PatternRewriter &rewriter) const override {
+    if (matchPattern(op.getCond(), m_One())) {
+      noteFold("assert-true", op.getLoc());
+      rewriter.eraseOp(op);
+      return success();
+    }
+    if (!matchPattern(op.getCond(), m_Zero()) || inDeadBlock(op))
+      return failure();
+    // already the end of its block (prints before the halt stay)
+    Operation *next = nextNonPrintOp(op);
+    if (next && isa<HaltOp>(next))
+      return failure();
+    sea::diag::warn(
+        "fold.assert-false",
+        "assert of constant false: the check fails whenever it is "
+        "reached; the rest of the block is dead (folded to sea.halt)",
+        op.getLoc());
+    noteFold("assert-false", op.getLoc());
+    Block *b = op->getBlock();
+    rewriter.splitBlock(b, std::next(op->getIterator()));
+    rewriter.setInsertionPointToEnd(b);
+    HaltOp::create(rewriter, op.getLoc());
+    return success();
+  }
+};
+
+/// load(store(m, a, v), a) -> v: the memory operand is the store's result,
+/// the address the same SSA value, the load's type the stored value's (the
+/// memory type, so the layout and cell, is the same by construction). Any
+/// layout: the load reads back exactly the cells the store wrote (exact,
+/// aligned and unaligned words, keyed cells, shadow memories alike) -- if
+/// the access spans at most 2^w index units (w the index width; a cell is
+/// one unit in exact and keyed layouts, k in k-byte words). A wider
+/// one wraps around the address space and the store overwrites its own
+/// first cells, so the load reads the later parts (an i32 at a 1-bit
+/// address): not forwarded.
+/// `tracked` changes the set of modified objects, not the contents. Only
+/// integers: a pointer or address read from memory is a value of the VC's
+/// pointer model (PtrSort: from the stored bits, with its companions), not
+/// forwarded without a proof that it is the same.
+struct ForwardStoredValue : OpRewritePattern<LoadOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LoadOp op,
+                                PatternRewriter &rewriter) const override {
+    auto st = op.getMem().getDefiningOp<StoreOp>();
+    if (!st || st.getAddr() != op.getAddr() ||
+        st.getValue().getType() != op.getType() ||
+        !isa<IntegerType>(op.getType()))
+      return failure();
+    auto mt = cast<MemType>(op.getMem().getType());
+    // cells covered times units per cell; a keyed access wider than its
+    // cell covers one unit per cell too
+    const uint64_t units =
+        uint64_t(bitWidthOf(op.getType()) / mt.getCell().getWidth()) *
+        mt.getCellUnits();
+    const unsigned w = mt.getIndexWidth();
+    if (w < 64 && units > (uint64_t(1) << w))
+      return failure();
+    noteFold("load-stored", op.getLoc());
+    rewriter.replaceOp(op, st.getValue());
+    return success();
+  }
+};
+} // namespace
+
+void BrOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                       MLIRContext *context) {
+  patterns.add<SimplifyBr>(context);
+}
+
+void AssumeOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                           MLIRContext *context) {
+  patterns.add<FoldConstAssume>(context);
+}
+
+void AssertOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                           MLIRContext *context) {
+  patterns.add<FoldConstAssert>(context);
+}
+
+void LoadOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                         MLIRContext *context) {
+  patterns.add<ForwardStoredValue>(context);
 }
 
 //===----------------------------------------------------------------------===//
