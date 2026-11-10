@@ -2,7 +2,8 @@
 
 SeaHorn's Expr library (hash-consed terms) and its z3 / Yices backends,
 ported from SeaHorn `dev18` at 0cb925cd (`include/seahorn/Expr`,
-`lib/seahorn/Smt`, `lib/Support/{SeaLog,SeaDebug,BoostException}.cc`).
+`lib/seahorn/Smt`, `lib/Support/{SeaLog,SeaDebug,BoostException}.cc`;
+SeaDebug's `LOG` is replaced by `sea/Support/Log.h`).
 Namespace stays `expr` so changes can be ported back.
 
 sea-mlir uses Expr for SMT terms only. Changes from SeaHorn:

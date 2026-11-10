@@ -60,6 +60,9 @@ namespace op {}
 /** Size of an expression as a DAG */
 size_t dagSize(Expr e);
 size_t dagSize(const ExprVector &vec);
+/** A term as a log value: printed when its DAG has at most 64 nodes, else
+    `#<id> (<n> nodes)` (sea/Support/Log.h) */
+std::string termForLog(Expr e);
 /** Size of an expression as a tree */
 size_t treeSize(Expr e);
 

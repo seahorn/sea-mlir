@@ -33,6 +33,7 @@ llvm_config.add_tool_substitutions(
         "sea-seam-rules-test",
         "sea-bv-rules-test",
         "sea-addr-range-test",
+        "sea-log-test",
         "sea-store-map-test",
         "sea-memops-test",
         "sea-ackermann-test",

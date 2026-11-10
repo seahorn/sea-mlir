@@ -7,7 +7,6 @@
 #include "sea/Expr/ExprInterp.hh"
 #include "sea/Expr/ExprOpBinder.hh"
 #include "sea/Expr/Smt/Yices2SolverImpl.hh"
-#include "sea/Support/SeaDebug.h"
 #include "sea/Support/SeaLog.hh"
 
 #include "llvm/Support/ErrorHandling.h"
@@ -663,14 +662,12 @@ Expr marshal_yices::eval(Expr expr, ExprFactory &efac, ycache_t &cache,
       isOpX<CONST_ARRAY>(expr)) {
     TypeChecker tc;
     Expr sort = tc.typeOf(expr);
+    // an ite of any other sort (a bit-vector ite of a counterexample) is
+    // decoded as a scalar below
     if (isOpX<ARRAY_TY>(sort)) {
       is_array = true;
       domain = op::sort::arrayIndexTy(sort);
       range = op::sort::arrayValTy(sort);
-    } else {
-      LOG("yices", WARN << "Unexpected term of non-array sort: " << *sort
-                        << "\n"
-                        << *expr);
     }
   }
 

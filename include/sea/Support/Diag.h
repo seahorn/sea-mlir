@@ -6,9 +6,10 @@
 // Every unimplemented or incomplete feature must be visible. A warning kind
 // (a short stable tag such as "vc.mem-op-expanded") prints in color the first
 // time it occurs, with the location; later occurrences are counted, and
-// printed only when the kind is enabled with --log=<kind> (SeaHorn's LOG
-// tags). At exit, printSummary reports the kinds that occurred more than
-// once, so one issue cannot drown the log and none goes unnoticed.
+// printed only when the kind is selected with --log=warn.<kind>:2 (or the
+// old spelling --log=<kind>; sea/Support/Log.h). At exit, printSummary reports
+// the kinds that occurred more than once, so one issue cannot drown the log and
+// none goes unnoticed.
 //
 // Errors (unsupported input the tool cannot handle) print in red; the caller
 // stops. Colors appear only on a terminal. Thread-safe (MLIR runs passes on
@@ -29,7 +30,7 @@
 namespace sea::diag {
 
 /// Reports a warning of `kind`. First occurrence: printed (yellow). Later:
-/// counted; printed only if `kind` is enabled with --log=<kind>.
+/// counted; printed only if `kind` is selected with --log=warn.<kind>:2.
 void warn(llvm::StringRef kind, const llvm::Twine &msg,
           std::optional<mlir::Location> loc = std::nullopt);
 

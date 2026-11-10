@@ -72,7 +72,9 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--print=lines|tree|off` | how the program's prints are shown in a replay |
 | `--print-refs=asis|weak|strong` | convert the program's prints before the lowering |
 | `--print-limit=<n>`, `--print-locs` | limit the print lines; add the location of each print |
-| `--log=<kind>` | print every occurrence of a warning kind |
+| `--log=<pattern>[:<level>],...` | select logs; `--log=help` lists the tags; `--log=warn.<kind>:2` prints every occurrence of a warning kind ([Logging](logging.md)) |
+| `--log-file=<path>` | append log events to a file instead of stderr |
+| `--mlir-print-ir-after-all`, `--mlir-timing`, ... | MLIR's pass-manager options, on the lowering pipeline |
 
 ## sea-run
 

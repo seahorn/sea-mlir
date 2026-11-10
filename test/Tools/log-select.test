@@ -1,0 +1,61 @@
+// The selection of logs and the event formats (docs/reference/logging.md),
+// through sea-log-test --emit: tags test.a (max level 3) and test.b (max 1),
+// one event per level; SEA_LOG first, then --log, later entries win.
+
+// A level-1 selection shows only level-1 events.
+RUN: sea-log-test --emit --log=test.a 2>&1 | FileCheck %s --check-prefix=L1
+L1: log: test.a event l=1
+L1-NOT: log:
+L1: done
+
+// A tag, a prefix, *; SEA_LOG then --log; :0 turns off.
+RUN: sea-log-test --emit --log=test.a:3 2>&1 | FileCheck %s --check-prefix=A3
+RUN: sea-log-test --emit '--log=test.*:3' --log=test.b:0 2>&1 | FileCheck %s --check-prefix=A3
+RUN: sea-log-test --emit '--log=*:3,test.b:0' 2>&1 | FileCheck %s --check-prefix=A3
+RUN: env SEA_LOG=test.a:3 sea-log-test --emit 2>&1 | FileCheck %s --check-prefix=A3
+RUN: env 'SEA_LOG=*:3' sea-log-test --emit --log=test.b:0 2>&1 | FileCheck %s --check-prefix=A3
+RUN: env SEA_LOG=test.a:0 sea-log-test --emit '--log=test.*:3,test.b:0' 2>&1 | FileCheck %s --check-prefix=A3
+A3: log: test.a event l=1
+A3-NEXT: log: test.a event l=2
+A3-NEXT: log: test.a event l=3
+A3-NEXT: done
+RUN: env 'SEA_LOG=*:3' sea-log-test --emit --log=test.a:0,test.b:0 2>&1 | FileCheck %s --check-prefix=NONE
+RUN: sea-log-test --emit '--log=*:3' '--log=test.*:0' 2>&1 | FileCheck %s --check-prefix=NONE
+RUN: sea-log-test --emit 2>&1 | FileCheck %s --check-prefix=NONE
+NONE-NOT: log:
+NONE: done
+
+// A malformed entry is skipped alone: the entry after it holds.
+RUN: sea-log-test --emit --log=test.a:7,test.b 2>&1 | FileCheck %s --check-prefix=BAD
+BAD: Warning: --log: 'test.a:7': the level is 0-3 (ignored) [log.bad-spec]
+BAD: log: test.b event l=1
+BAD: done
+
+// jsonl: one object per event; its text is the text line.
+RUN: sea-log-test --emit --jsonl --log=test.a:2 2>&1 | FileCheck %s --check-prefix=JSONL
+JSONL: {"log":"test.a","level":1,"msg":"event","l":1,"text":"log: test.a event l=1"}
+JSONL-NEXT: {"log":"test.a","level":2,"msg":"event","l":2,"text":"log: test.a event l=2"}
+
+// --log-file / SEA_LOG_FILE: events there (appended), not on stderr;
+// --log-file overrides SEA_LOG_FILE. A SEA_LOG_FILE that cannot be opened
+// is a warning, and the events go to stderr.
+RUN: rm -rf %t.log %t.env.log %t.nodir
+RUN: sea-log-test --emit --log=test.b --log-file=%t.log 2>&1 | FileCheck %s --check-prefix=NONE
+RUN: sea-log-test --emit --log=test.b --log-file=%t.log 2>&1 | FileCheck %s --check-prefix=NONE
+RUN: FileCheck %s --check-prefix=FILE2 < %t.log
+FILE2: log: test.b event l=1
+FILE2-NEXT: log: test.b event l=1
+RUN: env SEA_LOG_FILE=%t.env.log sea-log-test --emit --log=test.b 2>&1 | FileCheck %s --check-prefix=NONE
+RUN: FileCheck %s --check-prefix=FILE < %t.env.log
+FILE: log: test.b event l=1
+RUN: rm -f %t.log %t.env.log
+RUN: env SEA_LOG_FILE=%t.env.log sea-log-test --emit --log=test.b --log-file=%t.log 2>&1 | FileCheck %s --check-prefix=NONE
+RUN: FileCheck %s --check-prefix=FILE < %t.log
+RUN: not ls %t.env.log
+RUN: env SEA_LOG_FILE=%t.nodir/x.log sea-log-test --emit --log=test.b 2>&1 | FileCheck %s --check-prefix=ENVBAD
+ENVBAD: Warning: SEA_LOG_FILE: cannot open '{{.*}}x.log'{{.*}}; logs go to stderr [log.file]
+ENVBAD: log: test.b event l=1
+ENVBAD: done
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
