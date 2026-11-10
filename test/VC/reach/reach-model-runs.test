@@ -1,0 +1,81 @@
+// sea-vc --reach with model runs (--reach-model-runs, default on): the
+// replay of a reachable target's model is an execution, and every target
+// it reaches whose query is still to come is reachable via=model-run, with
+// no query. --reach-order=deepest (the default) queries the last target
+// first, so its model's run passes every target before it.
+// RUN: split-file %s %t
+
+// Deepest first: the assert's model passes the three assumes; one query.
+// RUN: rm -rf %t/w && sea-vc %t/line.mlir --reach --reach-order=deepest --reach-witness=%t/w | FileCheck %s --check-prefix=DEEP
+// The default order is deepest.
+// RUN: sea-vc %t/line.mlir --reach | FileCheck %s --check-prefix=DEFAULT
+// DEFAULT: reach.config: {{.*}} model-runs=1 order=deepest
+// DEFAULT: reach.summary: targets=4 reachable=4 unreachable=0 unknown=0 queries=1
+// DEEP: reach.config: {{.*}} model-runs=1 order=deepest
+// DEEP: reach: l.c:2:1 reachable op=sea.assume via=model-run by=l.c:5:1 witness={{.*}}reach-3.txt time=0.000 at=l.c:2:1
+// DEEP: reach: l.c:3:1 reachable op=sea.assume via=model-run by=l.c:5:1
+// DEEP: reach: l.c:4:1 reachable op=sea.assume via=model-run by=l.c:5:1
+// DEEP: reach: l.c:5:1 reachable op=sea.assert replay=reached witness={{.*}}reach-3.txt
+// DEEP: reach.summary: targets=4 reachable=4 unreachable=0 unknown=0 queries=1 time={{[0-9.]+}} model-runs=3
+// The witness reaches every one of them.
+// RUN: sea-run %t/line.mlir --input-file=%t/w/reach-3.txt --reach-targets | FileCheck %s --check-prefix=REPLAY
+// REPLAY: reach.summary: targets=4 reached=4 not-reached=0
+// Without model runs, a query per target and the same answers.
+// RUN: sea-vc %t/line.mlir --reach --reach-order=deepest --reach-model-runs=false | FileCheck %s --check-prefix=OFF
+// OFF: reach.config: {{.*}} model-runs=0 order=deepest
+// OFF-NOT: via=model-run
+// OFF: reach.summary: targets=4 reachable=4 unreachable=0 unknown=0 queries=4
+// Program order: a model reaches what it must, here nothing past the first
+// assume (any x reaches its top).
+// RUN: sea-vc %t/line.mlir --reach --reach-order=program | FileCheck %s --check-prefix=PROG
+// PROG: reach.config: {{.*}} model-runs=1 order=program
+// PROG: reach: l.c:2:1 reachable op=sea.assume replay=reached
+// PROG: reach: l.c:5:1 reachable op=sea.assert
+
+// The cross-check stays: a clean model run that reaches a target the
+// solver answered unreachable (here forced, the test-only plant of the last
+// target's guard, which deepest order queries first) is an error: the
+// model of the assume before it (x != 0 holds past x > 10) runs on to it.
+// RUN: not sea-vc %t/pass.mlir --reach --reach-order=deepest --x-reach-plant=block-last --brunch-stats 2>&1 | FileCheck %s --check-prefix=PINC
+// PINC: vc.reach-inconsistent
+// PINC: reach: l.c:5:1 unreachable op=sea.assert
+// PINC: BRUNCH_STAT status 2
+
+// The options need --reach.
+// RUN: not sea-vc %t/line.mlir --reach-order=deepest 2>&1 | FileCheck %s --check-prefix=NEED
+// NEED: need --reach
+// REQUIRES: z3
+
+//--- line.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("l.c":1:1)
+  %c10 = sea.const 10 : i8
+  %c100 = sea.const 100 : i8
+  %c50 = sea.const 50 : i8
+  %a = sea.icmp ugt, %x, %c10 : i8
+  sea.assume %a loc("l.c":2:1)
+  %b = sea.icmp ult, %x, %c100 : i8
+  sea.assume %b loc("l.c":3:1)
+  %c = sea.icmp eq, %x, %c50 : i8
+  sea.assume %c loc("l.c":4:1)
+  %f = sea.const 0 : i1
+  sea.assert %f loc("l.c":5:1)
+  sea.halt
+}
+
+//--- pass.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("l.c":1:1)
+  %c10 = sea.const 10 : i8
+  %z = sea.const 0 : i8
+  %a = sea.icmp ugt, %x, %c10 : i8
+  sea.assume %a loc("l.c":2:1)
+  %b = sea.icmp ne, %x, %z : i8
+  sea.assume %b loc("l.c":4:1)
+  %f = sea.const 0 : i1
+  sea.assert %f loc("l.c":5:1)
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -17,6 +17,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <map>
+#include <optional>
+#include <set>
 
 using namespace mlir;
 using namespace expr;
@@ -25,67 +28,7 @@ namespace sea {
 
 static log::Tag logReach("vc.reach", 2,
                          "each sea-vc --reach query: target, answer, solve "
-                         "and replay time");
-
-namespace {
-/// `f.c:3:5@g.c:9:2`: the position, then the call sites; empty without a
-/// file position.
-std::string positionId(Location loc) {
-  SourcePositions p = positionsOf(loc);
-  std::string id;
-  for (auto [i, f] : llvm::enumerate(p)) {
-    id += i ? "@" : "";
-    // a position in the .mlir file itself (an op the exporter left without
-    // a source position): its file by basename, so that copies of one
-    // program in other directories give the same ids
-    StringRef file = f.getFilename().getValue();
-    if (file.ends_with(".mlir"))
-      id += (llvm::sys::path::filename(file) + ":" + Twine(f.getLine()) + ":" +
-             Twine(f.getColumn()))
-                .str();
-    else
-      id += fileLocText(f);
-  }
-  return id;
-}
-} // namespace
-
-std::vector<ReachTarget> collectReachTargets(ProgramOp program,
-                                             ReachKind kind) {
-  std::vector<ReachTarget> targets;
-  auto add = [&](Operation *op, StringRef name, Location loc, std::string id) {
-    targets.push_back({std::move(id), name.str(), op, loc});
-  };
-  for (Block &b : program.getBody()) {
-    if (kind == ReachKind::Blocks) {
-      Operation *named = nullptr;
-      for (Operation &op : b)
-        if (!positionsOf(op.getLoc()).empty()) {
-          named = &op;
-          break;
-        }
-      Operation *top = &b.front();
-      add(top, "block", named ? named->getLoc() : top->getLoc(),
-          named ? positionId(named->getLoc()) : "");
-      continue;
-    }
-    for (Operation &op : b)
-      if (isa<AssumeOp, AssertOp, UnreachableOp>(op))
-        add(&op, op.getName().getStringRef(), op.getLoc(),
-            positionId(op.getLoc()));
-  }
-  // unlocated: by order; a repeated id: #<n> from the second on
-  unsigned unlocated = 0;
-  llvm::StringMap<unsigned> seen;
-  for (ReachTarget &t : targets) {
-    if (t.id.empty())
-      t.id = "unlocated#" + std::to_string(unlocated++);
-    unsigned n = ++seen[t.id];
-    if (n > 1)
-      t.id += "#" + std::to_string(n);
-  }
-  return targets;
-}
+                         "and replay time; each target a run decided");
 
 Expr mkReachQuery(OpSemContext &ctx) {
   ExprVector conj(ctx.side().begin(), ctx.side().end());
@@ -154,26 +97,114 @@ ReachReplay replayToTarget(ProgramOp program, solver::Model &model,
 }
 
 /// The A-INB check of a model (sea-vc's vc.seam-inb-spurious): the abstract
-/// program run on the model's nondet values. `violated`: it leaves an
-/// object before it reaches an op of the target's kind at the target's
-/// location (a folded assume of false, sea.unreachable, is a sea.assume
-/// there; a block, any op at its location), or without reaching one.
-/// `undetermined`: the run reads a nondet memory cell (the model's cells
-/// are addresses, not object offsets) or stops otherwise without deciding.
-/// `after`: it leaves an object only after the target (the answer stands,
-/// the rest of the run does not).
-enum class InbCheck { None, Ok, After, Violated, Undetermined };
+/// program run on the model's nondet values, and T found in it (AbstractSites).
+/// `violated`: it leaves an object without having reached T. `after`: it
+/// leaves an object only after T (the answer stands, the rest of the run
+/// does not). `undetermined`: it does not reach T (it reads a nondet memory
+/// cell, the model's cells being addresses, not object offsets; it stops
+/// otherwise; or it ends on another path), or T is found only by a location
+/// several ops share and the run stops. `unordered`: T is found only by
+/// such a location and the run leaves an object: maybe before T. A run
+/// decides a target (via=run, via=model-run) only if its check is not
+/// violated or unordered; a model's own answer with an unordered check
+/// stands, inb=undetermined.
+enum class InbCheck { None, Ok, After, Violated, Undetermined, Unordered };
 
-InbCheck checkAbstract(ProgramOp abs, const ReachTarget &t,
-                       const RunResult &placed, const ReachOptions &ro,
-                       std::string &message, RunResult &r) {
+} // namespace
+
+void tagReachSites(mlir::ModuleOp module) {
+  int64_t k = 0;
+  module.walk([&](Operation *op) {
+    if (isa<AssumeOp, AssertOp>(op))
+      op->setAttr(
+          kReachSiteAttr,
+          IntegerAttr::get(IntegerType::get(op->getContext(), 64), k++));
+  });
+}
+
+namespace {
+
+/// Where the targets are in the abstract program: a check site the
+/// lowering kept carries its tag (tagReachSites) in both programs; other
+/// targets (folded assumes, merged asserts, blocks) are found by location:
+/// an op of the target's kind at the target's location (a folded assume of
+/// false, sea.unreachable, is a sea.assume there; a block, any op at its
+/// location), ambiguous when more than one op of the abstract program
+/// matches (inlined code repeats a location; a block can hold two ops at
+/// one location): reaching one of them says nothing about which.
+struct AbstractSites {
+  explicit AbstractSites(ProgramOp abs) {
+    abs.walk([&](Operation *op) {
+      auto &e = byLoc[op->getLoc().getAsOpaquePointer()];
+      e.push_back({op->getName().getStringRef()});
+    });
+  }
+  struct Entry {
+    StringRef name;
+  };
+  static bool matches(const ReachTarget &t, StringRef name) {
+    return t.opName == "block" || name == t.opName ||
+           (t.opName == "sea.unreachable" && name == "sea.assume");
+  }
+  bool ambiguous(const ReachTarget &t) const {
+    auto it = byLoc.find(t.loc.getAsOpaquePointer());
+    if (it == byLoc.end())
+      return false;
+    return llvm::count_if(it->second, [&](const Entry &e) {
+             return matches(t, e.name);
+           }) > 1;
+  }
+  llvm::DenseMap<const void *, llvm::SmallVector<Entry, 2>> byLoc;
+};
+
+/// The abstract program's run on a placed run's nondet values, and the ops
+/// it reached the top of (tags; names by location), up to where it stopped.
+struct AbstractRun {
+  RunResult r;
+  llvm::DenseSet<int64_t> tags;
+  llvm::DenseMap<const void *, llvm::SmallVector<StringRef, 2>> seen;
+
+  static std::optional<int64_t> tagOf(Operation *op) {
+    if (auto a = op->getAttrOfType<IntegerAttr>(kReachSiteAttr))
+      return a.getInt();
+    return std::nullopt;
+  }
+
+  InbCheck check(const ReachTarget &t, const AbstractSites &sites,
+                 std::string &message) const {
+    bool at, ambiguous = false;
+    if (std::optional<int64_t> tag = tagOf(t.op)) {
+      at = tags.contains(*tag);
+    } else {
+      auto it = seen.find(t.loc.getAsOpaquePointer());
+      at = it != seen.end() && llvm::any_of(it->second, [&](StringRef name) {
+             return AbstractSites::matches(t, name);
+           });
+      ambiguous = sites.ambiguous(t);
+    }
+    const bool oob = isOutOfObjectAccess(r);
+    const bool stopped = r.status == RunStatus::Error;
+    if (stopped || oob)
+      message = r.message;
+    if (!at)
+      return oob ? InbCheck::Violated : InbCheck::Undetermined;
+    if (ambiguous && oob)
+      return InbCheck::Unordered;
+    if (ambiguous && stopped)
+      return InbCheck::Undetermined;
+    return oob ? InbCheck::After : InbCheck::Ok;
+  }
+};
+
+AbstractRun runAbstract(ProgramOp abs, const RunResult &placed,
+                        const ReachOptions &ro) {
   InputSource inputs(InputSource::Missing::Error);
   for (const NondetRead &rd : placed.reads) {
     llvm::SmallString<32> text;
     rd.value.toStringUnsigned(text);
     inputs.set(rd.site, std::string(text));
   }
-  bool reached = false;
+  AbstractRun a;
   // the options of sea-vc's A-INB check of a counterexample
   RunOptions options;
   options.prints = false;
@@ -181,22 +212,27 @@ InbCheck checkAbstract(ProgramOp abs, const ReachTarget &t,
   options.addr0IsNull = ro.addr0IsNull;
   options.memhavocNullNoop = ro.memhavocNullNoop;
   options.onOp = [&](Operation &op, auto) {
-    if (reached || op.getLoc() != t.loc)
-      return;
+    if (std::optional<int64_t> tag = AbstractRun::tagOf(&op))
+      a.tags.insert(*tag);
+    auto &names = a.seen[op.getLoc().getAsOpaquePointer()];
     StringRef name = op.getName().getStringRef();
-    reached = t.opName == "block" || name == t.opName ||
-              (t.opName == "sea.unreachable" && name == "sea.assume");
+    if (!llvm::is_contained(names, name))
+      names.push_back(name);
   };
-  r = interpret(abs, inputs, options);
-  if (isOutOfObjectAccess(r)) {
-    message = r.message;
-    return reached ? InbCheck::After : InbCheck::Violated;
-  }
-  if (r.status == RunStatus::Error && !reached) {
-    message = r.message;
-    return InbCheck::Undetermined;
-  }
-  return InbCheck::Ok;
+  a.r = interpret(abs, inputs, options);
+  return a;
+}
+
+/// `# replays on: ...`, the program a witness replays on.
+std::string replaysOn(const ReachOptions &options) {
+  std::string program =
+      options.programPath.empty() ? "<program>" : options.programPath;
+  if (options.lowered)
+    return "replays on: the lowered program (sea-opt --sea-vc-lower with "
+           "the run's lowering options, of " +
+           program + "), with sea-run --input-file=<this file>";
+  return "replays on: the input program, with sea-run " + program +
+         " --input-file=<this file>";
 }
 
 /// A corpus file of the run's inputs (sea-run --input-file).
@@ -211,15 +247,7 @@ bool writeWitness(StringRef path, const ReachTarget &t, StringRef at,
   }
   os << "# sea-vc --reach: " << t.id << " op=" << t.opName << " at=" << at
      << "\n";
-  if (options.lowered)
-    os << "# replays on: the lowered program (sea-opt --sea-vc-lower with "
-          "the run's lowering options, of "
-       << (options.programPath.empty() ? "<program>" : options.programPath)
-       << "), with sea-run --input-file=<this file>\n";
-  else
-    os << "# replays on: the input program, with sea-run "
-       << (options.programPath.empty() ? "<program>" : options.programPath)
-       << " --input-file=<this file>\n";
+  os << "# " << replaysOn(options) << "\n";
   for (const NondetRead &rd : run.reads) {
     os << "nondet: site=" << rd.site << " callee=" << rd.callee
        << " width=" << rd.value.getBitWidth() << " value=";
@@ -244,10 +272,117 @@ bool writeWitness(StringRef path, const ReachTarget &t, StringRef at,
 
 } // namespace
 
+FailureOr<ReachRuns> runReachRuns(ProgramOp program,
+                                  llvm::ArrayRef<ReachTarget> targets,
+                                  const ReachRunOptions &runOptions,
+                                  const ReachOptions &options,
+                                  std::string &error) {
+  ReachRuns out;
+  out.decisions.resize(targets.size());
+  FuzzOptions fo;
+  fo.trials = runOptions.corpus.size() + runOptions.fuzzTrials;
+  if (!fo.trials || targets.empty())
+    return out;
+  fo.seed = runOptions.seed;
+  fo.maxSteps = runOptions.maxSteps;
+  // coverage, not a bug hunt: a failing assert is a reached target
+  fo.keepGoing = true;
+  // the reach replays' interpreter options
+  fo.addr0IsNull = options.addr0IsNull;
+  fo.memhavocNullNoop = options.memhavocNullNoop;
+  fo.reachTargets = reachTargetOps(targets);
+  FailureOr<FuzzReport> rep = fuzz(program, runOptions.corpus, fo, error);
+  if (failed(rep))
+    return failure();
+  out.trials = rep->trials;
+  out.seedTrials = rep->seedTrials;
+  if (!options.witnessDir.empty())
+    if (std::error_code ec =
+            llvm::sys::fs::create_directories(options.witnessDir)) {
+      error = "cannot create '" + options.witnessDir + "': " + ec.message();
+      return failure();
+    }
+  // the A-INB check (under --seam): once per run that reached a target
+  std::optional<AbstractSites> sites;
+  if (options.abstractProgram)
+    sites.emplace(options.abstractProgram);
+  std::map<uint64_t, AbstractRun> abstractRuns;
+  std::set<uint64_t> deciding;
+  for (auto [i, t] : llvm::enumerate(targets)) {
+    const ReachHit &h = rep->reachHits[i];
+    if (!h.trial)
+      continue;
+    ReachRunDecision &d = out.decisions[i];
+    if (options.abstractProgram) {
+      auto it = abstractRuns.find(h.trial);
+      if (it == abstractRuns.end()) {
+        // the run again, for its reads (the trial kept only its inputs)
+        InputSource source(InputSource::Missing::Error);
+        addAssignments(source, h.input);
+        RunOptions ro;
+        ro.prints = false;
+        ro.warnEarlierVersion = false;
+        ro.addr0IsNull = options.addr0IsNull;
+        ro.memhavocNullNoop = options.memhavocNullNoop;
+        ro.maxSteps = runOptions.maxSteps;
+        RunResult placed = interpret(program, source, ro);
+        it = abstractRuns
+                 .emplace(h.trial,
+                          runAbstract(options.abstractProgram, placed, options))
+                 .first;
+      }
+      std::string message;
+      InbCheck c = it->second.check(t, *sites, message);
+      if (c == InbCheck::Violated || c == InbCheck::Unordered) {
+        // as a model's run would be (replay=memory-error): not a run of
+        // the program the VC is about; the solver answers it
+        ++out.inbViolated;
+        continue;
+      }
+      d.inbUndetermined = c == InbCheck::Undetermined;
+    }
+    d.reached = true;
+    ++out.decided;
+    d.by =
+        h.seed.empty() ? "trial:" + std::to_string(h.trial) : "seed:" + h.seed;
+    SEA_LOG(logReach, log::Object)
+        .kv("target", t.id)
+        .kv("result", "reachable")
+        .kv("via", "run")
+        .kv("by", d.by);
+    // the assumptions a decision rests on: its run's, and its A-INB check's
+    if (deciding.insert(h.trial).second) {
+      out.addr0Uses += h.addr0IsNullUses;
+      out.memhavocUses += h.memhavocNullNoopUses;
+      if (auto it = abstractRuns.find(h.trial); it != abstractRuns.end()) {
+        out.addr0Uses += it->second.r.addr0IsNullUses;
+        out.memhavocUses += it->second.r.memhavocNullNoopUses;
+      }
+    }
+    if (!h.seed.empty()) {
+      d.witness = h.seed;
+    } else if (!options.witnessDir.empty()) {
+      llvm::SmallString<128> path(options.witnessDir);
+      llvm::sys::path::append(path, "reach-" + Twine(i) + ".txt");
+      std::string at = formatLoc(t.loc);
+      std::vector<std::string> header{
+          "sea-vc --reach: " + t.id + " op=" + t.opName +
+              " at=" + (at.empty() ? "-" : at) +
+              " via=run trial=" + std::to_string(h.trial),
+          replaysOn(options)};
+      if (failed(writeCorpusFile(path, header, h.input, error)))
+        return failure();
+      d.witness = path.str().str();
+    }
+  }
+  out.seconds = rep->seconds;
+  return out;
+}
+
 int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
              const VCGen &vcgen, Expr query, SeaOpSem &sem, OpSemContext &ctx,
              const ReachOptions &options, const ReachHooks &hooks,
-             out::Emitter &out) {
+             out::Emitter &out, const ReachRuns *runs) {
   using Clock = std::chrono::steady_clock;
   auto since = [](Clock::time_point t) {
     return std::chrono::duration<double>(Clock::now() - t).count();
@@ -270,23 +405,97 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
       return 1;
     }
 
+  // made at the first query (none when runs decided every target)
   std::unique_ptr<solver::Solver> shared;
-  if (options.incremental) {
-    shared = hooks.makeSolver();
-    if (!shared)
-      return 1;
-  }
-  // printed at the end: a run that starts again (ReachHooks::withModel)
-  // prints nothing of this one
-  std::vector<out::Record> records;
+  std::optional<AbstractSites> sites;
+  if (options.abstractProgram)
+    sites.emplace(options.abstractProgram);
+  // printed at the end, in program order: a run that starts again
+  // (ReachHooks::withModel) prints nothing of this one
+  std::vector<std::optional<out::Record>> records(targets.size());
+  auto emitRecords = [&] {
+    for (const std::optional<out::Record> &r : records)
+      if (r)
+        out.emit(*r);
+  };
+  // ReachOptions::modelRuns: the targets a model's run reached before their
+  // turn (the target whose model it was; -1: none)
+  std::vector<int64_t> modelBy(targets.size(), -1);
+  std::vector<bool> modelInbUndetermined(targets.size(), false);
+  std::vector<std::string> witnessOf(targets.size());
+  std::vector<size_t> order(targets.size());
+  for (size_t k = 0; k < order.size(); ++k)
+    order[k] = options.order == ReachOrder::Deepest ? order.size() - 1 - k : k;
   std::vector<Verdict> verdicts(targets.size(), Verdict::Unknown);
   std::vector<bool> hitByRun(targets.size(), false);
   unsigned nReach = 0, nUnreach = 0, nUnknown = 0, queries = 0;
   // steps of the reach runs that rested on the interpreter's assumptions
   uint64_t addr0Uses = 0, memhavocUses = 0;
   bool bug = false, memError = false, error = false;
-  for (auto [i, t] : llvm::enumerate(targets)) {
+  // what decided the targets: concrete runs, the CFG, the solver
+  unsigned byRuns = 0, byCfg = 0, bySolver = 0, byModelRuns = 0;
+  if (runs) {
+    addr0Uses += runs->addr0Uses;
+    memhavocUses += runs->memhavocUses;
+  }
+  for (size_t i : order) {
+    const ReachTarget &t = targets[i];
     const auto t0 = Clock::now();
+    std::string at = formatLoc(t.loc);
+    if (at.empty())
+      at = "-";
+    if (modelBy[i] >= 0) {
+      // the run of an earlier query's model reached it: no query
+      const ReachTarget &src = targets[modelBy[i]];
+      verdicts[i] = Verdict::Reachable;
+      ++nReach;
+      ++byModelRuns;
+      out::Record rec("reach");
+      rec.str("id", t.id).str("status", "reachable").str("op", t.opName);
+      rec.str("via", "model-run").str("by", src.id);
+      raw_string_ostream os(rec.text);
+      os << "reach: " << t.id << " reachable op=" << t.opName
+         << " via=model-run by=" << src.id;
+      if (modelInbUndetermined[i]) {
+        rec.str("inb", "undetermined");
+        os << " inb=undetermined";
+      }
+      if (const std::string &w = witnessOf[modelBy[i]]; !w.empty()) {
+        rec.str("witness", w);
+        os << " witness=" << w;
+      }
+      rec.set("time", out::jtoken("0.000"));
+      os << " time=0.000 at=" << at;
+      addLocFields(rec, "at", t.loc);
+      records[i] = std::move(rec);
+      continue;
+    }
+    if (runs && runs->decisions[i].reached) {
+      // a concrete run reached it (runReachRuns): no query
+      const ReachRunDecision &d = runs->decisions[i];
+      verdicts[i] = Verdict::Reachable;
+      ++nReach;
+      ++byRuns;
+      out::Record rec("reach");
+      rec.str("id", t.id).str("status", "reachable").str("op", t.opName);
+      rec.str("via", "run").str("by", d.by);
+      raw_string_ostream os(rec.text);
+      os << "reach: " << t.id << " reachable op=" << t.opName
+         << " via=run by=" << d.by;
+      if (d.inbUndetermined) {
+        rec.str("inb", "undetermined");
+        os << " inb=undetermined";
+      }
+      if (!d.witness.empty()) {
+        rec.str("witness", d.witness);
+        os << " witness=" << d.witness;
+      }
+      rec.set("time", out::jtoken("0.000"));
+      os << " time=0.000 at=" << at;
+      addLocFields(rec, "at", t.loc);
+      records[i] = std::move(rec);
+      continue;
+    }
     // the block right before the target (sea-split-at-checks)
     Block *b = t.op->getBlock()->getSinglePredecessor();
     if (!b) {
@@ -297,9 +506,6 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
       return 1;
     }
     Expr g = vcgen.guard(b);
-    std::string at = formatLoc(t.loc);
-    if (at.empty())
-      at = "-";
     out::Record rec("reach");
     rec.str("id", t.id);
     std::string extra; // text after the verdict, before at=
@@ -318,6 +524,11 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
       reason = "guard-free";
     } else {
       std::unique_ptr<solver::Solver> own;
+      if (options.incremental && !shared) {
+        shared = hooks.makeSolver();
+        if (!shared)
+          return 1;
+      }
       if (!shared) {
         own = hooks.makeSolver();
         if (!own)
@@ -354,14 +565,32 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
           addr0Uses += rp.run.addr0IsNullUses;
           memhavocUses += rp.run.memhavocNullNoopUses;
           std::string inbMessage;
-          RunResult absRun;
-          InbCheck inb = options.abstractProgram
-                             ? checkAbstract(options.abstractProgram, t, rp.run,
-                                             options, inbMessage, absRun)
-                             : InbCheck::None;
-          addr0Uses += absRun.addr0IsNullUses;
-          memhavocUses += absRun.memhavocNullNoopUses;
-          if (inb == InbCheck::Undetermined)
+          std::optional<AbstractRun> abs;
+          if (options.abstractProgram)
+            abs = runAbstract(options.abstractProgram, rp.run, options);
+          InbCheck inb =
+              abs ? abs->check(t, *sites, inbMessage) : InbCheck::None;
+          if (abs) {
+            addr0Uses += abs->r.addr0IsNullUses;
+            memhavocUses += abs->r.memhavocNullNoopUses;
+          }
+          // every target the run reaches before its turn is reachable
+          // (the run is an execution; under --seam, the ones its input
+          // program's run reaches inside every object)
+          if (options.modelRuns && rp.reached && !rp.mismatches)
+            for (size_t h : rp.hit) {
+              if (h == i || verdicts[h] != Verdict::Unknown || records[h] ||
+                  modelBy[h] >= 0 || (runs && runs->decisions[h].reached))
+                continue;
+              std::string m;
+              InbCheck hc =
+                  abs ? abs->check(targets[h], *sites, m) : InbCheck::None;
+              if (hc == InbCheck::Violated || hc == InbCheck::Unordered)
+                continue;
+              modelBy[h] = int64_t(i);
+              modelInbUndetermined[h] = hc == InbCheck::Undetermined;
+            }
+          if (inb == InbCheck::Undetermined || inb == InbCheck::Unordered)
             inbField = "undetermined";
           // the runs that show what the program does: to their target, in
           // agreement with the model, inside every object
@@ -420,7 +649,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
             llvm::SmallString<128> path(options.witnessDir);
             llvm::sys::path::append(path, "reach-" + Twine(i) + ".txt");
             if (writeWitness(path, t, at, options, rp.run))
-              witness = path.str().str();
+              witness = witnessOf[i] = path.str().str();
             else
               error = true;
           }
@@ -433,8 +662,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
           // a rerun (sea-vc's retries) prints its own records; an error
           // prints the targets answered so far
           if (rc > 0)
-            for (const out::Record &r : records)
-              out.emit(r);
+            emitRecords();
           return rc;
         }
       } else {
@@ -443,6 +671,8 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
       }
     }
     verdicts[i] = v;
+    if (v != Verdict::Unknown)
+      ++(reason == "cfg" ? byCfg : bySolver);
     ++(v == Verdict::Reachable     ? nReach
        : v == Verdict::Unreachable ? nUnreach
                                    : nUnknown);
@@ -477,10 +707,9 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
     rec.set("time", out::jtoken(secText));
     os << " time=" << secText << " at=" << at;
     addLocFields(rec, "at", t.loc);
-    records.push_back(std::move(rec));
+    records[i] = std::move(rec);
   }
-  for (const out::Record &r : records)
-    out.emit(r);
+  emitRecords();
   // a run reached a target the VC calls unreachable: one of them is wrong
   for (auto [i, t] : llvm::enumerate(targets))
     if (hitByRun[i] && verdicts[i] == Verdict::Unreachable) {
@@ -494,8 +723,18 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
   out.lines() << "reach.summary: targets=" << targets.size()
               << " reachable=" << nReach << " unreachable=" << nUnreach
               << " unknown=" << nUnknown << " queries=" << queries
-              << " time=" << llvm::formatv("{0:f3}", since(start)).str()
-              << "\n";
+              << " time=" << llvm::formatv("{0:f3}", since(start)).str();
+  if (options.modelRuns)
+    out.lines() << " model-runs=" << byModelRuns;
+  out.lines() << "\n";
+  if (runs)
+    out.lines() << "reach.runs: decided=" << byRuns
+                << " model-run=" << byModelRuns << " solver=" << bySolver
+                << " cfg=" << byCfg << " unknown=" << nUnknown
+                << " trials=" << runs->trials << " seeds=" << runs->seedTrials
+                << " inb-violated=" << runs->inbViolated
+                << " time=" << llvm::formatv("{0:f3}", runs->seconds).str()
+                << "\n";
   if (addr0Uses)
     out.lines() << "assume.addr0-is-null: uses=" << addr0Uses << "\n";
   if (memhavocUses)

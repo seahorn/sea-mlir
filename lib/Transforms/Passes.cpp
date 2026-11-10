@@ -205,6 +205,7 @@ void registerPasses() {
   registerPass([] { return createExpandMemSetPass(); });
   registerPass([] { return createSplitCriticalEdgesPass(); });
   registerPass([] { return createSplitAtChecksPass(); });
+  registerPass([] { return createReachTargetPass(); });
   registerPass([] { return createWidenMemoryPass(); });
   registerPass([] { return createApplyTrackingPass(); });
   registerPass([] { return createLowerTrackingPass(); });

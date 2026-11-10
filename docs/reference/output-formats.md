@@ -63,7 +63,7 @@ a safety verdict.
 
 | line | meaning |
 |---|---|
-| `reach.config: kind=checks|blocks solver=incremental|separate rlimit=<n> splits=<n>` | the run's settings; `splits`: blocks split so that each target has a block right before it |
+| `reach.config: kind=checks|blocks solver=incremental|separate rlimit=<n> splits=<n> model-runs=0|1 order=program|deepest` | the run's settings; `splits`: blocks split so that each target has a block right before it |
 | `reach: <id> <status> op=<op> [reason=] [replay=] [mismatches=] [witness=] time=<s> at=<where>` | one target, in program order; `status` is `reachable`, `unreachable` or `unknown` |
 | `reach.summary: targets= reachable= unreachable= unknown= queries= time=` | the totals |
 
@@ -106,6 +106,83 @@ a safety verdict.
   `--memhavoc-null`); after the summary, `assume.addr0-is-null: uses=<n>`
   and `assume.memhavoc-null-noop: uses=<n>` count the steps of all of them
   that rested on those assumptions.
+
+#### Model runs
+
+The replay of a reachable target's model is an execution of the program:
+every target it reaches (it is about to execute the target's op) whose
+query is still to come is reachable without a query, unless
+`--reach-model-runs=false`. Only replays that reach their own target and
+agree with the model count; under `--seam`, a target also needs the input
+program's run on the model to reach it inside every object, as for the
+model's own target.
+
+| line | meaning |
+|---|---|
+| `reach: <id> reachable op=<op> via=model-run by=<id> [inb=undetermined] [witness=<file>] time=0.000 at=<where>` | a target the model of target `by` reached; `witness`: that model's witness |
+
+- `reach.config` has `model-runs=0|1 order=program|deepest`, and
+  `reach.summary` ends with `model-runs=<n>`, the targets decided so.
+- The queries go in reverse program order (`--reach-order=deepest`, the
+  default; `=program` in order): the model of a deep target passes the
+  targets before it.
+- The cross-check stays: a clean run that reaches a target the solver
+  answered `unreachable` is `vc.reach-inconsistent`.
+
+#### Concrete runs first
+
+With `--reach-corpus` or `--reach-fuzz`, concrete runs decide what they
+can before any query, and the solver gets the rest. The corpus files run
+first, in order, then the fuzz trials (the mutations of `sea-run --fuzz`);
+they run on the program the targets are listed on (after the lowering and
+the splits), with the reach replays' interpreter options. The queries of
+the rest use a new solver each (`--reach-incremental=false`) unless
+`--reach-incremental` is given. A run reaches a
+target when it is about to execute the target's op: its prefix up to there
+is an execution with every earlier assume holding, which is what the
+query asks. What the run does after that (an assume that blocks it, a
+failing assert, a memory-safety stop) does not matter.
+
+| line | meaning |
+|---|---|
+| `reach: <id> reachable op=<op> via=run by=seed:<file>\|trial:<n> [inb=undetermined] [witness=<file>] time=0.000 at=<where>` | a target a run decided; `by`: the first run that reached it, a corpus file or a fuzz trial (1-based, corpus runs counted); `witness`: that corpus file, or with `--reach-witness` the trial's inputs as `<dir>/reach-<k>.txt` |
+| `reach.runs: decided=<n> model-run=<n> solver=<n> cfg=<n> unknown=<n> trials=<n> seeds=<n> inb-violated=<n> time=<s>` | after `reach.summary`: the targets the runs decided, model runs decided, the solver decided, the CFG decided (no path), left unknown; the runs made and their time |
+
+- `reach.config` has `corpus=<n> fuzz=<n>` at its end.
+- Under `--seam`, a run that reaches a target also runs on the input
+  program, as a model's run does; a run that leaves an object before the
+  target, or that leaves one and reaches the target only by a location
+  other ops share (a folded assume, a merged assert, a block), so that
+  the order is not known, decides nothing (`inb-violated`), and the solver
+  answers that target. The same holds for model runs.
+- The deciding runs' uses of `addr0-is-null` and of `memhavoc(null)` as a
+  no-op are added to the `assume.*: uses=<n>` lines (each run once, the
+  whole run).
+- The targets the runs decide are not checked against the VC: a run is the
+  reference semantics.
+
+#### R_T programs
+
+`--reach-programs=<dir>` writes, for each target T, R_T: the program the
+targets are listed on (after `--lower`) with every `sea.assert` dropped,
+the block of T split right before T and ended by a branch to a new block
+`sea.assert false; sea.halt` (T's location; the assert has
+`sea.reach_target = "<id>"`), every other `sea.halt` replaced by
+`sea.unreachable`, and the blocks no longer reachable from the entry
+erased. A run fails R_T's assertion iff it reaches the top of T with every
+earlier assume holding: `sea-vc` on R_T answers `sat` iff `--reach` answers
+`reachable`, and T's witness fails R_T's assertion in `sea-run`. R_T is in
+BMC form when the input is. For a target no path from the entry reaches
+(`reason=cfg`), R_T has no assertion and no `sea.halt` left: statically
+safe, `unsat`. `sea-vc --reach` on R_T lists its assert with T's id, taken from the
+`sea.reach_target` attribute, whatever its location; R_T's other targets
+are numbered on R_T (`#n`, `unlocated#k`), and the `sea.unreachable` that
+replaced each other `sea.halt` is a target of R_T. Compare R_T programs by
+the attribute, not by the other ids. R_T is the program after `--lower` with the run's options:
+under `--seam` the lowering keeps memset and memmove of symbolic length,
+so run `sea-vc --seam` on it. One `reach.program: <id> op=<op> file=<path>
+at=<where>` line per target, then `reach.programs: <n> dir=<dir>`. `sea-opt
+--sea-reach-target="id=<id>"` builds one R_T.
 
 The lines of `sea-run`: `program:`, `nondet:` and `memread:` (with an
 `origin`: `input`, `zero` or `random`), `value:` (with `--trace`), the
@@ -244,7 +321,8 @@ The record kinds of `sea-vc`:
 | `memread` | `site`, `addr`, `width`, `value`, [`obj`, `off`] |
 | `replay` | `status`, [`at`, `at_inlined`, `at_name`] (assert-at), [`loc`] (`at:`), [`op`, `op_inlined`, `op_name`] (assert-op), [`path`] (most recent first), [`path_inlined`], [`message`] |
 | `validate` | `checked`, `mismatches`, `dontcare` |
-| `reach` | `id`, `status`, `op`, [`reason`], [`replay`], [`inb`], [`mismatches`], [`witness`], `time`, [`at`, `at_inlined`, `at_name`] |
+| `reach` | `id`, `status`, `op`, [`via`, `by`] (decided by a run), [`reason`], [`replay`], [`inb`], [`mismatches`], [`witness`], `time`, [`at`, `at_inlined`, `at_name`] |
+| `reach.program` | `id`, `op`, `file`, [`at`, `at_inlined`, `at_name`] (`--reach-programs`) |
 | `mismatch` | `def`, `type`, `interp`, `model`, [`obj`, `off`] |
 | `no-clobber-violated` | `loc` |
 | `ptrint` | `status` (`violated` or `unstored`), `at`, `addr`, [`obj`, `off`], `bits`, [`stored`] |
@@ -268,7 +346,9 @@ an abstract memory has `obj` and `off` instead of `addr`), `value` (with
 `reached:`, `message:` and `deferred:` lines, with the location fields of
 `replay`; `reached` and `reached_at` for a `memory-error`, `deferred`,
 `deferred_kind` and `deferred_at` for a run that went past a violation),
-`stat` (for `steps`), and the print kinds.
+`stat` (for `steps`), `reach` (with `--reach-targets`: `id`, `status`
+`reached` or `not-reached`, `op`, [`by`], [`witness`], [`at`,
+`at_inlined`, `at_name`]), and the print kinds.
 
 ## BRUNCH statistics
 

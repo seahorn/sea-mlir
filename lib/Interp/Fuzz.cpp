@@ -92,6 +92,23 @@ std::string formatAssignment(const Assignment &a) {
   return std::to_string(a.site) + "@" + a.cell + "=" + a.value;
 }
 
+LogicalResult writeCorpusFile(StringRef path,
+                              llvm::ArrayRef<std::string> header,
+                              llvm::ArrayRef<Assignment> input,
+                              std::string &error) {
+  std::error_code ec;
+  llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_Text);
+  if (ec) {
+    error = "cannot write '" + path.str() + "': " + ec.message();
+    return failure();
+  }
+  for (const std::string &h : header)
+    os << "# " << h << "\n";
+  for (const Assignment &a : input)
+    os << formatAssignment(a) << "\n";
+  return success();
+}
+
 /// The k=v fields of a record line's rest.
 static std::map<std::string, std::string> recordFields(StringRef rest) {
   std::map<std::string, std::string> f;
@@ -343,6 +360,17 @@ public:
       if (assumes.insert(a).second)
         newAssumes.push_back(a);
     };
+    if (!options.reachTargets.empty()) {
+      for (auto [i, op] : llvm::enumerate(options.reachTargets))
+        targetIndex[op] = i;
+      report.reachHits.resize(options.reachTargets.size());
+      // the top of a target: the op is about to execute
+      runOptions.onOp = [this](Operation &op, auto) {
+        auto it = targetIndex.find(&op);
+        if (it != targetIndex.end() && !report.reachHits[it->second].trial)
+          runHits.push_back(it->second);
+      };
+    }
   }
 
   FailureOr<FuzzReport> run(llvm::ArrayRef<CorpusEntryText> seeds,
@@ -354,6 +382,7 @@ public:
     newBlocks.clear();
     newEdges.clear();
     newAssumes.clear();
+    runHits.clear();
     return interpret(program, src, runOptions);
   }
 
@@ -504,10 +533,11 @@ private:
     return path.str().str();
   }
 
-  /// One trial on `preset` (and a seed's text). Returns failure on an
-  /// error of the fuzzer (`error` set); `stop` when the run must end.
+  /// One trial on `preset` (and a seed's text, from corpus file
+  /// `seedName`). Returns failure on an error of the fuzzer (`error` set);
+  /// `stop` when the run must end.
   LogicalResult trial(Entry preset, const std::map<Key, std::string> *seedText,
-                      bool &stop, std::string &error);
+                      StringRef seedName, bool &stop, std::string &error);
 
   ProgramOp program;
   const FuzzOptions &options;
@@ -522,6 +552,10 @@ private:
   llvm::DenseSet<std::pair<Block *, Block *>> edges;
   llvm::DenseSet<Operation *> assumes;
   llvm::DenseMap<Operation *, uint64_t> blockedBy;
+  /// FuzzOptions::reachTargets: op -> index; the targets the current run
+  /// reached that no earlier one did (repeats possible)
+  llvm::DenseMap<Operation *, size_t> targetIndex;
+  std::vector<size_t> runHits;
   FuzzReport report;
 };
 
@@ -529,13 +563,24 @@ private:
 
 LogicalResult Fuzzer::trial(Entry preset,
                             const std::map<Key, std::string> *seedText,
-                            bool &stop, std::string &error) {
+                            StringRef seedName, bool &stop,
+                            std::string &error) {
   source.reset(std::move(preset), seedText);
   RunResult r = runOn(source);
   ++report.trials;
   if (source.badSeed) {
     error = r.message;
     return failure();
+  }
+  for (size_t i : runHits) {
+    ReachHit &h = report.reachHits[i];
+    if (h.trial)
+      continue;
+    h.trial = report.trials;
+    h.seed = seedName.str();
+    h.input = assignmentsOf(source.used);
+    h.addr0IsNullUses = r.addr0IsNullUses;
+    h.memhavocNullNoopUses = r.memhavocNullNoopUses;
   }
   ++report.statusCount[static_cast<unsigned>(r.status)];
   report.addr0IsNullUses += r.addr0IsNullUses;
@@ -607,6 +652,12 @@ LogicalResult Fuzzer::trial(Entry preset,
 
 FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
                                   std::string &error) {
+  if (!options.reachTargets.empty() && options.deferMemoryErrors) {
+    error = "reach targets need exact runs: not with deferred memory errors "
+            "(past a substituted violation a run is not an execution of the "
+            "program)";
+    return failure();
+  }
   if (!options.outDir.empty() && llvm::sys::fs::exists(options.outDir)) {
     std::error_code ec;
     llvm::sys::fs::directory_iterator it(options.outDir, ec);
@@ -651,14 +702,14 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
     std::map<Key, std::string> text;
     for (const Assignment &a : s.assignments)
       text[{a.site, a.cell}] = a.value;
-    if (failed(trial({}, &text, stop, error))) {
+    if (failed(trial({}, &text, s.name, stop, error))) {
       error = s.name + ": " + error;
       return failure();
     }
     ++report.seedTrials;
   }
   while (!stop && budgetLeft())
-    if (failed(trial(nextEntry(), nullptr, stop, error)))
+    if (failed(trial(nextEntry(), nullptr, "", stop, error)))
       return failure();
   report.seconds = elapsed();
   report.blocksHit = blocks.size();
