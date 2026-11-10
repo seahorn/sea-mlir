@@ -28,7 +28,9 @@ std::unique_ptr<mlir::Pass>
 createSplitWideAccessPass(bool keepByteWide = false);
 /// sea-merge-asserts: many sea.assert ops -> one exit block with the only
 /// assert and halt (BMC form; ctac's ua merge).
-std::unique_ptr<mlir::Pass> createMergeAssertsPass();
+/// reportConstFalse: warn fold.assert-false for each assert of constant 0.
+std::unique_ptr<mlir::Pass>
+createMergeAssertsPass(bool reportConstFalse = true);
 /// sea-sink-assumes: every sea.assume of a BMC-form program -> one assume
 /// of the conjunction of the assumes on the path (an i1 carried along the
 /// CFG), right before the final assert (SeaHorn's UnifyAssumes; sea-vc

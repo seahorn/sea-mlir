@@ -7,7 +7,9 @@
 // offsets and hits the last write to its own: the VC has no select and no
 // store, and the assertion holds (unsat). Without SeaM the reads stay selects.
 // Read-over-write rules (Store-Map off: store-map.mlir has the same program with it on):
-// RUN: sea-vc %s --lower --widen-memory=4 --seam --seam-store-map=0 --seam-stats | FileCheck %s --check-prefix=STATS
+// The rule counts are of the three reads as written: --lower-opt=false, else
+// canonicalize forwards the last store's value to the read of st->b.
+// RUN: sea-vc %s --lower --lower-opt=false --widen-memory=4 --seam --seam-store-map=0 --seam-stats | FileCheck %s --check-prefix=STATS
 // RUN: sea-vc %s --lower --widen-memory=4 --seam --smt2 | FileCheck %s --check-prefix=SMT
 // RUN: sea-vc %s --lower --widen-memory=4 --smt2 | FileCheck %s --check-prefix=PLAIN
 // RUN: sea-vc %s --lower --widen-memory=4 --seam | FileCheck %s --check-prefix=VERDICT

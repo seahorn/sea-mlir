@@ -64,6 +64,12 @@ TYPICAL:
                                           #   Print names live in locations:
                                           #   keep --mlir-print-debuginfo
                                           #   (docs/design/Print.md)
+  sea-opt p.mlir --sea-merge-asserts      # every assert -> one exit block
+                                          #   (BMC form); warns
+                                          #   fold.assert-false for a
+                                          #   constant-0 assert but SeaHorn's
+                                          #   unlocated error marker
+                                          #   (report=false: no warning)
   sea-opt p.mlir --sea-vc-lower           # what sea-vc --lower runs (placed input)
   sea-opt p.mlir --pass-pipeline='builtin.module(sea-vc-lower{fold=false})'
                                           # the same without sccp (keeps every

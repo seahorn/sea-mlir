@@ -102,8 +102,10 @@ static cl::opt<bool>
 static cl::opt<bool> lowerOpt(
     "lower-opt",
     cl::desc("With --lower: upstream cse after sccp, canonicalize + cse "
-             "after the lowerings (merge equal values, fold, erase dead "
-             "ops and unreachable blocks; default on; =false keeps every op)"),
+             "after the lowerings (merge equal values, fold (constant "
+             "assumes / asserts, straight blocks, a load of a just-stored "
+             "value), erase dead ops and unreachable blocks; default on; "
+             "=false keeps every op)"),
     cl::init(true));
 
 static cl::opt<unsigned> widenMemory(
@@ -932,9 +934,10 @@ turns a solver model into a concrete run you can trust (or exposes a VC bug).
 
 INPUT FORM (checked; anything else is an error, never approximated):
   loop-free; one sea.halt; exactly one sea.assert immediately before it;
-  no critical edges; sea.cond_br targets distinct. nsw / nuw flags are
-  ignored (the value wraps, as in SeaHorn); use sea-wrap-flags to assume or
-  assert them.
+  no critical edges; sea.cond_br targets distinct. Also: no sea.halt and
+  no sea.assert (every path ends in sea.unreachable): statically safe.
+  nsw / nuw flags are ignored (the value wraps, as in SeaHorn); use
+  sea-wrap-flags to assume or assert them.
 
 TYPICAL:
   sea-vc p.mlir                  # solve with z3, replay if sat
@@ -1001,7 +1004,11 @@ TYPICAL:
                                  #   keep umulo/smulo: native overflow
                                  #   predicates), split critical edges;
                                  #   cse after sccp, canonicalize + cse
-                                 #   before splitting edges (--lower-opt)
+                                 #   before splitting edges (--lower-opt;
+                                 #   canonicalize also folds constant
+                                 #   assumes / asserts, merges straight
+                                 #   blocks, forwards a stored value to a
+                                 #   load at the same address)
   sea-vc p.mlir --lower --lower-opt=false  # the lowering without cse /
                                  #   canonicalize: every op stays (A/B of
                                  #   the clean-up)
@@ -1310,6 +1317,26 @@ OUTPUT (stdout, `key: value` lines):
   vc.config: <path>               (--config: each config loaded, in order,
                                   first; with --smt2 on stderr)
   program: @<name>
+  vc.fold: assume-false=<n> assert-false=<n>   (the lowering folded an
+                                  assume / assert of constant false:
+                                  warnings fold.assume-false (a proved
+                                  check or vacuity, not told apart) and
+                                  fold.assert-false, also from
+                                  sea-merge-asserts for an assert of
+                                  constant 0 that is not the only assert
+                                  right before the halt, or has a source
+                                  location (SeaHorn's unlocated error
+                                  marker `assert false; halt` is not
+                                  reported); only if one fired). Not
+                                  reported: an assert that becomes
+                                  constant only in the lowering's
+                                  canonicalize (icmp ne x, x); the
+                                  verdict still shows it. Counts
+                                  of the whole file: every program the
+                                  lowering ran on, not only --program's
+  vc.statically-safe: no reachable sea.halt ...   (no path reaches the
+                                  assertion: it cannot fail; the solver
+                                  still answers, unsat)
   vc.ptr-companion: loads=<n> stores=<n> copies=<n> fresh=<n>
                                   (--ptr-companion: split pointer loads read
                                   through the companion, pointer stores /
@@ -2114,6 +2141,21 @@ int main(int argc, char **argv) {
   }
   if (failed(sea::verifyBmcForm(program)))
     return 1;
+  // folding (canonicalize) may leave no reachable assertion: reported; the
+  // solver still answers (unsat)
+  const bool staticallySafe = sea::isStaticallySafe(program);
+  // the folds that decide a block's rest (sea canonicalizers; this run,
+  // every program of the file)
+  const unsigned foldAssumeFalse = sea::diag::count("fold.assume-false");
+  const unsigned foldAssertFalse = sea::diag::count("fold.assert-false");
+  auto foldLines = [&](raw_ostream &os) {
+    if (foldAssumeFalse || foldAssertFalse)
+      os << "vc.fold: assume-false=" << foldAssumeFalse
+         << " assert-false=" << foldAssertFalse << "\n";
+    if (staticallySafe)
+      os << "vc.statically-safe: no reachable sea.halt (every path is "
+            "blocked; the assertion cannot fail)\n";
+  };
   // the bounded expansions of symbolic memset / memmove lengths
   // (sea-expand-memset, without --seam): assume(n <= K), an
   // under-approximation the result rests on (assume.memset-bound)
@@ -3456,6 +3498,7 @@ int main(int argc, char **argv) {
                 << "vc.ptr-from-int-opaque: " << sem.ptrFromIntOpaque() << "\n";
       if (sinkAssumes)
         statOut() << "vc.sink-assumes: " << sunkAssumes << "\n";
+      foldLines(statOut());
       companionLine(statOut());
       printSeamStats(statOut());
       runSeamCheck();
@@ -3481,6 +3524,7 @@ int main(int argc, char **argv) {
            << "\nvc.ptr-from-int-opaque: " << sem.ptrFromIntOpaque() << "\n";
     if (sinkAssumes)
       vout() << "vc.sink-assumes: " << sunkAssumes << "\n";
+    foldLines(vout());
     companionLine(vout());
     brunchStat(vout(), "vc.ptr-mode", addressMode ? "address" : "opaque");
     brunchStat(vout(), "vc.int-to-ptr", llvm::Twine(intToPtr));

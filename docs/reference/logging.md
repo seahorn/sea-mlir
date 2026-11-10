@@ -51,6 +51,7 @@ To see what a solver receives, use `--smt2`, not a log.
 | `lower.pass` | 1 | `sea-vc` | one pass run |
 | `vc.solve` | 1 | `sea-vc` | one solver call of the verdict |
 | `vc.store-read` | 3 | `sea-vc` | a memory key read before any write |
+| `canon.fold` | 2 | all (canonicalize) | one fold of a sea canonicalizer: `assume-true`, `assume-false`, `assert-true`, `assert-false`, `br-merge`, `load-stored` |
 | `fuzz.run` | 1, 2 | `sea-run` | `--fuzz`: start and end (1); each trial that reached new coverage (2) |
 | `warn.<kind>` | 2 | all | one occurrence of a warning |
 

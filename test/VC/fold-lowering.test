@@ -1,0 +1,163 @@
+// Folds of the lowering that must keep the verdict and the replay.
+// RUN: split-file %s %t
+
+// An access wider than its address space wraps over its own cells: the
+// load reads the store's later parts, not the stored value. Not forwarded
+// (sat, as without canonicalize: standalone canonicalize first, then the
+// lowering without it); at exactly 2^w units it is.
+// RUN: sea-opt %t/wrap.mlir --canonicalize | FileCheck %s --check-prefix=KEPT
+// RUN: sea-opt %t/wrap8.mlir --canonicalize | FileCheck %s --check-prefix=KEPT
+// RUN: sea-vc %t/wrap.mlir --lower | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/wrap8.mlir --lower | FileCheck %s --check-prefix=SAT
+// RUN: sea-opt %t/wrap.mlir --canonicalize | sea-vc - --lower --lower-opt=false | FileCheck %s --check-prefix=SAT
+// RUN: sea-opt %t/wrap8.mlir --canonicalize | sea-vc - --lower --lower-opt=false | FileCheck %s --check-prefix=SAT
+// RUN: sea-run %t/wrap.mlir --input=1=0 | FileCheck %s --check-prefix=FAIL
+// RUN: sea-opt %t/fits.mlir --canonicalize | FileCheck %s --check-prefix=FWD
+// RUN: sea-vc %t/fits.mlir --lower --lower-opt=false | FileCheck %s --check-prefix=UNSAT
+// Keyed cells: an access wider than its cell covers one unit per cell and
+// wraps the same way (k1b: i32 over i8 cells at a 1-bit address, k2b: i40
+// at a 2-bit one); it fits in k2 (4 units at a 2-bit address), k16 (two
+// i16 cells at a 1-bit address) and k64.
+// RUN: sea-opt %t/k1b.mlir --canonicalize | FileCheck %s --check-prefix=KEPT
+// RUN: sea-opt %t/k2b.mlir --canonicalize | FileCheck %s --check-prefix=KEPT
+// RUN: sea-opt %t/k1b.mlir --canonicalize | sea-vc - --lower --lower-opt=false | FileCheck %s --check-prefix=SAT
+// RUN: sea-opt %t/k2b.mlir --canonicalize | sea-vc - --lower --lower-opt=false | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/k1b.mlir --lower | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/k2b.mlir --lower | FileCheck %s --check-prefix=SAT
+// RUN: sea-opt %t/k2.mlir --canonicalize | FileCheck %s --check-prefix=FWD
+// RUN: sea-opt %t/k16.mlir --canonicalize | FileCheck %s --check-prefix=FWD
+// RUN: sea-opt %t/k64.mlir --canonicalize | FileCheck %s --check-prefix=FWD
+// RUN: sea-vc %t/k2.mlir --lower --lower-opt=false | FileCheck %s --check-prefix=UNSAT
+// RUN: sea-vc %t/k16.mlir --lower --lower-opt=false | FileCheck %s --check-prefix=UNSAT
+// KEPT: sea.load
+// FWD-NOT: sea.load
+// SAT: result: sat
+// SAT: replay: assert-failed
+// UNSAT: result: unsat
+// FAIL: status: assert-failed
+
+// The block merge keeps the branches sea-merge-asserts marks: with the
+// halt path blocked, every other branch on the failing path merges away,
+// and the replay still names the original assert.
+// RUN: sea-vc %t/marker.mlir --lower | FileCheck %s --check-prefix=MARK
+// MARK: replay: assert-failed
+// MARK: replay: assert-op: {{.*}}marker.mlir:8:3{{$}}
+// REQUIRES: z3
+
+//--- wrap.mlir
+sea.program @main {
+  %m = sea.mem.nondet "m" [0] : !sea.mem<!sea.addr<1>, i8>
+  %k = sea.nondet "k" [1] : i1
+  %a = sea.addr.from_int %k : i1 to !sea.addr<1>
+  %v = sea.const 0x04030201 : i32
+  %m1 = sea.store %m[%a], %v inplace : !sea.mem<!sea.addr<1>, i8>, i32
+  %x = sea.load %m1[%a] : !sea.mem<!sea.addr<1>, i8> -> i32
+  %e = sea.icmp eq, %x, %v : i32
+  sea.assert %e
+  sea.halt
+}
+
+//--- wrap8.mlir
+sea.program @main {
+  %m = sea.mem.nondet "m" [0] : !sea.mem<!sea.addr<3>, i8>
+  %k = sea.nondet "k" [1] : i3
+  %a = sea.addr.from_int %k : i3 to !sea.addr<3>
+  %v = sea.nondet "v" [2] : i128
+  %m1 = sea.store %m[%a], %v inplace : !sea.mem<!sea.addr<3>, i8>, i128
+  %x = sea.load %m1[%a] : !sea.mem<!sea.addr<3>, i8> -> i128
+  %e = sea.icmp eq, %x, %v : i128
+  sea.assert %e
+  sea.halt
+}
+
+//--- fits.mlir
+sea.program @main {
+  %m = sea.mem.nondet "m" [0] : !sea.mem<!sea.addr<2>, i8>
+  %k = sea.nondet "k" [1] : i2
+  %a = sea.addr.from_int %k : i2 to !sea.addr<2>
+  %v = sea.nondet "v" [2] : i32
+  %m1 = sea.store %m[%a], %v inplace : !sea.mem<!sea.addr<2>, i8>, i32
+  %x = sea.load %m1[%a] : !sea.mem<!sea.addr<2>, i8> -> i32
+  %e = sea.icmp eq, %x, %v : i32
+  sea.assert %e
+  sea.halt
+}
+
+//--- k1b.mlir
+sea.program @main {
+  %m = sea.mem.nondet "m" [0] : !sea.mem<!sea.addr<1>, i8, keyed>
+  %k = sea.nondet "k" [1] : i1
+  %a = sea.addr.from_int %k : i1 to !sea.addr<1>
+  %v = sea.const 0x04030201 : i32
+  %m1 = sea.store %m[%a], %v inplace : !sea.mem<!sea.addr<1>, i8, keyed>, i32
+  %x = sea.load %m1[%a] : !sea.mem<!sea.addr<1>, i8, keyed> -> i32
+  %e = sea.icmp eq, %x, %v : i32
+  sea.assert %e
+  sea.halt
+}
+//--- k2b.mlir
+sea.program @main {
+  %m = sea.mem.nondet "m" [0] : !sea.mem<!sea.addr<2>, i8, keyed>
+  %k = sea.nondet "k" [1] : i2
+  %a = sea.addr.from_int %k : i2 to !sea.addr<2>
+  %v = sea.const 0x0504030201 : i40
+  %m1 = sea.store %m[%a], %v inplace : !sea.mem<!sea.addr<2>, i8, keyed>, i40
+  %x = sea.load %m1[%a] : !sea.mem<!sea.addr<2>, i8, keyed> -> i40
+  %e = sea.icmp eq, %x, %v : i40
+  sea.assert %e
+  sea.halt
+}
+//--- k2.mlir
+sea.program @main {
+  %m = sea.mem.nondet "m" [0] : !sea.mem<!sea.addr<2>, i8, keyed>
+  %k = sea.nondet "k" [1] : i2
+  %a = sea.addr.from_int %k : i2 to !sea.addr<2>
+  %v = sea.const 0x04030201 : i32
+  %m1 = sea.store %m[%a], %v inplace : !sea.mem<!sea.addr<2>, i8, keyed>, i32
+  %x = sea.load %m1[%a] : !sea.mem<!sea.addr<2>, i8, keyed> -> i32
+  %e = sea.icmp eq, %x, %v : i32
+  sea.assert %e
+  sea.halt
+}
+//--- k16.mlir
+sea.program @main {
+  %m = sea.mem.nondet "m" [0] : !sea.mem<!sea.addr<1>, i16, keyed>
+  %k = sea.nondet "k" [1] : i1
+  %a = sea.addr.from_int %k : i1 to !sea.addr<1>
+  %v = sea.const 0x04030201 : i32
+  %m1 = sea.store %m[%a], %v inplace : !sea.mem<!sea.addr<1>, i16, keyed>, i32
+  %x = sea.load %m1[%a] : !sea.mem<!sea.addr<1>, i16, keyed> -> i32
+  %e = sea.icmp eq, %x, %v : i32
+  sea.assert %e
+  sea.halt
+}
+//--- k64.mlir
+sea.program @main {
+  %m = sea.mem.nondet "m" [0] : !sea.mem<!sea.addr<64>, i8, keyed>
+  %k = sea.nondet "k" [1] : i64
+  %a = sea.addr.from_int %k : i64 to !sea.addr<64>
+  %v = sea.const 0x04030201 : i32
+  %m1 = sea.store %m[%a], %v inplace : !sea.mem<!sea.addr<64>, i8, keyed>, i32
+  %x = sea.load %m1[%a] : !sea.mem<!sea.addr<64>, i8, keyed> -> i32
+  %e = sea.icmp eq, %x, %v : i32
+  sea.assert %e
+  sea.halt
+}
+//--- marker.mlir
+sea.program @p {
+  %x = sea.nondet "x" [0] : i8 loc("m.c":3:3)
+  %z = sea.const 0 : i8
+  %c = sea.icmp eq, %x, %z : i8 loc("m.c":4:7)
+  sea.cond_br %c, ^a, ^b loc("m.c":4:3)
+^a:
+  %f = sea.const 0 : i1
+  sea.assert %f
+  sea.halt
+^b:
+  %g = sea.const 0 : i1
+  sea.assume %g
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

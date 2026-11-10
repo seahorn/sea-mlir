@@ -4,7 +4,7 @@
 // CHECK-LABEL: sea.program @take_true
 // CHECK: %[[T:.*]] = sea.nondet "taken" [0] : i1
 // CHECK-NOT: sea.cond_br
-// CHECK: sea.br ^{{.*}}(%[[T]] : i1)
+// CHECK: sea.assert %[[T]]
 // CHECK-NOT: sea.cond_br
 sea.program @take_true {
   %c = sea.const true
@@ -23,7 +23,7 @@ sea.program @take_true {
 // CHECK-LABEL: sea.program @take_false
 // CHECK: %[[F:.*]] = sea.nondet "taken" [1] : i1
 // CHECK-NOT: sea.cond_br
-// CHECK: sea.br ^{{.*}}(%[[F]] : i1)
+// CHECK: sea.assert %[[F]]
 // CHECK-NOT: sea.cond_br
 sea.program @take_false {
   %c = sea.const false
@@ -42,7 +42,7 @@ sea.program @take_false {
 // CHECK-LABEL: sea.program @same_edge
 // CHECK: %[[S:.*]] = sea.nondet "value" [1] : i1
 // CHECK-NOT: sea.cond_br
-// CHECK: sea.br ^{{.*}}(%[[S]] : i1)
+// CHECK: sea.assert %[[S]]
 // CHECK-NOT: sea.cond_br
 sea.program @same_edge {
   %c = sea.nondet "condition" [0] : i1

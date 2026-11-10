@@ -39,15 +39,19 @@ LogicalResult verifyBmcForm(ProgramOp program) {
 
   SmallVector<HaltOp> halts;
   program.walk([&](HaltOp h) { halts.push_back(h); });
-  if (halts.size() != 1) {
+  SmallVector<AssertOp> asserts;
+  program.walk([&](AssertOp a) { asserts.push_back(a); });
+  // no halt and no assert: every path ends in sea.unreachable (folding
+  // blocked them all), so the assertion cannot fail; the statically safe
+  // form (isStaticallySafe)
+  const bool blocked = halts.empty() && asserts.empty();
+  if (halts.size() != 1 && !blocked) {
     program.emitError("BMC form: expected exactly one sea.halt, found ")
         << halts.size();
     ok = false;
   }
 
-  SmallVector<AssertOp> asserts;
-  program.walk([&](AssertOp a) { asserts.push_back(a); });
-  if (asserts.size() != 1) {
+  if (asserts.size() != 1 && !blocked) {
     program.emitError("BMC form: expected exactly one sea.assert, found ")
         << asserts.size();
     ok = false;
@@ -95,6 +99,24 @@ LogicalResult verifyBmcForm(ProgramOp program) {
     ok = false;
 
   return success(ok);
+}
+
+bool isStaticallySafe(ProgramOp program) {
+  Region &body = program.getBody();
+  if (body.empty())
+    return true;
+  llvm::DenseSet<Block *> reached;
+  SmallVector<Block *> work{&body.front()};
+  while (!work.empty()) {
+    Block *b = work.pop_back_val();
+    if (!reached.insert(b).second)
+      continue;
+    if (isa<HaltOp>(b->getTerminator()))
+      return false;
+    for (Block *s : b->getSuccessors())
+      work.push_back(s);
+  }
+  return true;
 }
 
 Expr VCGen::computePathCondForBb(Block &bb,

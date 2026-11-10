@@ -1,5 +1,7 @@
-// RUN: sea-vc %s --lower --seam --seam-stats | FileCheck %s
-// RUN: sea-vc %s --lower --seam --seam-wide --seam-stats | FileCheck %s
+// --lower-opt=false: the load must reach the VC (canonicalize would forward
+// the stored value to it).
+// RUN: sea-vc %s --lower --lower-opt=false --seam --seam-stats | FileCheck %s
+// RUN: sea-vc %s --lower --lower-opt=false --seam --seam-wide --seam-stats | FileCheck %s
 
 // A node whose base is an ite of nodes (a GEP over a phi of GEPs). The
 // rules read it through its flat form, and that form must flatten the

@@ -36,8 +36,9 @@
 //
 // Contract.
 //   Accepts: a program in BMC form (loop-free; one sea.halt with the one
-//     sea.assert right before it, print ops aside); anything else is the
-//     error sea-sink-assumes.form.
+//     sea.assert right before it, print ops aside), or a program with
+//     neither (statically safe: left alone); anything else is the error
+//     sea-sink-assumes.form.
 //   Produces: at most one sea.assume, right before the assert (none if the
 //     program had none); the CFG's edges are unchanged (so no critical edge
 //     is added), blocks may gain one i1 argument. Checked.
@@ -101,7 +102,9 @@ void SinkAssumesPass::runOnOperation() {
   program.walk([&](HaltOp h) { halts.push_back(h); });
   if (moved)
     *moved = 0;
-  if (all.empty())
+  // no assert and no halt (the statically safe BMC form: every path is
+  // blocked): no path to sink the assumes along, nothing to do
+  if (all.empty() || (asserts.empty() && halts.empty()))
     return;
   if (asserts.size() != 1 || halts.size() != 1 ||
       nextNonPrintOp(asserts.front()) != halts.front().getOperation()) {
