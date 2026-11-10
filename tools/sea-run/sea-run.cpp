@@ -35,8 +35,13 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
+
+#include <iostream>
+#include <string>
 
 using namespace mlir;
 using namespace llvm;
@@ -161,6 +166,12 @@ static cl::opt<bool> fuzzSites(
     cl::desc("List the input sites (nondet values, memory sources) and exit"),
     cl::init(false));
 
+static cl::opt<bool> fuzzServe(
+    "fuzz-serve",
+    cl::desc("Serve runs: read one JSON request per line on stdin, write one "
+             "JSON response per line (docs/reference/fuzzing.md)"),
+    cl::init(false));
+
 static cl::opt<bool> agent("agent",
                            cl::desc("Print a terse guide for agents and exit"),
                            cl::init(false));
@@ -190,6 +201,7 @@ TYPICAL:
   sea-run p.mlir --fuzz=10000 --seed=1 --fuzz-out=out   # fuzz (see FUZZING)
   sea-run p.mlir --defer-memory-errors      # classify memory errors (DEFERRED)
   sea-run p.mlir --fuzz-sites               # list the input sites and exit
+  sea-run p.mlir --fuzz-serve < reqs.jsonl  # runs on given inputs (see SERVE)
 
 INPUTS: a module with sea.program ops. --input values are decimal, negative
 decimal, or 0x-hex, and must fit the nondet's width (a negative v means
@@ -484,15 +496,26 @@ FUZZ SITES (--fuzz-sites: list and exit, no run; not with --fuzz, --input,
 --input-file, --trace, --seed, --max-steps, --defer-memory-errors):
   fuzz.site: <site> callee=<f>|<memory name>|- width=<w>
              input=value|memory op=<op> at=<where>
-  fuzz.sites: <n> value=<n> memory=<n>    (last; 0: no input sites)
+  fuzz.assume: <id> op=sea.assume|sea.unreachable at=<where>
+               [sites=<n,...>|- cond=<expr>]
+                                          (each op that can block a run;
+                                          sea.assume: its condition, see
+                                          COND)
+  fuzz.sites: <n> value=<n> memory=<n> assumes=<n> unreachables=<n>
+                                          (last; 0: no input sites;
+                                          assumes: sea.assume ops, as
+                                          assumes-total of fuzz.coverage)
 value: sea.nondet, sea.struct.nondet (one value per run, <site>=<v>);
 memory: sea.mem.nondet, sea.memhavoc (callee -), width = the cell width,
 one value per cell read (<site>@<addr>=<v>). Program order.
-sea.ptr.nondet takes no input: not listed.
+sea.ptr.nondet takes no input: not listed. fuzz.assume: every sea.assume
+and sea.unreachable, program order; <id> is the position in that order
+(the id of --fuzz-serve's blocked and new assumes).
 
-COND (fuzz.blocked of a sea.assume): the assume's condition written over
-the input sites, computed once from the program text when the report
-prints (no cost per trial). A backward walk, not symbolic execution.
+COND (fuzz.blocked and fuzz.assume of a sea.assume): the assume's
+condition written over the input sites, computed from the program text
+when the report prints (no cost per trial). A backward walk, not
+symbolic execution.
   s<N>                 the value of input site N
   <number>             a constant, unsigned decimal (a placed object's
                        base address too)
@@ -521,6 +544,51 @@ field and runs to the end of the line (it holds spaces); jsonl: string
 fields sites and cond. cond=0: an assume of false, nothing passes it. The
 path to the assume is not part of cond.
 
+SERVE (--fuzz-serve; docs/reference/fuzzing.md; utils/fuzz-driver.py is a
+Python driver): parses once, then reads one JSON request per stdin line
+and writes one JSON response per stdout line, flushed; EOF ends it, with a
+summary line. The run is a trial of --fuzz on the given values (one value
+per site or cell per run); coverage is kept across requests. Takes
+--program, --missing (the requests' default), --seed (the stream of random
+values of requests without a seed), --max-steps, --defer-memory-errors;
+not --fuzz, --fuzz-time, --fuzz-out, --fuzz-dict, --fuzz-sites,
+--keep-going, --input, --input-file, --corpus, --trace, --format; the
+program is a file (stdin holds the requests).
+Request: {"inputs": {"<site>": <v>, "<site>@<addr>": <v>, ...},
+          "missing": "zero"|"random"|"error", "seed": <n>,
+          "trace_sites": true, "id": <any>}   (all optional)
+  <v>: an integer, or a string (decimal, negative, 0x-hex); it must fit
+  the site's width. A cell the run never reads is ignored (as --input);
+  object names (stack.1) come from earlier responses' input / reads.
+  missing: what sites the request does not set get
+  (error: the run stops, status error, as plain sea-run).
+Response (kind "response"): request (1-based line count), [id], then the
+fields of a jsonl status record (status, loc = the at: line, at / op /
+path = assert-at / assert-op / assert-path, reached*, message, deferred*;
+text = the status lines of a plain run), and:
+  blocked, blocked_at   assume-blocked: the id and <where> of the
+                        blocking op; join on the id (the number of
+                        --fuzz-sites' fuzz.assume line), not on the
+                        location (inlined code repeats one)
+  new                   {"blocks": [id], "edges": [[from, to]],
+                        "assumes": [id]}: what no earlier request reached;
+                        assumes: sea.assume ids (as assumes_total);
+                        block id = position in the program body (entry 0),
+                        from -1 = the entry of the run
+  coverage              {"blocks", "blocks_total", "edges", "assumes",
+                        "assumes_total"}: all requests so far
+  input                 ["<site>=<v>", "<site>@<addr>=<v>", ...]: every
+                        value the run read; these lines as a file replay
+                        with --input-file
+  reads                 (trace_sites) [{"site", ["addr",] "width", "value",
+                        "origin": input|zero|random}] in read order
+  steps
+A bad request (not JSON, unknown field, a site the program does not have,
+a value that does not fit, <site>@<addr> for a value site or the reverse)
+gets {"kind":"error","request":n,["id",]"error":"<why>"} and runs nothing;
+the server goes on. At EOF: {"kind":"summary","requests","errors",
+"coverage"}. Exit 0.
+
 DIAGNOSTICS (stderr): "Warning: ... [kind]" (yellow), once per kind, with a
 summary of repeats at exit (--log=warn.<kind>:2 prints each); "Error: ...
 [kind]" (red) when the run stops with status: error. Logs: --log, SEA_LOG
@@ -547,6 +615,8 @@ static std::string locText(Location l) {
   os << l;
   return t;
 }
+
+static sea::out::Record statusRecord(const sea::RunResult &r);
 
 /// The report of one run: program, its inputs, prints, status, steps.
 static void printRun(sea::out::Emitter &out, sea::ProgramOp program,
@@ -599,8 +669,14 @@ static void printRun(sea::out::Emitter &out, sea::ProgramOp program,
     out.emit(rec);
   }
   sea::printPrintRecords(out, r, printMode, printLocs);
+  out.emit(statusRecord(r));
+  out.emit(sea::out::parseLine("steps: " + std::to_string(r.steps)));
+}
+
+/// One record: the status and where the run stopped (the status / at /
+/// assert-* / reached / message / deferred lines).
+static sea::out::Record statusRecord(const sea::RunResult &r) {
   {
-    // one record: the status and where the run stopped
     sea::out::Record rec("status");
     rec.str("status", sea::stringifyRunStatus(r.status));
     raw_string_ostream os(rec.text);
@@ -649,12 +725,36 @@ static void printRun(sea::out::Emitter &out, sea::ProgramOp program,
           .str("deferred_kind", sea::stringifyRunErrorKind(r.deferredKind));
       sea::addLocFields(rec, "deferred_at", r.deferredAt->getLoc());
     }
-    out.emit(rec);
+    return rec;
   }
-  out.emit(sea::out::parseLine("steps: " + std::to_string(r.steps)));
 }
 
-/// sea-run --fuzz-sites: one `fuzz.site:` line per input site.
+/// Emits `line` (a `key: <n> op=.. at=..` stat line of a blocking op); for
+/// a sea.assume, with ` sites=<n,...>|- cond=<expr>` appended: the
+/// condition over input sites (static). cond is last: it holds spaces, so
+/// the stat record is built here, not parsed.
+static void emitBlockerLine(sea::out::Emitter &out, const std::string &line,
+                            Operation *op) {
+  auto assume = dyn_cast<sea::AssumeOp>(op);
+  if (!assume) {
+    out.lines() << line << "\n";
+    return;
+  }
+  sea::ConditionText c = sea::describeCondition(assume.getCond());
+  std::string sites =
+      c.sites.empty()
+          ? "-"
+          : join(map_range(c.sites,
+                           [](uint64_t s) { return std::to_string(s); }),
+                 ",");
+  sea::out::Record rec = sea::out::parseLine(line);
+  rec.str("sites", sites).str("cond", c.text);
+  rec.text += " sites=" + sites + " cond=" + c.text;
+  out.emit(rec);
+}
+
+/// sea-run --fuzz-sites: one `fuzz.site:` line per input site, one
+/// `fuzz.assume:` line per op that can block a run, then the counts.
 static int listSites(sea::ProgramOp program) {
   sea::out::Emitter out(outs(), outFormat);
   std::vector<sea::InputSite> sites = sea::inputSitesOf(program);
@@ -668,8 +768,26 @@ static int listSites(sea::ProgramOp program) {
                 << " op=" << s.op->getName()
                 << " at=" << (at.empty() ? "-" : at) << "\n";
   }
+  // every op that can block a run, with its condition: plan before fuzzing
+  std::vector<Operation *> blockers = sea::blockingOpsOf(program);
+  for (auto [id, op] : llvm::enumerate(blockers)) {
+    std::string at = sea::formatLoc(op->getLoc());
+    std::string line;
+    raw_string_ostream ls(line);
+    ls << "fuzz.assume: " << id << " op=" << op->getName()
+       << " at=" << (at.empty() ? "-" : at);
+    emitBlockerLine(out, line, op);
+  }
   out.lines() << "fuzz.sites: " << sites.size()
               << " value=" << sites.size() - memories << " memory=" << memories
+              << " assumes="
+              << llvm::count_if(
+                     blockers,
+                     [](Operation *op) { return isa<sea::AssumeOp>(op); })
+              << " unreachables="
+              << llvm::count_if(
+                     blockers,
+                     [](Operation *op) { return isa<sea::UnreachableOp>(op); })
               << "\n";
   out.flush();
   return 0;
@@ -805,28 +923,228 @@ static int runFuzz(sea::ProgramOp program) {
     raw_string_ostream ls(line);
     ls << "fuzz.blocked: " << n << " op=" << op->getName()
        << " at=" << (at.empty() ? "-" : at);
-    auto assume = dyn_cast<sea::AssumeOp>(op);
-    if (!assume) {
-      os << line << "\n";
-      continue;
-    }
-    // the condition over input sites (static, once per blocking assume);
-    // cond last: it holds spaces, so a stat record built here, not parsed
-    sea::ConditionText c = sea::describeCondition(assume.getCond());
-    std::string sites =
-        c.sites.empty()
-            ? "-"
-            : join(map_range(c.sites,
-                             [](uint64_t s) { return std::to_string(s); }),
-                   ",");
-    sea::out::Record rec = sea::out::parseLine(line);
-    rec.str("sites", sites).str("cond", c.text);
-    rec.text += " sites=" + sites + " cond=" + c.text;
-    out.emit(rec);
+    emitBlockerLine(out, line, op);
   }
   out.flush();
   return memoryFinding ? 4 : 0;
 }
+/// A JSON array of unsigned numbers.
+static std::string jnums(ArrayRef<unsigned> xs) {
+  return "[" +
+         join(map_range(xs, [](unsigned x) { return sea::out::jnum(x); }),
+              ",") +
+         "]";
+}
+
+static std::string coverageJson(const sea::ServeCoverage &c) {
+  return "{\"blocks\":" + sea::out::jnum(c.blocksHit) +
+         ",\"blocks_total\":" + sea::out::jnum(c.blocksTotal) +
+         ",\"edges\":" + sea::out::jnum(c.edgesHit) +
+         ",\"assumes\":" + sea::out::jnum(c.assumesPassed) +
+         ",\"assumes_total\":" + sea::out::jnum(c.assumesTotal) + "}";
+}
+
+/// Parses one --fuzz-serve request line; `trace` is its trace_sites.
+static LogicalResult parseRequest(StringRef line, sea::ServeRequest &req,
+                                  bool &trace, std::optional<json::Value> &id,
+                                  std::string &error) {
+  Expected<json::Value> v = json::parse(line);
+  if (!v) {
+    error = "not JSON: " + toString(v.takeError());
+    return failure();
+  }
+  json::Object *o = v->getAsObject();
+  if (!o) {
+    error = "a request is a JSON object";
+    return failure();
+  }
+  if (json::Value *i = o->get("id"))
+    id = *i;
+  req.missing = missing;
+  trace = false;
+  for (auto &[key, val] : *o) {
+    if (key == "id")
+      continue;
+    if (key == "inputs") {
+      json::Object *in = val.getAsObject();
+      if (!in) {
+        error = "\"inputs\" is an object {\"<site>[@<addr>]\": <value>}";
+        return failure();
+      }
+      // sorted keys: the same request gives the same order
+      std::vector<std::string> keys;
+      for (auto &kv : *in)
+        keys.push_back(kv.first.str());
+      llvm::sort(keys);
+      for (const std::string &k : keys) {
+        const json::Value &x = *in->get(k);
+        std::string text;
+        if (std::optional<StringRef> str = x.getAsString())
+          text = str->str();
+        else if (std::optional<int64_t> n = x.getAsInteger())
+          text = std::to_string(*n);
+        else if (std::optional<uint64_t> n = x.getAsUINT64())
+          text = std::to_string(*n);
+        else {
+          error = "input \"" + k +
+                  "\": the value is an integer or a string (decimal, "
+                  "negative, 0x-hex)";
+          return failure();
+        }
+        sea::Assignment a;
+        std::string expected;
+        if (failed(sea::parseAssignment(k + "=" + text, a, expected))) {
+          error = "bad input \"" + k + "\": " + expected;
+          return failure();
+        }
+        req.inputs.push_back(std::move(a));
+      }
+      continue;
+    }
+    if (key == "missing") {
+      std::optional<StringRef> m = val.getAsString();
+      if (m == "zero")
+        req.missing = sea::InputSource::Missing::Zero;
+      else if (m == "random")
+        req.missing = sea::InputSource::Missing::Random;
+      else if (m == "error")
+        req.missing = sea::InputSource::Missing::Error;
+      else {
+        error = "\"missing\" is \"zero\", \"random\" or \"error\"";
+        return failure();
+      }
+      continue;
+    }
+    if (key == "seed") {
+      std::optional<uint64_t> n = val.getAsUINT64();
+      if (!n) {
+        error = "\"seed\" is a non-negative integer";
+        return failure();
+      }
+      req.seed = *n;
+      continue;
+    }
+    if (key == "trace_sites") {
+      std::optional<bool> b = val.getAsBoolean();
+      if (!b) {
+        error = "\"trace_sites\" is true or false";
+        return failure();
+      }
+      trace = *b;
+      continue;
+    }
+    error = "unknown request field \"" + key.str() +
+            "\" (inputs, missing, seed, trace_sites, id)";
+    return failure();
+  }
+  return success();
+}
+
+/// sea-run --fuzz-serve (docs/reference/fuzzing.md): one response per
+/// request line, flushed; a summary at EOF.
+static int runServe(sea::ProgramOp program) {
+  if (fuzzTrials || fuzzTime > 0 || trace || !inputs.empty() ||
+      !inputFile.empty() || !corpus.empty() || !fuzzOut.empty() || keepGoing ||
+      fuzzDict.getNumOccurrences() || fuzzSites ||
+      outFormat.getNumOccurrences())
+    return fail("--fuzz-serve does not take --fuzz, --fuzz-time, --trace, "
+                "--input, --input-file, --corpus, --fuzz-out, --keep-going, "
+                "--fuzz-dict, --fuzz-sites or --format (it writes JSON lines)");
+  sea::FuzzOptions fo;
+  fo.seed = seed;
+  fo.maxSteps = maxSteps;
+  fo.deferMemoryErrors = deferMemoryErrors;
+  sea::FuzzServer server(program, fo);
+  sea::out::Emitter out(outs(), sea::out::Format::Jsonl);
+  uint64_t requests = 0, errors = 0;
+  std::string line;
+  while (std::getline(std::cin, line)) {
+    if (StringRef(line).trim().empty())
+      continue;
+    ++requests;
+    sea::ServeRequest req;
+    bool traceSites = false;
+    std::optional<json::Value> id;
+    std::string error;
+    FailureOr<sea::ServeResult> res = failure();
+    if (succeeded(parseRequest(line, req, traceSites, id, error)))
+      res = server.run(req, error);
+    if (failed(res)) {
+      ++errors;
+      sea::out::Record rec("error");
+      rec.num("request", requests);
+      if (id)
+        rec.set("id", formatv("{0}", *id).str());
+      rec.str("error", error);
+      rec.text = "error: " + error;
+      out.emit(rec);
+      out.flush();
+      continue;
+    }
+    const sea::RunResult &r = res->run;
+    sea::out::Record st = statusRecord(r);
+    sea::out::Record rec("response");
+    rec.num("request", requests);
+    if (id)
+      rec.set("id", formatv("{0}", *id).str());
+    rec.add(st.fields);
+    if (res->blocked) {
+      std::string at = sea::formatLoc(r.at->getLoc());
+      rec.num("blocked", *res->blocked)
+          .str("blocked_at", at.empty() ? "-" : at);
+    }
+    std::string edges = "[" +
+                        join(map_range(res->newEdges,
+                                       [](auto e) {
+                                         return "[" + sea::out::jnum(e.first) +
+                                                "," + sea::out::jnum(e.second) +
+                                                "]";
+                                       }),
+                             ",") +
+                        "]";
+    rec.set("new", "{\"blocks\":" + jnums(res->newBlocks) + ",\"edges\":" +
+                       edges + ",\"assumes\":" + jnums(res->newAssumes) + "}");
+    rec.set("coverage", coverageJson(server.coverage()));
+    std::vector<std::string> in;
+    for (const sea::Assignment &a : res->input)
+      in.push_back(sea::formatAssignment(a));
+    rec.set("input", sea::out::jstrs(in));
+    if (traceSites) {
+      std::vector<std::string> reads;
+      for (const sea::NondetRead &rd : r.reads)
+        reads.push_back("{\"site\":" + sea::out::jnum(rd.site) +
+                        ",\"width\":" + sea::out::jnum(rd.value.getBitWidth()) +
+                        ",\"value\":" + sea::out::jint(rd.value) +
+                        ",\"origin\":" + sea::out::jstr(rd.origin) + "}");
+      for (const sea::CellRead &cr : r.cellReads) {
+        std::string addr = cr.object.empty()
+                               ? sea::out::jint(cr.addr)
+                               : sea::out::jstr(cr.object + "+" +
+                                                toString(cr.addr, 10, false));
+        reads.push_back(
+            "{\"site\":" + sea::out::jnum(sea::memSiteOf(cr.siteOp)) +
+            ",\"addr\":" + addr +
+            ",\"width\":" + sea::out::jnum(cr.value.getBitWidth()) +
+            ",\"value\":" + sea::out::jint(cr.value) +
+            ",\"origin\":" + sea::out::jstr(cr.origin) + "}");
+      }
+      rec.set("reads", "[" + join(reads, ",") + "]");
+    }
+    rec.num("steps", r.steps);
+    rec.text = st.text;
+    out.emit(rec);
+    out.flush();
+  }
+  sea::out::Record sum("summary");
+  sum.num("requests", requests).num("errors", errors);
+  sum.set("coverage", coverageJson(server.coverage()));
+  sum.text = "fuzz.serve: " + std::to_string(requests) +
+             " errors=" + std::to_string(errors);
+  out.emit(sum);
+  out.flush();
+  return 0;
+}
+
 int main(int argc, char **argv) {
   InitLLVM y(argc, argv);
   // SEA_LOG / SEA_LOG_FILE, before --log entries override them
@@ -856,6 +1174,10 @@ int main(int argc, char **argv) {
     return fail("--fuzz-sites lists the input sites and exits; it does not "
                 "take --fuzz, --fuzz-time, --input, --input-file, --trace, "
                 "--seed, --max-steps or --defer-memory-errors");
+
+  if (fuzzServe && inputFilename == "-")
+    return fail("--fuzz-serve reads requests on stdin; give the program as "
+                "a file");
 
   sea::log::setFormat(outFormat);
   MLIRContext context;
@@ -902,6 +1224,8 @@ int main(int argc, char **argv) {
     sea::addAssignments(source, a);
   }
 
+  if (fuzzServe)
+    return runServe(program);
   if (fuzzSites)
     return listSites(program);
   if (fuzzTrials || fuzzTime > 0)
