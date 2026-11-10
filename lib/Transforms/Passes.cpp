@@ -205,6 +205,7 @@ void registerPasses() {
   registerPass([] { return createExpandMemSetPass(); });
   registerPass([] { return createSplitCriticalEdgesPass(); });
   registerPass([] { return createSplitAtChecksPass(); });
+  registerPass([] { return createSplitAssertFailuresPass(); });
   registerPass([] { return createReachTargetPass(); });
   registerPass([] { return createWidenMemoryPass(); });
   registerPass([] { return createApplyTrackingPass(); });
@@ -245,12 +246,14 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
                              unsigned widenMemory, bool expandMemSet,
                              bool widenReport, bool keepByteWide,
                              bool checkAlign, unsigned checkPtrIndex, bool opt,
-                             bool memhavocNullNoop) {
+                             bool memhavocNullNoop, unsigned disable) {
+  const bool cse = opt && !(disable & LowerDisableCse);
+  const bool canonicalize = opt && !(disable & LowerDisableCanonicalize);
   OpPassManager &prog = pm.nest<ProgramOp>();
   prog.addPass(createApplyTrackingPass());
-  if (fold)
+  if (fold && !(disable & LowerDisableSccp))
     prog.addPass(createSCCPPass());
-  if (opt)
+  if (cse)
     prog.addPass(createCSEPass());
   prog.addPass(createScalarizeStructsPass());
   if (abstract) {
@@ -293,10 +296,10 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
   prog.addPass(createMergeAssertsPass());
   prog.addPass(createSplitWideAccessPass(keepByteWide));
   prog.addPass(createExpandIntrinsicsPass(nativeMulOverflow));
-  if (opt) {
+  if (canonicalize)
     prog.addPass(createCanonicalizerPass());
+  if (cse)
     prog.addPass(createCSEPass());
-  }
   // Constant-branch folding may erase the only assertion and halt. Restore
   // BMC form, including the trivially safe case, after CFG simplification.
   // The first run reported the constant-false asserts.

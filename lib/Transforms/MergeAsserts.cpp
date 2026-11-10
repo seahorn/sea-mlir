@@ -21,7 +21,10 @@
 // The cond_br and the landing br carry the assert's location wrapped as
 // loc("sea.assert"(<loc>)) (kMergedAssertLocName): a replay reports it as
 // the failing assert, not as a branch of the source. Both carry the
-// assert's id attribute (kAssertIdAttr), if it has one.
+// assert's id attribute (kAssertIdAttr), if it has one; the assume in
+// ^cont carries its reach site (kReachSiteAttr), if it has one; under
+// kReachFailuresAttr the landing block starts with the reach-site marker
+// of its failure (kAssertFailMarker; inert, a print).
 //
 // Contract.
 //   Accepts: a program with any asserts and halts (loops are fine: the
@@ -163,10 +166,18 @@ void MergeAssertsPass::runOnOperation() {
     Block *land = new Block();
     body.getBlocks().insertAfter(Region::iterator(blk), land);
     b.setInsertionPointToEnd(land);
+    // a tagged assert's failure: a reach target (sea-vc --reach-failures)
+    if (Attribute site = a->getAttr(kReachSiteAttr);
+        site && program->hasAttr(kReachFailuresAttr))
+      createReachSiteMarker(b, aloc, kAssertFailMarker, site);
     Value f = boolConst(aloc, false);
     BrOp::create(b, brLoc, ValueRange{f}, exit);
     b.setInsertionPointToStart(cont);
-    AssumeOp::create(b, aloc, cond);
+    auto pass = AssumeOp::create(b, aloc, cond);
+    // the assert's reach site (kReachSiteAttr), on the assume: reached
+    // once the assert holds
+    if (Attribute site = a->getAttr(kReachSiteAttr))
+      pass->setAttr(kReachSiteAttr, site);
     b.setInsertionPoint(a);
     auto cbr = CondBrOp::create(b, brLoc, cond, ValueRange{}, ValueRange{},
                                 cont, land);

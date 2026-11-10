@@ -112,7 +112,28 @@ enum class InbCheck { None, Ok, After, Violated, Undetermined, Unordered };
 
 } // namespace
 
-void tagReachSites(mlir::ModuleOp module) {
+LogicalResult tagReachSites(mlir::ModuleOp module) {
+  // tagged already: kept as given
+  llvm::DenseMap<int64_t, Operation *> given;
+  bool tagged = false;
+  WalkResult w = module.walk([&](Operation *op) {
+    auto a = op->getAttrOfType<IntegerAttr>(kReachSiteAttr);
+    if (!a)
+      return WalkResult::advance();
+    tagged = true;
+    if (!given.try_emplace(a.getInt(), op).second) {
+      diag::error("vc.reach-site",
+                  "two ops have reach site " + Twine(a.getInt()) +
+                      " (sea.reach_site): a site names one check",
+                  op->getLoc());
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  if (w.wasInterrupted())
+    return failure();
+  if (tagged)
+    return success();
   int64_t k = 0;
   module.walk([&](Operation *op) {
     if (isa<AssumeOp, AssertOp>(op))
@@ -120,6 +141,7 @@ void tagReachSites(mlir::ModuleOp module) {
           kReachSiteAttr,
           IntegerAttr::get(IntegerType::get(op->getContext(), 64), k++));
   });
+  return success();
 }
 
 namespace {
@@ -162,6 +184,9 @@ struct AbstractSites {
 struct AbstractRun {
   RunResult r;
   llvm::DenseSet<int64_t> tags;
+  /// the tags of the asserts the run reached with their condition false
+  /// (the failure targets, kAssertFailMarker)
+  llvm::DenseSet<int64_t> failed;
   llvm::DenseMap<const void *, llvm::SmallVector<StringRef, 2>> seen;
 
   static std::optional<int64_t> tagOf(Operation *op) {
@@ -174,7 +199,11 @@ struct AbstractRun {
                  std::string &message) const {
     bool at, ambiguous = false;
     if (std::optional<int64_t> tag = tagOf(t.op)) {
-      at = tags.contains(*tag);
+      // an assert's failure: reached with its condition false, not only
+      // its top
+      auto m = dyn_cast<PrintOp>(t.op);
+      at = m && m.getTag() == kAssertFailMarker ? failed.contains(*tag)
+                                                : tags.contains(*tag);
     } else {
       auto it = seen.find(t.loc.getAsOpaquePointer());
       at = it != seen.end() && llvm::any_of(it->second, [&](StringRef name) {
@@ -211,9 +240,14 @@ AbstractRun runAbstract(ProgramOp abs, const RunResult &placed,
   options.warnEarlierVersion = false;
   options.addr0IsNull = ro.addr0IsNull;
   options.memhavocNullNoop = ro.memhavocNullNoop;
-  options.onOp = [&](Operation &op, auto) {
-    if (std::optional<int64_t> tag = AbstractRun::tagOf(&op))
+  options.onOp = [&](Operation &op, auto value) {
+    if (std::optional<int64_t> tag = AbstractRun::tagOf(&op)) {
       a.tags.insert(*tag);
+      if (auto as = dyn_cast<AssertOp>(op))
+        if (std::optional<llvm::APInt> c = value(as.getCond());
+            c && c->isZero())
+          a.failed.insert(*tag);
+    }
     auto &names = a.seen[op.getLoc().getAsOpaquePointer()];
     StringRef name = op.getName().getStringRef();
     if (!llvm::is_contained(names, name))
@@ -221,6 +255,27 @@ AbstractRun runAbstract(ProgramOp abs, const RunResult &placed,
   };
   a.r = interpret(abs, inputs, options);
   return a;
+}
+
+/// ` site=<k>` (text and field) of a target with a reach site.
+void addSite(out::Record &rec, raw_ostream &os, const ReachTarget &t) {
+  if (t.site < 0)
+    return;
+  rec.num("site", uint64_t(t.site));
+  os << " site=" << t.site;
+  if (!t.of.empty()) {
+    rec.str("of", t.of);
+    os << " of=" << t.of;
+  }
+  if (!t.trueCheck)
+    return;
+  // a check of true: reached iff the next target of its block is
+  rec.str("cond", "true");
+  os << " cond=true";
+  if (t.nextSite >= 0) {
+    rec.num("next", uint64_t(t.nextSite));
+    os << " next=" << t.nextSite;
+  }
 }
 
 /// `# replays on: ...`, the program a witness replays on.
@@ -467,6 +522,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
       rec.set("time", out::jtoken("0.000"));
       os << " time=0.000 at=" << at;
       addLocFields(rec, "at", t.loc);
+      addSite(rec, os, t);
       records[i] = std::move(rec);
       continue;
     }
@@ -493,6 +549,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
       rec.set("time", out::jtoken("0.000"));
       os << " time=0.000 at=" << at;
       addLocFields(rec, "at", t.loc);
+      addSite(rec, os, t);
       records[i] = std::move(rec);
       continue;
     }
@@ -512,7 +569,10 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
     std::string reason, replayStatus, witness, inbField;
     uint64_t mismatches = 0;
     Verdict v = Verdict::Unknown;
-    if (!g) {
+    if (!options.query) {
+      // the runs only (ReachOptions::query): no solver
+      reason = "no-query";
+    } else if (!g) {
       // no path from the entry reaches the block
       v = Verdict::Unreachable;
       reason = "cfg";
@@ -707,6 +767,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
     rec.set("time", out::jtoken(secText));
     os << " time=" << secText << " at=" << at;
     addLocFields(rec, "at", t.loc);
+    addSite(rec, os, t);
     records[i] = std::move(rec);
   }
   emitRecords();

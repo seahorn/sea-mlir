@@ -27,6 +27,8 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | option | effect |
 |---|---|
 | `--lower` | run the lowering first (the passes of `sea-opt --sea-vc-lower`): constant folding, struct scalarization, placement of abstract objects, memory widening, intrinsics, splitting critical edges |
+| `--lower-opt=false` | with `--lower`: no cse and no canonicalize (every op stays) |
+| `--lower-disable=<pass>,...` | with `--lower`: leave these optimization passes out of the lowering: `sccp`, `cse`, `canonicalize`. The lowering without one against the lowering with it validates the pass (`utils/cover-diff.py`, [Pass validation](../agents/gates.md#pass-validation)). `sea-drop-fresh-memhavoc` is refused: it is a semantics decision (a memhavoc of a fresh object is no tracked modification; without it, one after `sea_tracking_on` is) |
 | `--seam` | the SeaM memory rewriter ([Background: SeaM](seam.md)) |
 | `--seam-inb=0` | SeaM without the in-bounds assumption |
 | `--widen-memory=<k>` | with `--lower`: byte memories whose accesses are all aligned $k$-byte words become word memories |
@@ -69,6 +71,9 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--reach-programs=<dir>` | with `--reach`: write R_T, the program with every assert dropped and an `assert(false)` at T, for each target T to `<dir>/reach-<k>.mlir`, and exit; `sea-vc` on R_T answers `sat` iff T is reachable ([R_T programs](output-formats.md#r_t-programs)) |
 | `--reach-incremental=false\|true` | with `--reach`: `false`, a new solver per target, with the target's guard asserted; `true`, one solver that checks each guard as an assumption. z3 answers an assumption with its incremental core, which finds a reachable target faster and can prove an unreachable one much more slowly. Default `true`, and `false` with `--reach-corpus` or `--reach-fuzz` (the queries left are mostly unreachable targets) |
 | `--reach-model-runs=false` | with `--reach`: query every target. By default the replay of a reachable target's model decides every target it reaches whose query is still to come (`via=model-run`) |
+| `--reach-failures` | with `--reach`: also, for each tagged assert, its failure as a target (`op=sea.print of=sea.assert.fail`, id `<assert id>.fail`): reached iff an execution reaches the assert with its condition false |
+| `--reach-keep-sites` | with `--reach`: the lowering's canonicalize replaces a tagged assume or assert of the constant true by a reach-site marker (`sea.print "<op>"` with the `sea.reach_site`; prints are inert in the VC) instead of erasing it; the marker is a target (`op=sea.print of=<op>`) |
+| `--reach-query=false` | with `--reach` and `--reach-corpus` or `--reach-fuzz`: no query; the runs decide what they reach, every other target is `unknown reason=no-query` |
 | `--reach-order=program\|deepest` | with `--reach`: the order of the queries; `deepest` (default), reverse program order, so that a model's run passes the targets before its own |
 | `--ptr-companion=check` | with `--seam`, opaque pointers: check A-PTRINT (a split pointer load reads the pointer last stored at its address) instead of the program's assertions; `unsat` prints `seam.ptrint: holds`, a confirmed `sat` lists the failing loads (`seam.ptrint-violated`, `seam.ptrint-unstored`) and exits 0 |
 

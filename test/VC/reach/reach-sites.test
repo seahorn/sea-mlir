@@ -1,0 +1,174 @@
+// Reach sites (sea.reach_site): sea-vc --reach tags every input check
+// before the lowering and reports it as site=<k>; the folded assume's
+// sea.unreachable and the assume sea-merge-asserts makes of an assert
+// keep it. --reach-query=false decides by runs only; --lower-disable
+// leaves an optimization pass out.
+// RUN: split-file %s %t
+
+// RUN: sea-vc %t/multi.mlir --lower --reach 2>/dev/null | FileCheck %s --check-prefix=SITE
+// SITE: reach: m.c:3:1 reachable op=sea.assume {{.*}} site=0
+// SITE: reach: m.c:5:1 reachable op=sea.unreachable {{.*}} site=1
+// SITE: reach: multi.mlir:1:1 reachable op=sea.assert
+// SITE-NOT: site=
+// SITE: reach.summary
+// RUN: sea-vc %t/multi.mlir --lower --reach --format=jsonl 2>/dev/null | FileCheck %s --check-prefix=JSON
+// JSON: "kind":"reach"{{.*}}"site":1
+
+// Without canonicalize the dead assume stays (site 2, unreachable).
+// RUN: sea-vc %t/multi.mlir --lower --lower-disable=canonicalize --reach 2>/dev/null | FileCheck %s --check-prefix=NOCANON
+// NOCANON: reach: m.c:5:1 reachable op=sea.assume {{.*}} site=1
+// NOCANON: reach: m.c:6:1 unreachable op=sea.assume {{.*}} site=2
+// RUN: not sea-vc %t/multi.mlir --lower --lower-disable=sea-place-static 2>&1 | FileCheck %s --check-prefix=BADPASS
+// BADPASS: --lower-disable: 'sea-place-static' is not one of
+// RUN: not sea-vc %t/multi.mlir --lower --lower-disable=sea-drop-fresh-memhavoc 2>&1 | FileCheck %s --check-prefix=NODFM
+// NODFM: sea-drop-fresh-memhavoc is a semantics decision
+// RUN: not sea-vc %t/multi.mlir --lower-disable=cse 2>&1 | FileCheck %s --check-prefix=NOLOWER
+// NOLOWER: --lower-disable needs --lower
+
+// R_T records carry the site.
+// RUN: rm -rf %t/rt && sea-vc %t/multi.mlir --lower --reach --reach-programs=%t/rt 2>/dev/null | FileCheck %s --check-prefix=RT
+// RT: reach.program: m.c:5:1 op=sea.unreachable {{.*}} site=1
+
+// Runs only: a corpus decides what it reaches, the rest is unknown
+// (status 3).
+// RUN: not sea-vc %t/multi.mlir --lower --reach --reach-query=false --reach-corpus=%t/w.txt 2>/dev/null | FileCheck %s --check-prefix=NOQ
+// NOQ: reach: m.c:5:1 reachable op=sea.unreachable via=run by=seed:
+// NOQ: reach: multi.mlir:1:1 unknown op=sea.assert reason=no-query
+// NOQ: reach.summary: targets=3 reachable=2 unreachable=0 unknown=1 queries=0
+// RUN: not sea-vc %t/multi.mlir --lower --reach --reach-query=false 2>&1 | FileCheck %s --check-prefix=NOQRUNS
+// NOQRUNS: --reach-query=false decides by runs only
+
+// A check of true: cond=true, and the site of the next target in its
+// block, which is reached iff it is.
+// RUN: sea-vc %t/true.mlir --lower --lower-opt=false --reach 2>/dev/null | FileCheck %s --check-prefix=TRUE
+// TRUE: reach: t.c:2:1 reachable op=sea.assume {{.*}} site=0 cond=true next=1
+// TRUE: reach: t.c:4:1 reachable op=sea.assume {{.*}} site=1{{$}}
+// TRUE: reach: t.c:5:1 reachable op=sea.assume {{.*}} site=2 cond=true next=3
+
+// --reach-keep-sites: canonicalize keeps a tagged check of true as a
+// reach-site marker (sea.print, op=sea.print of=<op>), a target; the
+// lowering is otherwise the normal one.
+// RUN: sea-vc %t/true.mlir --lower --reach --reach-keep-sites 2>/dev/null | FileCheck %s --check-prefix=KEEP
+// KEEP: reach: t.c:2:1 reachable op=sea.print {{.*}} site=0 of=sea.assume
+// KEEP: reach: t.c:5:1 reachable op=sea.print {{.*}} site=2 of=sea.assume
+// RUN: sea-vc %t/true.mlir --lower --reach 2>/dev/null | FileCheck %s --check-prefix=NOKEEP
+// NOKEEP-NOT: op=sea.print
+// NOKEEP: reach.summary: targets=2
+
+// A marker is a target of sea-run too (the same list).
+// RUN: sea-run %t/marker.mlir --missing=zero --reach-targets | FileCheck %s --check-prefix=RUNMK
+// RUNMK: reach: k.c:2:1 reached op=sea.print
+// RUNMK: reach.summary: targets=2 reached=2
+
+// --reach-failures: each tagged assert's failure is a target, id
+// <assert id>.fail (a merged assert: its landing block).
+// RUN: sea-vc %t/true.mlir --lower --reach --reach-failures 2>/dev/null | FileCheck %s --check-prefix=FAIL
+// FAIL: reach: t.c:6:1.fail reachable op=sea.print {{.*}} site=3 of=sea.assert.fail
+// FAIL: reach: t.c:6:1 reachable op=sea.assert
+// RUN: sea-vc %t/multi.mlir --lower --reach --reach-failures 2>/dev/null | FileCheck %s --check-prefix=MFAIL
+// MFAIL: reach: m.c:3:1.fail reachable op=sea.print {{.*}} site=0 of=sea.assert.fail
+// MFAIL: reach: m.c:3:1 reachable op=sea.assume
+// RUN: sea-vc %t/multi.mlir --lower --reach --reach-failures --reach-programs=%t/rf 2>/dev/null | FileCheck %s --check-prefix=RTF
+// RTF: reach.program: m.c:3:1.fail op=sea.print file={{.*}} site=0 of=sea.assert.fail
+
+// Under --seam a run decides a failure key only if the input program's run
+// (every access checked) reaches the assert with its condition false
+// inside every object: trials that store out of the object (i != 0) do
+// not count; the in-object one (i = 0) does.
+// RUN: sea-vc %t/inbf.mlir --lower --seam --reach --reach-failures --reach-fuzz=200 2>/dev/null | FileCheck %s --check-prefix=SEAMF
+// SEAMF: reach: f.c:6:1.fail reachable op=sea.print via=run by=trial:{{[0-9]+}} time={{[0-9.]+}} at=f.c:6:1 site=0 of=sea.assert.fail{{$}}
+// SEAMF: reach.runs: {{.*}}inb-violated={{[1-9]}}
+
+// A check job (the asserts dropped) keeps each tagged assert's top as a
+// marker.
+// RUN: sea-vc %t/multi.mlir --lower --check-ptr-index --reach 2>/dev/null | FileCheck %s --check-prefix=CPI
+// CPI: reach: m.c:3:1 reachable op=sea.print {{.*}} site=0 of=sea.assert
+// RUN: sea-vc %t/multi.mlir --lower --check-align --reach 2>/dev/null | FileCheck %s --check-prefix=CPI
+
+// A tagged input keeps its tags; a tag two checks share is an error.
+// RUN: sea-vc %t/tagged.mlir --reach 2>/dev/null | FileCheck %s --check-prefix=TAG
+// TAG: reach: t.c:1:1 reachable op=sea.assume {{.*}} site=7
+// TAG-NOT: site=
+// TAG: reach.summary
+// RUN: not sea-vc %t/dup.mlir --reach 2>&1 | FileCheck %s --check-prefix=DUP
+// DUP: two ops have reach site 0 {{.*}}[vc.reach-site]
+// REQUIRES: z3
+
+//--- multi.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("m.c":1:1)
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8 loc("m.c":2:1)
+  sea.assert %big loc("m.c":3:1)
+  %f = sea.const 0 : i1 loc("m.c":4:1)
+  sea.assume %f loc("m.c":5:1)
+  sea.assert %big loc("m.c":6:1)
+  sea.halt
+}
+
+//--- true.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("t.c":1:1)
+  %t = sea.const true
+  sea.assume %t loc("t.c":2:1)
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8 loc("t.c":3:1)
+  sea.assume %big loc("t.c":4:1)
+  sea.assume %t loc("t.c":5:1)
+  %f = sea.const 0 : i1
+  sea.assert %f loc("t.c":6:1)
+  sea.halt
+}
+
+//--- marker.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("k.c":1:1)
+  sea.print "sea.assume" {sea.reach_site = 0 : i64} loc("k.c":2:1)
+  %f = sea.const 0 : i1
+  sea.assert %f {sea.reach_site = 1 : i64} loc("k.c":3:1)
+  sea.halt
+}
+
+//--- inbf.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %p = sea.alloca %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [2] : i64 loc("f.c":1:1)
+  %q = sea.ptr.add %p, %i : !sea.ptr<64>, i64 loc("f.c":2:1)
+  %v = sea.const 7 : i8
+  %m1 = sea.store %m0[%q], %v inplace : !m, i8 loc("f.c":3:1)
+  %x = sea.load %m1[%p] : !m -> i8 loc("f.c":4:1)
+  %ok = sea.icmp ne, %x, %v : i8 loc("f.c":5:1)
+  sea.assert %ok loc("f.c":6:1)
+  sea.halt
+}
+
+//--- w.txt
+nondet: site=0 callee=x width=8 value=9
+
+//--- tagged.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8
+  sea.assume %big {sea.reach_site = 7 : i64} loc("t.c":1:1)
+  %f = sea.const 0 : i1
+  sea.assert %f loc("t.c":2:1)
+  sea.halt
+}
+
+//--- dup.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8
+  sea.assume %big {sea.reach_site = 0 : i64}
+  %f = sea.const 0 : i1
+  sea.assert %f {sea.reach_site = 0 : i64}
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
