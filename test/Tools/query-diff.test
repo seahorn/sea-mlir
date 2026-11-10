@@ -1,0 +1,7 @@
+// The query-diff classes on handwritten query pairs (utils/query-diff.py).
+REQUIRES: z3
+RUN: %python %S/Inputs/query-diff.py %sea_src_root/utils/query-diff.py %z3 | FileCheck %s
+CHECK: query-diff: ok
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

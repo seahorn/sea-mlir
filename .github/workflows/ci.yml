@@ -91,3 +91,8 @@ jobs:
         run: python test/Tools/Inputs/publish.py utils/publish.py
       - name: attest self-test (no build, no GitHub)
         run: python utils/attest.py --self-test
+      - name: query-diff classes (test/Tools/query-diff.test without lit)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends z3
+          python test/Tools/Inputs/query-diff.py utils/query-diff.py z3

@@ -96,7 +96,9 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
 - `test/` — lit + FileCheck; `utils/check-semantics.py` — z3 oracle
   (interpreter, Expr, expanded intrinsics, folders); `utils/query-diff.py`
   — the gate of a change that must not change queries: two sea-vc binaries
-  over a corpus, each job identical / order / equiv (z3) / DIFF;
+  over a corpus, each job identical / order / both-unsat (equisat only) /
+  equiv-sat (z3) / DIFF / unknown (`--project-blocks`: up to renamed
+  block guards; `--agent` says what each class proves);
   `utils/bench.py` (`--agent`) — benchmarks: corpora, runs, and the suites
   in separate repositories (`just bench-connect`, `just bench-gate`,
   `docs/Benchmarks.md`); `utils/release-check.sh` (`just release-check`)
