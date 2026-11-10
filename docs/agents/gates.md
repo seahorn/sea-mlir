@@ -17,6 +17,7 @@ checks below test the verifier and its distribution.
 | release check | does an installed build work? | `just release-check` |
 | fuzz | do the query, SeaM and placement agree with the interpreter on random programs? | `utils/fuzz-vc.py`, `utils/fuzz-seam.py`, `utils/fuzz-place.py` |
 | benchmarks | do the applications keep their expected verdicts and counter bounds? | `just bench-smoke`, `just bench-canary`, `just bench-gate quick` |
+| query diff | does a change that must not change queries keep them? | `utils/query-diff.py` |
 
 ## Lint
 
@@ -119,6 +120,56 @@ Without `--no-record`, each gate run appends a record to
 The gates run at most 4 jobs in parallel by default, with a 16 GB memory
 cap per job.
 
+## Query diff
+
+A change that must not change the queries (a refactoring, a new
+representation) runs `utils/query-diff.py`: two `sea-vc` binaries over a
+corpus, with the same arguments.
+
+```bash
+python3 utils/query-diff.py --old <base>/sea-vc --new <head>/sea-vc \
+    bench/work/public/vcc --args="--lower --widen-memory=8 --seam" --par 4
+```
+
+Each job gets one class. Symbols of the two queries are matched by name.
+
+| class | what it proves |
+|---|---|
+| `identical` | the queries are byte-identical |
+| `order` | they are equal up to the order of commutative arguments and of the top-level forms |
+| `equiv-sat` | both are sat, and z3 proves that the same assignments satisfy both. With `reason=derived`, one sat check was unknown and its result follows from the other's and the equivalence |
+| `both-unsat` | z3 proves each query unsat by its own check, or (`reason=derived`) one by its own check and the other, whose check was unknown, through a proof that the two are equivalent: the verdict is kept, nothing more (any two unsat queries are `both-unsat`) |
+| `DIFF` | one is sat and the other unsat, or z3 finds an assignment on which they differ |
+| `unknown` | a z3 check ran out of its resource limit or time, or z3 gave up: no proof either way |
+| `error` | `sea-vc` or z3 failed, or the queries cannot be compared (a symbol with two sorts) |
+
+On unsat queries only `identical` and `order` show that the change kept
+the query. `both-unsat` is a pass of the gate, but no evidence about the
+change beyond the verdict. The line after the totals counts the jobs by
+what they prove:
+
+```text
+evidence: equiv-sat=0 identical+order=2 both-unsat=225 (verdict only)
+```
+
+`--strict` makes `both-unsat` a failure: when some job is `both-unsat`,
+the run prints `strict: fail both-unsat=<n> ...` and exits with 3.
+
+`--project-blocks` compares the queries up to their block guards
+(`^bbN_k`): `(exists g. OLD) <=> (exists g'. NEW)`. A change that only
+renumbers blocks is then `equiv-sat by=exists`. The check by names runs
+first; the quantified check runs only when it finds a difference.
+
+Every z3 check has a resource limit (`--rlimit`, deterministic) and a
+time limit (`--timeout`, a backstop). The sat checks solve the job's own
+query, so the default limit (200 million, about two minutes of z3) is
+sized for the quick tier of the vcc suite; it is not tuned. An `unknown`
+names the limit it hit (`old=unknown:rlimit`). z3 runs single-threaded
+by default, so `--par N` uses at most N cores for z3. The exit status is
+0 when every job is `identical`, `order`, `equiv-sat` or `both-unsat`,
+1 on a `DIFF` or `error`, 2 on an `unknown`, and 3 with `--strict` on a
+`both-unsat`, checked in this order.
+
 ## Continuous integration and attestation
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request
@@ -129,7 +180,7 @@ and every push to `main`:
 | `lint` | `.pre-commit-config.yaml` on every file |
 | `commits` | the commit messages (commitlint, `.commitlintrc.yml`) |
 | `docs` | `mkdocs build --strict` |
-| `utils-tests` | the Python tests that need no build |
+| `utils-tests` | the Python tests that need no build (with Ubuntu's z3 for `query-diff`) |
 
 The build, lit and the benchmark gates need LLVM, the solvers and the
 benchmark suites, which the hosted runners do not have. They run on a
