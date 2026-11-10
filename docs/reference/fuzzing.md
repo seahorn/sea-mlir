@@ -29,6 +29,7 @@ $ sea-run p.mlir --fuzz=10000 --seed=1 --fuzz-out=out
 | `--input-file=<file>` | run once on a corpus file (without `--fuzz`) |
 | `--max-steps=<n>` | the step limit of each trial |
 | `--fuzz-sites` | list the input sites and exit, without running (see [For agents](#for-agents)) |
+| `--fuzz-serve` | run on inputs sent as JSON lines on stdin (see [Driving the fuzzer from Python](#driving-the-fuzzer-from-python)) |
 
 All trials run in one process: the program is parsed once.
 
@@ -222,7 +223,7 @@ fuzz.site: 8 callee=nd_malloc_is_fail width=1 input=value op=sea.nondet at=seaho
 fuzz.assume: 0 op=sea.assume at=seahorn/lib/byte_buf_helper.c:21:5 sites=6,7 cond=(ule s6 s7)
 fuzz.assume: 1 op=sea.assume at=seahorn/lib/byte_buf_helper.c:22:5 sites=7 cond=(ult s7 11)
 ...
-fuzz.sites: 17 value=7 memory=10 assumes=10
+fuzz.sites: 17 value=7 memory=10 assumes=10 unreachables=0
 ```
 
 (the vcc job `byte_buf_append`, lowered as in
@@ -246,9 +247,11 @@ after `fuzz.assume:` is the position in that order: `--fuzz-serve`
 names assumes by it. So a strategy can be planned from the conditions
 before any run.
 
-The last line, `fuzz.sites: <n> value=<n> memory=<n> assumes=<n>`, counts
-the sites and the `fuzz.assume` lines; `0` sites means the program reads
-no input. `sea.ptr.nondet` is not listed: it
+The last line, `fuzz.sites: <n> value=<n> memory=<n> assumes=<n> unreachables=<n>`,
+counts the sites, the `sea.assume` ops and the `sea.unreachable` ops (the
+`fuzz.assume` lines are both); `assumes` is the `assumes-total` of
+`fuzz.coverage` and the `assumes_total` of `--fuzz-serve`. `0` sites means
+the program reads no input. `sea.ptr.nondet` is not listed: it
 makes a fresh object and takes no input. `--fuzz-sites` refuses the
 options that would have no effect (`--fuzz`, `--fuzz-time`, `--input`,
 `--input-file`, `--trace`, `--seed`, `--max-steps`,
@@ -315,6 +318,117 @@ from the assume's operand, not a symbolic execution. It stops with `?` at:
 The condition says nothing about the path to the assume: a run that does
 not reach it is not blocked by it. `cond=0` is an assume of a constant
 false: no input passes it, so the code after it is unreachable.
+
+## Driving the fuzzer from Python
+
+`sea-run p.mlir --fuzz-serve` lets a program outside `sea-mlir` choose the
+inputs. It parses the program once, then reads one JSON request per line
+on stdin and writes one JSON response per line on stdout, flushing each.
+End of input ends it, after a summary line. Each request is one run, a
+trial of `--fuzz` on the values the request gives, and the coverage is
+kept across requests, so a response says what that run reached first.
+
+`utils/fuzz-driver.py` (Python standard library only) is a reference
+driver to copy: a `Server` class that starts `sea-run --fuzz-serve`, sends
+requests and returns the parsed responses, and a `main()` with one simple
+strategy.
+
+`--fuzz-serve` takes `--program`, `--max-steps`, `--defer-memory-errors`,
+`--missing` (the default of the requests) and `--seed` (the random values
+of requests without a seed of their own). It refuses the options of
+`--fuzz` and of single runs, and `--format`: it always writes JSON lines.
+
+### Requests
+
+```json
+{"inputs": {"7": 10, "6": "3", "0@4096": "0xff"}, "missing": "random", "seed": 1}
+```
+
+| field | meaning |
+|---|---|
+| `inputs` | values by site, `"<site>"` or `"<site>@<addr>"` (`"<site>@<object>+<offset>"` for an abstract memory), as in `--input`; a value is an integer or a string (decimal, negative, `0x` hex) and must fit the site's width. A cell the run never reads is ignored, as with `--input`. The object names of abstract memories (`stack.1`) are those in the `input` and `reads` of earlier responses |
+| `missing` | what a site or cell the request does not set gets: `"zero"`, `"random"`, or `"error"` (the run stops with status `error`, as in a plain run); default: the server's `--missing` |
+| `seed` | the seed of this run's random values; without it, the server's stream continues |
+| `trace_sites` | `true`: the response lists every value the run read (`reads`) |
+| `id` | any JSON value, echoed in the response |
+
+All fields are optional. As in `--fuzz`, a site has one value per run.
+
+### Responses
+
+```text
+{"kind":"response","request":3,"status":"assume-blocked","loc":"loc(...)",
+ "blocked":3,"blocked_at":"seahorn/jobs/byte_buf_append/aws_byte_buf_append_harness.c:13:5",
+ "new":{"blocks":[5],"edges":[[3,5],[5,6]],"assumes":[]},
+ "coverage":{"blocks":36,"blocks_total":190,"edges":37,"assumes":6,"assumes_total":10},
+ "input":["6=4","7=4","8=1"],"steps":228,"text":"status: assume-blocked\nat: loc(...)"}
+```
+
+(shown on several lines; it is one line.)
+
+| field | meaning |
+|---|---|
+| `request` | the request's number, counting non-blank lines from 1 |
+| `id` | the request's `id`, if it has one |
+| `status`, `loc`, `at`, `op`, `path`, `reached`, `reached_at`, `message`, `deferred`, `deferred_kind`, `deferred_at` | the fields of the `status` record of `sea-run --format=jsonl` ([Output formats](output-formats.md)): `loc` is the `at:` line (where the run stopped), `at`, `op` and `path` are `assert-at`, `assert-op` and `assert-path`; the `deferred*` and `reached*` fields come with `--defer-memory-errors` |
+| `blocked`, `blocked_at` | for a blocked run, the id of the blocking `sea.assume` or `sea.unreachable` (the number of its `fuzz.assume` line in `--fuzz-sites`) and its location; join on the id, not on the location, which inlined code can share between several operations and which may carry `inlined-at=` |
+| `new` | what no earlier request reached: `blocks` (a block's position in the program body; the entry is 0), `edges` (`[from, to]`; from `-1` is the entry of the run), `assumes` (`sea.assume` ids that held) |
+| `coverage` | the totals over all requests so far, as in `fuzz.coverage`; `assumes` and `assumes_total` count `sea.assume` ops only, as `assumes=` of `fuzz.sites` |
+| `input` | every value the run read, in corpus syntax: written one per line, they are a corpus file that `sea-run --input-file` replays (with `--defer-memory-errors` for a `memory-error`) |
+| `reads` | with `trace_sites`: each read in order, `{"site", ["addr",] "width", "value", "origin"}`, origin `input`, `zero` or `random` |
+| `steps` | operations executed |
+| `text` | the status lines a plain run prints |
+
+A bad request gets `{"kind":"error","request":<n>,"error":"<why>"}` and
+runs nothing: a line that is not JSON, an unknown field, a site the
+program does not have, a value that does not fit its site, or a cell of a
+value site (or the reverse). The server goes on with the next line. At
+the end of input it writes `{"kind":"summary","requests":<n>,"errors":<n>,"coverage":{...}}`
+and exits with 0.
+
+### The reference driver
+
+```console
+$ cat strategy.json
+{"sites": {"7": {"range": [0, 10]},
+           "6": {"range": [0, "s7"]},
+           "11": {"range": [0, 10]},
+           "8": {"choice": [0, 1]}},
+ "missing": "random"}
+$ python3 utils/fuzz-driver.py placed.mlir --strategy strategy.json --requests 20000
+requests: 20000 kept=16 resampled=0
+status: assume-blocked=20000
+coverage: blocks=145 blocks_total=190 edges=166 assumes=7 assumes_total=10
+blocked: 8990 assume=3 at=seahorn/jobs/byte_buf_append/aws_byte_buf_append_harness.c:13:5
+blocked: 4971 assume=5 at=seahorn/jobs/byte_buf_append/aws_byte_buf_append_harness.c:20:5
+...
+```
+
+A strategy gives each listed site a `range` (inclusive) or a `choice`.
+A bound is an integer, or another site's value plus or minus an integer:
+`"s7"`, `"s7 + 1"`, `"s6 - 1"`; that site is sampled first. A bound that
+names a site the strategy does not list, a cycle of bounds, or any other
+bound text is an error. An empty range (`lo > hi`, such as `[0, "s6 - 1"]`
+when site 6 is 0) discards the whole sample, and the driver draws again;
+the `resampled` count says how often (1000 empty samples in a row is an
+error). Other sites get `missing`. The driver keeps the inputs that reach new coverage, stops
+at the first failure and writes its input as a corpus file (`--out`).
+Here, on the `byte_buf_append` job, the strategy is read off the
+`fuzz.assume` conditions `(ule s6 s7)`, `(ult s7 11)` and `(ult s11 11)`:
+every run passes them, and the next blockers are the harness's assumes,
+whose conditions (`?`) depend on memory.
+
+Adding `"15": {"range": [0, "s6 - 1"]}` for `(ult s15 s6)`
+(assume 7) gets every run past assume 7 too: 8 of the 10 assumes pass.
+The runs with site 6 at 0 are drawn again, so the paths of an empty
+buffer are no longer run (125 blocks instead of 145). The next blockers
+are assumes 3, 5 and 9 of the harness and assume 8, `(ult s16 ?)`, whose
+bound is not an input.
+
+To write another strategy, keep `Server` and replace the loop: mutate kept
+inputs, solve one blocking condition with z3, or anything else.
+Throughput is bounded by the round trip of one request: a Python driver
+gets fewer runs per second than `--fuzz`, which runs in one process.
 
 ## Corpus files
 

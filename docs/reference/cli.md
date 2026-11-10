@@ -95,6 +95,8 @@ sea-run <file.mlir> [options]
 | `--print`, `--print-refs`, `--print-limit`, `--print-locs` | as for `sea-vc` |
 | `--input-file=<file>` | inputs from a corpus file ([Fuzzing](fuzzing.md)) |
 | `--fuzz=<n>`, `--fuzz-time=<s>` | fuzz: run trials on generated inputs ([Fuzzing](fuzzing.md)) |
+| `--fuzz-sites` | list the input sites and the assumes with their conditions, and exit ([For agents](fuzzing.md#for-agents)) |
+| `--fuzz-serve` | run on inputs sent as JSON lines on stdin, one response per line ([Driving the fuzzer from Python](fuzzing.md#driving-the-fuzzer-from-python)) |
 | `--defer-memory-errors` | go on past a memory-safety violation; a finding only if the run then reaches the end or a failing assertion (not if an assume blocks it, nor at the step limit or an interpreter limit) ([Deferred memory errors](fuzzing.md#deferred-memory-errors)) |
 
 Abstract programs, with pointers into unplaced objects, run directly:

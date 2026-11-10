@@ -58,7 +58,8 @@ LogicalResult parseAssignment(StringRef text, Assignment &out,
   auto [key, value] = text.split('=');
   auto [siteText, addrText] = key.split('@');
   out = Assignment();
-  if (!addrText.empty()) {
+  // `<site>@` (no address) is a cell key without its cell: an error
+  if (key.contains('@')) {
     if (siteText.getAsInteger(10, out.site) || !cellKey(addrText, out.cell) ||
         value.empty()) {
       error = "expected <site>@<addr>=<value> or "
@@ -205,8 +206,14 @@ using Entry = std::map<Key, APInt>;
 /// value per trial.
 class FuzzSource : public NondetSource {
 public:
-  explicit FuzzSource(std::function<APInt(unsigned)> fresh)
+  /// `fresh` returns none when a key without a value stops the run (serve
+  /// mode, Missing::Error).
+  explicit FuzzSource(std::function<std::optional<APInt>(unsigned)> fresh)
       : fresh(std::move(fresh)) {}
+
+  /// The origin of a read value (NondetRead / CellRead): from the preset or
+  /// the text, and fresh.
+  std::string givenOrigin = "fuzz", freshOrigin = "fuzz";
 
   /// Starts a trial on `preset` (and `text`, a seed's values).
   void reset(Entry preset, const std::map<Key, std::string> *seedText) {
@@ -241,7 +248,7 @@ public:
     auto it = values.find({memSiteOf(siteOp), k});
     if (it == values.end() || it->second.getBitWidth() != cellWidth)
       return std::nullopt;
-    origin = "fuzz";
+    origin = givenOrigin;
     return it->second;
   }
 
@@ -251,7 +258,7 @@ public:
 private:
   FailureOr<APInt> lookup(Key key, unsigned width, std::string &origin,
                           std::string &error) {
-    origin = "fuzz";
+    origin = givenOrigin;
     if (auto it = values.find(key); it != values.end()) {
       // a value of another width (the same key read at another width; a
       // site has one width, so not expected): a fresh value then. A replay
@@ -277,14 +284,24 @@ private:
       }
       v = *p;
     } else {
-      v = fresh(width);
+      std::optional<APInt> f = fresh(width);
+      if (!f) {
+        error =
+            "no input for " + (key.second.empty()
+                                   ? "nondet site " + std::to_string(key.first)
+                                   : "cell " + key.second + " of memory site " +
+                                         std::to_string(key.first));
+        return failure();
+      }
+      v = *f;
+      origin = freshOrigin;
     }
     values[key] = v;
     used[key] = v;
     return v;
   }
 
-  std::function<APInt(unsigned)> fresh;
+  std::function<std::optional<APInt>(unsigned)> fresh;
   Entry values;
   const std::map<Key, std::string> *text = nullptr;
 
@@ -298,7 +315,7 @@ class Fuzzer {
 public:
   Fuzzer(ProgramOp program, const FuzzOptions &options)
       : program(program), options(options), rng(options.seed),
-        source([this](unsigned w) { return freshValue(w); }) {
+        source([this](unsigned w) { return std::optional(freshValue(w)); }) {
     unsigned order = 0;
     program.walk([&](Operation *op) {
       opOrder[op] = order++;
@@ -316,18 +333,42 @@ public:
     runOptions.prints = false;
     runOptions.onBlock = [this](Block *from, Block *to) {
       if (blocks.insert(to).second)
-        ++newBlocks;
+        newBlocks.push_back(to);
       if (edges.insert({from, to}).second)
-        ++newEdges;
+        newEdges.push_back({from, to});
     };
     runOptions.onAssume = [this](AssumeOp a) {
       if (assumes.insert(a).second)
-        ++newAssumes;
+        newAssumes.push_back(a);
     };
   }
 
   FailureOr<FuzzReport> run(llvm::ArrayRef<CorpusEntryText> seeds,
                             std::string &error);
+
+  /// One run on `src`, with the coverage hooks: the new* lists hold what
+  /// it reached first. The runner of the trials and of serve mode.
+  RunResult runOn(NondetSource &src) {
+    newBlocks.clear();
+    newEdges.clear();
+    newAssumes.clear();
+    return interpret(program, src, runOptions);
+  }
+
+  ServeCoverage coverage() const {
+    ServeCoverage c;
+    c.blocksHit = blocks.size();
+    c.blocksTotal = report.blocksTotal;
+    c.edgesHit = edges.size();
+    c.assumesPassed = assumes.size();
+    c.assumesTotal = report.assumesTotal;
+    return c;
+  }
+
+  /// What the last run reached first.
+  std::vector<Block *> newBlocks;
+  std::vector<std::pair<Block *, Block *>> newEdges;
+  std::vector<AssumeOp> newAssumes;
 
 private:
   /// The program's integer constants used by comparisons and arithmetic,
@@ -425,6 +466,7 @@ private:
     return e;
   }
 
+public:
   static std::vector<Assignment> assignmentsOf(const Entry &e) {
     std::vector<Assignment> as;
     for (const auto &[k, v] : e)
@@ -432,6 +474,7 @@ private:
     return as;
   }
 
+private:
   /// Writes `e` as a corpus file; returns its path.
   FailureOr<std::string> write(StringRef kind, const Entry &e,
                                const RunResult &r, std::string &error) {
@@ -472,7 +515,6 @@ private:
   llvm::DenseSet<Block *> blocks;
   llvm::DenseSet<std::pair<Block *, Block *>> edges;
   llvm::DenseSet<Operation *> assumes;
-  unsigned newBlocks = 0, newEdges = 0, newAssumes = 0;
   llvm::DenseMap<Operation *, uint64_t> blockedBy;
   FuzzReport report;
 };
@@ -483,8 +525,7 @@ LogicalResult Fuzzer::trial(Entry preset,
                             const std::map<Key, std::string> *seedText,
                             bool &stop, std::string &error) {
   source.reset(std::move(preset), seedText);
-  newBlocks = newEdges = newAssumes = 0;
-  RunResult r = interpret(program, source, runOptions);
+  RunResult r = runOn(source);
   ++report.trials;
   if (source.badSeed) {
     error = r.message;
@@ -507,15 +548,15 @@ LogicalResult Fuzzer::trial(Entry preset,
                "fuzz.limit lines count them per op): " +
                    r.message,
                r.at ? std::optional<Location>(r.at->getLoc()) : std::nullopt);
-  if (newBlocks || newEdges || newAssumes) {
+  if (!newBlocks.empty() || !newEdges.empty() || !newAssumes.empty()) {
     corpus.push_back(source.used);
     SEA_LOG(logFuzz, 2)
         .msg("new-coverage")
         .kv("trial", report.trials)
         .kv("status", stringifyRunStatus(r.status))
-        .kv("blocks", newBlocks)
-        .kv("edges", newEdges)
-        .kv("assumes", newAssumes)
+        .kv("blocks", newBlocks.size())
+        .kv("edges", newEdges.size())
+        .kv("assumes", newAssumes.size())
         .kv("corpus", corpus.size());
     if (!options.outDir.empty() && !failing && !erring)
       if (failed(write("cov", source.used, r, error)))
@@ -642,5 +683,115 @@ FailureOr<FuzzReport> fuzz(ProgramOp program,
   Fuzzer f(program, options);
   return f.run(seeds, error);
 }
+
+//===----------------------------------------------------------------------===//
+// Serve mode
+//===----------------------------------------------------------------------===//
+
+class FuzzServerImpl {
+public:
+  FuzzServerImpl(ProgramOp program, const FuzzOptions &options)
+      : options(options), fuzzer(program, this->options), rng(options.seed),
+        source([this](unsigned w) { return freshValue(w); }) {
+    source.givenOrigin = "input";
+    unsigned i = 0;
+    for (Block &b : program.getBody())
+      blockId[&b] = i++;
+    for (auto [id, op] : llvm::enumerate(blockingOpsOf(program)))
+      blockerId[op] = id;
+    for (const InputSite &s : inputSitesOf(program))
+      sites[s.site] = s;
+  }
+
+  FailureOr<ServeResult> run(const ServeRequest &req, std::string &error);
+
+  FuzzOptions options;
+  Fuzzer fuzzer;
+
+private:
+  std::optional<APInt> freshValue(unsigned w) {
+    switch (missing) {
+    case InputSource::Missing::Error:
+      return std::nullopt;
+    case InputSource::Missing::Zero:
+      return APInt::getZero(w);
+    case InputSource::Missing::Random: {
+      llvm::SmallVector<uint64_t> words((w + 63) / 64);
+      for (uint64_t &x : words)
+        x = (*random)();
+      return APInt(w, words);
+    }
+    }
+    llvm_unreachable("unknown missing-input policy");
+  }
+
+  std::mt19937_64 rng;
+  FuzzSource source;
+  InputSource::Missing missing = InputSource::Missing::Error;
+  std::mt19937_64 *random = &rng; // this run's stream
+  llvm::DenseMap<Block *, unsigned> blockId;
+  llvm::DenseMap<Operation *, unsigned> blockerId;
+  std::map<uint64_t, InputSite> sites;
+};
+
+FailureOr<ServeResult> FuzzServerImpl::run(const ServeRequest &req,
+                                           std::string &error) {
+  // check the whole request before running: a bad one changes no coverage
+  Entry preset;
+  for (const Assignment &a : req.inputs) {
+    auto it = sites.find(a.site);
+    if (it == sites.end()) {
+      error = "'" + formatAssignment(a) + "': the program has no input site " +
+              std::to_string(a.site);
+      return failure();
+    }
+    const InputSite &s = it->second;
+    if (s.memory == a.cell.empty()) {
+      error = "'" + formatAssignment(a) + "': site " + std::to_string(a.site) +
+              (s.memory ? " is a memory: give <site>@<addr>=<value>"
+                        : " is a value: give <site>=<value>");
+      return failure();
+    }
+    FailureOr<APInt> v = parseBitVector(a.value, s.width);
+    if (failed(v)) {
+      error = "'" + formatAssignment(a) + "': not an i" +
+              std::to_string(s.width) + " value";
+      return failure();
+    }
+    preset[{a.site, a.cell}] = *v;
+  }
+  missing = req.missing;
+  source.freshOrigin =
+      missing == InputSource::Missing::Zero ? "zero" : "random";
+  std::mt19937_64 own(req.seed.value_or(0));
+  random = req.seed ? &own : &rng;
+  source.reset(std::move(preset), nullptr);
+  ServeResult out;
+  out.run = fuzzer.runOn(source);
+  random = &rng;
+  out.input = Fuzzer::assignmentsOf(source.used);
+  for (Block *b : fuzzer.newBlocks)
+    out.newBlocks.push_back(blockId.lookup(b));
+  for (auto [from, to] : fuzzer.newEdges)
+    out.newEdges.push_back(
+        {from ? int64_t(blockId.lookup(from)) : -1, blockId.lookup(to)});
+  for (AssumeOp a : fuzzer.newAssumes)
+    out.newAssumes.push_back(blockerId.lookup(a));
+  if (out.run.status == RunStatus::AssumeBlocked && out.run.at)
+    out.blocked = blockerId.lookup(out.run.at);
+  return out;
+}
+
+FuzzServer::FuzzServer(ProgramOp program, const FuzzOptions &options)
+    : impl(std::make_unique<FuzzServerImpl>(program, options)) {}
+
+FuzzServer::~FuzzServer() = default;
+
+FailureOr<ServeResult> FuzzServer::run(const ServeRequest &request,
+                                       std::string &error) {
+  return impl->run(request, error);
+}
+
+ServeCoverage FuzzServer::coverage() const { return impl->fuzzer.coverage(); }
 
 } // namespace sea

@@ -31,6 +31,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -164,6 +165,66 @@ mlir::FailureOr<FuzzReport> fuzz(ProgramOp program,
 /// The --input-syntax text of an assignment: `<site>=<value>` or
 /// `<site>@<cell>=<value>`.
 std::string formatAssignment(const Assignment &a);
+
+//===----------------------------------------------------------------------===//
+// Serve mode (sea-run --fuzz-serve): runs on inputs chosen outside
+// sea-mlir, one per request, with the fuzzer's trial source and coverage
+// kept across requests. No mutation, no corpus.
+//===----------------------------------------------------------------------===//
+
+/// One request: the values it sets, and what the sites it does not set get.
+struct ServeRequest {
+  std::vector<Assignment> inputs;
+  /// Error: the run stops (status error) at a site without a value, as
+  /// plain sea-run does.
+  InputSource::Missing missing = InputSource::Missing::Error;
+  /// The seed of this run's random values; none: the server's stream
+  /// (seeded by FuzzOptions::seed), so later requests get other values.
+  std::optional<uint64_t> seed;
+};
+
+/// The coverage of all runs so far, as in FuzzReport.
+struct ServeCoverage {
+  unsigned blocksHit = 0, blocksTotal = 0;
+  unsigned edgesHit = 0;
+  unsigned assumesPassed = 0, assumesTotal = 0;
+};
+
+/// One run and what it reached first. Ids: a block's position in the
+/// program body (the entry is 0); an assume's position in blockingOpsOf.
+struct ServeResult {
+  RunResult run;
+  /// The values the run read, one per site or cell (as in a trial), in
+  /// --input syntax: `sea-run --input-file` of these lines replays the run.
+  /// Ordered by site, then cell. RunResult::reads / cellReads have the
+  /// origin of each read: "input" (the request set it), "zero", "random".
+  std::vector<Assignment> input;
+  std::vector<unsigned> newBlocks;
+  /// (from, to); from -1: the entry of the run.
+  std::vector<std::pair<int64_t, unsigned>> newEdges;
+  std::vector<unsigned> newAssumes;
+  /// assume-blocked: the id of the blocking op.
+  std::optional<unsigned> blocked;
+};
+
+class FuzzServerImpl;
+
+class FuzzServer {
+public:
+  /// Uses FuzzOptions::seed, maxSteps and deferMemoryErrors.
+  FuzzServer(ProgramOp program, const FuzzOptions &options);
+  ~FuzzServer();
+  /// Runs `request`. Fails, without running (coverage unchanged), on a
+  /// request that names no input site of the program, sets a memory
+  /// site's value or a value site's cell, or gives a value that does not
+  /// fit its site.
+  mlir::FailureOr<ServeResult> run(const ServeRequest &request,
+                                   std::string &error);
+  ServeCoverage coverage() const;
+
+private:
+  std::unique_ptr<FuzzServerImpl> impl;
+};
 
 //===----------------------------------------------------------------------===//
 // Introspection (FuzzIntrospect.cpp): what a strategy written outside

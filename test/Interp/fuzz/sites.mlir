@@ -11,7 +11,7 @@
 // RUN: not sea-run %s --program=main --fuzz-sites --defer-memory-errors 2>&1 | FileCheck %s --check-prefix=BAD
 // A program without input sites: the count says so.
 // RUN: sea-run %s --program=none --fuzz-sites | FileCheck %s --check-prefix=NONE
-// NONE: fuzz.sites: 0 value=0 memory=0
+// NONE: fuzz.sites: 0 value=0 memory=0 assumes=0 unreachables=0
 
 // CHECK: fuzz.site: 8 callee=nd_size_t width=64 input=value op=sea.nondet at={{.*}}sites.mlir:[[@LINE+10]]:
 // CHECK-NEXT: fuzz.site: 3 callee=nd_pair width=40 input=value op=sea.struct.nondet at={{.*}}sites.mlir:[[@LINE+10]]:

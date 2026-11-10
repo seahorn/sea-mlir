@@ -14,12 +14,12 @@
 // CHECK-NEXT: fuzz.assume: 1 op=sea.assume at={{.*}}sites-assume.mlir:[[@LINE+16]]:3 sites=7 cond=(ult s7 11)
 // CHECK-NEXT: fuzz.assume: 2 op=sea.unreachable at={{.*}}sites-assume.mlir:[[@LINE+22]]:3{{$}}
 // CHECK-NEXT: fuzz.assume: 3 op=sea.assume at={{.*}}sites-assume.mlir:[[@LINE+23]]:3 sites=- cond=?
-// CHECK-NEXT: fuzz.sites: 2 value=2 memory=0 assumes=4
+// CHECK-NEXT: fuzz.sites: 2 value=2 memory=0 assumes=3 unreachables=1{{$}}
 // CHECK-NOT: fuzz.
 // CHECK-NOT: status:
 // JSONL: {"kind":"stat","key":"fuzz.assume","value":0,"op":"sea.assume","at":"{{.*}}","sites":"6,7","cond":"(ule s6 s7)","text":"fuzz.assume: 0 {{.*}}"}
 // JSONL: {"kind":"stat","key":"fuzz.assume","value":2,"op":"sea.unreachable","at":"{{.*}}","text":"fuzz.assume: 2 {{.*}}"}
-// JSONL: {"kind":"stat","key":"fuzz.sites",{{.*}}"assumes":4,
+// JSONL: {"kind":"stat","key":"fuzz.sites",{{.*}}"assumes":3,"unreachables":1,
 sea.program @main {
   %len = sea.nondet "nd_size_t" [6] : i64
   %cap = sea.nondet "nd_size_t" [7] : i64
