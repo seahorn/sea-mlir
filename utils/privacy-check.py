@@ -29,7 +29,7 @@ PATTERNS = {
     "private-notes": r"\b(?:journal/|loose-ends/|handoff[ -]notes?|notebook)\b",
     "review-provenance": r"\b(?:review\s+(?:round\s+)?(?:R)?\d+|round\s+\d+)\b",
     "review-label": r"(?-i:\bR\d{1,3}(?:-\d+)?\b)",
-    "plan-label": r"\b(?:plan\s+(?:[A-Z]\.?\d+(?:\.\d+)*|\d+(?:\.\d+)*|step\b)|phase\s+\d+)\b",
+    "plan-label": r"\b(?:plan\s+(?:[A-Z]\.?\d+(?:\.\d+)*|\d+(?:\.\d+)*|step\b)|(?<![\w.])phase\s+\d+)\b",
     "decision-date": r"\b20\d{2}-[01]\d-[0-3]\d\b",
 }
 # END DETECTION VOCABULARY

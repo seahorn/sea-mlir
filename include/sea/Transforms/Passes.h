@@ -10,6 +10,10 @@
 
 #include <memory>
 
+namespace mlir {
+class PassManager;
+} // namespace mlir
+
 namespace sea {
 
 /// sea-place-static: lowers abstract pointers to addresses by placing every
@@ -134,6 +138,11 @@ void buildVCLoweringPipeline(mlir::OpPassManager &pm, bool abstract,
                              bool widenReport = false,
                              bool keepByteWide = false, bool checkAlign = false,
                              unsigned checkPtrIndex = 0, bool opt = true);
+
+/// Attaches the `lower.pass` log (one level-1 event per pass run: ops
+/// before and after, time; lib/Transforms/PassLog.cpp) to \p pm. Costs a
+/// check per pass when the tag is off.
+void addPassLog(mlir::PassManager &pm);
 
 /// Registers all sea passes with the global registry (for sea-opt).
 void registerPasses();

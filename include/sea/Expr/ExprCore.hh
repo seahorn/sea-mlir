@@ -433,6 +433,9 @@ private:
 
 public:
   ExprFactory() : idCount(0) {}
+  /// The nodes made so far, freed ones included (the ids handed out): a
+  /// constant-time measure of the terms built, for flow logs.
+  unsigned nodesMade() const { return idCount; }
   /// Destroys the recycled nodes kept on the free list (their argument
   /// vectors); every Expr of this factory must be gone before.
   ~ExprFactory();

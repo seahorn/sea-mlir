@@ -5,6 +5,9 @@
 // --log=help: the registered tags, sorted, with their max level.
 // RUN: sea-vc --log=help | FileCheck %s --check-prefix=HELP
 // HELP: log tags
+// HELP: lower.pass 1
+// HELP: vc.phase 1
+// HELP: vc.solve 1
 // HELP: vc.store-read 3
 // HELP: warn.<kind> 2
 

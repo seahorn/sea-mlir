@@ -67,7 +67,8 @@ When a run is slow or does not finish, look at where the work goes:
 - `--vcgen-only` builds the query without solving it and prints its
   statistics;
 - `--seam-stats` prints how often each rewrite rule fired;
-- `--progress` prints the phase the run is in;
+- `--progress` logs each phase with its time and sizes (`'--log=*:1'`: the
+  whole flow);
 - `vc.ackermann-constraints` measures the memory work left to the solver.
 
 Then change one thing and compare: the memory encoding (`--seam`,

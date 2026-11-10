@@ -4,7 +4,7 @@
 // RUN: sea-vc %s --config=%S/Inputs/progress.cfg 2>&1 >/dev/null | FileCheck %s --check-prefix=ERR
 // CHECK: vc.config: {{.*}}Inputs{{/|\\}}progress.cfg
 // CHECK: result: sat
-// ERR: phase: solve
+// ERR: log: vc.phase start phase=solve{{$}}
 sea.program @p {
   %x = sea.nondet "nondet_u8" [0] : i8
   %c100 = sea.const 100 : i8

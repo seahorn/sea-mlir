@@ -68,7 +68,7 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--seam-stats` | print SeaM's rule counters |
 | `--brunch-stats` | also print `BRUNCH_STAT <key> <value>` lines |
 | `--dag-stats` | print the size of the query as a DAG |
-| `--progress` | print `phase: <name>` on stderr as each phase starts |
+| `--progress` | log the start and end of each phase on stderr, or the log file (= `--log=vc.phase`) |
 | `--print=lines|tree|off` | how the program's prints are shown in a replay |
 | `--print-refs=asis|weak|strong` | convert the program's prints before the lowering |
 | `--print-limit=<n>`, `--print-locs` | limit the print lines; add the location of each print |

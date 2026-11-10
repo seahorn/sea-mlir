@@ -269,6 +269,11 @@ void init() {
     addSpec(s, "SEA_LOG");
 }
 
+void select(StringRef spec, StringRef source) {
+  init();
+  addSpec(spec, source);
+}
+
 void setFormat(out::Format f) {
   Registry &r = Registry::get();
   std::lock_guard<std::mutex> g(r.outLock);

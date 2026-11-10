@@ -50,7 +50,10 @@ Scope, build, assumptions and known issues: [docs/Release.md](docs/Release.md).
 - Assurance: the per-firing rule check (`--seam-check`), the rule trail
   (`--seam-trail`), `--eq-audit`, `--dag-stats`.
 - Limits and progress: `--timeout`, `--mem-limit`, `--vcgen-only`,
-  `--progress`.
+  `--progress` (= `--log=vc.phase`).
+- Logs (`--log`, `SEA_LOG`; docs/reference/logging.md): tagged, leveled
+  events on stderr; level 1 traces the flow of a run (`vc.phase`,
+  `lower.pass`, `vc.solve`).
 - Profiles (`--config`, LLVM config files), `--format=jsonl`, `--agent`.
 
 ### Tools and utilities
