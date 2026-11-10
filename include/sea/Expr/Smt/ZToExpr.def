@@ -5,7 +5,6 @@
 #include "sea/Expr/ExprAPInt.hh"
 #include "sea/Expr/ExprOpBinder.hh"
 #include "sea/Expr/Smt/ExprToZ.hh"
-#include "sea/Support/SeaDebug.h"
 #include "sea/Support/SeaLog.hh"
 
 #include "boost/lexical_cast.hpp"

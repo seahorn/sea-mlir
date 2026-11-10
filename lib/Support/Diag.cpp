@@ -4,7 +4,7 @@
 //===- Diag.cpp - visible, non-flooding warnings ----------------*- C++ -*-===//
 
 #include "sea/Support/Diag.h"
-#include "sea/Support/SeaDebug.h"
+#include "sea/Support/Log.h"
 
 #include "llvm/ADT/StringMap.h"
 
@@ -49,13 +49,7 @@ bool useColor(raw_ostream &os) {
   return os.has_colors() && !std::getenv("NO_COLOR");
 }
 
-bool logEnabled(StringRef kind) {
-#ifndef NSEALOG
-  return SeaLogFlag && SeaLog.count(kind.str()) > 0;
-#else
-  return false;
-#endif
-}
+bool logEnabled(StringRef kind) { return log::warningSelected(kind); }
 
 void print(raw_ostream::Colors color, StringRef prefix, StringRef kind,
            const Twine &msg, const std::string &where) {
@@ -120,7 +114,7 @@ void printSummary(raw_ostream &os) {
     os << "[" << k << "] occurred " << e.count << " times";
     if (!e.first.empty())
       os << " (first at " << e.first << ")";
-    os << "; --log=" << k << " shows each\n";
+    os << "; --log=warn." << k << ":2 shows each\n";
   }
   os.flush();
 }

@@ -25,6 +25,7 @@
 #include "sea/Dialect/Sea/SeaDialect.h"
 #include "sea/Reduce/Reduce.h"
 #include "sea/Support/Diag.h"
+#include "sea/Support/Log.h"
 #include "sea/Support/Version.h"
 #include "sea/Transforms/Passes.h"
 
@@ -127,6 +128,7 @@ int main(int argc, char **argv) {
     }
     args.push_back(argv[i]);
   }
+  sea::log::init(); // SEA_LOG / SEA_LOG_FILE, before --log
   sea::setVersionPrinter("sea-reduce");
   mlir::registerTransformsPasses();
   sea::registerPasses();

@@ -1,0 +1,19 @@
+// The selection syntax of logs (sea/Support/Log.h): parsing, matching, the
+// level of a tag, a tag registered after the selection; the text rendering
+// of values and the events in a log file.
+RUN: rm -f %t.log
+RUN: sea-log-test '--log=test.*:2' --log=test.b:0 --log-file=%t.log | FileCheck %s
+CHECK: parse: ok
+CHECK: match: ok
+CHECK: level: ok
+CHECK: text: ok
+CHECK: tag: ok
+CHECK: failures: 0
+
+RUN: FileCheck %s --check-prefix=EVENTS --match-full-lines < %t.log
+EVENTS: log: test.a m\r1 s="a\rb\x01" n=-3 nan=nan inf=-inf x=0.500
+EVENTS-NEXT: {"log":"test.a","level":2,"nan":"nan","inf":"inf","text":"log: test.a nan=nan inf=inf"}
+EVENTS-NOT: never
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

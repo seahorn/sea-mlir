@@ -7,7 +7,6 @@
 #include "sea/Expr/ExprAPInt.hh"
 #include "sea/Expr/ExprOpBinder.hh"
 #include "sea/Expr/Smt/ExprToZ.hh"
-#include "sea/Support/SeaDebug.h"
 #include "sea/Support/SeaLog.hh"
 
 #include "boost/lexical_cast.hpp"
@@ -356,8 +355,6 @@ z3::ast ExprToZ::marshal(const expr::Expr &_e, z3::context &ctx, C &cache,
     auto family_id = op.getFamilyId();
     unsigned arity = e->arity();
 
-    LOG("expr2z", errs() << "marshal: " << *e << "\n";);
-
     // expressions that are cached globally
     switch (family_id) {
     default:
@@ -528,12 +525,6 @@ z3::ast ExprToZ::marshal(const expr::Expr &_e, z3::context &ctx, C &cache,
       todo.push_back(arg);
     }
     if (todo.size() > sz) {
-      LOG("expr2z", {
-        errs() << "TODO arguments are: \n";
-        for (unsigned i = sz; i < todo.size(); ++i) {
-          errs() << i << ": " << *todo[i] << "\n";
-        }
-      });
       continue;
     }
 

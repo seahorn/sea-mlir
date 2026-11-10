@@ -20,6 +20,7 @@
 #include "sea/Expr/SeaMRules.hh"
 #include "sea/Expr/TypeChecker.hh"
 #include "sea/Support/Diag.h"
+#include "sea/Support/Log.h"
 #include "sea/Support/Version.h"
 #include "sea/VC/OpSem.h"
 #include "llvm/Support/CommandLine.h"
@@ -408,6 +409,7 @@ int main(int argc, char **argv) {
   struct Summary {
     ~Summary() { sea::diag::printSummary(); }
   } summary;
+  sea::log::init(); // SEA_LOG / SEA_LOG_FILE, before --log
   sea::setVersionPrinter("sea-seam-export");
   llvm::cl::ParseCommandLineOptions(
       argc, argv,

@@ -31,6 +31,7 @@
 #include "sea/Expr/Smt/BitwuzlaSolverImpl.hh"
 #endif
 #include "sea/Expr/Smt/Z3SolverImpl.hh"
+#include "sea/Support/Log.h"
 
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/CommandLine.h"
@@ -189,6 +190,7 @@ struct TermBuilder {
 
 int main(int argc, char **argv) {
   InitLLVM y(argc, argv);
+  sea::log::init(); // SEA_LOG / SEA_LOG_FILE, before --log
   cl::ParseCommandLineOptions(argc, argv, "Evaluate bv terms through Expr\n");
   if (agent) {
     outs() << agentGuide;

@@ -33,7 +33,6 @@
 #include "sea/Expr/ExprInterp.hh"
 #include "sea/Expr/ExprOpBinder.hh"
 #include "sea/Expr/ExprOpBv.hh"
-#include "sea/Support/SeaDebug.h"
 #include "sea/Support/SeaLog.hh"
 
 #include <fstream>

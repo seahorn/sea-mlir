@@ -106,6 +106,7 @@ nav:
       - The sea dialect: reference/dialect.md
       - Command line: reference/cli.md
       - Output formats and exit codes: reference/output-formats.md
+      - Logging: reference/logging.md
       - Counterexample notation: reference/print.md
       - Profiles: reference/profiles.md
       - The reducer: reference/reducer.md

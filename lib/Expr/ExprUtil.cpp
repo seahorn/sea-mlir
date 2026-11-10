@@ -72,6 +72,18 @@ size_t dagSize(Expr e) {
   return sz.count;
 }
 
+std::string termForLog(Expr e) {
+  constexpr size_t kLimit = 64;
+  std::string s;
+  llvm::raw_string_ostream os(s);
+  size_t n = dagSize(e);
+  if (n <= kLimit)
+    os << *e;
+  else
+    os << "#" << e->getId() << " (" << n << " nodes)";
+  return s;
+}
+
 size_t dagSize(const ExprVector &vec) {
   SIZE sz;
   dagVisit(sz, vec);

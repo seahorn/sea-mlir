@@ -1,9 +1,9 @@
 // RUN: sea-opt %s | sea-opt | FileCheck %s --check-prefix=RT
 // RUN: sea-opt %s --sea-place-static | FileCheck %s --check-prefix=PLACED
 // RUN: sea-run %s --program=ok --missing=zero 2>&1 | FileCheck %s --check-prefix=OK
-// RUN: sea-run %s --program=offset --missing=zero --log=interp.align-promise 2>&1 | FileCheck %s --check-prefix=OFF
-// RUN: sea-run %s --program=object --missing=zero --log=interp.align-promise 2>&1 | FileCheck %s --check-prefix=OBJ
-// RUN: sea-run %s --program=placed --missing=zero --log=interp.align-promise 2>&1 | FileCheck %s --check-prefix=ADDR
+// RUN: sea-run %s --program=offset --missing=zero --log=warn.interp.align-promise:2 2>&1 | FileCheck %s --check-prefix=OFF
+// RUN: sea-run %s --program=object --missing=zero --log=warn.interp.align-promise:2 2>&1 | FileCheck %s --check-prefix=OBJ
+// RUN: sea-run %s --program=placed --missing=zero --log=warn.interp.align-promise:2 2>&1 | FileCheck %s --check-prefix=ADDR
 
 // `align` (bytes, LLVM's) is a promise: a broken one is reported, the run
 // goes on.

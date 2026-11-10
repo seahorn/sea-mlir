@@ -5,7 +5,6 @@
 #include "sea/Expr/TypeChecker.hh"
 #include "sea/Expr/ExprAPInt.hh"
 #include "sea/Expr/ExprVisitor.hh"
-#include "sea/Support/SeaDebug.h"
 #include "sea/Support/SeaLog.hh"
 #include "llvm/Support/raw_ostream.h"
 

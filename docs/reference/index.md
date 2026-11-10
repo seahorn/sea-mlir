@@ -7,6 +7,8 @@
 - [Command line](cli.md): each installed tool and its main options.
 - [Output formats and exit codes](output-formats.md): the text lines, the
   JSONL records, and the exit status of each tool.
+- [Logging](logging.md): log tags and levels, `--log`, `SEA_LOG`, and the
+  event format.
 - [Counterexample notation](print.md): print operations, and how values,
   pointers and memory are shown.
 - [Profiles](profiles.md): option files for `sea-vc`.

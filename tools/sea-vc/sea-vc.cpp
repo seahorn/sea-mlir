@@ -26,6 +26,7 @@
 #include "sea/Expr/Smt/Z3SolverImpl.hh"
 #include "sea/Interp/ParseInput.h"
 #include "sea/Support/Diag.h"
+#include "sea/Support/Log.h"
 #include "sea/Support/Output.h"
 #include "sea/Support/Version.h"
 #include "sea/Transforms/Passes.h"
@@ -43,9 +44,11 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
+#include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Support/Timing.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSet.h"
@@ -1324,6 +1327,9 @@ OUTPUT (stdout, `key: value` lines):
                                   (status 16, "Out of memory"), and GMP
                                   aborts)
   nondet: site=<n> callee=<f> width=<w> value=<unsigned>   (sat: from the model)
+  memread: site=<n> addr=<a> width=<w> value=<v> [obj=&<o>[<off>]]
+                                  (sat: cells from the model; obj: the
+                                  placed object the cell lies in)
   replay: <interpreter status, expected assert-failed>   (with
                                   --ptr-companion=check any status: the
                                   property is A-PTRINT, below)
@@ -1605,11 +1611,17 @@ from encode.
 
 DIAGNOSTICS (stderr): "Warning: ... [kind]" (yellow) for incomplete or
 approximate handling, once per kind; repeats are counted and summarized at
-exit (--log=<kind> prints each). "Error: ... [kind]" (red) when the tool
-cannot continue.
-  memread: site=<n> addr=<a> width=<w> value=<v> [obj=&<o>[<off>]]
-                                  (sat: cells from the model; obj: the
-                                  placed object the cell lies in)
+exit (--log=warn.<kind>:2 prints each). "Error: ... [kind]" (red) when
+the tool cannot continue.
+
+LOGS (stderr, or --log-file / SEA_LOG_FILE; off by default): SEA_LOG, then
+--log=<pattern>[:<level>],... (pattern: a tag, <prefix>.* or *; level 1
+flow, 2 object, 3 detail; 0 off); --log=help lists the tags. One line per
+event: `log: <tag> [<msg>] k=v ... [at <loc>]`; under --format=jsonl
+{"log":"<tag>","level":L,...,"text":"<the text line>"}.
+MLIR's pass-manager options apply to the lowering: --mlir-print-ir-after-all,
+--mlir-print-ir-after-change, --mlir-timing, --mlir-pass-statistics;
+--mlir-print-ir-module-scope needs --mlir-disable-threading.
 
 OUTPUT FORMATS (--format=text|jsonl; default text, the lines above):
 jsonl: every stdout line is one JSON object
@@ -1729,8 +1741,30 @@ static void printValue(raw_ostream &os, Value v) {
     os << "block-arg " << v.getLoc();
 }
 
+/// MLIR's timing (--mlir-timing): the root scope of one report over every
+/// PassManager; set in main when timing is on
+static mlir::TimingScope *gTiming = nullptr;
+
+/// MLIR's pass-manager options (--mlir-print-ir-*, --mlir-pass-statistics,
+/// crash reproducers) and --mlir-timing, on a PassManager sea-vc built
+static LogicalResult configurePM(PassManager &pm) {
+  if (failed(mlir::applyPassManagerCLOptions(pm)))
+    return failure();
+  if (gTiming)
+    pm.enableTiming(*gTiming);
+  return success();
+}
+
 int main(int argc, char **argv) {
   InitLLVM y(argc, argv);
+  // SEA_LOG / SEA_LOG_FILE, before --log entries override them
+  sea::log::init();
+  mlir::registerPassManagerCLOptions();
+  mlir::registerDefaultTimingManagerCLOptions();
+  mlir::registerAsmPrinterCLOptions();
+  // --mlir-disable-threading (and the diagnostic options): read by the
+  // MLIRContext constructor
+  mlir::registerMLIRContextCLOptions();
   // Repeated warnings are summarized at exit, whatever the exit path.
   struct Summary {
     ~Summary() { sea::diag::printSummary(); }
@@ -1776,6 +1810,13 @@ int main(int argc, char **argv) {
   }
   sea::out::Emitter emitter(outs(), outFormat);
   gOut = &emitter;
+  sea::log::setFormat(outFormat);
+  // --mlir-timing: reported on stderr when main returns
+  mlir::DefaultTimingManager timing;
+  mlir::applyDefaultTimingManagerCLOptions(timing);
+  mlir::TimingScope timingRoot = timing.getRootScope();
+  if (timing.isEnabled())
+    gTiming = &timingRoot;
   // statistics: stderr under --smt2 (stdout is the query), unless jsonl
   // (the query is a record then)
   auto statOut = [&]() -> raw_ostream & {
@@ -1974,7 +2015,7 @@ int main(int argc, char **argv) {
   if (printRefs != sea::PrintRefs::AsIs) {
     PassManager pm(&context);
     sea::addPrintRefsPass(pm, printRefs);
-    if (failed(pm.run(*module)))
+    if (failed(configurePM(pm)) || failed(pm.run(*module)))
       return 1;
   }
   if (lower) {
@@ -1988,7 +2029,7 @@ int main(int argc, char **argv) {
         /*expandMemSet=*/!seam && !lambdaMem, widenMemoryReport,
         /*keepByteWide=*/seam && seamWide, checkAlign,
         checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt);
-    if (failed(pm.run(*module)))
+    if (failed(configurePM(pm)) || failed(pm.run(*module)))
       return 1;
   } else if (abstract) {
     sea::diag::error("vc.abstract-program",
@@ -2016,7 +2057,7 @@ int main(int argc, char **argv) {
     // the chosen program only (a file may hold several)
     PassManager pm(&context, sea::ProgramOp::getOperationName());
     pm.addPass(sea::createSinkAssumesPass(&sunkAssumes));
-    if (failed(pm.run(program)))
+    if (failed(configurePM(pm)) || failed(pm.run(program)))
       return 1;
   }
 

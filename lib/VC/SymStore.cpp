@@ -5,10 +5,15 @@
 // keys are not supported (ExprOpFiniteMap is not ported).
 #include "sea/VC/SymStore.hh"
 #include "sea/Expr/ExprAPInt.hh"
-#include "sea/Support/SeaDebug.h"
+#include "sea/Support/Log.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace sea {
+/// once per key read before it is written (about one per op: detail)
+static log::Tag logStoreRead(
+    "vc.store-read", 3,
+    "a SymStore key read before any write (its initial value made)");
+
 /// true if v is a constant value
 static bool isValue(Expr v) {
   return isOpX<TRUE>(v) || isOpX<FALSE>(v) || isOpX<MPZ>(v) || isOpX<MPQ>(v);
@@ -116,8 +121,10 @@ Expr SymStore::read(Expr key) {
   if (m_trackUse)
     m_uses.push_back(key);
 
-  LOG("live", llvm::errs() << "Store reading: " << *key << " uses "
-                           << m_uses.size() << "\n");
+  SEA_LOG(logStoreRead, 3)
+      .msg("read")
+      .kv("key", expr::termForLog(key))
+      .kv("uses", m_uses.size());
 
   {
     detail::scoped_track_use stu(*this, false);

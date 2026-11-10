@@ -4,8 +4,8 @@
 add_mlir_library(SeaSupport
   BoostException.cpp
   Diag.cpp
+  Log.cpp
   Output.cpp
-  SeaDebug.cpp
   SeaLog.cpp
   Version.cpp
 

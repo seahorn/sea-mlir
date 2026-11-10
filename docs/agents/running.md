@@ -75,7 +75,8 @@ The record kinds are listed in
 
 Diagnostics go to stderr. `Warning: <message> [kind]` names incomplete or
 approximate handling; each kind is printed once and repeats are summarized
-at exit (`--log=<kind>` prints each). `Error: <message> [kind]` stops the
+at exit (`--log=warn.<kind>:2` prints each; see
+[Logging](../reference/logging.md)). `Error: <message> [kind]` stops the
 tool. The kind is a short stable tag, such as
 `vc.seam-inb-violated`; match on it, not on the message. Nothing
 unsupported is skipped silently: an operation, layout or form that

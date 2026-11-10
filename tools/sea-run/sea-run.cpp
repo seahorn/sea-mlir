@@ -21,6 +21,7 @@
 #include "sea/Interp/Interpreter.h"
 #include "sea/Interp/ParseInput.h"
 #include "sea/Support/Diag.h"
+#include "sea/Support/Log.h"
 #include "sea/Support/Output.h"
 #include "sea/Support/Version.h"
 #include "sea/Transforms/Passes.h"
@@ -318,8 +319,9 @@ jq one-liners:
   ... | jq -c 'select(.kind=="print") | {path, obj, off, value}'
 
 DIAGNOSTICS (stderr): "Warning: ... [kind]" (yellow), once per kind, with a
-summary of repeats at exit (--log=<kind> prints each); "Error: ... [kind]"
-(red) when the run stops with status: error.
+summary of repeats at exit (--log=warn.<kind>:2 prints each); "Error: ...
+[kind]" (red) when the run stops with status: error. Logs: --log, SEA_LOG
+(docs/reference/logging.md).
 
 STATUS CODES: 0 the run ended (any status but error); 1 error (bad input,
 missing nondet value, unsupported op).
@@ -332,6 +334,8 @@ static int fail(const Twine &msg) {
 
 int main(int argc, char **argv) {
   InitLLVM y(argc, argv);
+  // SEA_LOG / SEA_LOG_FILE, before --log entries override them
+  sea::log::init();
   // Repeated warnings are summarized at exit, whatever the exit path.
   struct Summary {
     ~Summary() { sea::diag::printSummary(); }
@@ -401,6 +405,7 @@ int main(int argc, char **argv) {
   options.prints = printMode != sea::PrintMode::Off;
   options.printLimit = printLimit;
   sea::out::Emitter out(outs(), outFormat);
+  sea::log::setFormat(outFormat);
   auto locText = [](Location l) {
     std::string t;
     raw_string_ostream os(t);
