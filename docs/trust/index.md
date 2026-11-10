@@ -6,30 +6,23 @@ checking that path as part of the work, not as a step after it. Every
 part of the pipeline comes with a check that can show it wrong, built
 together with the part.
 
-Building a check has found more bugs than running one. A check needs a
-precise statement of what it compares: what a counterexample of the
-simplified program says about the original one, what it means for an
-execution to reach an assertion, what a memory havoc of a null pointer
-does. Writing that statement raises questions the specification left
-open, and answering them is where most of our bugs turned up, including
-unsound rewrites that every existing test had passed. Where a question
-had no answer yet, the answer became a named assumption, and every run
-that depends on it says so.
+Building a check has found more bugs than running one. A check must state
+exactly what it compares, and writing that statement raises questions the
+specification left open. Answering them has found bugs that every existing
+test passed. A question that has no answer yet becomes a named
+assumption, and every run that depends on it says so.
 
 What this means for an answer from `sea-vc`:
 
 - **A counterexample is real.** It is replayed in an independent
-  interpreter before it is reported, and can be replayed on the program as
-  it was before any simplification.
-- **A proof holds under the assumptions the run reports.** Each run lists
-  the assumptions it used, such as in-bounds memory access, and counts how
-  much of the proof depends on them. Reach coverage shows whether the
-  proof actually reached each assertion, so a vacuous proof is visible.
-- **A proof is not certified end to end.** The memory rules are proved
-  sound in Lean, and the rest of the pipeline is tested, not proved. The
-  limits are listed [below](#what-is-not-checked).
+  interpreter before it is reported.
+- **A proof holds under the assumptions the run reports.** Each run names
+  the assumptions it used and counts how much of the proof depends on
+  each.
+- **The limits are stated.** This page says which parts are proved, which
+  are tested, and [what is not checked](#what-is-not-checked).
 
-The rest of this page goes deeper, one level at a time: what each answer
+The rest of the page goes deeper, one level at a time: what an answer
 means, the checks behind it, and how the checks themselves were tested.
 
 ## What an answer means
