@@ -47,8 +47,10 @@ timeout 900 sea-vc job.mlir --lower --seam --widen-memory=4 \
 
 - `--mem-limit` is in GB of address space (`RLIMIT_AS`), not resident
   memory. Leave headroom above the expected resident size.
-- `--progress` prints `phase: <name>` on stderr as each phase starts, so a
-  run that does not finish shows where it is.
+- `--progress` (the same as `--log=vc.phase`) logs the start and end of each
+  phase on stderr, or the log file, the end with its time and sizes, so a run that does not
+  finish shows where it is. `'--log=*:1'` adds the passes of the lowering
+  and the solver calls ([Logging](../reference/logging.md)).
 - A limit that is hit gives `result: unknown` and exit status 3, with
   `solve-timeout: true` or `mem-limit: hit`.
 

@@ -681,19 +681,69 @@ static cl::opt<bool> vcgenOnly(
              "`result: none`, run no solver"),
     cl::init(false));
 
+// Flow logs (docs/reference/logging.md). Every event is written whole and
+// flushed, so the phase in progress is visible when a run is killed.
+static sea::log::Tag logPhase(
+    "vc.phase", 1,
+    "the start and end of each sea-vc phase (lower, encode, simplify, "
+    "solver-term, ackermann, solve, replay); the end with time and sizes");
+static sea::log::Tag logSolve("vc.solve", 1,
+                              "each solver call of the verdict: backend, "
+                              "result, time, Expr nodes made so far");
+
 static cl::opt<bool> progress(
     "progress",
-    cl::desc("Print `phase: <name>` on stderr at the start of each phase "
-             "(lower, encode, simplify, solver-term, ackermann, solve, "
-             "replay)"),
-    cl::init(false));
+    cl::desc("Log the start and end of each phase on stderr, or the log "
+             "file: an alias of --log=vc.phase (=false: vc.phase:0) (lower, "
+             "encode, simplify, solver-term, "
+             "ackermann, solve, replay)"),
+    cl::init(false), cl::cb<void, bool>([](bool on) {
+      sea::log::select(on ? "vc.phase" : "vc.phase:0", "--progress");
+    }));
 
-/// --progress: the phase starting now, flushed
-static void phase(const char *name) {
-  if (!progress)
-    return;
-  errs() << "phase: " << name << "\n";
-  errs().flush();
+namespace {
+/// A phase of the run: the start event is written when it is made; the end
+/// event is SEA_PHASE_END(phase) with the phase's sizes after it.
+/// \p run (encode only): the number of the VC run, 1, 2, ... (a fallback
+/// or a retry starts the VC again). The clock is read only when vc.phase
+/// is on.
+struct Phase {
+  const char *name;
+  std::chrono::steady_clock::time_point t0;
+  explicit Phase(const char *name) : name(name) {
+    if (!logPhase.on(sea::log::Flow))
+      return;
+    t0 = std::chrono::steady_clock::now();
+    SEA_LOG(logPhase, sea::log::Flow).msg("start").kv("phase", name);
+  }
+  Phase(const char *name, unsigned run) : name(name) {
+    if (!logPhase.on(sea::log::Flow))
+      return;
+    t0 = std::chrono::steady_clock::now();
+    SEA_LOG(logPhase, sea::log::Flow)
+        .msg("start")
+        .kv("phase", name)
+        .kv("run", run);
+  }
+  double seconds() const {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
+        .count();
+  }
+};
+} // namespace
+
+/// The end event of phase P; its arguments (sizes) are evaluated only when
+/// vc.phase is on.
+#define SEA_PHASE_END(P)                                                       \
+  SEA_LOG(logPhase, sea::log::Flow)                                            \
+      .msg("end")                                                              \
+      .kv("phase", (P).name)                                                   \
+      .kv("time", (P).seconds())
+
+static uint64_t countOps(Operation *op) {
+  uint64_t n = 0;
+  op->walk([&](Operation *) { ++n; });
+  return n;
 }
 
 /// --mem-limit: an allocation that fails (operator new; Bitwuzla, the VC)
@@ -932,8 +982,10 @@ TYPICAL:
                                  #   --x-read-table-check); not with --smt2
   sea-vc p.mlir --print-refs=strong  # keep every printed value alive
                                  #   through the lowering (PRINTS)
-  sea-vc p.mlir --progress       # phase: <name> lines on stderr (flushed)
-                                 #   as each phase starts
+  sea-vc p.mlir --progress       # = --log=vc.phase: the start and end
+                                 #   (time, sizes) of each phase on stderr
+  sea-vc p.mlir '--log=*:1'      # the whole flow: phases, passes, solver
+                                 #   calls (LOGS)
   sea-vc p.mlir --config=seam    # options from a profile (CONFIG below);
                                  #   the command line still overrides them
   sea-vc p.mlir --lower          # lower first (= sea-opt
@@ -1603,11 +1655,14 @@ array of file:line:col strings, outermost last), the name in
 path (positions) and, when an entry was inlined, path_inlined (an array
 parallel to path of call-site arrays, [] for an entry not inlined).
 
-PROGRESS (--progress, stderr, flushed): `phase: <name>` at the start of
-each phase: lower, encode, simplify (with the rewriter's normalization),
-solver-term, ackermann, solve, replay (sat only). A run that restarts
-(the vc.seam-inb-violated fallback, the --ack-stride retry) repeats them
-from encode.
+PROGRESS (--progress = --log=vc.phase, --progress=false = vc.phase:0; on
+stderr, or the log file; each line flushed as it is written):
+`log: vc.phase start phase=<name>` at the start of each phase and
+`log: vc.phase end phase=<name> time=<s> <sizes>` at its end; phases:
+lower, encode, simplify (with the rewriter's normalization), solver-term,
+ackermann, solve, replay (sat only). A killed run's last start line names
+the phase it was in. A run that restarts (the vc.seam-inb-violated
+fallback, the --ack-stride retry) repeats them from encode.
 
 DIAGNOSTICS (stderr): "Warning: ... [kind]" (yellow) for incomplete or
 approximate handling, once per kind; repeats are counted and summarized at
@@ -1619,6 +1674,19 @@ LOGS (stderr, or --log-file / SEA_LOG_FILE; off by default): SEA_LOG, then
 flow, 2 object, 3 detail; 0 off); --log=help lists the tags. One line per
 event: `log: <tag> [<msg>] k=v ... [at <loc>]`; under --format=jsonl
 {"log":"<tag>","level":L,...,"text":"<the text line>"}.
+Level-1 (flow) tags, `--log=*:1` for all:
+  vc.phase    start phase=<p> / end phase=<p> time=<s> + sizes: lower
+              ops-before ops-after; encode nodes-made sides guarantees
+              (its start: run=<n>, 2+ after a fallback or retry);
+              simplify, solver-term nodes-made; ackermann on arrays pairs
+              nodes-made; solve (time only); replay status checked
+              mismatches validated. nodes-made = Expr nodes made so far in
+              this run (freed ones included; not the DAG size).
+  lower.pass  pass=<arg> on=<op> program=@<name> ops-before ops-after
+              time, per pass run
+              (failed: msg `failed`)
+  vc.solve    backend result time nodes-made, per solver call of the
+              verdict
 MLIR's pass-manager options apply to the lowering: --mlir-print-ir-after-all,
 --mlir-print-ir-after-change, --mlir-timing, --mlir-pass-statistics;
 --mlir-print-ir-module-scope needs --mlir-disable-threading.
@@ -1750,6 +1818,7 @@ static mlir::TimingScope *gTiming = nullptr;
 static LogicalResult configurePM(PassManager &pm) {
   if (failed(mlir::applyPassManagerCLOptions(pm)))
     return failure();
+  sea::addPassLog(pm);
   if (gTiming)
     pm.enableTiming(*gTiming);
   return success();
@@ -2019,7 +2088,9 @@ int main(int argc, char **argv) {
       return 1;
   }
   if (lower) {
-    phase("lower");
+    Phase lowerPhase("lower");
+    const uint64_t opsBefore =
+        logPhase.on(sea::log::Flow) ? countOps(*module) : 0;
     PassManager pm(&context);
     // with --seam, memset / memmove / memhavoc are terms (SeaM-memops.md):
     // no sea-expand-memset, symbolic lengths are exact
@@ -2031,6 +2102,9 @@ int main(int argc, char **argv) {
         checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt);
     if (failed(configurePM(pm)) || failed(pm.run(*module)))
       return 1;
+    SEA_PHASE_END(lowerPhase)
+        .kv("ops-before", opsBefore)
+        .kv("ops-after", countOps(*module));
   } else if (abstract) {
     sea::diag::error("vc.abstract-program",
                      "the program uses abstract pointers; place it first "
@@ -2072,7 +2146,9 @@ int main(int argc, char **argv) {
   constexpr int kRetryExactCompanion = -3;
   CompanionMode companionMode = ptrCompanion;
   bool strideOn = ackStride;
+  unsigned vcRuns = 0; // vc.phase run=
   auto runVc = [&](bool inb, bool mayRetry, const char *note) -> int {
+    ++vcRuns;
     auto vcStart = std::chrono::steady_clock::now();
     // the phases of vc-time (--seam-stats: vc.<phase>-time)
     using Clock = std::chrono::steady_clock;
@@ -2188,15 +2264,20 @@ int main(int argc, char **argv) {
       };
     sea::VCGen vcgen(sem, joinEncoding);
     lap("setup");
-    phase("encode");
+    Phase encodePhase("encode", vcRuns);
     if (failed(vcgen.genVc(program, ctx)))
       return 1;
     lap("encode");
+    SEA_PHASE_END(encodePhase)
+        .kv("nodes-made", efac.nodesMade())
+        .kv("sides", side.size())
+        .kv("guarantees", ctx.guarantees().size());
     // the final normalization pass: every side condition
     // and guarantee, then the query, with the cache of the load and store
     // rewriting
+    std::optional<Phase> simplifyPhase;
     if (sem.simplifies())
-      phase("simplify");
+      simplifyPhase.emplace("simplify");
     if (sem.simplifies()) {
       sem.setTrailContext("side");
       for (expr::Expr &e : side)
@@ -2234,6 +2315,8 @@ int main(int argc, char **argv) {
     sem.setTrailContext("query");
     query = sem.simplify(query);
     lap("simplify-query");
+    if (simplifyPhase)
+      SEA_PHASE_END(*simplifyPhase).kv("nodes-made", efac.nodesMade());
     // census (PtrSort S4): the loaded pointers no rule resolved, by what the
     // PTR_FROM_BITS holds (select: an undecided read; concat: a split load;
     // wselect / ite / other), before the boundary
@@ -2379,7 +2462,7 @@ int main(int argc, char **argv) {
     std::unique_ptr<expr::xrt::Lowering> xlw;
     const bool xrtOn = !xReadTable.empty();
     uint64_t xrtDagStd = 0, xrtDagTranslated = 0;
-    phase("solver-term");
+    Phase solverTermPhase("solver-term");
     if (xrtOn) {
       if (!sem.seam() || !sem.seamRewriter())
         return fail("--x-read-table needs --seam");
@@ -2500,6 +2583,7 @@ int main(int argc, char **argv) {
         return 1; // vc.memop-term-at-boundary
       lap("solver-term");
     }
+    SEA_PHASE_END(solverTermPhase).kv("nodes-made", efac.nodesMade());
     if (failed(sea::verifyUniqueNames(query, clash)))
       return fail("two distinct VC constants are both named '" + clash + "'");
     lap("unique-names");
@@ -2538,7 +2622,7 @@ int main(int argc, char **argv) {
     }
     // Ackermann lowering of read-only arrays (an encoding step of the query,
     // docs/design/Ackermann.md); its table rebuilds the arrays on a model
-    phase("ackermann");
+    Phase ackPhase("ackermann");
     expr::Ackermannizer ack;
     ack.setValues(layoutValues);
     if (strideOn && !accessOrigins.byIndex.empty()) {
@@ -2610,6 +2694,11 @@ int main(int argc, char **argv) {
       query = xlw->lower(query);
       lap("xrt-lower");
     }
+    SEA_PHASE_END(ackPhase)
+        .kv("on", ackOn)
+        .kv("arrays", ack.stats().lowered)
+        .kv("pairs", ack.stats().pairs)
+        .kv("nodes-made", efac.nodesMade());
     // the size of what the solver gets: distinct nodes (shared subterms
     // once), per operator
     if (dagStats) {
@@ -3429,12 +3518,22 @@ int main(int argc, char **argv) {
     runSeamCheck();
     runEqAudit();
     runXrtCheck();
-    phase("solve");
+    Phase solvePhase("solve");
     auto solveStart = std::chrono::steady_clock::now();
     sea::solver::SolverResult res = solver->check();
     const double solveSec = std::chrono::duration<double>(
                                 std::chrono::steady_clock::now() - solveStart)
                                 .count();
+    SEA_LOG(logSolve, sea::log::Flow)
+        .kv("backend", backend == Backend::Z3         ? "z3"
+                       : backend == Backend::Bitwuzla ? "bitwuzla"
+                                                      : "yices")
+        .kv("result", res == sea::solver::SolverResult::SAT     ? "sat"
+                      : res == sea::solver::SolverResult::UNSAT ? "unsat"
+                                                                : "unknown")
+        .kv("time", solveSec)
+        .kv("nodes-made", efac.nodesMade());
+    SEA_PHASE_END(solvePhase);
     std::string solveSeconds =
         llvm::formatv("{0:f3}",
                       std::chrono::duration<double>(
@@ -3544,9 +3643,14 @@ int main(int argc, char **argv) {
     sea::solver::Model &replayModel =
         wordsModel ? static_cast<sea::solver::Model &>(*wordsModel)
                    : solvedModel;
-    phase("replay");
+    Phase replayPhase("replay");
     sea::ReplayResult replay =
         sea::replayAndValidate(program, replayModel, sem, ctx);
+    SEA_PHASE_END(replayPhase)
+        .kv("status", sea::stringifyRunStatus(replay.run.status))
+        .kv("checked", replay.checked)
+        .kv("mismatches", replay.mismatches.size())
+        .kv("validated", replay.mismatches.empty());
     if (xrtModel)
       vout() << "xrt.model: relevant=" << xrtModel->relevant()
              << " inconsistent-relevant=" << xrtModel->inconsistentRelevant()

@@ -155,6 +155,11 @@ private:
 /// about entries of SEA_LOG that match no tag (log.unknown-tag).
 void init();
 
+/// Adds the entries of `spec` (the --log syntax) as if given by --log at
+/// this point: a later entry still wins. For a tool's alias flags (sea-vc
+/// --progress = --log=vc.phase); `source` names the flag in warnings.
+void select(llvm::StringRef spec, llvm::StringRef source);
+
 /// The format of events: text (default) or, under a tool's --format=jsonl,
 /// one JSON object per line.
 void setFormat(sea::out::Format f);
