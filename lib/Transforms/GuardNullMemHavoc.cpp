@@ -139,7 +139,8 @@ void GuardNullMemHavocPass::runOnOperation() {
     auto cbr = pred ? dyn_cast<CondBrOp>(pred->getTerminator()) : CondBrOp();
     auto cmp = cbr ? cbr.getCondition().getDefiningOp<PtrCmpOp>() : PtrCmpOp();
     if (!cmp || cbr.getFalseDest() != op->getBlock() ||
-        cmp.getLhs() != op.getAddr() || !cmp.getRhs().getDefiningOp<PtrNullOp>()) {
+        cmp.getLhs() != op.getAddr() ||
+        !cmp.getRhs().getDefiningOp<PtrNullOp>()) {
       (void)postconditionFailed("sea-guard-null-memhavoc",
                                 "a memhavoc that may be of null is unguarded",
                                 op);
@@ -147,9 +148,9 @@ void GuardNullMemHavocPass::runOnOperation() {
     }
   }
   if (!havocs.empty())
-    program->setAttr(kMemhavocNullGuardsAttr,
-                     IntegerAttr::get(IntegerType::get(&getContext(), 64),
-                                      havocs.size()));
+    program->setAttr(
+        kMemhavocNullGuardsAttr,
+        IntegerAttr::get(IntegerType::get(&getContext(), 64), havocs.size()));
 }
 
 } // namespace
