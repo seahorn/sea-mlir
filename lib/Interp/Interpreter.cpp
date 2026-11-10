@@ -1179,6 +1179,15 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
       cells.push_back(*v);
     }
     if (isa<PtrType>(ld.getType())) {
+      // addr0-is-null (RunOptions::addr0IsNull): all-zero integer bytes are
+      // the null pointer
+      if (options.addr0IsNull && llvm::all_of(cells, [](const CellValue &c) {
+            return !c.ptr && c.bits.isZero();
+          })) {
+        ++result.addr0IsNullUses;
+        ptrs[ld.getResult()] = Ptr{0, APInt::getZero(width)};
+        return success();
+      }
       for (unsigned i = 0; i < n; ++i)
         if (!cells[i].ptr || cells[i].piece != i ||
             !(*cells[i].ptr == *cells[0].ptr)) {
@@ -1190,14 +1199,22 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
       return success();
     }
     APInt bits = APInt::getZero(width);
+    bool nullBytes = false; // counted once per load
     for (unsigned i = 0; i < n; ++i) {
       if (cells[i].ptr) {
+        // addr0-is-null: the bytes of the null pointer are 0
+        if (options.addr0IsNull && cells[i].ptr->obj == 0 &&
+            cells[i].ptr->off.isZero()) {
+          nullBytes = true;
+          continue; // bits stay 0
+        }
         error = "load of a pointer cell as an integer: pointers have no "
                 "address before placement";
         return failure();
       }
       bits.insertBits(cells[i].bits, i * buf.cellWidth);
     }
+    result.addr0IsNullUses += nullBytes;
     define(ld.getResult(), bits);
     if (trackProv && cells[0].prov) {
       bool whole = true;
@@ -1547,7 +1564,15 @@ LogicalResult Interpreter::execPtr(Operation &op, std::string &error) {
     define(pd.getResult(), APInt(1, ok));
     return success();
   }
-  if (isa<PtrToIntOp>(op)) {
+  if (auto ti = dyn_cast<PtrToIntOp>(op)) {
+    // addr0-is-null: the address of the null pointer is 0
+    Ptr p = ptrOf(ti.getPtr());
+    if (options.addr0IsNull && p.obj == 0 && p.off.isZero()) {
+      ++result.addr0IsNullUses;
+      define(ti.getResult(),
+             APInt::getZero(ti.getType().getIntOrFloatBitWidth()));
+      return success();
+    }
     error = "ptr.to_int: pointers have no address before placement";
     return failure();
   }

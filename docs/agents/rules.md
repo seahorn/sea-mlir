@@ -14,8 +14,12 @@ Verify under named assumptions; never drop one silently.
 - Do not discharge an assumption by verifying again without it. If the
   discharging check is missing, build it.
 - Report every assumption a verdict rests on: `seam.inb: assumed ...`
-  next to `result: unsat`, and also `assume.memset-bound`, `seam.ptrint`
-  and any `seam.inb: off (fallback ...)`.
+  next to `result: unsat`, and also `assume.memset-bound`,
+  `assume.a-inb` (memhavocs the lowering dropped under A-INB, also
+  without `--seam` and with `--seam-inb=0`), `assume.addr0-is-null`
+  (`vc`: placement makes null address 0; `uses=<n>`: a replay relied on
+  it), `seam.ptrint`, and any `seam.inb: off (fallback ...)` or
+  `seam.inb: off (lowering: ...)`.
 - Front-end annotations (`align`, and the `inbounds`, `nusw` and `nuw`
   flags of pointer arithmetic) are trusted premises. `--check-align` and
   `--check-ptr-index` are separate jobs that assert every such promise;

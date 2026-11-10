@@ -1,0 +1,117 @@
+// addr0-is-null (default on): address 0 is the null pointer. An abstract
+// program recovers null from zero bytes and from address 0, and counts it.
+// RUN: split-file %s %t
+// RUN: sea-run %t/zero.mlir | FileCheck %s --check-prefix=ZERO
+// ZERO: status: halted
+// ZERO: assume.addr0-is-null: uses=1
+// RUN: not sea-run %t/zero.mlir --addr0-is-null=false 2>&1 | FileCheck %s --check-prefix=OFF
+// OFF: status: error
+// OFF: message: load of a pointer from cells that do not hold one whole pointer
+// OFF-NOT: assume.addr0-is-null
+// RUN: not sea-run %t/nonzero.mlir 2>&1 | FileCheck %s --check-prefix=NONZERO
+// NONZERO: status: error
+// NONZERO: message: load of a pointer from cells that do not hold one whole pointer
+// NONZERO-NOT: assume.addr0-is-null
+// RUN: sea-run %t/bytes.mlir | FileCheck %s --check-prefix=BYTES
+// BYTES: status: halted
+// BYTES: assume.addr0-is-null: uses=1
+// RUN: not sea-run %t/bytes.mlir --addr0-is-null=false 2>&1 | FileCheck %s --check-prefix=BYTES-OFF
+// BYTES-OFF: status: error
+// BYTES-OFF: message: load of a pointer cell as an integer
+// RUN: sea-run %t/toint.mlir | FileCheck %s --check-prefix=TOINT
+// TOINT: status: halted
+// TOINT: assume.addr0-is-null: uses=1
+// RUN: not sea-run %t/toint.mlir --addr0-is-null=false 2>&1 | FileCheck %s --check-prefix=TOINT-OFF
+// TOINT-OFF: message: ptr.to_int: pointers have no address before placement
+// The replay of a sat on the original program uses it too.
+// RUN: sea-vc %t/zero-sat.mlir --lower --replay-original | FileCheck %s --check-prefix=VC
+// VC: replay.original: status=assert-failed {{.*}} match=yes
+// VC: assume.addr0-is-null: uses=1
+// RUN: sea-vc %t/zero-sat.mlir --lower --replay-original --addr0-is-null=false 2>&1 | FileCheck %s --check-prefix=VC-OFF
+// VC-OFF: [vc.addr0-is-null-off]
+// VC-OFF: replay.original: status=error {{.*}} match=undetermined
+// VC-OFF: [vc.replay-original-undetermined]
+// The VC identifies null with address 0 (placement): reported.
+// RUN: sea-vc %t/zero-sat.mlir --lower | FileCheck %s --check-prefix=VCNULL
+// VCNULL: assume.addr0-is-null: vc null-uses={{[1-9]}}
+// REQUIRES: z3
+
+//--- zero.mlir
+// a struct { int x; void *p; } set to zero: its pointer field is null
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %c16 = sea.const 16 : i64
+  %s = sea.alloca %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %m1 = sea.memset %m0[%s], %z, %c16 inplace align 8 : !m
+  %c8 = sea.const 8 : i64
+  %f = sea.ptr.add %s, %c8 : !sea.ptr<64>, i64
+  %p = sea.load %m1[%f] align 8 : !m -> !sea.ptr<64>
+  %n = sea.ptr.null : !sea.ptr<64>
+  %ok = sea.ptr.cmp eq, %p, %n : !sea.ptr<64>
+  sea.assert %ok
+  sea.halt
+}
+
+//--- nonzero.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %z = sea.const 0 : i8
+  %one = sea.const 1 : i8
+  %m0 = sea.mem.const %z : !m
+  %c16 = sea.const 16 : i64
+  %s = sea.alloca %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %m1 = sea.memset %m0[%s], %one, %c16 inplace align 8 : !m
+  %p = sea.load %m1[%s] align 8 : !m -> !sea.ptr<64>
+  %n = sea.ptr.null : !sea.ptr<64>
+  %ok = sea.ptr.cmp eq, %p, %n : !sea.ptr<64>
+  sea.assert %ok
+  sea.halt
+}
+
+//--- bytes.mlir
+// a stored null read back as an integer: 0
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %c8 = sea.const 8 : i64
+  %s = sea.alloca %c8 align 8 [1] : i64 -> !sea.ptr<64>
+  %n = sea.ptr.null : !sea.ptr<64>
+  %m1 = sea.store %m0[%s], %n inplace align 8 : !m, !sea.ptr<64>
+  %x = sea.load %m1[%s] align 8 : !m -> i64
+  %zero = sea.const 0 : i64
+  %ok = sea.icmp eq, %x, %zero : i64
+  sea.assert %ok
+  sea.halt
+}
+
+//--- toint.mlir
+// ptr.to_int of null: 0
+sea.program @main {
+  %n = sea.ptr.null : !sea.ptr<64>
+  %i = sea.ptr.to_int %n : !sea.ptr<64> to i64
+  %zero = sea.const 0 : i64
+  %ok = sea.icmp eq, %i, %zero : i64
+  sea.assert %ok
+  sea.halt
+}
+
+//--- zero-sat.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %c16 = sea.const 16 : i64
+  %s = sea.alloca %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %m1 = sea.memset %m0[%s], %z, %c16 inplace align 8 : !m
+  %p = sea.load %m1[%s] align 8 : !m -> !sea.ptr<64>
+  %n = sea.ptr.null : !sea.ptr<64>
+  %ok = sea.ptr.cmp ne, %p, %n : !sea.ptr<64>
+  sea.assert %ok
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

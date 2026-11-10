@@ -17,11 +17,26 @@
 
 - The in-bounds assumption of SeaM (every access stays inside its object)
   is reported but not discharged by sea-mlir. Discharging it takes a
-  separate memory-safety check of the program. `--seam-inb=0` runs without
-  the assumption, more slowly; it is a measurement, not a discharge.
+  separate memory-safety check of the program. `--seam-inb=0` builds the
+  VC without the assumption, more slowly; it is a measurement, not a
+  discharge, and the lowering's dropped memhavocs still rest on it
+  (`seam.inb: off (lowering: drop-fresh-memhavoc=<n> rests on A-INB)`).
 - Front-end annotations (`align`, and the no-wrap flags of pointer
   arithmetic) are trusted. `--check-align` and `--check-ptr-index` check
   them as separate jobs.
+- `--lower` of an abstract program removes memhavocs of fresh objects;
+  when one rests on A-INB (an access of another object could land in the
+  object after placement), it reports `assume.a-inb:
+  drop-fresh-memhavoc=<n>`, also without `--seam`. A separate
+  memory-safety check of the program would discharge it; sea-mlir has
+  none yet.
+- Address 0 is the null pointer (`addr0-is-null`). Placement puts the null
+  object at address 0, so every VC of a lowered program rests on it
+  (`assume.addr0-is-null: vc null-uses=<n>`), and the replays recover null
+  from zero bytes under it (`assume.addr0-is-null: uses=<n>`). It is a fact
+  about the target (false in some embedded and kernel environments), not
+  about the program: no check discharges it. `--addr0-is-null=false`
+  changes the replays only.
 - Without `--seam`, `--lower` bounds a memset or memmove of symbolic
   length and reports the bound (`assume.memset-bound`); an `unsat` then
   holds only for lengths up to the bound.

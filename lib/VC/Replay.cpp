@@ -259,7 +259,8 @@ private:
 } // namespace
 
 ReplayResult replayAndValidate(ProgramOp program, solver::Model &model,
-                               SeaOpSem &sem, OpSemContext &ctx) {
+                               SeaOpSem &sem, OpSemContext &ctx,
+                               bool addr0IsNull) {
   ReplayResult result;
   ModelSource source(model, sem, ctx);
   RunOptions options;
@@ -267,6 +268,7 @@ ReplayResult replayAndValidate(ProgramOp program, solver::Model &model,
   // so this run's model evaluations (and their counters) are the same with
   // and without them
   options.prints = false;
+  options.addr0IsNull = addr0IsNull;
   options.warnEarlierVersion = false; // counted: interp.earlier-version-loads
   options.onValue = [&](Value v, const llvm::APInt &interp) {
     ++result.checked;
@@ -480,11 +482,12 @@ std::optional<uint64_t> assertIdOf(const RunResult &run) {
 
 OriginalReplay replayOriginal(ProgramOp original, ProgramOp lowered,
                               solver::Model &model, SeaOpSem &sem,
-                              OpSemContext &ctx) {
+                              OpSemContext &ctx, bool addr0IsNull) {
   OriginalSource source(lowered, model, sem, ctx);
   RunOptions options;
   options.prints = false;
   options.deferMemoryErrors = true;
+  options.addr0IsNull = addr0IsNull;
   options.warnEarlierVersion = false; // counted: RunResult::earlierVersionLoads
   OriginalReplay r;
   r.run = interpret(original, source, options);

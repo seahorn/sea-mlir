@@ -312,6 +312,15 @@ the check jobs below is run.
     address space.
 - **Bounded memset**: a symbolic-length memset is expanded up to a bound,
   with an explicit assume. It is reported as `assume.memset-bound`.
+- **Dropped memhavocs**: `--lower` of an abstract program removes a
+  memhavoc of a fresh object (a no-op). That rests on A-INB when an access
+  of another object, or the memhavoc itself, could reach the object after
+  placement; it is reported as `assume.a-inb: drop-fresh-memhavoc=<n>`,
+  also without `--seam`; a separate memory-safety check of the program
+  would discharge it (sea-mlir has none yet).
+- **Null at address 0** (`addr0-is-null`): placement puts null at address
+  0, reported as `assume.addr0-is-null: vc`; a fact about the target, not
+  discharged.
 - **`--ptr-companion=assume`** (off by default) adds the A-PTRINT
   assumption, which is reported.
 - `--seam-check` checks each SeaM rewrite against its stated premises with

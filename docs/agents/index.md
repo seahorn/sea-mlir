@@ -126,7 +126,8 @@ uses fixed jobs for that purpose.
 For each result: the application and harness revisions, the extraction
 command and frontend versions, the `tool.version` line, the full command
 with every `vc.config`, the exit status, the `result`, the assumption lines
-(`seam.inb`, `assume.memset-bound`), the warnings, and for a `sat` the
+(`seam.inb`, `seam.ptrint`, `assume.memset-bound`, `assume.a-inb`,
+`assume.addr0-is-null`), the warnings, and for a `sat` the
 replay status and `assert-at`. For a timing claim: the machine, and
 whether other jobs were running.
 

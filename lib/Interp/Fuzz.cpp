@@ -329,6 +329,7 @@ public:
     report.dictionarySize = dict.size();
     runOptions.maxSteps = options.maxSteps;
     runOptions.deferMemoryErrors = options.deferMemoryErrors;
+    runOptions.addr0IsNull = options.addr0IsNull;
     runOptions.facts = programFactsOf(program);
     runOptions.prints = false;
     runOptions.onBlock = [this](Block *from, Block *to) {

@@ -290,6 +290,8 @@ struct RunResult {
   /// the in-place interpreter read the current contents, right only if the
   /// cell was not clobbered since (Mem-SSA's no-clobber claim, Memory.md).
   llvm::SmallVector<mlir::Operation *> earlierVersionLoads;
+  /// Steps that rested on addr0-is-null (RunOptions::addr0IsNull).
+  uint64_t addr0IsNullUses = 0;
 };
 
 /// The file location in `loc` (directly, or inside a name / fused /
@@ -427,6 +429,15 @@ struct RunOptions {
   /// Classification: RunResult::deferredCount. Layout errors and limits
   /// still stop the run.
   bool deferMemoryErrors = false;
+  /// The named assumption addr0-is-null (on by default; sea-run / sea-vc
+  /// --addr0-is-null=false: off): address 0 is the null pointer. Almost
+  /// always true; false in some embedded and kernel environments. Under it
+  /// an abstract program recovers null where only bytes or an address are
+  /// known: all-zero integer bytes loaded as a pointer are null, a null
+  /// pointer's bytes loaded as an integer are 0, ptr.to_int of null is 0.
+  /// Each such step counts (RunResult::addr0IsNullUses). Off: they stop
+  /// the run, as without it.
+  bool addr0IsNull = true;
 };
 
 //===- Counterexample printing (docs/design/Print.md) ---------------------===//

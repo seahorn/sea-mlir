@@ -1,0 +1,61 @@
+// sea-drop-fresh-memhavoc rests on A-INB: a store to another object, out
+// of its bounds, may land in the fresh object after placement, and then
+// the memhavoc was not a no-op. The drop is reported as A-INB reliance,
+// also without --seam and with --seam-inb=0 (discharged by a separate
+// memory-safety check, not in sea-mlir yet).
+// RUN: split-file %s %t
+// RUN: sea-vc %t/oob.mlir --lower | FileCheck %s --check-prefix=OOB
+// OOB: assume.a-inb: drop-fresh-memhavoc=1
+// OOB: result: unsat
+// RUN: sea-vc %t/oob.mlir --lower --seam --seam-inb=0 | FileCheck %s --check-prefix=INB0
+// INB0: seam.inb: off (lowering: drop-fresh-memhavoc=1 rests on A-INB)
+// The fallback without A-INB (a static violation) warns: the answer still
+// rests on it.
+// RUN: sea-vc %t/oob.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=FALLBACK
+// FALLBACK: [vc.seam-inb-fallback-conditional]
+// FALLBACK: seam.inb: off (fallback: {{.*}}) (lowering: drop-fresh-memhavoc=1 rests on A-INB)
+// RUN: sea-vc %t/oob.mlir --lower --brunch-stats | FileCheck %s --check-prefix=BRUNCH
+// BRUNCH: BRUNCH_STAT assume.a-inb-drop-fresh-memhavoc 1
+// The abstract program shows the out-of-bounds store.
+// RUN: not sea-run %t/oob.mlir --input=2@heap.1+0=0 2>&1 | FileCheck %s --check-prefix=INTERP
+// INTERP: status: error
+// No update before the memhavoc and its range in the object: no reliance.
+// RUN: sea-vc %t/plain.mlir --lower | FileCheck %s --check-prefix=PLAIN
+// PLAIN-NOT: assume.a-inb
+// PLAIN: result: sat
+// REQUIRES: z3
+
+//--- oob.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %v = sea.const 9 : i8
+  %a = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c4 align 4 [4] : i64 -> !sea.ptr<64>
+  %m4 = sea.const -4 : i64
+  %e = sea.ptr.add %b, %m4 : !sea.ptr<64>, i64
+  %mu = sea.store %m0[%e], %v inplace : !m, i8
+  %m2 = sea.memhavoc %mu[%a], %c4 [2] inplace : !m
+  %x = sea.load %m2[%a] : !m -> i8
+  %ok = sea.icmp eq, %x, %v : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- plain.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %p = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %m1 = sea.memhavoc %m0[%p], %c4 [2] inplace : !m
+  %x = sea.load %m1[%p] : !m -> i8
+  %k = sea.const 9 : i8
+  %ok = sea.icmp ne, %x, %k : i8
+  sea.assert %ok
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -79,6 +79,28 @@ integer (type punning), like `ptr.to_int`, stops the abstract interpreter
 with an error; these programs are checked only after placement, where
 addresses exist.
 
+**Decided: the named assumption `addr0-is-null`.** Address 0
+is the null pointer. This is almost always true, and false in some
+embedded and kernel environments. Under it the abstract interpreter
+recovers null where only bytes or an address are known:
+
+- all-zero integer bytes loaded as a pointer are the null pointer (C code
+  that zeroes a struct with `memset` and reads a pointer field from it);
+- the bytes of a stored null pointer loaded as an integer are 0;
+- `ptr.to_int` of the null pointer (offset 0) is 0. `ptr.from_int` of 0
+  is null without the assumption.
+
+Every other mix of pointers and integers still stops the run. The run
+counts the steps that rested on the assumption (`RunResult::addr0IsNullUses`;
+`assume.addr0-is-null: uses=<n>` in `sea-run` and in the replays of
+`sea-vc`). It is on by default; `--addr0-is-null=false` turns it off, and
+those steps stop the run again. The VC has no switch: placement puts the
+null object at address 0 (`sea.segment "null" base 0`), so every placed
+program, and every VC, already identifies null with address 0
+([SeaM-null](SeaM-null.md)); sea-vc reports it after a lowering as
+`assume.addr0-is-null: vc null-uses=<n>`, and `--addr0-is-null=false`
+changes its replays only.
+
 ### Abstract interpreter
 
 Pointers are (object id, offset) pairs; each object is its own host array

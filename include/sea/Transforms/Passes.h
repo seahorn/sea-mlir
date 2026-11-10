@@ -95,6 +95,11 @@ std::unique_ptr<mlir::Pass> createExpandMemSetPass();
 /// each sea.assume(n <= K) it adds: the bounded expansions, an
 /// under-approximation sea-vc reports (assume.memset-bound).
 inline constexpr llvm::StringLiteral kMemSetBoundAttr = "sea.memset_bound";
+/// On the sea.program: the number of memhavocs sea-drop-fresh-memhavoc
+/// dropped whose soundness rests on A-INB (an i64; absent: none). sea-vc
+/// reports it as `assume.a-inb: drop-fresh-memhavoc=<n>`.
+inline constexpr llvm::StringLiteral kDropFreshInbAttr =
+    "sea.a_inb.drop_fresh_memhavoc";
 
 /// sea-split-critical-edges: a new block on every critical edge.
 std::unique_ptr<mlir::Pass> createSplitCriticalEdgesPass();

@@ -45,6 +45,9 @@ The main lines of `sea-vc`:
 | `seam.ptrint-violated: <where> addr= [obj=] bits= stored=` | `--ptr-companion=check`, `sat`: a split pointer load in the replay that reads bits other than the pointer last stored there |
 | `seam.ptrint-unstored: <where> addr= [obj=] bits=` | `--ptr-companion=check`, `sat`: a split pointer load from a cell no pointer was stored to |
 | `seam.ptrint-replay: loads= holds= violated= unstored=` | `--ptr-companion=check`, `sat`: the split pointer loads of the replay; the `sat` is confirmed if one fails |
+| `assume.a-inb: drop-fresh-memhavoc=<n>` | `--lower` of an abstract program dropped n memhavocs of fresh objects whose no-op rests on A-INB (also without `--seam` and with `--seam-inb=0`); a separate memory-safety check discharges it |
+| `assume.addr0-is-null: vc null-uses=<n>` | `--lower`: placement puts the null object at address 0, so the VC identifies null with address 0 (n: uses of its segment); a fact about the target, not discharged |
+| `assume.addr0-is-null: uses=<n>` | after `replay.original:` (and in `sea-run`): steps of the run that rested on the assumption that address 0 is null; only when there are any |
 | `replay.original: status= at= match= nondets= cells= defaulted= unmapped=` | `--replay-original`, `sat`: the input program before any pass, run on the model's inputs; `match=yes` if it fails the same assertion ([below](#replay-on-the-original-program)) |
 
 `sea-vc --agent` lists every line, including all counters.

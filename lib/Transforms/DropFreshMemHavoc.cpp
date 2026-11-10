@@ -30,7 +30,14 @@
 //     after sea_tracking_on and expects them unmodified, as SeaHorn, whose
 //     memhavoc writes nothing).
 //   Produces: no memhavoc on a fresh object (by the rule above); the others
-//     unchanged.
+//     unchanged. Premise A-INB: a drop is sound only if no access of
+//     another object lands in this one (after placement, objects share one
+//     memory) and the memhavoc stays in its object. The drops that rest
+//     on it (the chain passed an update, or the memhavoc's range is not
+//     provably in its object) are counted on the program
+//     (kDropFreshInbAttr); sea-vc reports them (assume.a-inb), also with
+//     --seam-inb=0. A separate memory-safety check of the program would
+//     discharge A-INB.
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,6 +46,7 @@
 #include "sea/Transforms/Passes.h"
 
 #include "mlir/IR/Dominance.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Pass/Pass.h"
 
 using namespace mlir;
@@ -201,6 +209,47 @@ static bool fresh(Value mem, Operation *alloc, HappensBefore &before,
   return r;
 }
 
+/// Does the chain ending in `mem` pass an update before it reaches its
+/// roots (through block arguments)?
+static bool hasUpdate(Value mem) {
+  llvm::DenseSet<Value> seen;
+  SmallVector<Value> work{mem};
+  while (!work.empty()) {
+    Value v = work.pop_back_val();
+    if (!seen.insert(v).second)
+      continue;
+    if (auto arg = dyn_cast<BlockArgument>(v)) {
+      Block *b = arg.getOwner();
+      for (auto p = b->pred_begin(); p != b->pred_end(); ++p) {
+        auto br = dyn_cast<BranchOpInterface>((*p)->getTerminator());
+        if (!br)
+          return true; // decided not fresh before; be conservative
+        work.push_back(
+            br.getSuccessorOperands(p.getSuccessorIndex())[arg.getArgNumber()]);
+      }
+      continue;
+    }
+    if (!isa<MemNondetOp>(v.getDefiningOp()))
+      return true;
+  }
+  return false;
+}
+
+/// Does the memhavoc's range provably lie in its object: its address is an
+/// allocation's result (offset 0) and its constant length at most the
+/// allocation's constant size?
+static bool rangeInObject(MemHavocOp op) {
+  Operation *def = op.getAddr().getDefiningOp();
+  if (!isa_and_present<AllocaOp, MallocOp>(def))
+    return false;
+  llvm::APInt len, size;
+  if (!matchPattern(op.getLen(), m_ConstantInt(&len)) ||
+      !matchPattern(def->getOperand(0), m_ConstantInt(&size)))
+    return false;
+  return len.getActiveBits() <= 64 && size.getActiveBits() <= 64 &&
+         len.getZExtValue() <= size.getZExtValue();
+}
+
 void DropFreshMemHavocPass::runOnOperation() {
   ProgramOp program = getOperation();
   SmallVector<MemHavocOp> havocs;
@@ -212,6 +261,7 @@ void DropFreshMemHavocPass::runOnOperation() {
     return;
   DominanceInfo dom(program);
   HappensBefore before(dom);
+  uint64_t inbDrops = 0;
   for (MemHavocOp op : havocs) {
     llvm::SmallPtrSet<Operation *, 4> allocs;
     llvm::DenseSet<Value> seen;
@@ -224,9 +274,21 @@ void DropFreshMemHavocPass::runOnOperation() {
     }
     if (!allFresh)
       continue;
+    // A-INB: the drop is sound only if no access lands in the object from
+    // outside: an update the walk passed (another object's, or one before
+    // the allocation) must stay in its object, and so must the memhavoc
+    // itself (else it changed a neighbor). After placement objects share
+    // one memory. With no update and the range in the object, the
+    // object's cells are the initial memory's: unconstrained already.
+    if (hasUpdate(op.getMem()) || !rangeInObject(op))
+      ++inbDrops;
     op.getResult().replaceAllUsesWith(op.getMem());
     op.erase();
   }
+  if (inbDrops)
+    program->setAttr(
+        kDropFreshInbAttr,
+        IntegerAttr::get(IntegerType::get(&getContext(), 64), inbDrops));
 }
 
 } // namespace

@@ -94,6 +94,8 @@ struct FuzzOptions {
   /// violation on a run that reaches the end or a failing assert is a
   /// failure (status memory-error); on a run an assume blocks, nothing.
   bool deferMemoryErrors = false;
+  /// RunOptions::addr0IsNull in every trial.
+  bool addr0IsNull = true;
   /// Write failing and new-coverage inputs here (empty: none). The
   /// directory must be new or empty.
   std::string outDir;

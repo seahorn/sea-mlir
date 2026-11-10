@@ -161,6 +161,16 @@ static cl::opt<bool> deferMemoryErrors(
              "if an assume blocks it"),
     cl::init(false));
 
+static cl::opt<bool> addr0IsNull(
+    "addr0-is-null",
+    cl::desc("The named assumption addr0-is-null (default on): address 0 "
+             "is the null pointer, so all-zero bytes loaded as a pointer are "
+             "null, null's bytes loaded as an integer are 0, ptr.to_int of "
+             "null is 0 (`assume.addr0-is-null: uses=<n>` when relied on); "
+             "=false: those stop the run (false in some embedded and kernel "
+             "environments)"),
+    cl::init(true));
+
 static cl::opt<bool> fuzzSites(
     "fuzz-sites",
     cl::desc("List the input sites (nondet values, memory sources) and exit"),
@@ -217,7 +227,9 @@ null, freed and out-of-bounds accesses, double free and a free of a
 pointer that is not a heap object's start (memory safety) stop the run with
 an error (--defer-memory-errors: see DEFERRED); ptr.to_int, ptr.from_int of
 non-zero, and reading a pointer cell as an integer stop it too (no
-addresses before placement: limits, never deferred).
+addresses before placement: limits, never deferred), except for null under
+addr0-is-null (default on: address 0 is null; zero bytes read as a pointer
+are null, null's bytes read as an integer are 0, ptr.to_int of null is 0).
 
 DEFERRED (--defer-memory-errors; docs/reference/fuzzing.md): a run may
 reach a memory-safety violation and later an assume that blocks it
@@ -308,6 +320,11 @@ OUTPUT (stdout, one `key: value` per line, stable order):
             at=<where>              (--defer-memory-errors, a run that went
                                     past n violations: the first one)
   steps: <ops executed>
+  assume.addr0-is-null: uses=<n>    (n > 0: steps that rested on the
+                                    assumption that address 0 is null: zero
+                                    bytes loaded as a pointer, null's bytes
+                                    loaded as an integer, ptr.to_int of null;
+                                    --addr0-is-null=false: they stop the run)
 Values print as unsigned decimal. assume-blocked means the run is
 infeasible (not a bug); assert-failed means the run reached a failing
 sea.assert (a bug if the inputs are feasible).
@@ -671,6 +688,9 @@ static void printRun(sea::out::Emitter &out, sea::ProgramOp program,
   sea::printPrintRecords(out, r, printMode, printLocs);
   out.emit(statusRecord(r));
   out.emit(sea::out::parseLine("steps: " + std::to_string(r.steps)));
+  if (r.addr0IsNullUses)
+    out.emit(sea::out::parseLine("assume.addr0-is-null: uses=" +
+                                 std::to_string(r.addr0IsNullUses)));
 }
 
 /// One record: the status and where the run stopped (the status / at /
@@ -813,6 +833,7 @@ static int runFuzz(sea::ProgramOp program) {
   fo.dictionary = fuzzDict;
   fo.keepGoing = keepGoing;
   fo.deferMemoryErrors = deferMemoryErrors;
+  fo.addr0IsNull = addr0IsNull;
   fo.outDir = fuzzOut;
   fo.maxSteps = maxSteps;
   FailureOr<sea::FuzzReport> rep = sea::fuzz(program, seeds, fo, error);
@@ -831,6 +852,7 @@ static int runFuzz(sea::ProgramOp program) {
     sea::RunOptions options;
     options.maxSteps = maxSteps;
     options.deferMemoryErrors = deferMemoryErrors;
+    options.addr0IsNull = addr0IsNull;
     options.prints = printMode != sea::PrintMode::Off;
     options.printLimit = printLimit;
     sea::RunResult r = sea::interpret(program, source, options);
@@ -1054,6 +1076,7 @@ static int runServe(sea::ProgramOp program) {
   fo.seed = seed;
   fo.maxSteps = maxSteps;
   fo.deferMemoryErrors = deferMemoryErrors;
+  fo.addr0IsNull = addr0IsNull;
   sea::FuzzServer server(program, fo);
   sea::out::Emitter out(outs(), sea::out::Format::Jsonl);
   uint64_t requests = 0, errors = 0;
@@ -1236,6 +1259,7 @@ int main(int argc, char **argv) {
   options.prints = printMode != sea::PrintMode::Off;
   options.printLimit = printLimit;
   options.deferMemoryErrors = deferMemoryErrors;
+  options.addr0IsNull = addr0IsNull;
   sea::out::Emitter out(outs(), outFormat);
   // `value: <op> <loc> : <type> = `
   auto traceHead = [&](Value val, sea::out::Record &rec) {

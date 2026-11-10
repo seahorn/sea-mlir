@@ -108,6 +108,17 @@ static cl::opt<bool> lowerOpt(
              "=false keeps every op)"),
     cl::init(true));
 
+static cl::opt<bool> addr0IsNull(
+    "addr0-is-null",
+    cl::desc("The named assumption addr0-is-null (default on) in the "
+             "replays only: address 0 is the null pointer (zero bytes loaded "
+             "as a pointer are null, null's bytes as an integer 0, ptr.to_int "
+             "of null 0; `assume.addr0-is-null: uses=<n>` when relied on); "
+             "=false: such a replay stops. The VC identifies null with "
+             "address 0 either way (placement; `assume.addr0-is-null: vc`, "
+             "warning vc.addr0-is-null-off)"),
+    cl::init(true));
+
 static cl::opt<bool> replayOriginalOpt(
     "replay-original",
     cl::desc("With --lower (or --sink-assumes), on sat: also run the input "
@@ -1532,6 +1543,28 @@ OUTPUT (stdout, `key: value` lines):
                                   follow)
   replay.original: skipped (<reason>)   (no lowering ran, a check job, or
                                   --ptr-companion=check)
+  assume.addr0-is-null: uses=<n>   (after replay.original, n > 0: steps
+                                  of its run that rested on the named
+                                  assumption addr0-is-null, address 0 is
+                                  null: zero bytes loaded as a pointer,
+                                  null's bytes as an integer, ptr.to_int
+                                  of null; --addr0-is-null=false: they
+                                  stop the run, undetermined)
+  assume.addr0-is-null: vc null-uses=<n>   (--lower: placement puts the null
+                                  object at address 0, so the VC
+                                  identifies null with address 0; n: the
+                                  uses of its segment. A fact about the
+                                  target, discharged by no check; the
+                                  replays' own uses: `uses=<n>` lines)
+  assume.a-inb: drop-fresh-memhavoc=<n>   (n > 0: --lower of an abstract
+                                  program dropped n memhavocs of fresh
+                                  objects whose no-op rests on A-INB (an
+                                  update of another object, or the
+                                  memhavoc's range, could reach the object
+                                  after placement); also without --seam and
+                                  with --seam-inb=0 (`seam.inb: off
+                                  (lowering: ...)`); a separate
+                                  memory-safety check discharges it)
   assume.memset-bound: count=<n> bound=<K>   (n > 0: --lower without --seam
                                   expanded n symbolic-length memsets /
                                   memmoves with assume(len <= K), the
@@ -1540,6 +1573,11 @@ OUTPUT (stdout, `key: value` lines):
                                   largest bound; with --smt2 on stderr)
   seam.inb: assumed accesses=<n> conditions=<m>
   seam.inb: off [(fallback: an access leaves its object)]
+      [(lowering: drop-fresh-memhavoc=<n> rests on A-INB)]   (the VC runs
+                                  without A-INB, the lowering's dropped
+                                  memhavocs still rest on it; after a
+                                  fallback, warning
+                                  vc.seam-inb-fallback-conditional)
   vc.seam-inb-violated: at <file:line:col> <op>: <reason>
                                   (--seam, before the run restarts without
                                   A-INB; the first 8 definite violations:
@@ -1834,6 +1872,9 @@ BRUNCH STATS (--brunch-stats): also prints `BRUNCH_STAT <key> <value>` lines
 (one token values; brunch collects them into a CSV, utils/bench.py too): result,
 vc-time, solve-time, status (the exit status; not for status 1 before the
 verdict), seam.inb (assumed|off) with seam.inb-accesses / seam.inb-conditions,
+the assume.* lines split the same way (assume.a-inb-drop-fresh-memhavoc,
+assume.memset-bound-count / -bound, assume.addr0-is-null vc with
+assume.addr0-is-null-null-uses),
 and with --seam-stats every seam.* counter and time (also vc.*-time). With
 --smt2 they go to stderr with the other statistics. Existing output unchanged.
 
@@ -2158,6 +2199,11 @@ int main(int argc, char **argv) {
   }
   const bool addressMode =
       ptrMode == PtrMode::Address || (ptrMode == PtrMode::Auto && intToPtr);
+  if (!addr0IsNull)
+    sea::diag::warn("vc.addr0-is-null-off",
+                    "--addr0-is-null=false changes the replays only: the VC "
+                    "still identifies null with address 0 (placement puts "
+                    "the null object there; assume.addr0-is-null: vc)");
   if (checkAlign && checkPtrIndex) {
     sea::diag::error("vc.check-jobs",
                      "--check-align and --check-ptr-index are separate jobs "
@@ -2223,6 +2269,16 @@ int main(int argc, char **argv) {
   // the bounded expansions of symbolic memset / memmove lengths
   // (sea-expand-memset, without --seam): assume(n <= K), an
   // under-approximation the result rests on (assume.memset-bound)
+  // the uses of the null object's address 0 placement made
+  uint64_t nullUses = 0;
+  program.walk([&](sea::SegmentOp seg) {
+    if (seg.getKind() == "null")
+      nullUses += std::distance(seg->use_begin(), seg->use_end());
+  });
+  // the memhavocs sea-drop-fresh-memhavoc dropped under A-INB
+  uint64_t dropFreshInb = 0;
+  if (auto n = program->getAttrOfType<IntegerAttr>(sea::kDropFreshInbAttr))
+    dropFreshInb = n.getInt();
   uint64_t memsetBounds = 0, memsetBoundK = 0;
   program.walk([&](sea::AssumeOp a) {
     if (auto k = a->getAttrOfType<IntegerAttr>(sea::kMemSetBoundAttr)) {
@@ -2287,7 +2343,7 @@ int main(int argc, char **argv) {
     }
     Phase phase("replay-original");
     sea::OriginalReplay o =
-        sea::replayOriginal(orig, program, replayModel, sem, ctx);
+        sea::replayOriginal(orig, program, replayModel, sem, ctx, addr0IsNull);
     std::optional<Location> origLoc =
         o.run.status == sea::RunStatus::MemoryError &&
                 o.run.reachedStatus == sea::RunStatus::AssertFailed
@@ -2382,6 +2438,9 @@ int main(int argc, char **argv) {
       }
       gOut->emit(rec);
     }
+    if (o.run.addr0IsNullUses)
+      gOut->emit(sea::out::parseLine("assume.addr0-is-null: uses=" +
+                                     std::to_string(o.run.addr0IsNullUses)));
     gOut->flush();
     if (match)
       return 0;
@@ -3227,13 +3286,28 @@ int main(int argc, char **argv) {
       if (memsetBounds)
         os << "assume.memset-bound: count=" << memsetBounds
            << " bound=" << memsetBoundK << "\n";
+      // A-INB, also without --seam: the lowering dropped memhavocs that
+      // are no-ops only if no access lands in their object from outside
+      if (dropFreshInb)
+        os << "assume.a-inb: drop-fresh-memhavoc=" << dropFreshInb << "\n";
+      // placement makes null address 0 (the segment "null"): every VC of a
+      // lowered program identifies null with address 0 (a fact of the
+      // target: no check discharges it)
+      if (lower)
+        os << "assume.addr0-is-null: vc null-uses=" << nullUses << "\n";
       if (sem.seam()) {
         // the assumption the answer depends on, always visible
         if (inb)
           os << "seam.inb: assumed accesses=" << sem.inbAccessCount()
              << " conditions=" << sem.inbConditionCount() << "\n";
-        else
-          os << "seam.inb: off" << note << "\n";
+        else {
+          os << "seam.inb: off" << note;
+          // the lowering's drops rest on A-INB all the same
+          if (dropFreshInb)
+            os << " (lowering: drop-fresh-memhavoc=" << dropFreshInb
+               << " rests on A-INB)";
+          os << "\n";
+        }
       }
       for (const auto &[k, v] : fromBitsLeft)
         os << "seam.ptr.from-bits-left." << k << ": " << v << "\n";
@@ -3268,14 +3342,18 @@ int main(int argc, char **argv) {
         auto [line, tail] = rest.split('\n');
         rest = tail;
         auto [key, value] = line.split(": ");
-        if (key == "seam.inb") {
-          auto [state, more] = value.split(' ');
-          brunchStat(os, key, state);
-          SmallVector<StringRef> kvs;
-          more.split(kvs, ' ', -1, /*KeepEmpty=*/false);
-          for (StringRef kv : kvs) {
-            auto [k, v] = kv.split('=');
-            brunchStat(os, "seam.inb-" + k, v);
+        if (key == "seam.inb" || key.starts_with("assume.")) {
+          // a leading state word (assumed / off / vc), then the k=v
+          // tokens: `<key> <state>`, `<key>-<k> <v>` (words of notes in
+          // parentheses are left out)
+          SmallVector<StringRef> words;
+          value.split(words, ' ', -1, /*KeepEmpty=*/false);
+          for (auto [i, w] : llvm::enumerate(words)) {
+            auto [k, v] = w.split('=');
+            if (!v.empty() && !k.starts_with("("))
+              brunchStat(os, key + "-" + k, v.rtrim(')'));
+            else if (i == 0)
+              brunchStat(os, key, w);
           }
         } else if (!value.empty() && !value.contains(' '))
           brunchStat(os, key, value);
@@ -3920,7 +3998,7 @@ int main(int argc, char **argv) {
                    : solvedModel;
     Phase replayPhase("replay");
     sea::ReplayResult replay =
-        sea::replayAndValidate(program, replayModel, sem, ctx);
+        sea::replayAndValidate(program, replayModel, sem, ctx, addr0IsNull);
     SEA_PHASE_END(replayPhase)
         .kv("status", sea::stringifyRunStatus(replay.run.status))
         .kv("checked", replay.checked)
@@ -4025,6 +4103,7 @@ int main(int argc, char **argv) {
     if (hasPrints && printMode != sea::PrintMode::Off) {
       sea::RunOptions printOptions;
       printOptions.printLimit = printLimit;
+      printOptions.addr0IsNull = addr0IsNull;
       sea::RunResult printed =
           sea::replayPrints(program, replayModel, sem, ctx, printOptions);
       sea::printPrintRecords(*gOut, printed, printMode, printLocs);
@@ -4157,7 +4236,8 @@ int main(int argc, char **argv) {
     // program access memory outside an object, the sat is not a bug but an
     // artifact of the violated assumption (conditional soundness: the answer
     // holds only for executions that satisfy A-INB), and the program has a
-    // memory-safety error. Discharging A-INB is the bounds-check job's work.
+    // memory-safety error. Discharging A-INB is a separate memory-safety
+    // check's work.
     bool replayFailed = replay.run.status == sea::RunStatus::Error ||
                         !replay.mismatches.empty() || !claimSeen;
     if (replayFailed && inb && abstractModule) {
@@ -4177,7 +4257,11 @@ int main(int argc, char **argv) {
         rd.value.toStringUnsigned(text);
         inputs.set(rd.site, std::string(text));
       }
-      sea::RunResult abs = sea::interpret(absProg, inputs);
+      sea::RunOptions absOptions;
+      absOptions.addr0IsNull = addr0IsNull;
+      sea::RunResult abs = sea::interpret(absProg, inputs, absOptions);
+      if (abs.addr0IsNullUses)
+        vout() << "assume.addr0-is-null: uses=" << abs.addr0IsNullUses << "\n";
       if (sea::isOutOfObjectAccess(abs)) {
         vout() << "seam.inb-violation: " << abs.message << "\n";
         if (abs.at)
@@ -4188,8 +4272,10 @@ int main(int argc, char **argv) {
             "sat, but the counterexample does not replay: the program "
             "accesses memory outside an object with these inputs, so A-INB "
             "(assumed by --seam) does not hold; the answer is inconclusive "
-            "and the program has a memory-safety error (run the bounds-check "
-            "job, or --seam-inb=0)",
+            "and the program has a memory-safety error (a separate "
+            "memory-safety check of the program discharges A-INB; "
+            "--seam-inb=0 drops it from the VC only, not from the lowering's "
+            "dropped memhavocs, assume.a-inb)",
             abs.at ? std::optional<Location>(abs.at->getLoc()) : std::nullopt);
         return 4;
       }
@@ -4282,8 +4368,19 @@ int main(int argc, char **argv) {
   }
   // the A-INB fallback keeps the rule: its firings that rest on A-INB (K,
   // size-0 bases) are off without it.
-  if (rc == kRetryWithoutInb)
+  if (rc == kRetryWithoutInb) {
+    // the lowering's drops still rest on A-INB, which this program breaks
+    if (dropFreshInb)
+      sea::diag::warn("vc.seam-inb-fallback-conditional",
+                      Twine("the run without A-INB still rests on it: the "
+                            "lowering dropped ") +
+                          Twine(dropFreshInb) +
+                          " memhavoc(s) that are no-ops only under A-INB "
+                          "(assume.a-inb), and an access of this program "
+                          "leaves its object: the answer is conditional on "
+                          "an assumption the program is known to break");
     rc = runVc(false, false, " (fallback: an access leaves its object)");
+  }
   if (auditOn) {
     statOut() << auditReport;
     gOut->flush();
