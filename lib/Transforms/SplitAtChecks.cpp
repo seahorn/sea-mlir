@@ -58,6 +58,7 @@ public:
 
   void runOnOperation() override {
     SmallVector<Operation *> sites;
+    BlockIdNamer ids(getOperation());
     for (Block &b : getOperation().getBody())
       for (Operation &op : b)
         if (blocks ? &op == &b.front() : isCheckSite(&op))
@@ -67,7 +68,10 @@ public:
       Block *head = op->getBlock();
       Block *rest = head->splitBlock(op);
       b.setInsertionPointToEnd(head);
-      BrOp::create(b, op->getLoc(), ValueRange{}, rest);
+      auto br = BrOp::create(b, op->getLoc(), ValueRange{}, rest);
+      // block ids (kBlockIdsAttr): the head keeps them, the rest is a piece
+      if (ArrayAttr l = ids.splitTail(rest))
+        br->setAttr(kBlockIdsAttr, l);
     }
     if (splits)
       *splits += sites.size();
@@ -135,6 +139,7 @@ public:
     });
     OpBuilder b(&getContext());
     Region &body = getOperation().getBody();
+    BlockIdNamer ids(getOperation());
     for (AssertOp a : asserts) {
       Location loc = a.getLoc();
       Block *head = a->getBlock();
@@ -142,15 +147,22 @@ public:
       Block *pass = new Block(), *fail = new Block();
       body.getBlocks().insert(Region::iterator(chk), pass);
       body.getBlocks().insert(Region::iterator(chk), fail);
+      // block ids (kBlockIdsAttr): pass and fail are new (roles p, q), chk
+      // a piece of the block (the fail target's R_T does not reach it)
       b.setInsertionPointToEnd(pass);
-      BrOp::create(b, loc, ValueRange{}, chk);
+      BlockIdNamer::set(BrOp::create(b, loc, ValueRange{}, chk),
+                        ids.derive(chk, "p"));
       b.setInsertionPointToEnd(fail);
       createReachSiteMarker(b, loc, kAssertFailMarker,
                             a->getAttr(kReachSiteAttr));
-      BrOp::create(b, loc, ValueRange{}, chk);
+      BlockIdNamer::set(BrOp::create(b, loc, ValueRange{}, chk),
+                        ids.derive(chk, "q"));
+      ArrayAttr headIds = ids.splitTail(chk);
       b.setInsertionPointToEnd(head);
-      CondBrOp::create(b, loc, a.getCond(), ValueRange{}, ValueRange{}, pass,
-                       fail);
+      auto cbr = CondBrOp::create(b, loc, a.getCond(), ValueRange{},
+                                  ValueRange{}, pass, fail);
+      if (headIds)
+        cbr->setAttr(kBlockIdsAttr, headIds);
     }
   }
 };

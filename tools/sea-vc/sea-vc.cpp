@@ -2024,6 +2024,12 @@ checked (as for a counterexample): a run that leaves an object before the
 target is replay=memory-error (status 4); inb=undetermined: that run read
 a nondet memory cell and decided nothing. Witness headers say which
 program they replay on (lowered or input).
+Block ids: --reach also tags every block of the input (sea.block_ids =
+["<n>"] on its terminator; the passes keep them: merged blocks hold both
+lists, a split tail is <last>.s<k>, a new block <last>.<role><k>, an edge
+block <a>><b>); R_T keeps them, and --smt2 on a program with them ends the
+query with `; sea.block-ids <guard> <id>,...` lines (query-diff's Skolem
+hints). A reachable block without ids: warning vc.block-ids-missing.
 Targets are those of the lowered program: a site the lowering removed (an
 assume of true, the code after an assume of false) is not listed; the
 folded assume of false is the sea.unreachable at its location.
@@ -2166,8 +2172,9 @@ Kinds and fields:
                 defaulted, unmapped, [earlier_version_loads], [expected,
                 got, message] (not a match); skipped: status `skipped`,
                 reason; one record for the `replay.original:` lines
-  smt2          (--smt2) the query in text; the statistics follow as
-                records on stdout (text mode: stderr)
+  smt2          (--smt2) the query in text (and its `; sea.block-ids`
+                lines); the statistics follow as records on stdout (text
+                mode: stderr)
   print         path (scope.tag[.leaf|[i]]), [scope], [at], [at_inlined],
                 [at_name], [depth] (tree),
                 and the value: type (iN|ptr|addr), integers fmt + value
@@ -2617,6 +2624,11 @@ int main(int argc, char **argv) {
   // (`site=`, utils/cover-diff.py)
   if (reach && failed(sea::tagReachSites(*module)))
     return 1;
+  // --reach: every block gets its stable id too (kBlockIdsAttr; the passes
+  // keep them): R_T keeps them, and its --smt2 query names the ids of each
+  // block guard, from which utils/query-diff.py builds Skolem hints
+  if (reach)
+    sea::tagBlockIds(*module);
   // --reach-keep-sites: read by the canonicalizer (kKeepReachSitesAttr)
   for (auto p : module->getOps<sea::ProgramOp>()) {
     if (reachKeepSites)
@@ -2703,6 +2715,17 @@ int main(int argc, char **argv) {
   }
   if (failed(sea::verifyBmcForm(program)))
     return 1;
+  // block ids (--reach, or an R_T that carries them): a reachable block
+  // without them is a pass that lost them; its guard gets no Skolem hint
+  {
+    Operation *first = nullptr;
+    if (unsigned n = sea::countBlocksWithoutIds(program, &first))
+      sea::diag::warn("vc.block-ids-missing",
+                      Twine(n) + " reachable block(s) without sea.block_ids "
+                                 "(a pass lost them): their guards get no "
+                                 "Skolem hint",
+                      first->getLoc());
+  }
   // folding (canonicalize) may leave no reachable assertion: reported; the
   // solver still answers (unsat)
   const bool staticallySafe = sea::isStaticallySafe(program);
@@ -4338,16 +4361,36 @@ int main(int argc, char **argv) {
          << "\n";
     };
     if (smt2) {
+      // the block ids of each guard (kBlockIdsAttr), as SMT-LIB comments:
+      // `; sea.block-ids <guard> <id>,<id>...` (utils/query-diff.py's
+      // Skolem hints); none for a program without them
+      auto blockIdLines = [&](raw_ostream &os) {
+        for (Block &bb : program.getBody()) {
+          ArrayAttr ids = sea::blockIdsOf(&bb);
+          expr::Expr g = ids ? vcgen.guard(&bb) : expr::Expr();
+          if (!g)
+            continue;
+          std::ostringstream gs;
+          gs << *g;
+          os << "; sea.block-ids " << gs.str() << " ";
+          llvm::interleave(
+              ids, os,
+              [&](Attribute a) { os << cast<StringAttr>(a).getValue(); }, ",");
+          os << "\n";
+        }
+      };
       if (gOut->jsonl()) {
         // the query is one record
         sea::out::Record rec("smt2");
         raw_string_ostream qs(rec.text);
         solver->to_smt_lib(qs);
+        blockIdLines(qs);
         if (StringRef(rec.text).ends_with("\n"))
           rec.text.pop_back();
         gOut->emit(rec);
       } else {
         solver->to_smt_lib(outs());
+        blockIdLines(outs());
       }
       gOut->flush();
       statOut() << "vc.ptr-mode: " << (addressMode ? "address" : "opaque")

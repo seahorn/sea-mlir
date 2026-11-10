@@ -63,6 +63,12 @@ namespace sea {
 /// vc.reach-site) on a tag that two checks share.
 mlir::LogicalResult tagReachSites(mlir::ModuleOp module);
 
+/// Stable block ids (kBlockIdsAttr, sea/Dialect/Sea/SeaOps.h), before the
+/// lowering: the terminator of every block of every program gets ["<n>"],
+/// n the block's position in its program. A program some block of which
+/// already carries ids (a lowered program, R_T) is left as it is.
+void tagBlockIds(mlir::ModuleOp module);
+
 /// The side conditions, without the negated assertion.
 expr::Expr mkReachQuery(OpSemContext &ctx);
 

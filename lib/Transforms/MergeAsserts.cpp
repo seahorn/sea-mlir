@@ -143,16 +143,26 @@ void MergeAssertsPass::runOnOperation() {
   }
   Region &body = program.getBody();
   Location loc = program.getLoc();
+  // block ids (kBlockIdsAttr), if the program has them: the exit block is
+  // new (id x); a halt's branch to it keeps its block's ids; the assert's
+  // block keeps them; ^land is new (role f), ^cont a piece of the block
+  // (splitTail: a path that fails the assert does not reach it)
+  BlockIdNamer ids(program);
+  const bool withIds =
+      llvm::any_of(body, [](Block &blk) { return bool(blockIdsOf(&blk)); });
   Block *exit = new Block();
   body.push_back(exit);
   Value ok = exit->addArgument(i1, loc);
   b.setInsertionPointToEnd(exit);
   AssertOp::create(b, loc, ok);
-  HaltOp::create(b, loc);
+  auto exitHalt = HaltOp::create(b, loc);
+  if (withIds)
+    BlockIdNamer::set(exitHalt, ids.fresh("x"));
   for (HaltOp h : halts) {
     b.setInsertionPoint(h);
     Value t = boolConst(h.getLoc(), true);
-    BrOp::create(b, h.getLoc(), ValueRange{t}, exit);
+    copyBlockIds(h->getBlock(),
+                 BrOp::create(b, h.getLoc(), ValueRange{t}, exit));
     h.erase();
   }
   for (AssertOp a : asserts) {
@@ -171,7 +181,9 @@ void MergeAssertsPass::runOnOperation() {
         site && program->hasAttr(kReachFailuresAttr))
       createReachSiteMarker(b, aloc, kAssertFailMarker, site);
     Value f = boolConst(aloc, false);
-    BrOp::create(b, brLoc, ValueRange{f}, exit);
+    auto landBr = BrOp::create(b, brLoc, ValueRange{f}, exit);
+    BlockIdNamer::set(landBr, ids.derive(cont, "f"));
+    ArrayAttr blkIds = ids.splitTail(cont);
     b.setInsertionPointToStart(cont);
     auto pass = AssumeOp::create(b, aloc, cond);
     // the assert's reach site (kReachSiteAttr), on the assume: reached
@@ -181,6 +193,8 @@ void MergeAssertsPass::runOnOperation() {
     b.setInsertionPoint(a);
     auto cbr = CondBrOp::create(b, brLoc, cond, ValueRange{}, ValueRange{},
                                 cont, land);
+    if (blkIds)
+      cbr->setAttr(kBlockIdsAttr, blkIds);
     // the assert's id (kAssertIdAttr), on both branches made of it
     if (Attribute id = a->getAttr(kAssertIdAttr)) {
       cbr->setAttr(kAssertIdAttr, id);

@@ -1,0 +1,63 @@
+// Stable block ids under --reach: every input block's terminator gets its
+// position (sea.block_ids) before the lowering; R_T keeps them, and its
+// --smt2 query names the ids of each block guard (`; sea.block-ids`, the
+// Skolem hints of utils/query-diff.py). Without --reach nothing changes.
+// RUN: split-file %s %t
+// RUN: rm -rf %t/rt && sea-vc %t/merged.mlir --lower --reach --reach-programs=%t/rt > /dev/null
+// RUN: FileCheck %s --check-prefix=RT --input-file=%t/rt/reach-1.mlir
+// canonicalize merged ^a into ^a2's predecessor slot: one block, ids 1,2
+// RT: sea.cond_br {{.*}} {sea.block_ids = ["0"]}
+// RT: sea.br ^{{bb[0-9]+}} {sea.block_ids = ["1", "2"]}
+// RT: sea.br ^{{bb[0-9]+}} {sea.block_ids = ["3"]}
+// RT: sea.halt {sea.block_ids = ["t"]}
+// RUN: sea-vc %t/rt/reach-1.mlir --smt2 2>&1 | FileCheck %s --check-prefix=SMT
+// SMT-NOT: vc.block-ids-missing
+// SMT: (check-sat)
+// SMT: ; sea.block-ids ^bb0_0 0
+// SMT: ; sea.block-ids ^bb1_0 1,2
+// SMT: ; sea.block-ids ^bb2_0 3
+// SMT: ; sea.block-ids ^bb{{[0-9]+}}_0 t
+// The normal lowering: no ids, no comment lines.
+// RUN: sea-vc %t/merged.mlir --lower --smt2 2>&1 | FileCheck %s --check-prefix=PLAIN
+// PLAIN-NOT: sea.block-ids
+// A reachable block without ids (a pass that lost them) is reported.
+// RUN: sea-vc %t/lost.mlir --smt2 2>&1 | FileCheck %s --check-prefix=LOST
+// LOST: 1 reachable block(s) without sea.block_ids {{.*}}[vc.block-ids-missing]
+// LOST: ; sea.block-ids ^bb0_0 0
+// LOST-NOT: ^bb1_0 {{[0-9]}}
+
+//--- merged.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %c5 = sea.const 5 : i8
+  %c = sea.icmp ult, %x, %c5 : i8
+  sea.cond_br %c, ^a, ^b
+^a:
+  sea.br ^a2
+^a2:
+  %c1 = sea.const 1 : i8
+  %y = sea.icmp ne, %x, %c1 : i8
+  sea.assume %y
+  sea.br ^j
+^b:
+  sea.br ^j
+^j:
+  %c3 = sea.const 3 : i8
+  %ok = sea.icmp ne, %x, %c3 : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- lost.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  sea.br ^a {sea.block_ids = ["0"]}
+^a:
+  %c3 = sea.const 3 : i8
+  %ok = sea.icmp ne, %x, %c3 : i8
+  sea.assert %ok
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
