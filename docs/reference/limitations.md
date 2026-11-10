@@ -10,8 +10,9 @@
 - `sea-vc` checks programs without loops (BMC form). Loops are unrolled to
   a bound by the front end, or replaced by inductive cuts in the harness,
   as in the [Applications](../tutorials/index.md).
-- There is no per-assertion vacuity check. Reach jobs in the harness are
-  the check.
+- Vacuity is checked per assertion only on request: `sea-vc --reach`
+  reports which checks an execution can reach
+  ([Reach](output-formats.md#reach)); an ordinary `sea-vc` run does not.
 
 ## Assumptions that are not discharged
 
