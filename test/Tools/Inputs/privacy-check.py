@@ -32,9 +32,14 @@ examples = [
     "plan " + "2.3",
     "plan " + "step",
     "phase " + "4",
+    "Phase " + "2",
+    "in phase " + "3 we",
 ]
 for value in examples:
     assert list(module.findings("docs/example.md", value)), value
+# A dotted or longer identifier ending in phase is a name, not a label.
+for value in ["vc.phase " + "1", "--log=vc.phase " + "2>&1", "subphase " + "2"]:
+    assert not list(module.findings("docs/example.md", value)), value
 
 terms = [module.re.compile("Example Person"), module.re.compile("examplehost")]
 vocabulary = "# BEGIN DETECTION VOCABULARY\nexamplehost\n# END DETECTION VOCABULARY"

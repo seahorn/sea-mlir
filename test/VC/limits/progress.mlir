@@ -3,12 +3,12 @@
 // on stderr, in order, written as they happen; nothing without the flag. A
 // later --log entry overrides it.
 // RUN: sea-vc %s --lower --progress 2>&1 >/dev/null | FileCheck %s
-// RUN: sea-vc %s --lower '--log=vc.phase' 2>&1 >/dev/null | FileCheck %s
+// RUN: sea-vc %s --lower --log=vc.phase 2>&1 >/dev/null | FileCheck %s
 // RUN: sea-vc %s --lower 2>&1 | FileCheck %s --check-prefix=QUIET
 // RUN: sea-vc %s --lower --progress --log=vc.phase:0 2>&1 | FileCheck %s --check-prefix=QUIET
 // --progress=false turns it off, at its place among the --log entries.
-// RUN: sea-vc %s --lower '--log=vc.phase' --progress=false 2>&1 | FileCheck %s --check-prefix=QUIET
-// RUN: sea-vc %s --lower --progress=false '--log=vc.phase' 2>&1 >/dev/null | FileCheck %s
+// RUN: sea-vc %s --lower --log=vc.phase --progress=false 2>&1 | FileCheck %s --check-prefix=QUIET
+// RUN: sea-vc %s --lower --progress=false --log=vc.phase 2>&1 >/dev/null | FileCheck %s
 // CHECK: log: vc.phase start phase=lower
 // CHECK-NEXT: log: vc.phase end phase=lower time=
 // CHECK-NEXT: log: vc.phase start phase=encode

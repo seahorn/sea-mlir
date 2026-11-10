@@ -13,14 +13,13 @@ on.
 
 Every log point belongs to a tag: a dotted name, subsystem first
 (`vc.store-read`). `--log=help` lists the tags a tool has,
-sorted, with the highest level each emits and a one-line description
-(abridged):
+sorted, with the highest level each emits and a one-line description:
 
 ```text
 $ sea-vc --log=help
 log tags (--log=<pattern>[:<level>]; level 1 flow, 2 object, 3 detail; docs/reference/logging.md):
   lower.pass     1  each pass of a pass manager sea-vc runs (--lower, --sink-assumes, --print-refs): ops before and after, time
-  ...
+  vc.phase       1  the start and end of each sea-vc phase (lower, encode, simplify, solver-term, ackermann, solve, replay); the end with time and sizes
   vc.solve       1  each solver call of the verdict: backend, result, time, Expr nodes made so far
   vc.store-read  3  a SymStore key read before any write (its initial value made)
   warn.<kind>    2  every occurrence of warning <kind>, not only the first

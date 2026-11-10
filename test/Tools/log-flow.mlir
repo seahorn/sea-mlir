@@ -3,7 +3,7 @@
 
 // vc.phase: a start and an end per phase; the end has the time and the
 // phase's sizes; replay's end has the result of the validation.
-// RUN: sea-vc %s --lower --seam '--log=vc.phase' 2>&1 >/dev/null | FileCheck %s --check-prefix=PHASE
+// RUN: sea-vc %s --lower --seam --log=vc.phase 2>&1 >/dev/null | FileCheck %s --check-prefix=PHASE
 // PHASE: log: vc.phase start phase=lower
 // PHASE-NEXT: log: vc.phase end phase=lower time={{[0-9.]+}} ops-before={{[0-9]+}} ops-after={{[0-9]+}}
 // PHASE-NEXT: log: vc.phase start phase=encode run=1{{$}}
@@ -63,7 +63,7 @@
 // RUN: diff %t.off.s %t.on.s
 
 // jsonl: the same events, one object each.
-// RUN: sea-vc %s --format=jsonl '--log=vc.phase' 2>&1 >/dev/null | FileCheck %s --check-prefix=JSONL
+// RUN: sea-vc %s --format=jsonl --log=vc.phase 2>&1 >/dev/null | FileCheck %s --check-prefix=JSONL
 // JSONL: {"log":"vc.phase","level":1,"msg":"start","phase":"encode","run":1,"text":"log: vc.phase start phase=encode run=1"}
 // JSONL-NEXT: {"log":"vc.phase","level":1,"msg":"end","phase":"encode","time":{{[0-9.]+}},"nodes-made":{{[0-9]+}},
 
