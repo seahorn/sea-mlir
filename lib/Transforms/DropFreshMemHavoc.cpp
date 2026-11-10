@@ -12,12 +12,16 @@
 //
 // Fresh: the memhavoc's pointer comes only from allocations (sea.alloca /
 // sea.malloc, through ptr.add, select and block arguments) or null (a
-// havoc of null touches nothing), and for each such allocation A no update
-// on the memory chain back to A's allocation may write A: walking
-// back from the memhavoc's memory operand, every update that A dominates
-// writes an object provably not A (its pointer comes from another
-// allocation); updates not dominated by A precede the object. Block
-// arguments: all incoming versions must be fresh; a cycle is not.
+// havoc of null touches nothing), and for each such allocation A the
+// memory chain back from the memhavoc's memory operand starts at a
+// sea.mem.nondet (a sea.mem.const fixes the object's contents: its
+// memhavoc is not a no-op) and no update on it may write A: an update
+// that happens before A on every path (it properly dominates A, or A is
+// reachable from it and not the other way) cannot; every other one must
+// write an object provably not A (its pointer comes from one other
+// allocation). An update not dominated by A may still follow it (a join
+// after an allocation in one branch). Block arguments: all incoming
+// versions must be fresh; a cycle is not.
 //
 // Contract.
 //   Accepts: abstract programs (pointer-indexed memory); runs before
@@ -105,37 +109,95 @@ static Operation *allocationOf(Value p) {
   return *allocs.begin();
 }
 
-/// No update on the chain ending in `mem` that `alloc` dominates may write
-/// `alloc`'s object. `memo`: decided values; a value being decided (a
-/// cycle) counts as not fresh.
-static bool fresh(Value mem, Operation *alloc, DominanceInfo &dom,
+/// Does `op` happen before `alloc` on every path that executes both: it
+/// properly dominates `alloc`, or `alloc`'s block is reachable from its
+/// block and not the other way (no cycle through both). An op merely not
+/// dominated by `alloc` may follow it: a join block after an allocation in
+/// one branch.
+class HappensBefore {
+public:
+  explicit HappensBefore(DominanceInfo &dom) : dom(dom) {}
+  bool operator()(Operation *op, Operation *alloc) {
+    if (dom.properlyDominates(op, alloc))
+      return true;
+    Block *a = op->getBlock(), *b = alloc->getBlock();
+    return a != b && reachable(a).contains(b) && !reachable(b).contains(a);
+  }
+
+private:
+  const llvm::DenseSet<Block *> &reachable(Block *from) {
+    auto [it, inserted] = cache.try_emplace(from);
+    if (inserted) {
+      SmallVector<Block *> work(from->getSuccessors().begin(),
+                                from->getSuccessors().end());
+      while (!work.empty()) {
+        Block *b = work.pop_back_val();
+        if (it->second.insert(b).second)
+          work.append(b->getSuccessors().begin(), b->getSuccessors().end());
+      }
+    }
+    return it->second;
+  }
+  DominanceInfo &dom;
+  llvm::DenseMap<Block *, llvm::DenseSet<Block *>> cache;
+};
+
+/// No update on the chain ending in `mem` may write `alloc`'s object, and
+/// the chain starts at a sea.mem.nondet: only there are a fresh object's
+/// contents unconstrained (a sea.mem.const gives them its value, which a
+/// memhavoc changes). An update that happens before `alloc`
+/// (HappensBefore) cannot write the object: walked through unchecked.
+/// Every other update must write an object provably not `alloc`'s (its
+/// pointer comes from one other allocation). `memo`: decided values; a
+/// value being decided (a cycle) counts as not fresh.
+static bool fresh(Value mem, Operation *alloc, HappensBefore &before,
                   llvm::DenseMap<Value, std::optional<bool>> &memo) {
   auto [it, inserted] = memo.try_emplace(mem, std::nullopt);
   if (!inserted)
     return it->second.value_or(false);
+  // the linear part of the chain, iteratively (chains can be long)
+  SmallVector<Value> walked{mem};
+  Value cur = mem;
   bool r = false;
-  if (auto arg = dyn_cast<BlockArgument>(mem)) {
-    Block *b = arg.getOwner();
-    r = true;
-    for (auto p = b->pred_begin(); r && p != b->pred_end(); ++p) {
-      auto br = dyn_cast<BranchOpInterface>((*p)->getTerminator());
-      Value in = br ? br.getSuccessorOperands(
-                          p.getSuccessorIndex())[arg.getArgNumber()]
-                    : Value();
-      r = in && fresh(in, alloc, dom, memo);
+  while (true) {
+    if (auto arg = dyn_cast<BlockArgument>(cur)) {
+      Block *b = arg.getOwner();
+      r = !b->hasNoPredecessors();
+      for (auto p = b->pred_begin(); r && p != b->pred_end(); ++p) {
+        auto br = dyn_cast<BranchOpInterface>((*p)->getTerminator());
+        Value in = br ? br.getSuccessorOperands(
+                            p.getSuccessorIndex())[arg.getArgNumber()]
+                      : Value();
+        r = in && fresh(in, alloc, before, memo);
+      }
+      break;
     }
-  } else {
-    Operation *def = mem.getDefiningOp();
-    if (isa<MemNondetOp, MemConstOp>(def) || !dom.properlyDominates(alloc, def))
-      r = true; // the start, or before the object exists
-    else if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(
-                 def)) {
+    Operation *def = cur.getDefiningOp();
+    if (isa<MemNondetOp>(def)) {
+      r = true;
+      break;
+    }
+    if (!isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(def)) {
+      r = false; // a sea.mem.const, or an unknown producer
+      break;
+    }
+    if (!before(def, alloc)) {
       Operation *target = allocationOf(def->getOperand(1));
-      r = target && target != alloc &&
-          fresh(def->getOperand(0), alloc, dom, memo);
+      if (!target || target == alloc) {
+        r = false;
+        break;
+      }
     }
+    cur = def->getOperand(0);
+    auto [cit, cnew] = memo.try_emplace(cur, std::nullopt);
+    if (!cnew) {
+      r = cit->second.value_or(false);
+      break;
+    }
+    walked.push_back(cur);
   }
-  memo[mem] = r;
+  for (Value v : walked)
+    memo[v] = r;
   return r;
 }
 
@@ -149,6 +211,7 @@ void DropFreshMemHavocPass::runOnOperation() {
   if (havocs.empty())
     return;
   DominanceInfo dom(program);
+  HappensBefore before(dom);
   for (MemHavocOp op : havocs) {
     llvm::SmallPtrSet<Operation *, 4> allocs;
     llvm::DenseSet<Value> seen;
@@ -157,7 +220,7 @@ void DropFreshMemHavocPass::runOnOperation() {
     bool allFresh = true;
     for (Operation *alloc : allocs) {
       llvm::DenseMap<Value, std::optional<bool>> memo;
-      allFresh = allFresh && fresh(op.getMem(), alloc, dom, memo);
+      allFresh = allFresh && fresh(op.getMem(), alloc, before, memo);
     }
     if (!allFresh)
       continue;
