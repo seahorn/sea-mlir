@@ -259,8 +259,9 @@ with `sea-vc --place-out=<file>`, the other with `--place-in=<file>`
 ([External placement](../reference/output-formats.md#placement-files)), so
 the objects of both sides are at the same addresses. The writer should be
 the side with more objects: A writes first. If B has an object that A's
-file does not name (or one of another size or alignment, a `place.in-*`
-error), B writes and A reads, once. The `layout:` line names the writer.
+file does not name (or one of another kind, size or alignment: `place.in-unplaced` or
+`place.in-mismatch`; other `place.in-*` errors are errors), B writes and A
+reads, once. The `layout:` line names the writer.
 If both fail, there is no shared placement, and the job is `unknown`
 (`reason=layout`), not a pass. The gate does not check all placements: both
 lowerings are compared on one placement, the writer's; the reader takes it

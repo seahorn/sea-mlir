@@ -49,7 +49,7 @@ Placement. Both sides run on one placement of the objects (sea-vc
 the other with --place-in=<file>, so their common objects are at the same
 addresses (and their obj.<name> symbols have the same values). The writer
 is the side with more objects: A first; if B has an object A's file does
-not name (or one of another size: a place.in-* error), the reverse, once.
+not name (or one of another kind, size or align: place.in-unplaced / place.in-mismatch), the reverse, once.
 If both fail, there is no shared placement: the job is unknown
 (reason=layout), never a pass. The gate does not check all placements:
 both lowerings are compared on one placement, the writer's; the reader
@@ -171,7 +171,7 @@ CLASSES (level 0, per key):
                          reachable answer with replay=memory-error)
 PLACEMENT: both sides on one placement (sea-vc --place-out on the writer,
   --place-in on the other): A writes; if B has an object A's file lacks
-  (a place.in-* error), B writes and A reads, once; both fail: the job is
+  (place.in-unplaced or place.in-mismatch), B writes and A reads, once; both fail: the job is
   unknown reason=layout (level 1 / verdict alone: those unknown). Applies to
   the reach runs (level 0), the verdicts, the R_T programs and the replays.
 LEVEL 1 (per key reachable on both sides): query-diff --project-blocks on
@@ -245,8 +245,9 @@ class SeaVcError(Exception):
 
 
 class LayoutError(SeaVcError):
-    """A side could not take the other side's placement (--place-in: a
-    place.in-* error, such as an object the file does not name)."""
+    """A side could not take the other side's placement (--place-in:
+    place.in-unplaced or place.in-mismatch, such as an object the file does
+    not name)."""
 
 
 class NoLayout(Exception):
