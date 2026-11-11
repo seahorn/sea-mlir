@@ -585,12 +585,14 @@ prints; the fuzzer checks the replay ends the same way), then stat lines:
   fuzz.deferred: <runs> memory-error=<n> assume-blocked=<n> step-limit=<n>
                  error=<n>       (--defer-memory-errors: runs that went
                                  past a violation, by final status)
-  fuzz.blocked-before-assert-false: <runs> assumes=<n>
+  fuzz.blocked-before-assert-false: <runs> assumes=<n> deferred=<n>
                                  (only if the program has an assume
                                  directly followed by `assert false`, pure
                                  ops and sea.br between: runs blocked at
                                  one; in SeaHorn's export form these
-                                 passed the check; still in assume-blocked)
+                                 passed the check; still in assume-blocked;
+                                 deferred: of them, runs past a deferred
+                                 memory-safety violation, not passed checks)
   fuzz.assumptions: addr0-is-null=<uses> addr0-is-null-runs=<n>
                     memhavoc-null-noop=<uses> memhavoc-null-noop-runs=<n>
                                  (any > 0: what the trials rested on, the
@@ -1186,7 +1188,8 @@ static int runFuzz(sea::ProgramOp program) {
   // (SeaHorn's export form: they passed the program's check)
   if (rep->assumesBeforeAssertFalse)
     os << "fuzz.blocked-before-assert-false: " << rep->blockedBeforeAssertFalse
-       << " assumes=" << rep->assumesBeforeAssertFalse << "\n";
+       << " assumes=" << rep->assumesBeforeAssertFalse
+       << " deferred=" << rep->blockedBeforeAssertFalseDeferred << "\n";
   if (rep->addr0IsNullUses || rep->memhavocNullNoopUses)
     os << "fuzz.assumptions: addr0-is-null=" << rep->addr0IsNullUses
        << " addr0-is-null-runs=" << rep->addr0IsNullRuns

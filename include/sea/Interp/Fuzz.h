@@ -221,6 +221,10 @@ struct FuzzReport {
   /// assert false; halt) these are the runs that passed the check. Also
   /// counted in statusCount (assume-blocked) and blocked.
   uint64_t blockedBeforeAssertFalse = 0;
+  /// Of those, the runs that went past a deferred memory-safety violation
+  /// first (FuzzOptions::deferMemoryErrors): not executions of the program,
+  /// so not passed checks.
+  uint64_t blockedBeforeAssertFalseDeferred = 0;
   unsigned assumesBeforeAssertFalse = 0;
   uint64_t filesWritten = 0; // in outDir
   unsigned dictionarySize = 0;

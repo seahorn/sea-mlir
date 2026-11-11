@@ -89,7 +89,9 @@ Several such assumes of one site intersect when their low ends agree; one
 with another low end is not used, nor is `(ult sN 0)` (no value passes
 it), nor a bound whose sites lead back to the site. A bound that names a
 site the trial has not read yet is not used in that trial. Such unused
-assumes are counted as `skipped` in `fuzz.ranges`.
+assumes are counted as `skipped` in `fuzz.ranges`. An assume need not
+dominate the site's other uses: a range read off an assume on one path
+also shapes the values on paths that do not pass it.
 
 A site with a range gets its fresh values from it, and so does the
 mutation "a fresh random value" (and, with `--fuzz-dict=false`, the
@@ -256,7 +258,7 @@ fuzz.blocked: 30 op=sea.assume at=p.mlir:5:3 sites=0 cond=(eq s0 1234)
 | `fuzz.ranges: <sites> value-sites=<n> assumes=<n> skipped=<n> draws=<n> mode=mix\|edge\|off share=<p> range-trials=<n>` | value sites with a range, of all value sites; the range assumes they come from, the recognized ones not used, and the values drawn from a range; the mode (`mix`: both generators, `edge`: range trials only, `off`: none, with `--fuzz-ranges=false` or a share of 0), the share of range trials asked for, and the trials that were range trials ([Ranges](#ranges)) |
 | `fuzz.status: halted=.. assert-failed=.. assume-blocked=.. step-limit=.. error=.. [memory-error=..]` | runs per status (`memory-error` with `--defer-memory-errors`) |
 | `fuzz.deferred: <runs> memory-error=.. assume-blocked=.. step-limit=.. error=..` | `--defer-memory-errors`: the runs that went past a violation, by how they ended |
-| `fuzz.blocked-before-assert-false: <runs> assumes=<n>` | when the program has an assume directly followed by `assert false`: the runs blocked at such an assume, and the number of them ([SeaHorn's export form](#seahorns-export-form)); these runs are also counted as `assume-blocked` |
+| `fuzz.blocked-before-assert-false: <runs> assumes=<n> deferred=<n>` | when the program has an assume directly followed by `assert false`: the runs blocked at such an assume, the number of them, and of the runs those that went past a deferred memory-safety violation first (`--defer-memory-errors`) ([SeaHorn's export form](#seahorns-export-form)); these runs are also counted as `assume-blocked` |
 | `fuzz.coverage: blocks=<n> blocks-total=<n> edges=<n> assumes=<n> assumes-total=<n>` | blocks entered, edges taken (the entry counts as one), `sea.assume` ops passed at least once |
 | `fuzz.corpus: <entries> seeds=<files> skipped-lines=<n> files=<n> dictionary=<n>` | corpus entries at the end, seed files read, lines of saved runs that are not inputs, files written, dictionary size |
 | `fuzz.blocked: <runs> op=<op> at=<where> [sites=<n,...> cond=<expr>]` | one per `sea.assume` or `sea.unreachable` that blocked runs, most first; for a `sea.assume`, its condition over the input sites (see [For agents](#for-agents)) |
@@ -278,14 +280,15 @@ shows `halted=0` and the runs that passed the check are among the
 `assume-blocked` ones. The line
 
 ```text
-fuzz.blocked-before-assert-false: 7445 assumes=2
+fuzz.blocked-before-assert-false: 7445 assumes=2 deferred=0
 ```
 
 counts the runs blocked at an assume that is directly followed by
 `sea.assert` of a constant false: with nothing between them but pure
 operations (the constant) and unconditional `sea.br` hops. In the export
 form these are the runs that passed a check and ended there, the valid
-trials; the `fuzz.blocked` lines show which of the assumes blocked them.
+trials, unless a deferred memory-safety violation came before
+(`deferred=`); the `fuzz.blocked` lines show which of the assumes blocked them.
 The line says what the program's structure is; whether such a block is a
 passed check is a reading of the export form. The line is printed only for
 programs that have such an assume. `fuzz.status` is unchanged.

@@ -704,8 +704,10 @@ LogicalResult Fuzzer::trial(Entry preset,
     ++report.deferredStatusCount[static_cast<unsigned>(r.status)];
   if (r.status == RunStatus::AssumeBlocked && r.at) {
     ++blockedBy[r.at];
-    if (beforeAssertFalse.contains(r.at))
+    if (beforeAssertFalse.contains(r.at)) {
       ++report.blockedBeforeAssertFalse;
+      report.blockedBeforeAssertFalseDeferred += r.deferredCount != 0;
+    }
   }
   bool failing =
       r.status == RunStatus::AssertFailed || r.status == RunStatus::MemoryError;
