@@ -163,8 +163,8 @@ static cl::opt<bool> fuzzCmp(
     cl::desc("Fuzz: comparison coverage: the operand distance buckets of "
              "each sea.icmp / sea.addr.cmp the trials evaluate, and the "
              "branch distance of the assumes that block trials (a measure; "
-             "default off)"),
-    cl::init(false));
+             "default on, --fuzz-cmp=false turns it off)"),
+    cl::init(true));
 
 static cl::opt<bool> fuzzGates(
     "fuzz-gates",
@@ -594,12 +594,12 @@ count depends on speed).
                          of several runs join (utils/fuzz-par.py); then
                          `frontier: deepest=<n> sum=<n>`, one
                          `gate: <id> op=<op> passed=<n> blocked=<n>
-                         [distance=<d>|-]` per fuzz.assume id, and with
-                         --fuzz-cmp one `cmp: <id> pred=<p>
+                         [distance=<d>|-]` per fuzz.assume id, and, unless
+                         --fuzz-cmp=false, one `cmp: <id> pred=<p>
                          role=assume|branch|value counts=<7 counts>
                          at=<where>` per comparison (MODEL COVERAGE)
   --fuzz-cmp             comparison coverage and branch distances (MODEL
-                         COVERAGE; default off: a measure, costs time)
+                         COVERAGE; default on: a measure; =false turns it off)
   --fuzz-gates           one fuzz.gate line per blocking op
   --fuzz-reachable=F     F: `sea-vc --reach=blocks` output on the same
                          file; block coverage of the reachable blocks
@@ -624,7 +624,7 @@ prints; the fuzzer checks the replay ends the same way), then stat lines:
                                  (--fuzz-progress, during the run, before
                                  the lines below; failures: failing trials
                                  so far; frontier, cmp-buckets: MODEL
-                                 COVERAGE, cmp-buckets with --fuzz-cmp)
+                                 COVERAGE, cmp-buckets unless --fuzz-cmp=false)
   fuzz.failure: <runs> trial=<first> [file=<path>] at=<where> time=<s>
                                  (per failing sea.assert; time: of the
                                  first, since the trials started)
@@ -713,7 +713,7 @@ are the fuzz.assume ids of --fuzz-sites.
     the assume is directly followed by `assert false` (SeaHorn's export
     form: the assume of a check's failure; closed = no trial failed the
     check, the expected state of a proof, not a lead).
-  --fuzz-cmp: per sea.icmp / sea.addr.cmp evaluated, buckets of d = lhs -
+  --fuzz-cmp (default on; =false turns it off): per sea.icmp / sea.addr.cmp evaluated, buckets of d = lhs -
     rhs, exact, signed for a signed predicate (eq, ne and the unsigned ones:
     unsigned): -L (< -16), -S (-16..-2), -1, 0, +1, +S, +L. role: the
     condition of an assume (directly or through xor with true), of a
@@ -1229,6 +1229,11 @@ static LogicalResult readReachable(StringRef path, sea::ProgramOp program,
         toks[1] != "unknown") {
       error = path.str() + ":" + std::to_string(lineNo) +
               ": unknown reach status '" + toks[1].str() + "'";
+      return failure();
+    }
+    if (!out.status[it->second].empty()) {
+      error = path.str() + ":" + std::to_string(lineNo) + ": block '" +
+              toks[0].str() + "' listed twice";
       return failure();
     }
     out.status[it->second] = toks[1].str();
@@ -1839,8 +1844,8 @@ int main(int argc, char **argv) {
     return fail("--reach-targets reports exact runs: not with --fuzz-serve, "
                 "--fuzz-sites or --defer-memory-errors (past a substituted "
                 "violation a run is not an execution of the program)");
-  if ((fuzzCmp || fuzzGates || !fuzzReachable.empty()) && !fuzzTrials &&
-      fuzzTime <= 0)
+  if ((fuzzCmp.getNumOccurrences() || fuzzGates || !fuzzReachable.empty()) &&
+      !fuzzTrials && fuzzTime <= 0)
     return fail("--fuzz-cmp, --fuzz-gates and --fuzz-reachable need --fuzz "
                 "or --fuzz-time");
   if (!fuzzReachable.empty() && deferMemoryErrors)

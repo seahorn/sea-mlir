@@ -18,15 +18,20 @@
 // A covered block that the file calls unreachable: a bug of one of the two.
 // RUN: sed 's/ reachable op=block/ unreachable op=block/' %t/reach.txt > %t/bad.txt
 // RUN: not sea-run %s --fuzz=3 --seed=1 --fuzz-reachable=%t/bad.txt 2>&1 | FileCheck %s --check-prefix=BAD
+// A block listed twice: an error with the line.
+// RUN: cat %t/reach.txt > %t/dup.txt
+// RUN: grep -m1 '^reach: ' %t/reach.txt >> %t/dup.txt
+// RUN: not sea-run %s --fuzz=3 --fuzz-reachable=%t/dup.txt 2>&1 | FileCheck %s --check-prefix=DUP
 // RUN: not sea-run %s --fuzz=3 --defer-memory-errors --fuzz-reachable=%t/reach.txt 2>&1 | FileCheck %s --check-prefix=DEFER
 
 // CHECK: fuzz.reachable: covered=6 reachable=7 unreachable=1 unknown=0 unknown-covered=0 unlisted=0
-// CHECK-NEXT: fuzz.uncovered: {{.*}}reachable.mlir:[[@LINE+25]]:3 at=
+// CHECK-NEXT: fuzz.uncovered: {{.*}}reachable.mlir:[[@LINE+26]]:3 at=
 // CHECK-NOT: fuzz.uncovered:
 // OTHER: block 'other.mlir:1:1' is not a block of this program
 // CHECKS: not the output of sea-vc --reach=blocks
 // NONE: has no `reach:` lines
 // BAD: which sea-vc --reach calls unreachable [fuzz.reach-inconsistent]
+// DUP: dup.txt:{{[0-9]+}}: block '{{.*}}' listed twice
 // DEFER: not with --defer-memory-errors
 sea.program @main {
   %x = sea.nondet "nondet_u8" [0] : i8
