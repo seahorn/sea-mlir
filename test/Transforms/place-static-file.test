@@ -1,0 +1,169 @@
+// External placement: sea-place-static place-out writes the placement,
+// place-in takes the bases from a file and checks them as placement does.
+// RUN: rm -rf %t && split-file %s %t
+// DEFINE: %{opts} =
+// DEFINE: %{place} = sea-opt --pass-pipeline='builtin.module(sea.program(sea-place-static{%{opts}}))'
+
+// The writer: one object per line, with its kind, base, size and align.
+// REDEFINE: %{opts} = place-out=%t/w.place
+// RUN: %{place} %t/writer.mlir -o %t/w.mlir
+// RUN: FileCheck %s --check-prefix=OUT < %t/w.place
+// OUT-DAG: name=stack.1 kind=stack base=0x{{[0-9a-f]+}} size=8 align=8
+// OUT-DAG: name=stack.2 kind=stack base=0xbfffffe8 size=16 align=4
+// OUT-DAG: name=heap.3 kind=heap base=0x{{[0-9a-f]+}} size=32 align=16
+// OUT-DAG: name=nondet.4 kind=heap base=0x{{[0-9a-f]+}} size=1 align=1
+// OUT-DAG: name=global.g kind=global base=0x{{[0-9a-f]+}} size=4 align=4
+// OUT-DAG: name=null kind=null base=0x0 size=0 align=
+
+// Roundtrip: the writer's own file gives it the same program.
+// REDEFINE: %{opts} = place-in=%t/w.place
+// RUN: %{place} %t/writer.mlir -o %t/w-in.mlir
+// RUN: diff %t/w.mlir %t/w-in.mlir
+
+// A reader with fewer objects (stack.1 absent: a hole) gets the writer's
+// bases, not its own: stack.2 is where the writer put it, below stack.1.
+// RUN: %{place} %t/reader.mlir | FileCheck %s --check-prefix=HOLE
+// HOLE: sea.segment "stack.2" base 3221225448 : i64 size 16 : i64 align 4 kind "stack"
+// REDEFINE: %{opts} =
+// RUN: %{place} %t/reader.mlir | FileCheck %s --check-prefix=OWN
+// OWN: sea.segment "stack.2" base 3221225456 : i64 size 16 : i64 align 4 kind "stack"
+// REDEFINE: %{opts} = place-in=%t/w.place
+
+// Errors: an object the file does not name; a size or an align that is not
+// the object's own.
+// RUN: not %{place} %t/extra.mlir 2>&1 | FileCheck %s --check-prefix=UNPLACED
+// UNPLACED: Error: sea-place-static: stack.9 is not in the placement file
+// UNPLACED-SAME: [place.in-unplaced]
+// RUN: not %{place} %t/size.mlir 2>&1 | FileCheck %s --check-prefix=SIZE
+// SIZE: Error: sea-place-static: stack.2 is kind=stack size=24 align=4 here, kind=stack size=16 align=4 in
+// SIZE-SAME: [place.in-mismatch]
+// RUN: not %{place} %t/align.mlir 2>&1 | FileCheck %s --check-prefix=ALIGN
+// ALIGN: stack.2 is kind=stack size=16 align=8 here, kind=stack size=16 align=4
+// ALIGN-SAME: [place.in-mismatch]
+
+// Files that break the allocator's rules: overlap, misaligned, null not at
+// 0, an object at 0, out of the address width, malformed.
+// REDEFINE: %{opts} = place-in=%t/overlap.place
+// RUN: not %{place} %t/reader.mlir 2>&1 | FileCheck %s --check-prefix=OVERLAP
+// OVERLAP: [place.in-overlap]
+// REDEFINE: %{opts} = place-in=%t/misaligned.place
+// RUN: not %{place} %t/reader.mlir 2>&1 | FileCheck %s --check-prefix=MISALIGNED
+// MISALIGNED: stack.2 is at 4098 in {{.*}}, not a multiple of its align 4
+// MISALIGNED-SAME: [place.in-align]
+// REDEFINE: %{opts} = place-in=%t/null.place
+// RUN: not %{place} %t/reader.mlir 2>&1 | FileCheck %s --check-prefix=NULL
+// NULL: null is null: its base must be 0
+// NULL-SAME: [place.in-null]
+// NULL: heap.3 is at address 0
+// NULL-SAME: [place.in-null]
+// REDEFINE: %{opts} = place-in=%t/wide.place
+// RUN: not %{place} %t/narrow.mlir 2>&1 | FileCheck %s --check-prefix=WIDTH
+// WIDTH: stack.0 at 4096 (16 units) does not fit a 8-bit address space
+// WIDTH-SAME: [place.in-width]
+// REDEFINE: %{opts} = place-in=%t/bad.place
+// RUN: not %{place} %t/reader.mlir 2>&1 | FileCheck %s --check-prefix=FORMAT
+// FORMAT: bad.place:2: expected name=, kind=, base=, size=, align=, got 'room=8'
+// FORMAT-SAME: [place.in-format]
+// FORMAT: bad.place:3: kind 'stak' is not stack, heap, global, func or null
+// FORMAT: bad.place:5: object 'heap.3' twice
+// REDEFINE: %{opts} = place-in=%t/missing.place
+// RUN: not %{place} %t/reader.mlir 2>&1 | FileCheck %s --check-prefix=NOFILE
+// NOFILE: cannot read the placement file
+// NOFILE-SAME: [place.in-file]
+// REDEFINE: %{opts} = place-in=%t/w.place place-out=%t/x.place
+// RUN: not %{place} %t/reader.mlir 2>&1 | FileCheck %s --check-prefix=BOTH
+// BOTH: [place.file-both]
+
+// A concrete program: nothing to place, an empty file.
+// REDEFINE: %{opts} = place-out=%t/c.place
+// RUN: %{place} %t/concrete.mlir -o /dev/null
+// RUN: not grep -v '^#' %t/c.place
+
+//--- writer.mlir
+sea.program @main {
+  %n8 = sea.const 8 : i64
+  %n16 = sea.const 16 : i64
+  %n32 = sea.const 32 : i64
+  %a = sea.alloca %n8 align 8 [1] : i64 -> !sea.ptr<64>
+  %b = sea.alloca %n16 align 4 [2] : i64 -> !sea.ptr<64>
+  %h = sea.malloc %n32 align 16 [3] : i64 -> !sea.ptr<64>
+  %p = sea.ptr.nondet "p" [4] : !sea.ptr<64>
+  %g = sea.global @g size 4 align 4 : !sea.ptr<64>
+  %z = sea.ptr.null : !sea.ptr<64>
+  %c = sea.ptr.cmp eq, %p, %z : !sea.ptr<64>
+  sea.halt
+}
+
+//--- reader.mlir
+sea.program @main {
+  %n16 = sea.const 16 : i64
+  %n32 = sea.const 32 : i64
+  %b = sea.alloca %n16 align 4 [2] : i64 -> !sea.ptr<64>
+  %h = sea.malloc %n32 align 16 [3] : i64 -> !sea.ptr<64>
+  %z = sea.ptr.null : !sea.ptr<64>
+  %c = sea.ptr.cmp eq, %h, %z : !sea.ptr<64>
+  sea.halt
+}
+
+//--- extra.mlir
+sea.program @main {
+  %n16 = sea.const 16 : i64
+  %b = sea.alloca %n16 align 4 [2] : i64 -> !sea.ptr<64>
+  %x = sea.alloca %n16 align 4 [9] : i64 -> !sea.ptr<64>
+  sea.halt
+}
+
+//--- size.mlir
+sea.program @main {
+  %n24 = sea.const 24 : i64
+  %b = sea.alloca %n24 align 4 [2] : i64 -> !sea.ptr<64>
+  sea.halt
+}
+
+//--- align.mlir
+sea.program @main {
+  %n16 = sea.const 16 : i64
+  %b = sea.alloca %n16 align 8 [2] : i64 -> !sea.ptr<64>
+  sea.halt
+}
+
+//--- narrow.mlir
+sea.program @main {
+  %n16 = sea.const 16 : i8
+  %b = sea.alloca %n16 align 1 [0] : i8 -> !sea.ptr<8>
+  sea.halt
+}
+
+//--- concrete.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  sea.halt
+}
+
+//--- overlap.place
+name=null kind=null base=0 size=0 align=4611686018427387904
+name=stack.2 kind=stack base=4096 size=16 align=4
+name=heap.3 kind=heap base=4096 size=32 align=16
+
+//--- misaligned.place
+name=null kind=null base=0 size=0 align=4611686018427387904
+name=stack.2 kind=stack base=4098 size=16 align=4
+name=heap.3 kind=heap base=8192 size=32 align=16
+
+//--- null.place
+name=null kind=null base=16 size=0 align=4611686018427387904
+name=stack.2 kind=stack base=4096 size=16 align=4
+name=heap.3 kind=heap base=0 size=32 align=16
+
+//--- wide.place
+name=stack.0 kind=stack base=4096 size=16 align=1
+
+//--- bad.place
+# a comment
+name=stack.2 kind=stack base=4096 room=8 align=4
+name=heap.3 kind=stak base=8192 size=32 align=16
+name=heap.3 kind=heap base=8192 size=32 align=16
+name=heap.3 kind=heap base=8192 size=32 align=16
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -34,6 +34,23 @@
 //   Errors: place.struct, place.reuse-unimplemented, and the size and
 //     layout errors below.
 //
+// External placement (place-in / place-out, sea-vc --place-in /
+// --place-out): place-out writes the placement computed, one object per
+// line, `name=<n> kind=<k> base=<hex> size=<n> align=<n>` (`#` comments).
+// place-in takes the bases from such a file instead of computing them:
+// the pass is still the allocator and checks them as it places (kind, size
+// and align equal to the object's own, base aligned, inside the address
+// width, null at 0 and nothing else there, no overlap); a violation is an
+// error (place.in-*). An object of the program the file does not name is
+// an error (place.in-unplaced): the file's writer must have every object
+// of the reader (a pass that creates objects is not supported); objects of
+// the file the program does not have are holes. Objects are matched by
+// their segment names (<kind>.<site>, global.<name>, func.<name>,
+// nondet.<site>, null), unique in the program (place.duplicate-name). Two
+// lowerings of one program that share a file place their common objects
+// at the same bases (utils/cover-diff.py --level=1). With either file the
+// module must hold one program (place.file-programs).
+//
 //===----------------------------------------------------------------------===//
 
 #include "PassUtils.h"
@@ -45,7 +62,11 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <functional>
 
@@ -83,6 +104,10 @@ public:
 
   PlaceStaticPass() = default;
   PlaceStaticPass(const PlaceStaticPass &other) : PassWrapper(other) {}
+  explicit PlaceStaticPass(const PlaceFiles &files) {
+    placeIn = files.in;
+    placeOut = files.out;
+  }
 
   StringRef getArgument() const final { return "sea-place-static"; }
   StringRef getDescription() const final {
@@ -109,6 +134,17 @@ public:
                      llvm::cl::desc("Share space between objects with "
                                     "disjoint lifetimes (not implemented)"),
                      llvm::cl::init(false)};
+  Option<std::string> placeIn{
+      *this, "place-in",
+      llvm::cl::desc("Take every object's base from this placement file "
+                     "(written by place-out), checked; an object the file "
+                     "does not name is an error"),
+      llvm::cl::init("")};
+  Option<std::string> placeOut{
+      *this, "place-out",
+      llvm::cl::desc("Write the placement to this file (one object per "
+                     "line)"),
+      llvm::cl::init("")};
 
   void runOnOperation() override;
 
@@ -117,7 +153,90 @@ private:
                         llvm::DenseMap<Operation *, unsigned> &objectOf);
   LogicalResult place(ProgramOp program, unsigned width,
                       SmallVector<Object> &objects);
+  LogicalResult placeFromFile(ProgramOp program, unsigned width,
+                              SmallVector<Object> &objects);
+  LogicalResult writeFile(ProgramOp program, ArrayRef<Object> objects);
 };
+
+/// One object of a placement file.
+struct Placed {
+  std::string kind;
+  uint64_t base = 0, size = 0, align = 0;
+  unsigned line = 0;
+};
+
+/// The objects of a placement file by name; every malformed line is an
+/// error (place.in-format).
+static FailureOr<llvm::StringMap<Placed>> readPlacement(StringRef path,
+                                                        Location loc) {
+  auto buf = llvm::MemoryBuffer::getFile(path, /*IsText=*/true);
+  if (!buf) {
+    diag::error("place.in-file",
+                "sea-place-static: cannot read the placement file '" + path +
+                    "': " + buf.getError().message(),
+                loc);
+    return failure();
+  }
+  llvm::StringMap<Placed> out;
+  bool ok = true;
+  SmallVector<StringRef> lines;
+  (*buf)->getBuffer().split(lines, '\n');
+  for (unsigned i = 0; i < lines.size(); ++i) {
+    StringRef line = lines[i].trim();
+    if (line.empty() || line.starts_with("#"))
+      continue;
+    auto bad = [&](const Twine &why) {
+      diag::error("place.in-format",
+                  "sea-place-static: " + path + ":" + Twine(i + 1) + ": " + why,
+                  loc);
+      ok = false;
+    };
+    llvm::StringMap<StringRef> kv;
+    SmallVector<StringRef> fields;
+    line.split(fields, ' ', -1, /*KeepEmpty=*/false);
+    bool lineOk = true;
+    for (StringRef f : fields) {
+      auto [k, v] = f.split('=');
+      if (!f.contains('=') || v.empty() ||
+          !llvm::is_contained({"name", "kind", "base", "size", "align"}, k)) {
+        bad("expected name=, kind=, base=, size=, align=, got '" + f + "'");
+        lineOk = false;
+        break;
+      }
+      if (!kv.try_emplace(k, v).second) {
+        bad("'" + k + "' twice");
+        lineOk = false;
+        break;
+      }
+    }
+    if (!lineOk)
+      continue;
+    if (kv.size() != 5) {
+      bad("an object needs name=, kind=, base=, size= and align=");
+      continue;
+    }
+    Placed p;
+    p.kind = kv["kind"].str();
+    p.line = i + 1;
+    if (!llvm::is_contained({"stack", "heap", "global", "func", "null"},
+                            p.kind)) {
+      bad("kind '" + p.kind + "' is not stack, heap, global, func or null");
+      continue;
+    }
+    if (kv["base"].getAsInteger(0, p.base) ||
+        kv["size"].getAsInteger(0, p.size) ||
+        kv["align"].getAsInteger(0, p.align) || p.align == 0) {
+      bad("base, size and align are unsigned 64-bit numbers, align > 0");
+      continue;
+    }
+    StringRef name = kv["name"];
+    if (!out.try_emplace(name, p).second)
+      bad("object '" + name + "' twice");
+  }
+  if (!ok)
+    return failure();
+  return out;
+}
 
 /// The pointer width used by the program (all pointers must agree).
 static FailureOr<unsigned> pointerWidth(ProgramOp program) {
@@ -332,6 +451,107 @@ LogicalResult PlaceStaticPass::place(ProgramOp program, unsigned width,
   return success();
 }
 
+LogicalResult PlaceStaticPass::placeFromFile(ProgramOp program, unsigned width,
+                                             SmallVector<Object> &objects) {
+  FailureOr<llvm::StringMap<Placed>> file =
+      readPlacement(placeIn, program.getLoc());
+  if (failed(file))
+    return failure();
+  APInt limit = APInt::getMaxValue(width);
+  bool ok = true;
+  auto error = [&](StringRef kind, const Object &o, const Twine &why) {
+    diag::error(kind, "sea-place-static: " + o.name + " " + why, o.loc);
+    ok = false;
+  };
+  for (Object &o : objects) {
+    auto it = file->find(o.name);
+    if (it == file->end()) {
+      error("place.in-unplaced", o,
+            "is not in the placement file " + placeIn +
+                " (its writer did not have this object)");
+      continue;
+    }
+    const Placed &p = it->second;
+    if (p.kind != o.kind || p.size != o.room || p.align != o.align) {
+      error("place.in-mismatch", o,
+            "is kind=" + o.kind + " size=" + Twine(o.room) +
+                " align=" + Twine(o.align) + " here, kind=" + p.kind +
+                " size=" + Twine(p.size) + " align=" + Twine(p.align) + " in " +
+                placeIn + ":" + Twine(p.line));
+      continue;
+    }
+    if ((o.kind == "null") != (p.base == 0)) {
+      error("place.in-null", o,
+            o.kind == "null" ? "is null: its base must be 0, " + placeIn +
+                                   " gives " + Twine(p.base)
+                             : "is at address 0 in " + placeIn +
+                                   ", the null pointer's address");
+      continue;
+    }
+    if (p.base % o.align) {
+      error("place.in-align", o,
+            "is at " + Twine(p.base) + " in " + placeIn +
+                ", not a multiple of its align " + Twine(o.align));
+      continue;
+    }
+    uint64_t end;
+    if (o.kind != "null" &&
+        (__builtin_add_overflow(p.base, addressRoom(o), &end) ||
+         APInt(64, end - 1).ugt(limit.zext(64)))) {
+      error("place.in-width", o,
+            "at " + Twine(p.base) + " (" + Twine(addressRoom(o)) +
+                " units) does not fit a " + Twine(width) +
+                "-bit address space");
+      continue;
+    }
+    o.base = p.base;
+  }
+  if (!ok)
+    return failure();
+  // no overlap: the address ranges of the objects, by base
+  SmallVector<const Object *> byBase;
+  for (const Object &o : objects)
+    if (o.kind != "null")
+      byBase.push_back(&o);
+  llvm::sort(byBase, [](const Object *a, const Object *b) {
+    return a->base < b->base;
+  });
+  for (unsigned i = 1; i < byBase.size(); ++i)
+    if (byBase[i - 1]->base + addressRoom(*byBase[i - 1]) > byBase[i]->base)
+      error("place.in-overlap", *byBase[i],
+            "overlaps " + byBase[i - 1]->name + " in " + placeIn);
+  return success(ok);
+}
+
+LogicalResult PlaceStaticPass::writeFile(ProgramOp program,
+                                         ArrayRef<Object> objects) {
+  std::error_code ec;
+  llvm::raw_fd_ostream os(placeOut, ec, llvm::sys::fs::OF_Text);
+  if (ec) {
+    diag::error("place.out-file",
+                "sea-place-static: cannot write the placement file '" +
+                    placeOut + "': " + ec.message(),
+                program.getLoc());
+    return failure();
+  }
+  os << "# sea-place-static placement of @" << program.getSymName()
+     << ": one object per line\n";
+  for (const Object &o : objects)
+    os << "name=" << o.name << " kind=" << o.kind << " base=0x"
+       << llvm::utohexstr(o.base, /*LowerCase=*/true) << " size=" << o.room
+       << " align=" << o.align << "\n";
+  os.close();
+  if (os.has_error()) {
+    diag::error("place.out-file",
+                "sea-place-static: cannot write the placement file '" +
+                    placeOut + "': " + os.error().message(),
+                program.getLoc());
+    os.clear_error();
+    return failure();
+  }
+  return success();
+}
+
 void PlaceStaticPass::runOnOperation() {
   ProgramOp program = getOperation();
   MLIRContext *ctx = &getContext();
@@ -365,16 +585,56 @@ void PlaceStaticPass::runOnOperation() {
     return signalPassFailure();
   }
 
+  const bool files = !placeIn.empty() || !placeOut.empty();
+  if (!placeIn.empty() && !placeOut.empty()) {
+    diag::error("place.file-both",
+                "sea-place-static: place-in and place-out exclude each other",
+                program.getLoc());
+    return signalPassFailure();
+  }
+  if (files) {
+    // one file, one program (the file has no program names)
+    auto programs = program->getParentOp()->getRegion(0).getOps<ProgramOp>();
+    if (std::distance(programs.begin(), programs.end()) != 1) {
+      diag::error("place.file-programs",
+                  "sea-place-static: place-in / place-out need a module "
+                  "with one sea.program",
+                  program.getLoc());
+      return signalPassFailure();
+    }
+  }
+
   FailureOr<unsigned> width = pointerWidth(program);
   if (failed(width))
     return signalPassFailure();
-  if (*width == 0)
-    return; // nothing abstract: already concrete
+  if (*width == 0) {
+    // nothing abstract: already concrete, no object to place; the file is
+    // read (checked) or written (empty) all the same
+    if ((!placeIn.empty() &&
+         failed(readPlacement(placeIn, program.getLoc()))) ||
+        (!placeOut.empty() && failed(writeFile(program, {}))))
+      return signalPassFailure();
+    return;
+  }
 
   SmallVector<Object> objects;
   llvm::DenseMap<Operation *, unsigned> objectOf;
-  if (failed(collect(program, objects, objectOf)) ||
-      failed(place(program, *width, objects)))
+  if (failed(collect(program, objects, objectOf)))
+    return signalPassFailure();
+  if (files) {
+    // the file matches objects by name
+    llvm::StringSet<> names;
+    for (const Object &o : objects)
+      if (!names.insert(o.name).second) {
+        diag::error("place.duplicate-name",
+                    "sea-place-static: two objects named " + o.name +
+                        " (place-in / place-out match objects by name)",
+                    o.loc);
+        return signalPassFailure();
+      }
+  }
+  if (failed(placeIn.empty() ? place(program, *width, objects)
+                             : placeFromFile(program, *width, objects)))
     return signalPassFailure();
   // postcondition: every object has its own base
   llvm::DenseMap<uint64_t, const Object *> byBase;
@@ -518,12 +778,18 @@ void PlaceStaticPass::runOnOperation() {
                               at ? at : program.getOperation());
     return signalPassFailure();
   }
+  if (!placeOut.empty() && failed(writeFile(program, objects)))
+    return signalPassFailure();
 }
 
 } // namespace
 
 std::unique_ptr<Pass> createPlaceStaticPass() {
   return std::make_unique<PlaceStaticPass>();
+}
+
+std::unique_ptr<Pass> createPlaceStaticPass(const PlaceFiles &files) {
+  return std::make_unique<PlaceStaticPass>(files);
 }
 
 } // namespace sea

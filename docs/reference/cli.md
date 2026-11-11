@@ -28,6 +28,8 @@ The input is a module with a `sea.program` in BMC form, or a program that
 |---|---|
 | `--lower` | run the lowering first (the passes of `sea-opt --sea-vc-lower`): constant folding, struct scalarization, placement of abstract objects, memory widening, intrinsics, splitting critical edges |
 | `--lower-opt=false` | with `--lower`: no cse and no canonicalize (every op stays) |
+| `--place-out=<file>` | with `--lower`: write the placement of the program's objects to a file, one object per line ([Placement files](output-formats.md#placement-files)) |
+| `--place-in=<file>` | with `--lower`: place the objects at the bases a `--place-out` file gives, checked as placement does; an object the file does not name is an error (`place.in-unplaced`). Two lowerings that share a file put their common objects at the same addresses |
 | `--lower-disable=<pass>,...` | with `--lower`: leave these optimization passes out of the lowering: `sccp`, `cse`, `canonicalize`. The lowering without one against the lowering with it validates the pass (`utils/cover-diff.py`, [Pass validation](../agents/gates.md#pass-validation)). `sea-drop-fresh-memhavoc` is refused: it is a semantics decision (a memhavoc of a fresh object is no tracked modification; without it, one after `sea_tracking_on` is) |
 | `--seam` | the SeaM memory rewriter ([Background: SeaM](seam.md)) |
 | `--seam-inb=0` | SeaM without the in-bounds assumption |
@@ -153,7 +155,7 @@ nondet sites, cast widths, terminators.
 | `sea-opt p.mlir` | parse, verify, print |
 | `sea-opt p.mlir --sea-vc-lower` | the lowering that `sea-vc --lower` runs |
 | `sea-opt p.mlir --sccp` | fold constants |
-| `sea-opt p.mlir --sea-place-static` | place abstract objects at addresses |
+| `sea-opt p.mlir --sea-place-static` | place abstract objects at addresses (`--sea-place-static="place-out=<file>"` writes the placement, `place-in=<file>` takes it from a file) |
 | `sea-opt p.mlir --sea-reach-target="id=<id>"` | R_T of a reach target (an id of `sea-vc --reach`; `kind=blocks` for a block target): every assert dropped, an `assert(false)` at the top of the target, every other `sea.halt` a `sea.unreachable` |
 | `sea-opt p.mlir --mlir-print-debuginfo` | keep locations, and with them print names, between tools |
 | `sea-opt --help` | every pass and option |

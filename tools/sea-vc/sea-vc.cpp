@@ -118,6 +118,21 @@ static cl::list<std::string> lowerDisable(
              "by utils/cover-diff.py, validates it"),
     cl::value_desc("pass,..."), cl::CommaSeparated);
 
+static cl::opt<std::string> placeOut(
+    "place-out",
+    cl::desc("With --lower: write the placement of the program's objects "
+             "(sea-place-static place-out) to this file, one object per "
+             "line, for another lowering's --place-in"),
+    cl::value_desc("file"));
+
+static cl::opt<std::string> placeIn(
+    "place-in",
+    cl::desc("With --lower: place the objects at the bases of this file "
+             "(written by --place-out; sea-place-static place-in), checked "
+             "as placement does; an object the file does not name is an "
+             "error (place.in-unplaced)"),
+    cl::value_desc("file"));
+
 static cl::opt<bool> addr0IsNull(
     "addr0-is-null",
     cl::desc("The named assumption addr0-is-null (default on) in the "
@@ -1216,6 +1231,18 @@ TYPICAL:
                                  #   sea-drop-fresh-memhavoc: it decides
                                  #   that a fresh memhavoc is no tracked
                                  #   write (a semantics decision)
+  sea-vc p.mlir --lower --place-out=p.place  # write the placement (one
+                                 #   object per line: name= kind= base=
+                                 #   size= align=)
+  sea-vc p.mlir --lower --place-in=p.place  # place the objects at the
+                                 #   file's bases (another lowering's
+                                 #   --place-out), checked as placement
+                                 #   does (place.in-*); an object the
+                                 #   file does not name is an error
+                                 #   (place.in-unplaced), file objects
+                                 #   the program lacks are holes. Two
+                                 #   lowerings on one file: common objects
+                                 #   at the same addresses (cover-diff)
   sea-vc p.mlir --lower --reach --reach-failures  # also each tagged
                                  #   assert's failure (reached with its
                                  #   condition false): op=sea.print
@@ -2447,6 +2474,10 @@ int main(int argc, char **argv) {
   }
   if (!lowerDisable.empty() && !lower)
     return fail("--lower-disable needs --lower");
+  if ((!placeIn.empty() || !placeOut.empty()) && !lower)
+    return fail("--place-in and --place-out need --lower");
+  if (!placeIn.empty() && !placeOut.empty())
+    return fail("--place-in and --place-out exclude each other");
   if (reachSeed.getNumOccurrences() && !reachFuzz)
     return fail("--reach-seed is the seed of --reach-fuzz");
   if (!reachPrograms.empty() &&
@@ -2700,7 +2731,8 @@ int main(int argc, char **argv) {
         /*expandMemSet=*/!seam && !lambdaMem, widenMemoryReport,
         /*keepByteWide=*/seam && seamWide, checkAlign,
         checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt,
-        memhavocNull == MemhavocNull::Noop, lowerDisableMask);
+        memhavocNull == MemhavocNull::Noop, lowerDisableMask,
+        sea::PlaceFiles{placeIn, placeOut});
     if (failed(configurePM(pm)) || failed(pm.run(*module)))
       return 1;
     SEA_PHASE_END(lowerPhase)

@@ -1,0 +1,61 @@
+// sea-vc --place-out / --place-in: the lowering's placement written to a
+// file and taken from one (sea-place-static place-out / place-in).
+// RUN: rm -rf %t && split-file %s %t
+// DEFINE: %{vc} = sea-vc --lower --seam --smt2
+
+// Roundtrip: a lowering that takes the placement it wrote makes the same
+// query, byte for byte.
+// RUN: %{vc} %t/p.mlir --lower-opt=false --place-out=%t/a.place > %t/a.smt2
+// RUN: %{vc} %t/p.mlir --lower-opt=false --place-in=%t/a.place > %t/a-in.smt2
+// RUN: diff %t/a.smt2 %t/a-in.smt2
+
+// The default lowering erases the dead object stack.1 after placement; on
+// A's placement its live object has A's address.
+// RUN: %{vc} %t/p.mlir --place-in=%t/a.place | FileCheck %s --check-prefix=B
+// B-NOT: obj.stack.1
+// B: (= obj.stack.2 #x00000000bfffffe8)
+// RUN: FileCheck %s --check-prefix=A < %t/a.smt2
+// A-DAG: (= obj.stack.1 #x00000000bffffff8)
+// A-DAG: (= obj.stack.2 #x00000000bfffffe8)
+
+// A program with an object the file does not name cannot take it.
+// RUN: not %{vc} %t/more.mlir --place-in=%t/a.place 2>&1 | FileCheck %s --check-prefix=MORE
+// MORE: Error: sea-place-static: heap.3 is not in the placement file
+// MORE-SAME: [place.in-unplaced]
+
+// Refused: without --lower; both options.
+// RUN: not sea-vc %t/p.mlir --place-out=%t/x.place 2>&1 | FileCheck %s --check-prefix=NOLOWER
+// NOLOWER: --place-in and --place-out need --lower
+// RUN: not %{vc} %t/p.mlir --place-in=%t/a.place --place-out=%t/x.place 2>&1 | FileCheck %s --check-prefix=BOTH
+// BOTH: --place-in and --place-out exclude each other
+
+//--- p.mlir
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !sea.mem<!sea.ptr<64>, i8>
+  %n8 = sea.const 8 : i64
+  %n16 = sea.const 16 : i64
+  %dead = sea.alloca %n8 align 8 [1] : i64 -> !sea.ptr<64>
+  %a = sea.alloca %n16 align 4 [2] : i64 -> !sea.ptr<64>
+  %v = sea.nondet "v" [3] : i8
+  %m1 = sea.store %m0[%a], %v : !sea.mem<!sea.ptr<64>, i8>, i8
+  %x = sea.load %m1[%a] : !sea.mem<!sea.ptr<64>, i8> -> i8
+  %c0 = sea.const 0 : i8
+  %c = sea.icmp ne, %x, %c0 : i8
+  sea.assert %c
+  sea.halt
+}
+
+//--- more.mlir
+sea.program @main {
+  %n8 = sea.const 8 : i64
+  %n16 = sea.const 16 : i64
+  %dead = sea.alloca %n8 align 8 [1] : i64 -> !sea.ptr<64>
+  %a = sea.alloca %n16 align 4 [2] : i64 -> !sea.ptr<64>
+  %h = sea.malloc %n8 align 8 [3] : i64 -> !sea.ptr<64>
+  %c = sea.ptr.cmp eq, %a, %h : !sea.ptr<64>
+  sea.assert %c
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

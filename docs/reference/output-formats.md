@@ -334,6 +334,48 @@ location and is the last field: `loc("claim.x")` on line 154 shows as
 `a.py:61:4 name=claim.x`. Print and `print.object` lines write the same as
 `at=<pos> [inlined-at=...] [at_name=<name>]`.
 
+### Placement files
+
+`sea-vc --lower --place-out=<file>` (`sea-opt` pass option
+`sea-place-static{place-out=<file>}`) writes the placement of the
+program's objects, one object per line; `#` starts a comment:
+
+```text
+# sea-place-static placement of @main: one object per line
+name=null kind=null base=0x0 size=0 align=4611686018427387904
+name=stack.5 kind=stack base=0xbfffffb0 size=80 align=8
+name=global.s_allocator_static kind=global base=0x8048018 size=40 align=8
+```
+
+`name` is the object's segment name (`<kind>.<site>` for an allocation,
+`nondet.<site>` for a nondeterministic pointer, `global.<name>`,
+`func.<name>`, `null`), `kind` its kind, `base` its address, `size` the
+units reserved (the allocation size, `max-symbolic-size` for a symbolic
+one) and `align` its alignment. A concrete program has no objects to place:
+the file has the comment only.
+
+`--place-in=<file>` (`place-in=<file>`) places every object at the base the
+file gives it, instead of computing one. The pass still checks the bases
+as an allocator, and each violation is an error:
+
+| error | cause |
+|---|---|
+| `place.in-unplaced` | an object of the program the file does not name (the file's writer did not have it) |
+| `place.in-mismatch` | the file's `kind`, `size` or `align` of an object differs from the object's own |
+| `place.in-align` | a base that is not a multiple of the object's alignment |
+| `place.in-null` | the null object not at 0, or another object at 0 |
+| `place.in-width` | an object that does not fit the program's address width |
+| `place.in-overlap` | two objects whose address ranges overlap |
+| `place.in-format` | a malformed line, an unknown key or kind, an object named twice |
+| `place.in-file` | the file cannot be read |
+
+Objects of the file that the program does not have are holes. Two
+lowerings of one program that share a file put their common objects at the
+same addresses, so their queries agree on `obj.<name>`
+(`utils/cover-diff.py`, [Pass validation](../agents/gates.md#pass-validation)).
+Either option needs `--lower`, and a module with one program
+(`place.file-programs`).
+
 ## JSONL
 
 `--format=jsonl` prints every stdout line as one JSON object:

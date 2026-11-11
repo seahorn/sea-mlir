@@ -44,7 +44,9 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   `sea/Expr/ExprMlir.hh` (Expr terminals holding mlir::Value / Block)
 - `lib/Transforms/` — passes: `sea-place-static` (abstract pointers ->
   constant addresses; each object is a `sea.segment`, whose result, the base
-  address, replaces the object's uses: no folder, so sccp keeps it), `sea-scalarize-structs`
+  address, replaces the object's uses: no folder, so sccp keeps it;
+  `place-out` / `place-in`: the placement written to / taken from a file,
+  checked, `sea-vc --place-out` / `--place-in`), `sea-scalarize-structs`
   (register structs -> their leaves; runs first), `sea-expand-memset`
   (symbolic length -> bounded store chain + explicit assume),
   `sea-split-critical-edges`,
