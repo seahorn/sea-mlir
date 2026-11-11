@@ -425,6 +425,13 @@ struct RunOptions {
   /// Called after each sea.assume whose condition held (unset: one test
   /// per assume).
   std::function<void(AssumeOp)> onAssume;
+  /// Called with each sea.icmp and sea.addr.cmp the run evaluates, its
+  /// predicate and operand values, before its result is defined (sea-run
+  /// --fuzz-cmp: comparison coverage). Unset, it costs one test per pure
+  /// op.
+  std::function<void(mlir::Operation &, ICmpPredicate, const llvm::APInt &,
+                     const llvm::APInt &)>
+      onCmp;
   /// Defer memory-safety violations (sea-run --defer-memory-errors): record
   /// the first (and count them) and go on, so a later assume can show the
   /// run infeasible. A load past a violation reads 0 (a pointer: null); a

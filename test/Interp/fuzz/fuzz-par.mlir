@@ -10,12 +10,18 @@
 // RUN: not %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/err --sea-run %sea_bin/sea-run -- %s --program=nosuch --fuzz=10 | FileCheck %s --check-prefix=ERR
 // RUN: not %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/safe --sea-run %sea_bin/sea-run -- %s --fuzz=10 2>&1 | FileCheck %s --check-prefix=NONEMPTY
 // RUN: %python %sea_src_root/utils/fuzz-par.py --agent | FileCheck %s --check-prefix=AGENT
+// RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/model --sea-run %sea_bin/sea-run -- %s --program=safe --fuzz=2000 --fuzz-cmp | FileCheck %s --check-prefix=MODEL
 
 // The union joins the coverage files of the processes that ended.
 // SAFE-DAG: fuzz-par.process: 0 seed=1 exit=0 end=done from=final trials=2000
 // SAFE-DAG: fuzz-par.process: 1 seed=2 exit=0 end=done from=final trials=2000
 // SAFE: fuzz-par.first-failure: none
 // SAFE: fuzz-par.union: blocks=4 blocks-total=4 edges=5 assumes=1 assumes-total=1 paths=3 processes=2/2
+// SAFE-NEXT: fuzz-par.model: frontier-max=1 closed=0 closed-gates=-
+// SAFE-NOT: cmp-buckets=
+
+// The model coverage joins too: comparison buckets of both processes.
+// MODEL: fuzz-par.model: frontier-max=1 closed=0 closed-gates=- cmp-buckets={{[1-9][0-9]*}}/{{[1-9][0-9]*}} closed-distance=-
 
 // FAIL: fuzz-par.process: 0 seed=1 exit=0 end=failure from=final
 // FAIL: fuzz-par.process: 1 seed=2 exit=0 end=failure from=final

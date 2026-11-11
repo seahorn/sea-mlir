@@ -131,6 +131,10 @@ struct FuzzProgress {
   uint64_t paths = 0;
   bool pathsCapped = false;
   uint64_t failures = 0;
+  /// The assume frontier so far (FuzzReport::frontierDeepest), and with
+  /// FuzzOptions::cmpCoverage the comparison buckets covered.
+  unsigned frontier = 0;
+  unsigned cmpBuckets = 0;
 };
 
 struct FuzzOptions {
@@ -191,6 +195,60 @@ struct FuzzOptions {
   /// first reached the top of each. Not with deferMemoryErrors (past a
   /// substituted violation a run is not an execution of the program).
   std::vector<mlir::Operation *> reachTargets;
+  /// Comparison coverage (sea-run --fuzz-cmp): per sea.icmp and
+  /// sea.addr.cmp the runs evaluate, the distance buckets of its operands
+  /// (FuzzCmpStats), and the branch distance of each run an assume of a
+  /// comparison blocked (FuzzGateStats::bestDistance). A measure, not corpus
+  /// feedback.
+  bool cmpCoverage = false;
+};
+
+/// The operand distance buckets of a comparison: d = lhs - rhs, exact (as
+/// signed values for a signed predicate, else as unsigned), by sign and
+/// |d|: > 16, 2..16, 1; 0. Index order: -L -S -1 0 +1 +S +L.
+constexpr unsigned kCmpBuckets = 7;
+/// The bucket names, in index order.
+extern const char *const kCmpBucketNames[kCmpBuckets];
+
+/// What a comparison decides: the condition of a sea.assume (directly or
+/// through `sea.xor` with true), of a sea.cond_br, or neither.
+enum class CmpRole { Assume, Branch, Value };
+llvm::StringRef stringifyCmpRole(CmpRole r);
+
+/// One comparison of the program, a sea.icmp or sea.addr.cmp
+/// (FuzzOptions::cmpCoverage; sea.ptr.cmp of abstract pointers is not
+/// one); its id is its position among the program's comparisons in
+/// program order.
+struct FuzzCmpStats {
+  mlir::Operation *op = nullptr;
+  CmpRole role = CmpRole::Value;
+  /// evaluations per bucket (kCmpBuckets)
+  uint64_t counts[kCmpBuckets] = {};
+  /// Which of true / false the evaluations gave (derived from the buckets).
+  bool sawTrue = false, sawFalse = false;
+};
+
+/// One op that can block a run (blockingOpsOf order: its id).
+struct FuzzGateStats {
+  mlir::Operation *op = nullptr;
+  /// Trials that passed it (a sea.assume whose condition held; once per
+  /// trial), and trials it blocked.
+  uint64_t passed = 0, blocked = 0;
+  /// The comparison its condition is (an id of FuzzReport::cmps), through
+  /// `sea.xor` with true (negated: an odd number of them); none: the
+  /// condition is not a comparison (or a sea.unreachable).
+  std::optional<unsigned> cmp;
+  bool negated = false;
+  /// isAssumeBeforeAssertFalse: in SeaHorn's export form, the assume of a
+  /// check's failure (passing it reaches the failure).
+  bool beforeAssertFalse = false;
+  /// FuzzOptions::cmpCoverage: the least branch distance of a blocked
+  /// trial (how far one operand had to move for the condition to hold:
+  /// eq: |lhs - rhs| modulo 2^w the short way; ne: 1; ult: lhs - rhs + 1;
+  /// ule: lhs - rhs; ugt: rhs - lhs + 1; uge: rhs - lhs; signed alike; at
+  /// most 2^64 - 1), and the blocked trials it was measured on.
+  std::optional<uint64_t> bestDistance;
+  uint64_t distanceRuns = 0;
 };
 
 /// The first trial that reached a reach target (FuzzOptions::reachTargets):
@@ -292,6 +350,25 @@ struct FuzzReport {
   uint64_t memhavocNullNoopUses = 0, memhavocNullNoopRuns = 0;
   /// Parallel to FuzzOptions::reachTargets.
   std::vector<ReachHit> reachHits;
+  /// The covered blocks, by id (position in the program body), ascending.
+  std::vector<unsigned> coveredBlocks;
+  /// Per blocking op (blockingOpsOf order).
+  std::vector<FuzzGateStats> gates;
+  /// The assume frontier (approach level): the distinct sea.assume ops a
+  /// trial passed. The most of any trial, the first trial that passed that
+  /// many, how it ended (and its blocking op: an id of `gates`), and the
+  /// sum over the trials (mean = sum / trials).
+  unsigned frontierDeepest = 0;
+  uint64_t frontierTrial = 0;
+  RunStatus frontierStatus = RunStatus::Halted;
+  std::optional<unsigned> frontierGate;
+  uint64_t frontierSum = 0;
+  /// Every comparison of the program, by id (counts: with
+  /// FuzzOptions::cmpCoverage); the buckets covered (of kCmpBuckets per
+  /// comparison), the comparisons evaluated, the outcomes covered (of 2
+  /// per comparison).
+  std::vector<FuzzCmpStats> cmps;
+  unsigned cmpBucketsHit = 0, cmpsReached = 0, cmpOutcomesHit = 0;
 };
 
 /// Fuzzes `program`: first the seeds, in order, then mutated entries.

@@ -14,7 +14,7 @@
 // CHECK-NEXT: fuzz.corpus:
 // CHECK-NEXT: fuzz.blocked: 2 op=sea.assume at={{.*}}blocked.mlir:[[@LINE+11]]
 // CHECK-NEXT: fuzz.blocked: 1 op=sea.assume at={{.*}}blocked.mlir:[[@LINE+6]]
-// CHECK-NOT: fuzz.
+// CHECK-NOT: fuzz.blocked
 sea.program @main {
   %x = sea.nondet "nondet_u8" [0] : i8
   %c4 = sea.const 4 : i8
