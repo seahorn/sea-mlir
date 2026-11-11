@@ -30,6 +30,7 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -115,6 +116,22 @@ struct RangeStats {
   unsigned skipped = 0; // recognized but not used
 };
 
+/// The distinct paths FuzzReport::paths counts at most (2^20 hashes, 8 MiB):
+/// a program with loops has unboundedly many.
+constexpr uint64_t kFuzzPathCap = uint64_t(1) << 20;
+
+/// The running totals of a fuzz run (FuzzOptions::onProgress): the cost so
+/// far (trials, interpreter steps), the coverage so far (as FuzzReport),
+/// and the failing trials (assert failures, memory-safety findings).
+struct FuzzProgress {
+  double seconds = 0;
+  uint64_t trials = 0, steps = 0;
+  unsigned blocksHit = 0, edgesHit = 0, assumesPassed = 0;
+  uint64_t paths = 0;
+  bool pathsCapped = false;
+  uint64_t failures = 0;
+};
+
 struct FuzzOptions {
   /// Stop after this many trials (0: no bound), or after `seconds` of wall
   /// clock (0: no bound); at least one is set.
@@ -157,6 +174,15 @@ struct FuzzOptions {
   /// Write failing and new-coverage inputs here (empty: none). The
   /// directory must be new or empty.
   std::string outDir;
+  /// Write the covered blocks, edges, assumes and path hashes here at the
+  /// end of the run (empty: none), by the ids of serve mode (ServeResult):
+  /// the same program gives the same ids in every process, so files of
+  /// several runs can be joined (utils/fuzz-par.py).
+  std::string coverageOut;
+  /// Call onProgress every progressSeconds of wall clock (0: never), after
+  /// the trial that crossed the time.
+  double progressSeconds = 0;
+  std::function<void(const FuzzProgress &)> onProgress;
   /// Per-trial interpreter options (maxSteps; prints are off in trials).
   uint64_t maxSteps = 1'000'000;
   /// Reach coverage (sea-run --reach-targets, sea-vc --reach-corpus): the
@@ -191,6 +217,7 @@ struct FuzzFailure {
   std::vector<Assignment> input;
   std::string file;   // in FuzzOptions::outDir, if set
   uint64_t count = 0; // trials that stopped the same way
+  double seconds = 0; // wall clock of the run at the first
 };
 
 /// The number of RunStatus values.
@@ -201,6 +228,16 @@ struct FuzzReport {
   uint64_t trials = 0;
   uint64_t seedTrials = 0; // of which the corpus seeds' runs
   double seconds = 0;
+  /// Interpreter steps (ops executed, RunResult::steps) over all trials:
+  /// the cost unit (a trial an early assume blocks is cheap).
+  uint64_t steps = 0;
+  /// Distinct paths: 64-bit hashes of the trials' block sequences (each
+  /// block entered, by id, whatever ended the trial; collisions possible,
+  /// so a lower bound). In a loop-free program finite; capped at
+  /// kFuzzPathCap (pathsCapped: the cap was hit, later paths not counted).
+  /// Not corpus feedback: a trial that reaches only a new path is not kept.
+  uint64_t paths = 0;
+  bool pathsCapped = false;
   /// Runs per status (RunStatus order).
   uint64_t statusCount[kRunStatusCount] = {};
   unsigned blocksHit = 0, blocksTotal = 0;
@@ -259,7 +296,8 @@ struct FuzzReport {
 /// Fuzzes `program`: first the seeds, in order, then mutated entries.
 /// Writes failure-<trial>.txt (the first of each failure),
 /// memory-check-<trial>.txt / limit-<trial>.txt (the first of each error)
-/// and cov-<trial>.txt (new coverage) to FuzzOptions::outDir. Warns
+/// and cov-<trial>.txt (new coverage) to FuzzOptions::outDir, and the
+/// covered ids to FuzzOptions::coverageOut. Warns
 /// fuzz.limit (once, then counted) when trials stop at a limit.
 /// Fails (with `error`) on a seed value that does not fit its site, or an
 /// output file that cannot be written.

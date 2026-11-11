@@ -16,6 +16,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
@@ -357,7 +358,7 @@ public:
       for (InputRange &r : rs)
         ranges.emplace(r.site, std::move(r));
     for (Block &b : program.getBody())
-      (void)b, ++report.blocksTotal;
+      blockId[&b] = report.blocksTotal++;
     report.dictionarySize = dict.size();
     runOptions.maxSteps = options.maxSteps;
     runOptions.deferMemoryErrors = options.deferMemoryErrors;
@@ -366,6 +367,9 @@ public:
     runOptions.facts = programFactsOf(program);
     runOptions.prints = false;
     runOptions.onBlock = [this](Block *from, Block *to) {
+      // the path: a hash of the ids of the blocks entered, in order
+      pathHash = (pathHash ^ (blockId.lookup(to) + 1)) * 0x100000001b3ULL;
+      pathHash ^= pathHash >> 29;
       if (blocks.insert(to).second)
         newBlocks.push_back(to);
       if (edges.insert({from, to}).second)
@@ -398,8 +402,27 @@ public:
     newEdges.clear();
     newAssumes.clear();
     runHits.clear();
+    pathHash = 0xcbf29ce484222325ULL;
     return interpret(program, src, runOptions);
   }
+
+  /// The running totals (FuzzOptions::onProgress).
+  FuzzProgress progress(double seconds) const {
+    FuzzProgress p;
+    p.seconds = seconds;
+    p.trials = report.trials;
+    p.steps = report.steps;
+    p.blocksHit = blocks.size();
+    p.edgesHit = edges.size();
+    p.assumesPassed = assumes.size();
+    p.paths = paths.size();
+    p.pathsCapped = report.pathsCapped;
+    p.failures = failingTrials;
+    return p;
+  }
+
+  /// Writes FuzzOptions::coverageOut.
+  LogicalResult writeCoverage(std::string &error);
 
   ServeCoverage coverage() const {
     ServeCoverage c;
@@ -661,8 +684,16 @@ private:
   llvm::DenseSet<Operation *> beforeAssertFalse;
   llvm::DenseMap<Operation *, unsigned> opOrder;
   std::vector<Entry> corpus;
+  /// a block's id: its position in the program body
+  llvm::DenseMap<Block *, unsigned> blockId;
   llvm::DenseSet<Block *> blocks;
   llvm::DenseSet<std::pair<Block *, Block *>> edges;
+  /// the current run's path hash, and the distinct ones (kFuzzPathCap)
+  uint64_t pathHash = 0;
+  llvm::DenseSet<uint64_t> paths;
+  uint64_t failingTrials = 0;
+  /// the run's start (failure times, progress)
+  std::chrono::steady_clock::time_point start;
   llvm::DenseSet<Operation *> assumes;
   llvm::DenseMap<Operation *, uint64_t> blockedBy;
   /// FuzzOptions::reachTargets: op -> index; the targets the current run
@@ -684,6 +715,13 @@ LogicalResult Fuzzer::trial(Entry preset,
   if (source.badSeed) {
     error = r.message;
     return failure();
+  }
+  report.steps += r.steps;
+  if (!paths.contains(pathHash)) {
+    if (paths.size() < kFuzzPathCap)
+      paths.insert(pathHash);
+    else
+      report.pathsCapped = true;
   }
   for (size_t i : runHits) {
     ReachHit &h = report.reachHits[i];
@@ -737,6 +775,7 @@ LogicalResult Fuzzer::trial(Entry preset,
   }
   if (!failing && !erring)
     return success();
+  failingTrials += failing;
   std::vector<FuzzFailure> &list = failing       ? report.failures
                                    : memoryCheck ? report.memoryChecks
                                                  : report.limits;
@@ -752,6 +791,9 @@ LogicalResult Fuzzer::trial(Entry preset,
     f.message = r.message;
     f.input = assignmentsOf(source.used);
     f.count = 1;
+    f.seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+            .count();
     if (!options.outDir.empty()) {
       FailureOr<std::string> p = write(failing       ? "failure"
                                        : memoryCheck ? "memory-check"
@@ -800,7 +842,7 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
       .kv("seconds", options.seconds)
       .kv("seed", options.seed)
       .kv("dictionary", options.dictionary ? dict.size() : 0);
-  auto start = std::chrono::steady_clock::now();
+  start = std::chrono::steady_clock::now();
   auto elapsed = [&] {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                          start)
@@ -812,6 +854,19 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
     if (options.seconds > 0 && elapsed() >= options.seconds)
       return false;
     return true;
+  };
+  // onProgress at k * progressSeconds, after the trial that crossed it
+  bool progressOn = options.progressSeconds > 0 && options.onProgress;
+  double nextProgress = options.progressSeconds;
+  auto tick = [&] {
+    if (!progressOn)
+      return;
+    double t = elapsed();
+    if (t < nextProgress)
+      return;
+    options.onProgress(this->progress(t));
+    while (nextProgress <= t)
+      nextProgress += options.progressSeconds;
   };
   bool stop = false;
   for (const CorpusEntryText &s : seeds) {
@@ -826,13 +881,18 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
       return failure();
     }
     ++report.seedTrials;
+    tick();
   }
   while (!stop && budgetLeft()) {
     pickStrategy();
     if (failed(trial(nextEntry(), nullptr, "", stop, error)))
       return failure();
+    tick();
   }
   report.seconds = elapsed();
+  report.paths = paths.size();
+  if (!options.coverageOut.empty() && failed(writeCoverage(error)))
+    return failure();
   report.blocksHit = blocks.size();
   report.edgesHit = edges.size();
   report.assumesPassed = assumes.size();
@@ -857,6 +917,45 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
       .kv("errors",
           report.statusCount[static_cast<unsigned>(RunStatus::Error)]);
   return report;
+}
+
+LogicalResult Fuzzer::writeCoverage(std::string &error) {
+  std::error_code ec;
+  llvm::raw_fd_ostream os(options.coverageOut, ec, llvm::sys::fs::OF_Text);
+  if (ec) {
+    error = "cannot write '" + options.coverageOut + "': " + ec.message();
+    return failure();
+  }
+  // sorted ids, so equal coverage gives equal files
+  std::vector<unsigned> bs;
+  for (Block *b : blocks)
+    bs.push_back(blockId.lookup(b));
+  llvm::sort(bs);
+  std::vector<std::pair<int64_t, unsigned>> es;
+  for (auto [from, to] : edges)
+    es.push_back(
+        {from ? int64_t(blockId.lookup(from)) : -1, blockId.lookup(to)});
+  llvm::sort(es);
+  std::vector<unsigned> as;
+  for (auto [id, op] : llvm::enumerate(blockingOpsOf(program)))
+    if (assumes.contains(op))
+      as.push_back(id);
+  std::vector<uint64_t> ps(paths.begin(), paths.end());
+  llvm::sort(ps);
+  os << "# sea-run --fuzz coverage: program=@" << program.getSymName()
+     << " trials=" << report.trials << "\n";
+  os << "totals: blocks-total=" << report.blocksTotal
+     << " assumes-total=" << report.assumesTotal
+     << " paths-capped=" << (report.pathsCapped ? 1 : 0) << "\n";
+  for (unsigned b : bs)
+    os << "block: " << b << "\n";
+  for (auto [from, to] : es)
+    os << "edge: " << from << " " << to << "\n";
+  for (unsigned a : as)
+    os << "assume: " << a << "\n";
+  for (uint64_t p : ps)
+    os << "path: " << llvm::format_hex(p, 18) << "\n";
+  return success();
 }
 
 FailureOr<FuzzReport> fuzz(ProgramOp program,

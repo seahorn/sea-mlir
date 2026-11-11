@@ -145,6 +145,18 @@ static cl::opt<std::string>
             cl::desc("Write failing and new-coverage inputs of --fuzz here"),
             cl::value_desc("dir"));
 
+static cl::opt<double> fuzzProgress(
+    "fuzz-progress",
+    cl::desc("Fuzz: print a fuzz.progress line (cost and coverage so far) "
+             "every S seconds (default 0: none)"),
+    cl::value_desc("S"), cl::init(0));
+
+static cl::opt<std::string> fuzzCoverageOut(
+    "fuzz-coverage-out",
+    cl::desc("Fuzz: write the covered block, edge, assume ids and path "
+             "hashes to this file at the end"),
+    cl::value_desc("file"));
+
 static cl::opt<bool>
     fuzzDict("fuzz-dict",
              cl::desc("Fuzz with the dictionary of the program's constants "
@@ -545,7 +557,25 @@ count depends on speed).
                          (the first trial of each failing / erring op)
                          and cov-<trial>.txt (new coverage), as corpus
                          files
+  --fuzz-progress=S      a fuzz.progress line every S seconds (default 0:
+                         none), flushed: cost and coverage so far; if
+                         blocks/edges/paths/assumes still grow, the run
+                         is making progress
+  --fuzz-coverage-out=F  writes the covered ids at the end: `block: <id>`,
+                         `edge: <from> <to>` (from -1: the entry),
+                         `assume: <id>`, `path: <hash>`, after a `totals:`
+                         line (blocks-total, assumes-total, paths-capped);
+                         ids as in SERVE (block: position in the program
+                         body; assume: the fuzz.assume id), the same in
+                         every process on the same program, so the files
+                         of several runs join (utils/fuzz-par.py)
   --input-file=F         replays one corpus file (also without --fuzz)
+Cost and paths: trials are a poor cost unit (a trial an early assume
+blocks is cheap); steps (ops executed, over all trials) are the cost.
+A path is the sequence of blocks a trial entered, whatever ended it, kept
+as a 64-bit hash (collisions possible: a lower bound); counted, not corpus
+feedback. A program with loops has unboundedly many: at most 2^20 are
+counted (paths-capped).
 Corpus file: one assignment per line, `<site>=<v>`, `<site>@<addr>=<v>`,
 `<site>@<object>+<offset>=<v>` (the --input syntax), or a `nondet:` /
 `memread:` line of a sea-run or sea-vc output (site, addr, value fields);
@@ -554,25 +584,32 @@ of a saved run) are skipped and counted. A saved run is a seed.
 Output of --fuzz: the first failure as a plain run on its input
 (the lines of OUTPUT; what --input-file=<its file> [--defer-memory-errors]
 prints; the fuzzer checks the replay ends the same way), then stat lines:
-  fuzz.failure: <runs> trial=<first> [file=<path>] at=<where>
-                                 (per failing sea.assert)
+  fuzz.progress: <elapsed s> trials=<n> steps=<n> blocks=<n> edges=<n>
+                 paths=<n> assumes=<n> failures=<n>
+                                 (--fuzz-progress, during the run, before
+                                 the lines below; failures: failing trials
+                                 so far)
+  fuzz.failure: <runs> trial=<first> [file=<path>] at=<where> time=<s>
+                                 (per failing sea.assert; time: of the
+                                 first, since the trials started)
   fuzz.memory-safety: <runs> trial=<first> [file=<path>] op=<op>
-                      [site=<n>] at=<where>
+                      [site=<n>] at=<where> time=<s>
   fuzz.memory-safety-message: <message of the first>
                                  (--defer-memory-errors: per op with a
                                  memory-safety finding)
   fuzz.memory-check: <runs> trial=<first> [file=<path>] op=<op> [site=<n>]
-                     at=<where>
+                     at=<where> time=<s>
   fuzz.memory-check-message: <message of the first>
                                  (per op that stopped a run at a
                                  memory-safety check; site: the op's site,
                                  if it has one)
   fuzz.limit: <runs> trial=<first> [file=<path>] op=<op> [site=<n>]
-              at=<where>
+              at=<where> time=<s>
   fuzz.limit-message: <message of the first>
                                  (per op that stopped a run at a limit or
                                  a layout error)
-  fuzz.trials: <n> seeds=<n> time=<s> execs/s=<n>
+  fuzz.trials: <n> seeds=<n> time=<s> execs/s=<n> steps=<n> steps/s=<n>
+                               (steps: ops executed over all trials)
   fuzz.ranges: <sites> value-sites=<n> assumes=<n> skipped=<n> draws=<n>
                mode=mix|edge|off share=<p> range-trials=<n>
                                (value sites with a range; the assumes used;
@@ -600,8 +637,11 @@ prints; the fuzzer checks the replay ends the same way), then stat lines:
                                  decision memhavoc(null) = no-op; also in
                                  a failure file's `# assume:` header)
   fuzz.coverage: blocks=<n> blocks-total=<n> edges=<n> assumes=<n>
-                 assumes-total=<n>  (edges include the entry; assumes:
-                                     sea.assume ops that held at least once)
+                 assumes-total=<n> paths=<n> [paths-capped=<cap>]
+                                    (edges include the entry; assumes:
+                                     sea.assume ops that held at least once;
+                                     paths: distinct block sequences, see
+                                     Cost and paths)
   fuzz.corpus: <entries> seeds=<files> skipped-lines=<n> files=<written>
                dictionary=<n>
   fuzz.blocked: <runs> op=sea.assume|sea.unreachable at=<where>
@@ -1075,18 +1115,31 @@ static int runFuzz(sea::ProgramOp program) {
   fo.addr0IsNull = addr0IsNull;
   fo.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
   fo.outDir = fuzzOut;
+  fo.coverageOut = fuzzCoverageOut;
   fo.maxSteps = maxSteps;
+  sea::out::Emitter out(outs(), outFormat);
+  raw_ostream &os = out.lines();
+  // `fuzz.progress:` lines while the trials run, flushed one by one
+  fo.progressSeconds = fuzzProgress;
+  fo.onProgress = [&](const sea::FuzzProgress &p) {
+    os << "fuzz.progress: " << format("%.3f", p.seconds)
+       << " trials=" << p.trials << " steps=" << p.steps
+       << " blocks=" << p.blocksHit << " edges=" << p.edgesHit
+       << " paths=" << p.paths << " assumes=" << p.assumesPassed
+       << " failures=" << p.failures << "\n";
+    out.flush();
+  };
   std::vector<sea::ReachTarget> targets;
   if (reachTargets != sea::ReachKind::Off) {
     targets = sea::collectReachTargets(program, reachTargets);
     fo.reachTargets = sea::reachTargetOps(targets);
   }
   FailureOr<sea::FuzzReport> rep = sea::fuzz(program, seeds, fo, error);
-  if (failed(rep))
+  if (failed(rep)) {
+    out.flush();
     return fail(error);
+  }
 
-  sea::out::Emitter out(outs(), outFormat);
-  raw_ostream &os = out.lines();
   // The first failure, as a plain run on its input: what
   // `sea-run --input-file=<its file>` prints (with --defer-memory-errors
   // for a memory-error).
@@ -1127,7 +1180,7 @@ static int runFuzz(sea::ProgramOp program) {
       if (auto site = f.at->getAttrOfType<IntegerAttr>("site"))
         os << " site=" << site.getInt();
     }
-    os << " at=" << where(f) << "\n";
+    os << " at=" << where(f) << " time=" << format("%.3f", f.seconds) << "\n";
   };
   bool memoryFinding = false;
   for (const sea::FuzzFailure &f : rep->failures)
@@ -1148,9 +1201,11 @@ static int runFuzz(sea::ProgramOp program) {
     os << "fuzz.limit-message: " << f.message << "\n";
   }
   double rate = rep->seconds > 0 ? rep->trials / rep->seconds : 0;
+  double stepRate = rep->seconds > 0 ? rep->steps / rep->seconds : 0;
   os << "fuzz.trials: " << rep->trials << " seeds=" << rep->seedTrials
      << " time=" << format("%.3f", rep->seconds)
-     << " execs/s=" << format("%.0f", rate) << "\n";
+     << " execs/s=" << format("%.0f", rate) << " steps=" << rep->steps
+     << " steps/s=" << format("%.0f", stepRate) << "\n";
   os << "fuzz.ranges: " << rep->ranges.sites
      << " value-sites=" << rep->valueSites << " assumes=" << rep->ranges.assumes
      << " skipped=" << rep->ranges.skipped << " draws=" << rep->rangeDraws
@@ -1198,7 +1253,10 @@ static int runFuzz(sea::ProgramOp program) {
   os << "fuzz.coverage: blocks=" << rep->blocksHit
      << " blocks-total=" << rep->blocksTotal << " edges=" << rep->edgesHit
      << " assumes=" << rep->assumesPassed
-     << " assumes-total=" << rep->assumesTotal << "\n";
+     << " assumes-total=" << rep->assumesTotal << " paths=" << rep->paths;
+  if (rep->pathsCapped)
+    os << " paths-capped=" << sea::kFuzzPathCap;
+  os << "\n";
   unsigned skipped = 0;
   for (const sea::CorpusEntryText &s : seeds)
     skipped += s.skippedLines;
@@ -1456,11 +1514,15 @@ int main(int argc, char **argv) {
   }
   if (fuzzTime < 0)
     return fail("--fuzz-time must not be negative");
+  if (!(fuzzProgress >= 0))
+    return fail("--fuzz-progress must not be negative");
   if (!fuzzTrials && fuzzTime <= 0 &&
       (!corpus.empty() || !fuzzOut.empty() || keepGoing ||
        fuzzDict.getNumOccurrences() || fuzzDictShare.getNumOccurrences() ||
-       fuzzRanges.getNumOccurrences() || fuzzRangeShare.getNumOccurrences()))
-    return fail("--corpus, --fuzz-out, --fuzz-dict, --fuzz-dict-share, "
+       fuzzRanges.getNumOccurrences() || fuzzRangeShare.getNumOccurrences() ||
+       fuzzProgress.getNumOccurrences() || !fuzzCoverageOut.empty()))
+    return fail("--corpus, --fuzz-out, --fuzz-coverage-out, "
+                "--fuzz-progress, --fuzz-dict, --fuzz-dict-share, "
                 "--fuzz-ranges, --fuzz-range-share and --keep-going need "
                 "--fuzz or --fuzz-time");
   if (fuzzRangeShare.getNumOccurrences() &&

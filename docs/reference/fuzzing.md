@@ -27,6 +27,8 @@ $ sea-run p.mlir --fuzz=10000 --seed=1 --fuzz-out=out
 | `--fuzz-dict-share=<p>` | the probability that a fresh value and that a mutation is a dictionary value; unset: 1/2 of fresh values and 1/5 of mutations (see below) |
 | `--fuzz-ranges=false` | no range draws: the generator without them (see [Ranges](#ranges)); default on |
 | `--fuzz-range-share=<p>` | the probability that a trial uses range draws; the other trials use the generator without them (default 0.5; see [Ranges](#ranges)) |
+| `--fuzz-progress=<s>` | print a `fuzz.progress` line every `s` seconds (see [Progress](#progress)); default 0: none |
+| `--fuzz-coverage-out=<file>` | write the covered blocks, edges, assumes and paths by id at the end (see [Progress](#progress)) |
 | `--keep-going` | count failures instead of stopping at the first |
 | `--defer-memory-errors` | go on past memory-safety violations; one is a failure only if the run reaches the end (see below) |
 | `--input-file=<file>` | run once on a corpus file (without `--fuzz`) |
@@ -128,6 +130,76 @@ A trial reaches new coverage when it enters a block it has not entered
 before, takes a new edge between blocks, or passes a `sea.assume` that no
 earlier run passed. Its input then joins the corpus, and with `--fuzz-out`
 it is written as `cov-<trial>.txt`.
+
+The fuzzer also counts paths: a path is the sequence of blocks a trial
+entered, whatever ended the trial, kept as a 64-bit hash. Paths are a
+measure, not corpus feedback: a trial that reaches only a new path does
+not join the corpus. Hashes can collide, so the count is a lower bound. A
+loop-free program has finitely many paths; a program with loops has
+unboundedly many (each iteration count is a path), and at most 2^20 are
+counted (`paths-capped=` on `fuzz.coverage`).
+
+## Progress
+
+Trials are a poor measure of the work done: a trial that an early assume
+blocks costs a few steps, one that reaches the end costs all of them. The
+fuzzer counts interpreter steps (operations executed) over all trials as
+its cost (`steps=` and `steps/s=` of `fuzz.trials`).
+
+`--fuzz-progress=<s>` prints one line every `s` seconds of the run, after
+the trial that crossed the time, and flushes it:
+
+```text
+fuzz.progress: 1.000 trials=183513 steps=1449724 blocks=4 edges=5 paths=3 assumes=1 failures=0
+```
+
+The fields are the elapsed seconds, then the totals so far: trials,
+steps, blocks entered, edges taken, distinct paths, `sea.assume` ops
+passed, failing trials. While blocks, edges, paths or assumes still grow,
+the fuzzer is reaching new behavior; when they stay flat for a long time,
+more of the same is unlikely to help, and a corpus entry, another
+`--fuzz-range-share` or a look at the `fuzz.blocked` lines is the next step.
+
+`--fuzz-coverage-out=<file>` writes what the run covered, by id, when it
+ends:
+
+```text
+# sea-run --fuzz coverage: program=@main trials=514547
+totals: blocks-total=4 assumes-total=1 paths-capped=0
+block: 0
+block: 1
+block: 2
+block: 3
+edge: -1 0
+edge: 0 1
+edge: 0 2
+edge: 1 3
+edge: 2 3
+assume: 0
+path: 0x6d9ce9a95edf3676
+path: 0x6da0eba95f4570e7
+path: 0xaf63bc49fd1c5448
+```
+
+A block's id is its position in the program body (the entry is 0); an
+edge is `<from> <to>`, `-1` for the entry of the run; an assume's id is
+the one `--fuzz-sites` lists. The ids are the same in every process on
+the same program file, so the files of several runs can be joined.
+
+### Several processes
+
+The fuzzer is single-threaded. `utils/fuzz-par.py` runs several `sea-run
+--fuzz` processes with distinct seeds, each with its own `--fuzz-out`
+directory and coverage file, and prints a merged progress line, the first
+failure and the coverage of each process and of their union:
+
+```console
+$ python3 utils/fuzz-par.py -n 8 --out par --progress 5 -- p.mlir --fuzz-time=600
+```
+
+Run `utils/fuzz-par.py --agent` for its options and output lines. The time
+to the first failure of `n` processes is the least of `n` independent
+runs.
 
 ## Failures, memory-safety checks and limits
 
@@ -236,30 +308,31 @@ status at the same operation (`fuzz.replay-mismatch` if not).
 Then come the `fuzz.*` lines:
 
 ```text
-fuzz.failure: 1 trial=32 file=out/failure-32.txt at=p.mlir:12:3
-fuzz.trials: 32 seeds=0 time=0.001 execs/s=54659
+fuzz.failure: 1 trial=32 file=out/failure-32.txt at=p.mlir:12:3 time=0.001
+fuzz.trials: 32 seeds=0 time=0.001 execs/s=54659 steps=139 steps/s=211841
 fuzz.ranges: 0 value-sites=1 assumes=0 skipped=0 draws=0 mode=mix share=0.5 range-trials=0
 fuzz.status: halted=1 assert-failed=1 assume-blocked=30 step-limit=0 error=0
-fuzz.coverage: blocks=3 blocks-total=3 edges=3 assumes=1 assumes-total=1
+fuzz.coverage: blocks=3 blocks-total=3 edges=3 assumes=1 assumes-total=1 paths=3
 fuzz.corpus: 3 seeds=0 skipped-lines=0 files=3 dictionary=6
 fuzz.blocked: 30 op=sea.assume at=p.mlir:5:3 sites=0 cond=(eq s0 1234)
 ```
 
 | line | meaning |
 |---|---|
-| `fuzz.failure: <runs> trial=<n> [file=<path>] at=<where>` | one per failing `sea.assert`: how many runs failed it, the first trial, its file |
-| `fuzz.memory-safety: <runs> trial=<n> [file=<path>] op=<op> [site=<n>] at=<where>` | `--defer-memory-errors`: one per operation with a memory-safety finding (the first violation of a run that reached the end or a failing assert) |
+| `fuzz.progress: <s> trials=<n> steps=<n> blocks=<n> edges=<n> paths=<n> assumes=<n> failures=<n>` | `--fuzz-progress`: the totals so far, printed during the run ([Progress](#progress)) |
+| `fuzz.failure: <runs> trial=<n> [file=<path>] at=<where> time=<s>` | one per failing `sea.assert`: how many runs failed it, the first trial, its file, the seconds from the start of the trials to it |
+| `fuzz.memory-safety: <runs> trial=<n> [file=<path>] op=<op> [site=<n>] at=<where> time=<s>` | `--defer-memory-errors`: one per operation with a memory-safety finding (the first violation of a run that reached the end or a failing assert) |
 | `fuzz.memory-safety-message: <text>` | the message of the first such run |
-| `fuzz.memory-check: <runs> trial=<n> [file=<path>] op=<op> [site=<n>] at=<where>` | without `--defer-memory-errors`: one per operation that stopped runs at a memory-safety check; `site` is the operation's site, if it has one |
+| `fuzz.memory-check: <runs> trial=<n> [file=<path>] op=<op> [site=<n>] at=<where> time=<s>` | without `--defer-memory-errors`: one per operation that stopped runs at a memory-safety check; `site` is the operation's site, if it has one |
 | `fuzz.memory-check-message: <text>` | the message of the first such run |
-| `fuzz.limit: <runs> trial=<n> [file=<path>] op=<op> [site=<n>] at=<where>` | one per operation that stopped runs at an interpreter limit or a layout error |
+| `fuzz.limit: <runs> trial=<n> [file=<path>] op=<op> [site=<n>] at=<where> time=<s>` | one per operation that stopped runs at an interpreter limit or a layout error |
 | `fuzz.limit-message: <text>` | the message of the first such run |
-| `fuzz.trials: <n> seeds=<n> time=<s> execs/s=<n>` | trials run (seed runs included), time, trials per second |
+| `fuzz.trials: <n> seeds=<n> time=<s> execs/s=<n> steps=<n> steps/s=<n>` | trials run (seed runs included), time, trials per second, interpreter steps over all trials and per second ([Progress](#progress)) |
 | `fuzz.ranges: <sites> value-sites=<n> assumes=<n> skipped=<n> draws=<n> mode=mix\|edge\|off share=<p> range-trials=<n>` | value sites with a range, of all value sites; the range assumes they come from, the recognized ones not used, and the values drawn from a range; the mode (`mix`: both generators, `edge`: range trials only, `off`: none, with `--fuzz-ranges=false` or a share of 0), the share of range trials asked for, and the trials that were range trials ([Ranges](#ranges)) |
 | `fuzz.status: halted=.. assert-failed=.. assume-blocked=.. step-limit=.. error=.. [memory-error=..]` | runs per status (`memory-error` with `--defer-memory-errors`) |
 | `fuzz.deferred: <runs> memory-error=.. assume-blocked=.. step-limit=.. error=..` | `--defer-memory-errors`: the runs that went past a violation, by how they ended |
 | `fuzz.blocked-before-assert-false: <runs> assumes=<n> deferred=<n>` | when the program has an assume directly followed by `assert false`: the runs blocked at such an assume, the number of them, and of the runs those that went past a deferred memory-safety violation first (`--defer-memory-errors`) ([SeaHorn's export form](#seahorns-export-form)); these runs are also counted as `assume-blocked` |
-| `fuzz.coverage: blocks=<n> blocks-total=<n> edges=<n> assumes=<n> assumes-total=<n>` | blocks entered, edges taken (the entry counts as one), `sea.assume` ops passed at least once |
+| `fuzz.coverage: blocks=<n> blocks-total=<n> edges=<n> assumes=<n> assumes-total=<n> paths=<n> [paths-capped=<cap>]` | blocks entered, edges taken (the entry counts as one), `sea.assume` ops passed at least once, distinct paths ([Coverage](#coverage)) |
 | `fuzz.corpus: <entries> seeds=<files> skipped-lines=<n> files=<n> dictionary=<n>` | corpus entries at the end, seed files read, lines of saved runs that are not inputs, files written, dictionary size |
 | `fuzz.blocked: <runs> op=<op> at=<where> [sites=<n,...> cond=<expr>]` | one per `sea.assume` or `sea.unreachable` that blocked runs, most first; for a `sea.assume`, its condition over the input sites (see [For agents](#for-agents)) |
 
@@ -597,7 +670,8 @@ a value that does not fit its site.
 ## Reproducibility
 
 The same program, `--seed`, corpus and options give the same trials and the
-same output, except the `time` and `execs/s` fields. With `--fuzz-time`, the
+same output, except the `time`, `execs/s` and `steps/s` fields and the
+`fuzz.progress` lines. With `--fuzz-time`, the
 number of trials depends on the machine's speed, so the result is
 reproducible only up to where the time ran out: give `--fuzz` for a fixed
 run.
