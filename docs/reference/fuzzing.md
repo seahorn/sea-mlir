@@ -10,6 +10,9 @@ assumption blocks.
 A fuzzing run without failures says nothing about the inputs it did not
 try; `sea-vc` checks all of them.
 
+[Steering the fuzzer](../agents/fuzzing.md) is the loop of reading this
+output and choosing the next run.
+
 ## Running it
 
 ```console
