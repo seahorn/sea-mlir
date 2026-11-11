@@ -114,12 +114,14 @@ static LogicalResult writeWhole(StringRef path, StringRef text,
     if (os.has_error()) {
       error = "cannot write '" + tmp.str().str() + "': " + os.error().message();
       os.clear_error();
+      llvm::sys::fs::remove(tmp);
       return failure();
     }
   }
   if (std::error_code ec = llvm::sys::fs::rename(tmp, path)) {
     error = "cannot rename '" + tmp.str().str() + "' to '" + path.str() +
             "': " + ec.message();
+    llvm::sys::fs::remove(tmp);
     return failure();
   }
   return success();
@@ -257,7 +259,8 @@ LogicalResult readCorpus(StringRef path, std::vector<CorpusEntryText> &out,
   std::error_code ec;
   for (llvm::sys::fs::directory_iterator it(path, ec), end; it != end && !ec;
        it.increment(ec))
-    if (llvm::sys::fs::is_regular_file(it->path()))
+    if (!llvm::sys::path::filename(it->path()).starts_with(".") &&
+        llvm::sys::fs::is_regular_file(it->path()))
       files.push_back(it->path());
   if (ec) {
     error =
@@ -1052,17 +1055,21 @@ LogicalResult Fuzzer::trial(Entry preset,
                             bool imported) {
   source.reset(std::move(preset), seedText);
   RunResult r = runOn(source);
-  ++report.trials;
   if (source.badSeed) {
     if (imported) {
       // a peer's file with a value that does not fit (another program?):
-      // skipped; the run up to that site was an execution and counts
+      // skipped, and not a trial
       ++report.syncSkipped;
+      diag::warn("fuzz.sync-skip",
+                 "a --fuzz-sync file was skipped (a value that does not fit "
+                 "its site); the fuzz.sync line counts them: " +
+                     seedName.str());
       return success();
     }
     error = r.message;
     return failure();
   }
+  ++report.trials;
   report.syncImported += imported;
   report.steps += r.steps;
   if (!paths.contains(pathHash)) {
@@ -1142,12 +1149,13 @@ LogicalResult Fuzzer::trial(Entry preset,
     ++report.keptBy[first];
     report.syncKept += imported;
     bool full = options.corpusMax && corpus.size() >= options.corpusMax;
-    if (full) {
+    // the frontier rises with every kept trial, dropped or not: a later
+    // trial is kept for it only when deeper than any kept trial
+    corpusFrontier = std::max(corpusFrontier, runFrontier);
+    if (full)
       ++report.corpusDropped;
-    } else {
+    else
       corpus.push_back(source.used);
-      corpusFrontier = std::max(corpusFrontier, runFrontier);
-    }
     SEA_LOG(logFuzz, 2)
         .msg("new-coverage")
         .kv("trial", report.trials)
@@ -1295,7 +1303,7 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
     if (!own)
       syncDirs.push_back(d);
   }
-  std::set<std::string> syncSeen;
+  std::set<llvm::sys::fs::UniqueID> syncSeen;
   double nextSync = options.syncSeconds;
   auto sync = [&](bool &stop) -> LogicalResult {
     if (syncDirs.empty() || elapsed() < nextSync)
@@ -1314,8 +1322,7 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
       for (llvm::sys::fs::directory_iterator it(dir, ec), end; it != end && !ec;
            it.increment(ec)) {
         StringRef name = llvm::sys::path::filename(it->path());
-        if (name.starts_with("cov-") && name.ends_with(".txt") &&
-            !syncSeen.count(it->path()))
+        if (name.starts_with("cov-") && name.ends_with(".txt"))
           files.push_back(it->path());
       }
       if (ec) {
@@ -1327,11 +1334,23 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
       for (const std::string &f : files) {
         if (stop || !budgetLeft())
           break;
-        syncSeen.insert(f);
+        // by file identity: one directory under two spellings is read once
+        llvm::sys::fs::UniqueID id;
+        if (llvm::sys::fs::getUniqueID(f, id)) {
+          ++report.syncSkipped;
+          diag::warn("fuzz.sync-skip",
+                     "a --fuzz-sync file was skipped (unreadable): " + f);
+          continue;
+        }
+        if (!syncSeen.insert(id).second)
+          continue;
         std::vector<CorpusEntryText> entry;
         std::string why;
         if (failed(readCorpusFile(f, entry, why))) {
           ++report.syncSkipped;
+          diag::warn("fuzz.sync-skip", "a --fuzz-sync file was skipped (" +
+                                           why +
+                                           "); the fuzz.sync line counts them");
           SEA_LOG(logFuzz, 2).msg("sync-skip").kv("file", f).kv("why", why);
           continue;
         }
