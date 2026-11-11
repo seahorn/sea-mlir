@@ -189,6 +189,22 @@ static cl::opt<bool> vcJoinCases(
              "print its `cases.<name>: <n>` counters"),
     cl::init(false));
 
+static cl::opt<bool> vcCasesReorder(
+    "vc-cases-reorder",
+    cl::desc("Experimental, default off, needs --vc-join-cases: merge a pair "
+             "of a cases join whose value is an earlier pair's value into "
+             "that pair, conjoining the negations of the conditions it skips "
+             "(first-match semantics; changes the query)"),
+    cl::init(false));
+
+static cl::opt<bool> vcCasesDropDefault(
+    "vc-cases-drop-default",
+    cl::desc("Experimental, default off, needs --vc-join-cases: drop a pair "
+             "of a cases join whose value is the default, conjoining the "
+             "negation of its condition into the later pairs (changes the "
+             "query)"),
+    cl::init(false));
+
 static cl::opt<bool> seamWide(
     "seam-wide",
     cl::desc("With --seam: a load / store of a byte memory wider than a byte "
@@ -1560,6 +1576,13 @@ TYPICAL:
   sea-vc p.mlir --vc-join-cases  # experimental: each ite join built as a
                                  #   cases term and expanded at once (same
                                  #   query); prints the cases.* counters
+  sea-vc p.mlir --vc-join-cases --vc-cases-reorder [--vc-cases-drop-default]
+                                 # experimental, changes the query: merge
+                                 #   pairs of a join with equal values (the
+                                 #   moved pair's condition conjoins the
+                                 #   negations of the conditions it skips);
+                                 #   drop pairs equal to the default (their
+                                 #   negation conjoined into later pairs)
 
 OUTPUT (stdout, `key: value` lines):
   tool.version: sea-mlir <x.y.z> (<git describe>)
@@ -1602,7 +1625,14 @@ OUTPUT (stdout, `key: value` lines):
                                   adjacent-equal-pairs, ite-folded-pairs,
                                   last-equal-default, nonadjacent-redundant,
                                   with-nonadjacent, default-not-most-frequent;
-                                  include/sea/VC/JoinCases.h)
+                                  with --vc-cases-reorder or
+                                  --vc-cases-drop-default also reorder-joins
+                                  (joins changed), reorder-merged-pairs,
+                                  reorder-merged-adjacent,
+                                  reorder-merge-negations,
+                                  reorder-dropped-default,
+                                  reorder-drop-negations, reorder-pairs
+                                  (pairs left); include/sea/VC/JoinCases.h)
   seam.ptrint: assumed loads=<n>  (--ptr-companion=assume: loads resting on
                                   A-PTRINT; checked loads=<n> with =check,
                                   then `seam.ptrint: holds` (unsat) or
@@ -2592,6 +2622,9 @@ int main(int argc, char **argv) {
     return fail("--seam-words and --x-read-table exclude each other");
   if (vcJoinCases && joinEncoding != sea::JoinEncoding::Ite)
     return fail("--vc-join-cases builds the ite joins: needs --vc-join=ite");
+  if ((vcCasesReorder || vcCasesDropDefault) && !vcJoinCases)
+    return fail("--vc-cases-reorder and --vc-cases-drop-default rearrange "
+                "cases joins: need --vc-join-cases");
   if (seamStats && !seam && !simplifyOpt)
     return fail("--seam-stats needs --seam or --simplify");
   // the rewriter normalizes under --simplify, and under --seam unless
@@ -3198,7 +3231,7 @@ int main(int argc, char **argv) {
       };
     sea::VCGen vcgen(sem, joinEncoding);
     vcgen.setReach(reach);
-    vcgen.setJoinCases(vcJoinCases);
+    vcgen.setJoinCases(vcJoinCases, {vcCasesReorder, vcCasesDropDefault});
     lap("setup");
     Phase encodePhase("encode", vcRuns);
     if (failed(vcgen.genVc(program, ctx)))

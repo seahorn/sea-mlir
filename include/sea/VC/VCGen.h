@@ -90,9 +90,11 @@ public:
   /// Experimental (sea-vc --vc-join-cases): with the Ite encoding, build
   /// every join of block arguments and pointer companions as a cases term,
   /// counted and expanded at once to the same ite chain (sea/VC/JoinCases.h).
-  /// Set before genVc.
-  void setJoinCases(bool on) {
-    cases = on ? std::make_unique<JoinCases>() : nullptr;
+  /// \p reorder: the rearrangements of each cases term before its
+  /// expansion (--vc-cases-reorder, --vc-cases-drop-default; they change the
+  /// query). Set before genVc.
+  void setJoinCases(bool on, JoinCases::Reorder reorder = {}) {
+    cases = on ? std::make_unique<JoinCases>(reorder) : nullptr;
   }
   /// The counters of setJoinCases; null when off.
   const JoinCases *joinCases() const { return cases.get(); }
