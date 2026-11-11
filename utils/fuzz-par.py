@@ -42,7 +42,7 @@ USAGE:
 OUTPUT (key: value lines, stdout):
   fuzz-par.progress: <wall s> reported=<k>/<N> trials-sum=<n> steps-sum=<n>
       failures-sum=<n> blocks-max=<n> edges-max=<n> paths-max=<n>
-      assumes-max=<n>
+      assumes-max=<n> frontier-max=<n>
       (the latest fuzz.progress of each process that has printed one; sums
        of the cost, max of the coverage: the union needs the ids, at the end)
   fuzz-par.process: <i> seed=<s> exit=<rc> end=done|failure|stopped|error
@@ -62,8 +62,10 @@ OUTPUT (key: value lines, stdout):
       [cmp-buckets=<hit>/<total> closed-distance=<id>:<d>,...|-]
       (the joined model coverage of the same files: the deepest assume
        frontier of any trial; the sea.assume gates that blocked trials and
-       that no process passed; with --fuzz-cmp the comparison buckets of
-       all processes and the least branch distance of each closed gate)
+       that no process passed; unless --fuzz-cmp=false the comparison
+       buckets of all processes and the least branch distance of each
+       closed gate; none when the program has no sea.assume /
+       sea.unreachable)
   fuzz-par.summary: processes=<N> wall=<s> failures=<processes with one>
 EXIT: 0 ran; 4 a process found a memory-safety finding (as sea-run);
   1 bad options, or a process failed (exit other than 0 / 4, not stopped
@@ -120,14 +122,14 @@ def merged(procs, t):
     s = {k: sum(int(r[k]) for r in rep) for k in ("trials", "steps", "failures")}
     m = {
         k: max((int(r[k]) for r in rep), default=0)
-        for k in ("blocks", "edges", "paths", "assumes")
+        for k in ("blocks", "edges", "paths", "assumes", "frontier")
     }
     return (
         f"fuzz-par.progress: {t:.3f} reported={len(rep)}/{len(procs)}"
         f" trials-sum={s['trials']} steps-sum={s['steps']}"
         f" failures-sum={s['failures']} blocks-max={m['blocks']}"
         f" edges-max={m['edges']} paths-max={m['paths']}"
-        f" assumes-max={m['assumes']}"
+        f" assumes-max={m['assumes']} frontier-max={m['frontier']}"
     )
 
 

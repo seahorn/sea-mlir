@@ -2,15 +2,17 @@
 // own --fuzz-out and coverage files; per-process lines, the first failure,
 // the union of the coverage files.
 // RUN: rm -rf %t && mkdir -p %t
-// RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/safe --sea-run %sea_bin/sea-run -- %s --program=safe --fuzz=2000 | FileCheck %s --check-prefix=SAFE
+// RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/safe --sea-run %sea_bin/sea-run -- %s --program=safe --fuzz=2000 --fuzz-cmp=false | FileCheck %s --check-prefix=SAFE
 // RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/fail --wait-all --sea-run %sea_bin/sea-run -- %s --program=fail --fuzz=100000 | FileCheck %s --check-prefix=FAIL
 // RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/prog --progress 0.1 --sea-run %sea_bin/sea-run -- %s --program=safe --fuzz-time=0.5 | FileCheck %s --check-prefix=PROG
 // RUN: not %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/bad --sea-run %sea_bin/sea-run -- %s --fuzz=10 --seed=3 2>&1 | FileCheck %s --check-prefix=RESERVED
 // RUN: not %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/bad1 --sea-run %sea_bin/sea-run -- %s --fuzz=10 -seed=3 2>&1 | FileCheck %s --check-prefix=SINGLE
 // RUN: not %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/err --sea-run %sea_bin/sea-run -- %s --program=nosuch --fuzz=10 | FileCheck %s --check-prefix=ERR
 // RUN: not %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/safe --sea-run %sea_bin/sea-run -- %s --fuzz=10 2>&1 | FileCheck %s --check-prefix=NONEMPTY
+// RUN: mkdir -p %t/seeds && printf '0=3\n' > %t/seeds/a.txt && printf '0=3\n' > %t/seeds/b.txt
+// RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/seeded --sea-run %sea_bin/sea-run -- %s --program=gate --fuzz=2 --corpus=%t/seeds | FileCheck %s --check-prefix=SEEDED
 // RUN: %python %sea_src_root/utils/fuzz-par.py --agent | FileCheck %s --check-prefix=AGENT
-// RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/model --sea-run %sea_bin/sea-run -- %s --program=safe --fuzz=2000 --fuzz-cmp | FileCheck %s --check-prefix=MODEL
+// RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/model --sea-run %sea_bin/sea-run -- %s --program=safe --fuzz=2000 | FileCheck %s --check-prefix=MODEL
 
 // The union joins the coverage files of the processes that ended.
 // SAFE-DAG: fuzz-par.process: 0 seed=1 exit=0 end=done from=final trials=2000
@@ -23,12 +25,18 @@
 // The model coverage joins too: comparison buckets of both processes.
 // MODEL: fuzz-par.model: frontier-max=1 closed=0 closed-gates=- cmp-buckets={{[1-9][0-9]*}}/{{[1-9][0-9]*}} closed-distance=-
 
+// Only the seeds run (--fuzz=2); the unseeded input differs by process
+// (seeds 1 and 2), so the processes cover different buckets.
+// (y = 154 and 221: the buckets -L and -S of the comparison with 230; the
+// gate stays closed, its least distance 231 - 221 = 10.)
+// SEEDED: fuzz-par.model: frontier-max=1 closed=1 closed-gates=1 cmp-buckets=3/14 closed-distance=1:10
+
 // FAIL: fuzz-par.process: 0 seed=1 exit=0 end=failure from=final
 // FAIL: fuzz-par.process: 1 seed=2 exit=0 end=failure from=final
 // FAIL: fuzz-par.first-failure: process={{[01]}} seed={{[12]}} kind=failure trial={{[0-9]+}} time={{[0-9.]+}} wall={{[0-9.]+}} at={{.*}} file={{.*}}failure-{{[0-9]+}}.txt
 // FAIL: fuzz-par.summary: processes=2 wall={{[0-9.]+}} failures=2
 
-// PROG: fuzz-par.progress: {{[0-9.]+}} reported=2/2 trials-sum={{[1-9][0-9]*}} steps-sum={{[1-9][0-9]*}} failures-sum=0 blocks-max=4 edges-max=5 paths-max=3 assumes-max=1
+// PROG: fuzz-par.progress: {{[0-9.]+}} reported=2/2 trials-sum={{[1-9][0-9]*}} steps-sum={{[1-9][0-9]*}} failures-sum=0 blocks-max=4 edges-max=5 paths-max=3 assumes-max=1 frontier-max=1
 // PROG: fuzz-par.union: {{.*}} processes=2/2
 
 // SINGLE: -seed=3: the launcher sets
@@ -50,6 +58,18 @@ sea.program @safe {
 ^b:
   sea.br ^done
 ^done:
+  sea.halt
+}
+
+sea.program @gate {
+  %x = sea.nondet "nondet_u8" [0] : i8
+  %c10 = sea.const 10 : i8
+  %lt = sea.icmp ult, %x, %c10 : i8
+  sea.assume %lt
+  %y = sea.nondet "nondet_u8" [1] : i8
+  %c230 = sea.const 230 : i8
+  %gt = sea.icmp ugt, %y, %c230 : i8
+  sea.assume %gt
   sea.halt
 }
 

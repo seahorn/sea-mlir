@@ -29,7 +29,7 @@ $ sea-run p.mlir --fuzz=10000 --seed=1 --fuzz-out=out
 | `--fuzz-range-share=<p>` | the probability that a trial uses range draws; the other trials use the generator without them (default 0.5; see [Ranges](#ranges)) |
 | `--fuzz-progress=<s>` | print a `fuzz.progress` line every `s` seconds (see [Progress](#progress)); default 0: none |
 | `--fuzz-coverage-out=<file>` | write the covered blocks, edges, assumes and paths by id at the end (see [Progress](#progress)) |
-| `--fuzz-cmp` | comparison coverage: operand distance buckets of every comparison, branch distances of the blocking assumes (see [Model coverage](#model-coverage)); default off |
+| `--fuzz-cmp` | comparison coverage: operand distance buckets of every comparison, branch distances of the blocking assumes (see [Model coverage](#model-coverage)); default on, `--fuzz-cmp=false` turns it off |
 | `--fuzz-gates` | one `fuzz.gate` line per `sea.assume` and `sea.unreachable`: trials that passed it and that it blocked (see [Model coverage](#model-coverage)) |
 | `--fuzz-reachable=<file>` | the output of `sea-vc --reach=blocks` on the same file: block coverage of the reachable blocks, the uncovered ones named (see [Model coverage](#model-coverage)) |
 | `--keep-going` | count failures instead of stopping at the first |
@@ -158,8 +158,8 @@ fuzz.progress: 1.000 trials=183513 steps=1449724 blocks=4 edges=5 paths=3 assume
 
 The fields are the elapsed seconds, then the totals so far: trials,
 steps, blocks entered, edges taken, distinct paths, `sea.assume` ops
-passed, failing trials, the deepest assume frontier, and with `--fuzz-cmp`
-the comparison buckets covered (`cmp-buckets=`; see
+passed, failing trials, the deepest assume frontier, and unless
+`--fuzz-cmp=false` the comparison buckets covered (`cmp-buckets=`; see
 [Model coverage](#model-coverage)). While blocks, edges, paths or assumes still grow,
 the fuzzer is reaching new behavior; when they stay flat for a long time,
 more of the same is unlikely to help, and a corpus entry, another
@@ -218,9 +218,8 @@ $ python3 utils/fuzz-par.py -n 8 --out par --progress 5 -- p.mlir --fuzz-time=60
 Run `utils/fuzz-par.py --agent` for its options and output lines. The time
 to the first failure of `n` processes is the least of `n` independent
 runs. Its `fuzz-par.model` line joins the model coverage of the files:
-the deepest frontier, the assumes no process passed, and with `--fuzz-cmp`
-the buckets of all processes and the least distance of each closed
-assume.
+the deepest frontier, the assumes no process passed, and the buckets of all processes and the least distance of each closed
+assume (the comparison fields are absent with `--fuzz-cmp=false`).
 
 ## Model coverage
 
@@ -267,9 +266,9 @@ fuzz.cmp: 152 reached=121 buckets=299/1064 outcomes=166/304 assume=79/154 branch
 `reached`: comparisons evaluated; `buckets` and `outcomes` (true and
 false) covered of all; then the buckets by role: comparisons that are the
 condition of an assume (directly or through `sea.xor` with true), of a
-`sea.cond_br`, or neither.
+`sea.cond_br`, or neither; a comparison that is both counts as assume.
 
-With `--fuzz-cmp`, a trial an assume of a comparison blocked also has a
+A trial an assume of a comparison blocked also has a
 branch distance: how far one operand had to move for the condition to
 hold (eq: |lhs - rhs|, the short way modulo 2^w; ne: 1; ult: lhs - rhs +
 1; ule: lhs - rhs; ugt: rhs - lhs + 1; uge: rhs - lhs; the signed
@@ -278,6 +277,8 @@ and `fuzz.gate` is the least over the run (`-`: none measured; the
 condition is not a comparison). It says how near the runs came to a
 gate they never passed. `ne` gives 1 or nothing, so an assume of
 `x != y` (SeaHorn's form of a failed equality check) shows no gradient.
+`ne` gives distance 1 even for a gate that can never pass, so
+`distance=1` on a closed gate does not mean it was nearly passed.
 
 **Reachable blocks** (`--fuzz-reachable=<file>`). `blocks-total` counts
 blocks no input reaches. `sea-vc --reach=blocks` decides which are
@@ -300,6 +301,32 @@ calls unreachable is a bug of one of the two tools
 (`fuzz.reach-inconsistent`, exit status 1). Not with
 `--defer-memory-errors`. `sea-vc --reach` is a solver query per block:
 on a large program it can take long (`--reach-rlimit`).
+
+## Local search in the solver
+
+Besides fuzzing, `sea-vc` can run z3's stochastic local search on the
+query of the normal solve, the same query the default solve gets (the best
+form of it, for example `--lower --widen-memory=8 --seam`):
+
+```console
+$ sea-vc p.mlir --lower --widen-memory=8 --seam --z3-tactic=sls-smt --timeout=60
+```
+
+`sls-smt` is z3's newer local-search engine: it searches over the Boolean
+structure of the query with a bit-vector plugin. It is incomplete: it
+answers `sat` or `unknown`, never `unsat`, and an `unknown` is returned
+only when `--timeout` expires (exit status 3). Always give a `--timeout`;
+z3's resource limit does not reliably stop it. A seed is set in the
+tactic: `--z3-tactic='(using-params sls-smt :random_seed 3)'`; z3 rejects
+an unknown parameter name there with `result: unknown`. A `sat` is
+replayed in the interpreter like any other model.
+
+What to expect today: on small examples with bugs that the default solve
+finds in seconds, `sls-smt` found none in 120 seconds over several seeds
+and mutants of one function, while the model fuzzer and the default solve
+found them. It is worth a try when the default solve times out on a query
+that looks satisfiable, or as a cross-check. z3's older `qfbv-sls` tactic
+and `sat.local_search` are not recommended.
 
 ## Failures, memory-safety checks and limits
 
