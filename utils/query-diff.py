@@ -38,6 +38,16 @@ first class that applies, in this order:
               queries cannot be compared (a symbol with two sorts,
               an unsupported command).
 
+Defined one-sided symbols: a symbol declared in one query only (not a
+block guard, not a bound name) that a top-level conjunct of that query
+(through `and` and `let` bodies) defines as a numeral, (= x c), is
+substituted by c in that query before any z3 check
+(details: subst=<n>). Exact: exists x. (x = c and phi) is phi[c/x]. Such
+symbols are addresses of objects the other lowering erased (obj.<name>
+= <base>), not inputs; without the substitution the other query leaves
+them free and the equivalence check finds a "difference" in them. Any
+other one-sided symbol stays a free input.
+
 Checks, cheapest first: the text checks; then sat(OLD) and sat(NEW), one
 z3 run each (the common unsat-unsat case ends here, as does a verdict
 change); then (distinct OLD NEW), unless the two verdicts decide. If the
@@ -114,13 +124,17 @@ CLASSES (what each proves; OLD/NEW = the queries, symbols matched by name):
   DIFF        one sat and one unsat, or a distinguishing assignment
   unknown     a z3 check gave unknown (rlimit, timeout): no proof either way
   error       sea-vc or z3 failed, or the queries are not comparable
+SUBST: a symbol of one query only (not a guard) that a top-level
+  conjunct of it (through and / let bodies) defines as a numeral, (= x #x..), is replaced by the
+  numeral (exact; obj.<name> of an object one lowering erased): subst=<n>.
+  Other one-sided symbols are free inputs.
 ORDER: identical, order, sat(OLD) + sat(NEW), then (distinct OLD NEW)
   unless both are unsat or one is sat and the other unsat;
   --project-blocks: after the by-name check found a difference, the
   Skolem-hint checks (queries with `; sea.block-ids` lines: sea-vc on R_T),
   then, if a hint check is sat or unknown, the quantified check.
 OUTPUT (stdout, one line per job, then totals):
-  <job> <class> [reason=<r>] [old=<verdict> new=<verdict>]
+  <job> <class> [reason=<r>] [old=<verdict> new=<verdict>] [subst=<n>]
       [by=hints|by=exists [hints=<old-new|new-old>:<answer>|incomplete:<n>|none:<why>]]
       [inb old=<acc>/<cond> new=<acc>/<cond>]
   total: identical=<n> order=<n> both-unsat=<n> equiv-sat=<n> diff=<n> unknown=<n> error=<n> [by-hints=<n> by-exists=<n>]
@@ -240,6 +254,94 @@ class Query:
         bvumul_noovfl, which QF_AUFBV rejects)."""
         out = [c for _, c in self.decls.values()] + [c for _, c in self.defs]
         return out + [f"(assert {self.formula()})"]
+
+
+NUMERAL = re.compile(r"#x[0-9a-fA-F]+|#b[01]+")
+
+
+def is_numeral(x):
+    """A bit-vector numeral: #x.., #b.. or (_ bvN w)."""
+    if isinstance(x, str):
+        return NUMERAL.fullmatch(x) is not None
+    return (
+        len(x) == 3
+        and x[0] == "_"
+        and isinstance(x[1], str)
+        and x[1].startswith("bv")
+        and x[1][2:].isdigit()
+    )
+
+
+def conjuncts(f):
+    """The top-level conjuncts of a formula: nested `and` flattened, and
+    through the body of a `let` ((let B (and c1 c2)) is (and (let B c1)
+    (let B c2)); a conjunct that mentions no name of B is c itself)."""
+    if isinstance(f, list) and f and f[0] == "and":
+        return [c for k in f[1:] for c in conjuncts(k)]
+    if isinstance(f, list) and len(f) == 3 and f[0] == "let":
+        return conjuncts(f[2])
+    return [f]
+
+
+def bound_names(x, out):
+    """The names a let, exists or forall binds anywhere in x."""
+    if isinstance(x, list):
+        if len(x) == 3 and x[0] in ("let", "exists", "forall"):
+            out.update(b[0] for b in x[1] if isinstance(b, list) and b)
+        for k in x:
+            bound_names(k, out)
+    return out
+
+
+def substitute_defined(q, other_names):
+    """Eliminates from q every symbol declared in q only (not a block
+    guard, no arguments, not used by a define-fun, not a bound name) that
+    a top-level conjunct of q (through `and` and `let` bodies) defines as
+    a numeral, (= x c) or (= c x): x is replaced
+    by c everywhere in q's asserts and its declaration dropped. Exact:
+    exists x. (x = c and phi) is phi[c/x]; such an x (a placed object's
+    address, obj.<name>) is not an input, so it must not count as one
+    that the other query leaves free. Other one-sided symbols stay.
+    Returns the number of symbols eliminated."""
+    own = {
+        x
+        for x, (sort, _) in q.decls.items()
+        if x not in other_names and not GUARD.fullmatch(x) and sort.startswith("() ")
+    }
+    if not own:
+        return 0
+    in_defs = {t for _, cmd in q.defs for t in tokens(cmd)}
+    trees = [parse(tokens(a))[0] for a in q.asserts]
+    # a name some binder of q also uses could be that binder's anywhere
+    bound = set()
+    for t in trees:
+        bound_names(t, bound)
+    own -= bound
+    sub = {}
+    for t in trees:
+        for c in conjuncts(t):
+            if isinstance(c, list) and len(c) == 3 and c[0] == "=":
+                for x, v in ((c[1], c[2]), (c[2], c[1])):
+                    if (
+                        isinstance(x, str)
+                        and x in own
+                        and x not in in_defs
+                        and x not in sub
+                        and is_numeral(v)
+                    ):
+                        sub[x] = v
+    if not sub:
+        return 0
+
+    def put(x):
+        if isinstance(x, str):
+            return sub.get(x, x)
+        return [put(k) for k in x]
+
+    q.asserts = [ser(put(t)) for t in trees]
+    for x in sub:
+        del q.decls[x]
+    return len(sub)
 
 
 def shared_decls(o, n, skip=()):
@@ -504,6 +606,17 @@ def classify(old, new, z3, project_blocks=False, hints="auto"):
         o, n = Query(old), Query(new)
     except Incomparable as e:
         return "error", [f"reason={e}"]
+    # symbols of one query only that it defines as numerals (addresses of
+    # objects the other lowering erased): substituted, not inputs; both
+    # sides are computed against the declarations before either changes
+    o_names, n_names = set(o.decls), set(n.decls)
+    subst = substitute_defined(o, n_names) + substitute_defined(n, o_names)
+    cls, details = classify_queries(o, n, z3, project_blocks, hints)
+    return cls, details + ([f"subst={subst}"] if subst else [])
+
+
+def classify_queries(o, n, z3, project_blocks, hints):
+    """classify() for two parsed queries that differ in text."""
     so = z3.check(o.script())
     sn = z3.check(n.script())
     for s in (so, sn):
