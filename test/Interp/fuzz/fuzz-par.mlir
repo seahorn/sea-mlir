@@ -18,7 +18,10 @@
 // RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/sync --sync --sync-period 0.1 --sea-run %sea_bin/sea-run -- %s --program=rare --fuzz-time=1 --corpus=%t/rare | FileCheck %s --check-prefix=SYNC
 // RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/sync2 --sea-run %sea_bin/sea-run -- %s --program=rare --fuzz=10 | FileCheck %s --check-prefix=NOSYNC
 // RUN: not %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/sync3 --sync --sea-run %sea_bin/sea-run -- %s --fuzz=10 --fuzz-sync=x 2>&1 | FileCheck %s --check-prefix=SYNCRES
+// RUN: not %python %sea_src_root/utils/fuzz-par.py -n 1 --out %t/sync4 --sync --sea-run %sea_bin/sea-run -- %s --fuzz=10 2>&1 | FileCheck %s --check-prefix=SYNC1
 // RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/model --sea-run %sea_bin/sea-run -- %s --program=safe --fuzz=2000 | FileCheck %s --check-prefix=MODEL
+
+// SYNC1: --sync needs -n 2 or more
 
 // The union joins the coverage files of the processes that ended.
 // SAFE-DAG: fuzz-par.process: 0 seed=1 exit=0 end=done from=final trials=2000

@@ -345,7 +345,7 @@ and `sat.local_search` are not recommended.
 |---|---|
 | `blocks` | enters a new block, takes a new edge or passes a `sea.assume` no earlier trial passed (the default, the rule of [Coverage](#coverage)) |
 | `cmp` | covers a comparison bucket no earlier trial covered ([Model coverage](#model-coverage); needs the comparison counters, an error with `--fuzz-cmp=false`) |
-| `frontier` | passes more distinct `sea.assume` ops than the trial of any corpus entry (a deeper assume frontier) |
+| `frontier` | passes more distinct `sea.assume` ops than any kept trial (a deeper assume frontier; a kept trial counts when `--fuzz-corpus-max` dropped it) |
 | `all` | any of them |
 
 A new pass of one gate is a newly passed assume, so `blocks` covers it.
@@ -371,7 +371,7 @@ first, so the corpus has at most as many entries as there are blocks,
 edges, assumes, buckets (7 per comparison) and frontier depths.
 `--fuzz-corpus-max=<n>` bounds it further: a kept trial is not added
 when the corpus has `n` entries (its coverage still counts and its file
-is still written), and `dropped=` counts these trials.
+is still written, and it still raises the frontier a `frontier` trial must exceed), and `dropped=` counts these trials.
 
 ## Corpus sync
 

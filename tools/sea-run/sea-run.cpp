@@ -171,7 +171,7 @@ static cl::opt<std::string> fuzzKeep(
     cl::desc("Fuzz: why a trial joins the corpus, a list of blocks (a new "
              "block, edge or passed assume), cmp (a new comparison bucket; "
              "needs --fuzz-cmp), frontier (more assumes passed than any "
-             "corpus entry), all (default blocks)"),
+             "kept trial), all (default blocks)"),
     cl::value_desc("reason,..."), cl::init("blocks"));
 
 static cl::opt<uint64_t> fuzzCorpusMax(
@@ -742,8 +742,8 @@ CORPUS (docs/reference/fuzzing.md, "Corpus feedback", "Corpus sync"):
   --fuzz-keep: why a trial joins the corpus. blocks: a new block, edge or
     passed assume (default; the corpus and random stream of earlier
     versions); cmp: a new comparison bucket (needs --fuzz-cmp, default
-    on); frontier: more distinct assumes passed than any corpus entry's
-    trial; all. Untuned options. fuzz.corpus kept-<reason>: the kept
+    on); frontier: more distinct assumes passed than any kept
+    trial (one dropped by --fuzz-corpus-max included); all. Untuned options. fuzz.corpus kept-<reason>: the kept
     trials by their first reason (blocks, cmp, frontier order), so
     kept-cmp is what cmp added beyond blocks. Without a bound the corpus
     is at most blocks + edges + assumes + buckets + assumes entries;

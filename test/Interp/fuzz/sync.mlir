@@ -13,12 +13,21 @@
 // RUN: printf '0=1215171618\n' > %t/peer/.cov-10.txt.tmp
 // RUN: sea-run %s --fuzz-time=1 --seed=1 --fuzz-out=%t/own --fuzz-sync=%t/peer,%t/own,%t/nosuch --fuzz-sync-period=0.1 | FileCheck %s --check-prefix=SYNC
 // RUN: not grep -rl 1215171618 %t/own
+// One directory under three spellings is imported once; a dotfile in a
+// corpus directory is not read; a skipped file is also a fuzz.sync-skip
+// warning (once per kind).
+// RUN: sea-run %s --fuzz-time=1 --seed=1 --fuzz-sync=%t/peer,%t/peer/,%t/./peer --fuzz-sync-period=0.1 2>&1 | FileCheck %s --check-prefix=SPELL
+// RUN: mkdir -p %t/cdir && printf '0=3\n' > %t/cdir/a.txt && printf 'bogus\n' > %t/cdir/.hidden
+// RUN: sea-run %s --fuzz=20 --seed=1 --corpus=%t/cdir | FileCheck %s --check-prefix=DOT
 // Without sync the block stays uncovered.
 // RUN: sea-run %s --fuzz-time=0.3 --seed=1 | FileCheck %s --check-prefix=NOSYNC
 // RUN: not sea-run %s --fuzz=10 --fuzz-sync=%t/peer --fuzz-sync-period=0 2>&1 | FileCheck %s --check-prefix=PERIOD
 
 // SYNC: fuzz.coverage: blocks=3 blocks-total=3
 // SYNC: fuzz.sync: imported=1 kept=1 skipped=2 polls={{[1-9][0-9]*}} dirs=3 missing=1 period=0.1
+// SPELL: fuzz.sync-skip
+// SPELL: fuzz.sync: imported=1 kept=1 skipped=2
+// DOT: fuzz.corpus: {{.*}} seeds=1
 // NOSYNC: fuzz.coverage: blocks=2 blocks-total=3
 // NOSYNC-NOT: fuzz.sync:
 // PERIOD: --fuzz-sync-period must be positive

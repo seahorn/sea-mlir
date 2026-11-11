@@ -235,6 +235,8 @@ def main():
     if os.path.exists(a.out) and (not os.path.isdir(a.out) or os.listdir(a.out)):
         ap.error(f"--out {a.out} is not a new or empty directory")
 
+    if a.sync and a.n < 2:
+        ap.error("--sync needs -n 2 or more")
     start = time.monotonic()
     events = queue.Queue()
     procs = []
