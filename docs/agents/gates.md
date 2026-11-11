@@ -179,6 +179,9 @@ condition holds, the halt block's guard is asserted), and the blocks that
 share an id are on a path together. The hints are checked, not trusted:
 a wrong one makes its check sat or unknown, and the quantified check runs
 (`by=exists hints=<old-new|new-old>:<answer>`); it never makes a pass.
+`hints=incomplete:<n>` and `hints=none:<why>` (`cases:<n>`: a guard
+without a hint has more than 6 cases, an untuned bound;
+`guard-without-ids`) say why no hint check ran.
 `--no-hints` turns them off.
 
 Every z3 check has a resource limit (`--rlimit`, deterministic) and a

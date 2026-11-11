@@ -121,7 +121,7 @@ ORDER: identical, order, sat(OLD) + sat(NEW), then (distinct OLD NEW)
   then, if a hint check is sat or unknown, the quantified check.
 OUTPUT (stdout, one line per job, then totals):
   <job> <class> [reason=<r>] [old=<verdict> new=<verdict>]
-      [by=hints|by=exists [hints=<old-new|new-old>:<answer>|incomplete:<n>]]
+      [by=hints|by=exists [hints=<old-new|new-old>:<answer>|incomplete:<n>|none:<why>]]
       [inb old=<acc>/<cond> new=<acc>/<cond>]
   total: identical=<n> order=<n> both-unsat=<n> equiv-sat=<n> diff=<n> unknown=<n> error=<n> [by-hints=<n> by-exists=<n>]
   evidence: equiv-sat=<n> identical+order=<n> both-unsat=<n> (verdict only)

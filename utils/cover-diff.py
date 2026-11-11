@@ -82,7 +82,7 @@ pass; DIFF fails; unknown is unknown; both-unsat and error are errors
 (level 0 answered both reachable).
 Skolem hints: sea-vc --reach gives every input block a stable id before
 any pass (sea.block_ids on its terminator; the passes keep them: a merged
-block holds both lists, split halves the same list, a new block a derived
+block holds both lists, a split tail the id <last>.s<k>, a new block a derived
 id) and R_T keeps them, so each R_T query names the ids of its block
 guards (`; sea.block-ids`). When both queries of a pair carry them,
 query-diff first runs the two quantifier-free checks with the guards of
@@ -169,7 +169,7 @@ OUTPUT (stdout, line-oriented):
       than 0 / 3 / 4 is an error)
   level1: <job> <site>/<role> <class> [reason=...] [old=.. new=..]
       [by=identical|names|hints|exists] [hints=<old-new|new-old>:<answer>
-      | hints=incomplete:<n>]   (hints=: why the quantified check ran)
+      | hints=incomplete:<n> | hints=none:<why>]   (hints=: why the quantified check ran)
   job: <job> <pass|DIFF|unknown|error> targets=<n> equal=<n> diff=<n>
       removed-ok=<n> removed-true=<n> removed-but-reachable=<n> unknown=<n>
       untagged=<a>/<b> [level1: equiv=<n> diff=<n> unknown=<n> error=<n>] [reason=<r>]
