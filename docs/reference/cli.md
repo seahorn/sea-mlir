@@ -114,7 +114,9 @@ sea-run <file.mlir> [options]
 | `--print`, `--print-refs`, `--print-limit`, `--print-locs` | as for `sea-vc` |
 | `--input-file=<file>` | inputs from a corpus file ([Fuzzing](fuzzing.md)) |
 | `--fuzz=<n>`, `--fuzz-time=<s>` | fuzz: run trials on generated inputs ([Fuzzing](fuzzing.md)) |
-| `--fuzz-sites` | list the input sites and the assumes with their conditions, and exit ([For agents](fuzzing.md#for-agents)) |
+| `--fuzz-ranges=false` | with `--fuzz`: no range draws (default on: a value site that an assume bounds gets values from its range, biased to the ends) ([Ranges](fuzzing.md#ranges)) |
+| `--fuzz-dict=false`, `--fuzz-dict-share=<p>` | with `--fuzz`: no dictionary values, or the probability `p` that a fresh value and that a mutation is one (default: 1/2 of fresh values, 1/5 of mutations) ([Trials](fuzzing.md#trials)) |
+| `--fuzz-sites` | list the input sites, the assumes with their conditions and the ranges, and exit ([For agents](fuzzing.md#for-agents)) |
 | `--fuzz-serve` | run on inputs sent as JSON lines on stdin, one response per line ([Driving the fuzzer from Python](fuzzing.md#driving-the-fuzzer-from-python)) |
 | `--memhavoc-null=noop\|error` | `sea.memhavoc` of the null pointer: a no-op (default; an open semantics decision, counted as `assume.memhavoc-null-noop: uses=<n>` and warned) or a memory-safety error |
 | `--addr0-is-null=false` | turn off the named assumption that address 0 is the null pointer (default on): zero bytes loaded as a pointer, a null pointer's bytes loaded as an integer, and `ptr.to_int` of null then stop the run; on, each such step counts (`assume.addr0-is-null: uses=<n>`) ([Memory-Step2](../design/Memory-Step2.md)) |

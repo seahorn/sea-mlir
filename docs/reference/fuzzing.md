@@ -24,6 +24,8 @@ $ sea-run p.mlir --fuzz=10000 --seed=1 --fuzz-out=out
 | `--corpus=<dir or file>,...` | seed entries: corpus files, or directories of them (their files in name order) |
 | `--fuzz-out=<dir>` | write failing inputs and inputs that reached new coverage as corpus files; the directory must be new or empty |
 | `--fuzz-dict=false` | no dictionary values (see below) |
+| `--fuzz-dict-share=<p>` | the probability that a fresh value and that a mutation is a dictionary value; unset: 1/2 of fresh values and 1/5 of mutations (see below) |
+| `--fuzz-ranges=false` | no range draws: the generator without them (see [Ranges](#ranges)); default on |
 | `--keep-going` | count failures instead of stopping at the first |
 | `--defer-memory-errors` | go on past memory-safety violations; one is a failure only if the run reaches the end (see below) |
 | `--input-file=<file>` | run once on a corpus file (without `--fuzz`) |
@@ -46,13 +48,61 @@ values. A change is one of:
 - a dictionary value.
 
 A site or memory cell that the entry does not set gets a random value or a
-dictionary value. Every value fits the width of its site.
+dictionary value. Every value fits the width of its site. A value site with
+a range (below) gets values from its range instead of random ones.
 
 The dictionary holds the integer constants that the program compares with
 or computes with (`sea.icmp`, add, sub, mul, div, rem, min, max and the
 overflow tests), each with its neighbors plus and minus one. A value is
 sign- or zero-extended or truncated to the site's width. It gets runs past
 guards such as `assume(x == 1234)` that random values miss.
+
+By default, half of the fresh values and one mutation in five are
+dictionary values. `--fuzz-dict-share=<p>` sets both to `p`: a fresh value
+is a dictionary value with probability `p`, and a mutation too, otherwise
+one of the four other kinds, each equally likely. `--fuzz-dict=false`
+keeps the default mix with a random value in place of each dictionary
+value, so a mutation is then a fresh random value two times in five; it
+does not go with `--fuzz-dict-share`. No share is best for every
+program: one bug needs a constant of the program, another needs the 0, 1
+and plus-or-minus-one changes, which a larger share makes rarer.
+
+### Ranges
+
+Many harnesses bound an input with an assume: `assume(n < 64)`, or
+`assume(n - 1 < 64)` for n in 1..64. Random 64-bit values almost never
+pass such an assume, and the runs that pass rarely reach the ends of the
+range, where off-by-one bugs are. The fuzzer reads a range off each
+`sea.assume` whose condition has one of these forms (seen through block
+arguments with one incoming value), for a `sea.nondet` site `sN` of at most
+64 bits:
+
+| condition | range of `sN` |
+|---|---|
+| `(ult sN K)`, K > 0 | `[0, K-1]` |
+| `(ult (add sN M) K)`, K > 0 | `[d, d+K-1]` modulo 2^w, d = -M modulo 2^w |
+| `(ule sN E)` | `[0, E]`, E a sum (`add`) of value sites and constants, evaluated in each trial on the values read so far |
+
+Several such assumes of one site intersect when their low ends agree; one
+with another low end is not used, nor is `(ult sN 0)` (no value passes
+it), nor a bound whose sites lead back to the site. A bound that names a
+site the trial has not read yet is not used in that trial. Such unused
+assumes are counted as `skipped` in `fuzz.ranges`.
+
+A site with a range gets its fresh values from it, and so does the
+mutation "a fresh random value" (and, with `--fuzz-dict=false`, the
+random value in place of a dictionary value). A draw from `[lo, hi]` is
+`lo`, `hi`, `lo + r` or `hi - r` with r below 64 (or below the size of the
+range), each with probability 1/6, or a uniform value in the range with
+probability 2/6. The other mutations stay as they are: a bit flip, plus or
+minus one, or 0, 1 or -1 may leave the range, and the assume then blocks
+the run; such changes find bugs that need small or equal values.
+
+The range only guides the choice of values. Every trial still runs the
+assume. `--fuzz-ranges=false` turns the draws off: the trials are then the
+same as those of the generator without ranges, for the same seed.
+`--fuzz-sites` lists the ranges (`fuzz.range` lines,
+[For agents](#for-agents)).
 
 A site has one value per trial, as with `--input`: a site that a loop reads
 again reads the same value. So every trial replays through `--input-file`.
@@ -173,6 +223,7 @@ Then come the `fuzz.*` lines:
 ```text
 fuzz.failure: 1 trial=32 file=out/failure-32.txt at=p.mlir:12:3
 fuzz.trials: 32 seeds=0 time=0.001 execs/s=54659
+fuzz.ranges: 0 value-sites=1 assumes=0 skipped=0 draws=0 mode=edge
 fuzz.status: halted=1 assert-failed=1 assume-blocked=30 step-limit=0 error=0
 fuzz.coverage: blocks=3 blocks-total=3 edges=3 assumes=1 assumes-total=1
 fuzz.corpus: 3 seeds=0 skipped-lines=0 files=3 dictionary=6
@@ -189,8 +240,10 @@ fuzz.blocked: 30 op=sea.assume at=p.mlir:5:3 sites=0 cond=(eq s0 1234)
 | `fuzz.limit: <runs> trial=<n> [file=<path>] op=<op> [site=<n>] at=<where>` | one per operation that stopped runs at an interpreter limit or a layout error |
 | `fuzz.limit-message: <text>` | the message of the first such run |
 | `fuzz.trials: <n> seeds=<n> time=<s> execs/s=<n>` | trials run (seed runs included), time, trials per second |
+| `fuzz.ranges: <sites> value-sites=<n> assumes=<n> skipped=<n> draws=<n> mode=edge\|off` | value sites with a range, of all value sites; the range assumes they come from, the recognized ones not used, and the values drawn from a range ([Ranges](#ranges)); `mode=off` with `--fuzz-ranges=false` (then `draws=0`) |
 | `fuzz.status: halted=.. assert-failed=.. assume-blocked=.. step-limit=.. error=.. [memory-error=..]` | runs per status (`memory-error` with `--defer-memory-errors`) |
 | `fuzz.deferred: <runs> memory-error=.. assume-blocked=.. step-limit=.. error=..` | `--defer-memory-errors`: the runs that went past a violation, by how they ended |
+| `fuzz.blocked-before-assert-false: <runs> assumes=<n>` | when the program has an assume directly followed by `assert false`: the runs blocked at such an assume, and the number of them ([SeaHorn's export form](#seahorns-export-form)); these runs are also counted as `assume-blocked` |
 | `fuzz.coverage: blocks=<n> blocks-total=<n> edges=<n> assumes=<n> assumes-total=<n>` | blocks entered, edges taken (the entry counts as one), `sea.assume` ops passed at least once |
 | `fuzz.corpus: <entries> seeds=<files> skipped-lines=<n> files=<n> dictionary=<n>` | corpus entries at the end, seed files read, lines of saved runs that are not inputs, files written, dictionary size |
 | `fuzz.blocked: <runs> op=<op> at=<where> [sites=<n,...> cond=<expr>]` | one per `sea.assume` or `sea.unreachable` that blocked runs, most first; for a `sea.assume`, its condition over the input sites (see [For agents](#for-agents)) |
@@ -202,6 +255,27 @@ each line is a `stat` record ([Output formats](output-formats.md)).
 The `fuzz.blocked` lines show which assumptions stop the runs. A harness
 whose runs are almost all blocked by one assume tests little beyond it:
 that assume is the one to look at, or to seed past with a corpus entry.
+
+## SeaHorn's export form
+
+SeaHorn exports a check as an assume of its failure followed by
+`assert false` and `sea.halt`: reaching the assertion is the failure. A
+run in which the check holds is blocked at that assume, so `fuzz.status`
+shows `halted=0` and the runs that passed the check are among the
+`assume-blocked` ones. The line
+
+```text
+fuzz.blocked-before-assert-false: 7445 assumes=2
+```
+
+counts the runs blocked at an assume that is directly followed by
+`sea.assert` of a constant false: with nothing between them but pure
+operations (the constant) and unconditional `sea.br` hops. In the export
+form these are the runs that passed a check and ended there, the valid
+trials; the `fuzz.blocked` lines show which of the assumes blocked them.
+The line says what the program's structure is; whether such a block is a
+passed check is a reading of the export form. The line is printed only for
+programs that have such an assume. `fuzz.status` is unchanged.
 
 ## Reach coverage
 
@@ -278,6 +352,23 @@ every `sea.assume`, with its condition over the input sites (`sites` and
 after `fuzz.assume:` is the position in that order: `--fuzz-serve`
 names assumes by it. So a strategy can be planned from the conditions
 before any run.
+
+Then comes one `fuzz.range` line per value site with a range, the range
+`--fuzz` draws from ([Ranges](#ranges)):
+
+```text
+fuzz.range: 12 width=64 lo=1 span=63 bounds=- assumes=2
+fuzz.range: 28 width=64 lo=0 span=- bounds=s12+s15+s18+18446744073709551615 assumes=19
+```
+
+| field | meaning |
+|---|---|
+| value | the site |
+| `width` | its width |
+| `lo` | the low end, in unsigned decimal |
+| `span` | the range is `lo` plus 0 to `span`, modulo 2^width; `-`: no constant bound |
+| `bounds` | `,`-separated sums (sites `s<N>` and an unsigned constant, joined by `+`) that also bound the span, evaluated in each trial; `-`: none |
+| `assumes` | the ids of the assumes the range comes from |
 
 The last line, `fuzz.sites: <n> value=<n> memory=<n> assumes=<n> unreachables=<n>`,
 counts the sites, the `sea.assume` ops and the `sea.unreachable` ops (the
