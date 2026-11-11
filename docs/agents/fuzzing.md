@@ -10,7 +10,8 @@ A campaign without failures says nothing about the inputs it did not try.
 `sea-vc` checks all of them.
 
 The defaults of the fuzzer (the dictionary share, the range share, the
-keep rule, the MCMC `beta`, weight and restart bound, the sync period)
+keep rule, the MCMC `beta` and restart bound, and its level weight 65 (fixed, no
+flag), the sync period)
 are not tuned. They were measured on small programs only. Treat each as a
 knob to try, not as a recommendation, and report the values a result
 came from.
@@ -40,9 +41,9 @@ summary at the end ([Reading the output](#reading-the-output)).
 **3. Decide** one change from the [symptom table](#symptoms-and-actions).
 
 **4. Rerun** with that change, a new `--fuzz-out`, and the corpus of the
-earlier run as seeds (`--corpus=out1`), so the new run starts where the
-old one stopped. A `failure-*.txt` file among the seeds fails again at
-once; pass the `cov-*.txt` files only when the failure is known. Change one thing at a time; with the same seed and
+earlier run as seeds (`--corpus=out1`), so the new run starts from the inputs the old one kept. A `failure-*.txt` file among the seeds fails again at
+once; once the failure is known, pass only the `cov-*.txt` files (a
+comma-separated `--corpus` list), or add `--keep-going`. Change one thing at a time; with the same seed and
 options a run is reproducible ([Reproducibility](../reference/fuzzing.md#reproducibility)),
 so two runs that differ in one flag can be compared.
 
@@ -75,12 +76,16 @@ the point they stopped.
 
 Exit status 0 means the trials ran: an assertion failure is in the output
 (`fuzz.failure`), not in the exit status. 4 is a memory-safety finding
-under `--defer-memory-errors`; 1 is a bad option or corpus, or a failure
+under `--defer-memory-errors`; 1 is a bad option or corpus, an unwritable `--fuzz-out` or
+`--fuzz-coverage-out`, a bad `--fuzz-reachable` file or a covered block it
+calls unreachable (`fuzz.reach-inconsistent`), or a failure
 that does not replay (`fuzz.replay-mismatch`, a bug in sea-mlir).
 
 ## Reading the output
 
-The examples are runs of the programs in `test/Interp/fuzz/`.
+The examples are runs of the programs in `test/Interp/fuzz/` and of the
+program shown in the example below; lines of timed runs (`fuzz.progress`,
+`fuzz.sync`) vary from run to run.
 
 ### `fuzz.progress`: is the run still finding anything
 
@@ -97,8 +102,8 @@ fuzz.progress: 0.030 trials=4874 steps=38992 blocks=1 edges=1 paths=1 assumes=0 
 - Everything flat for several periods: more of the same run is unlikely
   to help. Change something.
 - `cost=` (with `--fuzz-strategy=mcmc` only) falling: the chain closes in
-  on the gate that blocks it. Above, the cost went 18, 13, 7 and the next
-  trial failed the assertion. A cost that does not fall for many periods
+  on the gate that blocks it. Above, the cost went 18, 13, 7 and the run
+  failed the assertion at trial 5365, a few hundred trials later. A cost that does not fall for many periods
   is a stall ([MCMC](#fuzzmcmc-the-chain)).
 - `steps` divided by `trials`: the mean cost of a trial.
 
@@ -106,7 +111,7 @@ fuzz.progress: 0.030 trials=4874 steps=38992 blocks=1 edges=1 paths=1 assumes=0 
 
 ```text
 fuzz.frontier: deepest=0 trial=1 end=assume-blocked gate=0 mean=0.00 assumes=1 passed=0 closed=1 unreached=0
-fuzz.gate-closed: 0 blocked=20000 distance=31578 check=1 at=mcmc.mlir:90:3 sites=0 cond=(eq (add (mul s0 3) 7) 1000003)
+fuzz.gate-closed: 0 blocked=20000 distance=31578 check=1 at=test/Interp/fuzz/mcmc.mlir:90:3 sites=0 cond=(eq (add (mul s0 3) 7) 1000003)
 ```
 
 The frontier of a trial is the number of distinct assumes it passed.
@@ -120,8 +125,10 @@ Here site 0 must satisfy `3 * s0 + 7 = 1000003`, that is `s0 = 333332`.
   progress; one that stays put is not.
 - `distance=1` on an `ne` condition means nothing: `ne` gives 1 on every
   blocked trial.
-- `distance=-`: the condition is not a comparison (an `and`, an `or`, or
-  `?` in `cond`); the fuzzer has no measure of how close the runs came.
+- `distance=-`: the assume's operand is not a comparison (an `and` or `or`
+  of comparisons, or a value merged from several paths), or the gate is a
+  `sea.unreachable`; the fuzzer has no measure of how close the runs came.
+  A `?` inside a comparison (`(eq ? 123456)`) still has a distance.
 - `check=1`: the assume is followed by `assert false`. In SeaHorn's export
   form passing it is a failure, and a proof keeps it closed
   ([SeaHorn's export form](../reference/fuzzing.md#seahorns-export-form)).
@@ -181,7 +188,7 @@ With `--fuzz-strategy=mcmc` ([MCMC strategy](../reference/fuzzing.md#mcmc-strate
 
 ```text
 fuzz.mcmc: moves=5362 accepted=2193 uphill=95 restarts=2 restarts-rejected=0 failure-restarts=1 best-cost=0 best-trial=5365 stall=0:5255 beta=1 restart=1000 share=1
-fuzz.gate: 0 op=sea.assume passed=1 blocked=5364 distance=3 measured=5364 mcmc-moves=5362 mcmc-improved=107 check=1 at=mcmc.mlir:90:3
+fuzz.gate: 0 op=sea.assume passed=1 blocked=5364 distance=3 measured=5364 mcmc-moves=5362 mcmc-improved=107 check=1 at=test/Interp/fuzz/mcmc.mlir:90:3
 ```
 
 | field | read it as |
@@ -216,7 +223,7 @@ distance of 183).
 | a range-bounded site whose ends matter (`fuzz.range` lines) | raise `--fuzz-range-share` toward 1; bugs needing values outside the range need it lower |
 | corpus at 1-2 entries, comparisons covered but blocks flat | `--fuzz-keep=blocks,cmp` keeps inputs that came closer to a comparison |
 | deeper frontier matters more than blocks | `--fuzz-keep=blocks,frontier` |
-| `--fuzz-keep=cmp` or `all` makes a large corpus (`kept-cmp=` high) and the picks rarely reach the entries that matter | bound it with `--fuzz-corpus-max` and read `dropped=` |
+| `--fuzz-keep=cmp` or `all` makes a large corpus (`kept-cmp=` high) and the picks rarely reach the entries that matter | bound it with `--fuzz-corpus-max` and read `dropped=`; the bound keeps the first entries and drops later ones, so a late find is not mutated further |
 | many `step-limit` in `fuzz.status` | long loops on random inputs: lower `--max-steps`, or seed bounded loop counts |
 | `fuzz.memory-check` lines | a run stopped at a memory-safety check; feasibility unknown: rerun with `--defer-memory-errors` to classify |
 | `fuzz.limit` lines | the interpreter cannot run that op: not a finding; lower the program first ([Programs that do not run](../reference/fuzzing.md#programs-that-do-not-run)) |
@@ -234,7 +241,31 @@ fuzz-par.model: frontier-max=0 closed=1 closed-gates=0 cmp-buckets=3/14 closed-d
 A check in SeaHorn's export form is an assume of its failure, then
 `assert false`. When the check is an equality `r == x`, the assume is
 `r != x`, and every trial it blocks has `r = x`: distance 1 always. In
-this program `r` differs from `x` only when `3 * x + 7 = 1000003`:
+this program (`p.mlir`) `r` differs from `x` only when `3 * x + 7 = 1000003`:
+
+```mlir
+sea.program @main {
+  %x = sea.nondet "nondet_u32" [0] : i32
+  %c3 = sea.const 3 : i32
+  %c7 = sea.const 7 : i32
+  %m = sea.mul %x, %c3 : i32
+  %y = sea.add %m, %c7 : i32
+  %k = sea.const 1000003 : i32
+  %eq = sea.icmp eq, %y, %k : i32
+  %one = sea.const 1 : i32
+  %zero = sea.const 0 : i32
+  %d = sea.select %eq, %one, %zero : i32
+  %r = sea.add %x, %d : i32
+  %ne = sea.icmp ne, %r, %x : i32
+  sea.assume %ne
+  %f = sea.const false
+  sea.assert %f
+  sea.halt
+}
+```
+
+Run with `sea-run p.mlir --fuzz=200000 --seed=1 --fuzz-strategy=mcmc
+--fuzz-gates`:
 
 ```text
 fuzz.mcmc: moves=199800 accepted=199800 uphill=0 restarts=199 restarts-rejected=0 failure-restarts=0 best-cost=1 best-trial=1 stall=0:199800 beta=1 restart=1000 share=1
@@ -270,7 +301,8 @@ show what the fields look like when the chain works and when it does not.
 ## When to stop
 
 - `fuzz.failure` (or `fuzz.memory-safety`): replay its file with
-  `sea-run p.mlir --input-file=<file>` and report it. Further fuzzing
+  `sea-run p.mlir --input-file=<file>` (with `--defer-memory-errors` for a
+  `fuzz.memory-safety` file) and report it. Further fuzzing
   finds the same failure; `--keep-going` counts the others.
 - `fuzz.reachable` covers every reachable block, and the remaining closed
   gates are `check=1` gates: the campaign has nothing left to reach by
@@ -288,7 +320,8 @@ coverage. The fuzz corpus helps the solver: `sea-vc --reach
 --reach-corpus=out1` runs the corpus files first and queries only the
 targets they did not reach ([Command line](../reference/cli.md)).
 
-`sea-vc --z3-tactic=sls-smt --timeout=<s>` runs z3's local search on the
+`sea-vc p.mlir <the flags of the normal solve> --z3-tactic=sls-smt
+--timeout=<s>` runs z3's local search on the
 query. It answers `sat` or `unknown`, never `unsat`; always give a
 timeout. On the small mutants measured so far it found no bug in 120
 seconds, where the default z3 solve found them in seconds
