@@ -166,6 +166,34 @@ static cl::opt<bool> fuzzCmp(
              "default on, --fuzz-cmp=false turns it off)"),
     cl::init(true));
 
+static cl::opt<std::string> fuzzKeep(
+    "fuzz-keep",
+    cl::desc("Fuzz: why a trial joins the corpus, a list of blocks (a new "
+             "block, edge or passed assume), cmp (a new comparison bucket; "
+             "needs --fuzz-cmp), frontier (more assumes passed than any "
+             "corpus entry), all (default blocks)"),
+    cl::value_desc("reason,..."), cl::init("blocks"));
+
+static cl::opt<uint64_t> fuzzCorpusMax(
+    "fuzz-corpus-max",
+    cl::desc("Fuzz: at most this many corpus entries; a trial kept when the "
+             "corpus is full is not added, and counted (default 0: no "
+             "bound)"),
+    cl::value_desc("N"), cl::init(0));
+
+static cl::list<std::string> fuzzSync(
+    "fuzz-sync",
+    cl::desc("Fuzz: run the new-coverage files (cov-*.txt) of these "
+             "directories (other processes' --fuzz-out) as trials, every "
+             "--fuzz-sync-period seconds; not reproducible"),
+    cl::value_desc("dir,..."), cl::CommaSeparated);
+
+static cl::opt<double> fuzzSyncPeriod(
+    "fuzz-sync-period",
+    cl::desc("Fuzz: seconds between two reads of the --fuzz-sync "
+             "directories (default 5, not tuned)"),
+    cl::value_desc("S"), cl::init(5));
+
 static cl::opt<bool> fuzzGates(
     "fuzz-gates",
     cl::desc("Fuzz: one fuzz.gate line per sea.assume / sea.unreachable: "
@@ -562,7 +590,7 @@ trial, gets its fresh values and its fresh-random mutation from the range:
 lo, hi, lo+r, hi-r (r < 64) with 1/6 each, uniform 2/6. The other
 mutations may leave the range (the assume then blocks the run). A site has
 one value per trial, as with --input. An input that reaches a new block, edge or passed sea.assume
-joins the corpus. The fuzzer stops at the first failure: an assert
+joins the corpus (default --fuzz-keep=blocks; CORPUS). The fuzzer stops at the first failure: an assert
 failure, or with --defer-memory-errors a memory-safety finding (status
 memory-error) (--keep-going: counts them instead). A run that stops with
 status: error is recorded per op and never stops it: a memory-safety
@@ -572,14 +600,15 @@ access off a word of a word-layout memory; never a finding; warning
 fuzz.limit once). A broken `align` promise is a warning,
 interp.align-promise, not an error.
 Same --seed and corpus = same run (--fuzz-time: best effort, the trial
-count depends on speed).
+count depends on speed; --fuzz-sync: not reproducible).
   --corpus=DIR|FILE,...  seed entries, run first, in order (directory:
                          its files by name)
   --fuzz-out=DIR         (new or empty) writes failure-<trial>.txt /
                          memory-check-<trial>.txt / limit-<trial>.txt
                          (the first trial of each failing / erring op)
-                         and cov-<trial>.txt (new coverage), as corpus
-                         files
+                         and cov-<trial>.txt (new coverage; other keep
+                         reasons: cov-cmp-, cov-frontier-<trial>.txt), as
+                         corpus files, each written whole (temp + rename)
   --fuzz-progress=S      a fuzz.progress line every S seconds (default 0:
                          none), flushed: cost and coverage so far; if
                          blocks/edges/paths/assumes still grow, the run
@@ -600,6 +629,12 @@ count depends on speed).
                          at=<where>` per comparison (MODEL COVERAGE)
   --fuzz-cmp             comparison coverage and branch distances (MODEL
                          COVERAGE; default on: a measure; =false turns it off)
+  --fuzz-keep=R,...      corpus feedback: blocks (default), cmp, frontier,
+                         all (CORPUS)
+  --fuzz-corpus-max=N    at most N corpus entries (default 0: no bound)
+  --fuzz-sync=DIR,...    corpus sync with peers' --fuzz-out dirs (CORPUS)
+  --fuzz-sync-period=S   seconds between two sync reads (default 5, not
+                         tuned)
   --fuzz-gates           one fuzz.gate line per blocking op
   --fuzz-reachable=F     F: `sea-vc --reach=blocks` output on the same
                          file; block coverage of the reachable blocks
@@ -620,7 +655,7 @@ Output of --fuzz: the first failure as a plain run on its input
 prints; the fuzzer checks the replay ends the same way), then stat lines:
   fuzz.progress: <elapsed s> trials=<n> steps=<n> blocks=<n> edges=<n>
                  paths=<n> assumes=<n> failures=<n> frontier=<n>
-                 [cmp-buckets=<n>]
+                 [cmp-buckets=<n>] corpus=<n>
                                  (--fuzz-progress, during the run, before
                                  the lines below; failures: failing trials
                                  so far; frontier, cmp-buckets: MODEL
@@ -679,7 +714,10 @@ prints; the fuzzer checks the replay ends the same way), then stat lines:
                                      paths: distinct block sequences, see
                                      Cost and paths)
   fuzz.corpus: <entries> seeds=<files> skipped-lines=<n> files=<written>
-               dictionary=<n>
+               dictionary=<n> keep=<reasons> kept-blocks=<n> kept-cmp=<n>
+               kept-frontier=<n> [max=<n>] dropped=<n>   (CORPUS)
+  fuzz.sync: imported=<n> kept=<n> skipped=<n> polls=<n> dirs=<n>
+             missing=<n> period=<s>          (--fuzz-sync; CORPUS)
   fuzz.blocked: <runs> op=sea.assume|sea.unreachable at=<where>
                 [sites=<n,...>|- cond=<expr>]
                                  (each blocking site, most runs first;
@@ -700,9 +738,30 @@ prints; the fuzzer checks the replay ends the same way), then stat lines:
 <where> is a location as in LOCATIONS. Logs: --log=fuzz.run (start, end),
 --log=fuzz.run:2 (each trial that reached new coverage).
 
+CORPUS (docs/reference/fuzzing.md, "Corpus feedback", "Corpus sync"):
+  --fuzz-keep: why a trial joins the corpus. blocks: a new block, edge or
+    passed assume (default; the corpus and random stream of earlier
+    versions); cmp: a new comparison bucket (needs --fuzz-cmp, default
+    on); frontier: more distinct assumes passed than any corpus entry's
+    trial; all. Untuned options. fuzz.corpus kept-<reason>: the kept
+    trials by their first reason (blocks, cmp, frontier order), so
+    kept-cmp is what cmp added beyond blocks. Without a bound the corpus
+    is at most blocks + edges + assumes + buckets + assumes entries;
+    --fuzz-corpus-max=N: a kept trial is not added to a full corpus
+    (dropped=; its file is still written).
+  --fuzz-sync=DIR,...: every --fuzz-sync-period seconds, the cov-*.txt
+    files of DIRs (peers' --fuzz-out; the run's own is skipped) not read
+    yet run as trials (counted in fuzz.trials) and join the corpus by the
+    keep rule; not written to this run's --fuzz-out (no echo). Failure
+    files are not imported. skipped: unreadable, not a corpus file, or a
+    value that does not fit (another program); missing: dirs absent at the
+    last poll. Not reproducible. utils/fuzz-par.py --sync wires N
+    processes.
+
 MODEL COVERAGE (--fuzz; docs/reference/fuzzing.md, "Model coverage"):
-measures of the program as a model, not corpus feedback (the inputs, the
-corpus and the random stream are the same with or without them). Gate ids
+measures of the program as a model, not corpus feedback unless
+--fuzz-keep asks (the inputs, the corpus and the random stream are the
+same with or without them). Gate ids
 are the fuzz.assume ids of --fuzz-sites.
   frontier: the distinct sea.assume ops one trial passed (the approach
     level); deepest: the most of any trial, the first such trial, how it
@@ -1404,6 +1463,15 @@ static int runFuzz(sea::ProgramOp program) {
   fo.outDir = fuzzOut;
   fo.coverageOut = fuzzCoverageOut;
   fo.cmpCoverage = fuzzCmp;
+  if (failed(sea::parseFuzzKeep(fuzzKeep, fo.keep, error)))
+    return fail("--fuzz-keep: " + error);
+  if ((fo.keep & sea::kKeepCmp) && !fuzzCmp)
+    return fail("--fuzz-keep=cmp needs the comparison counters (--fuzz-cmp)");
+  fo.corpusMax = fuzzCorpusMax;
+  fo.syncDirs.assign(fuzzSync.begin(), fuzzSync.end());
+  if (fuzzSyncPeriod <= 0)
+    return fail("--fuzz-sync-period must be positive");
+  fo.syncSeconds = fuzzSyncPeriod;
   fo.maxSteps = maxSteps;
   sea::out::Emitter out(outs(), outFormat);
   raw_ostream &os = out.lines();
@@ -1417,7 +1485,7 @@ static int runFuzz(sea::ProgramOp program) {
        << " failures=" << p.failures << " frontier=" << p.frontier;
     if (fuzzCmp)
       os << " cmp-buckets=" << p.cmpBuckets;
-    os << "\n";
+    os << " corpus=" << p.corpus << "\n";
     out.flush();
   };
   std::vector<sea::ReachTarget> targets;
@@ -1553,7 +1621,19 @@ static int runFuzz(sea::ProgramOp program) {
     skipped += s.skippedLines;
   os << "fuzz.corpus: " << rep->corpusSize << " seeds=" << seeds.size()
      << " skipped-lines=" << skipped << " files=" << rep->filesWritten
-     << " dictionary=" << (fuzzDict ? rep->dictionarySize : 0) << "\n";
+     << " dictionary=" << (fuzzDict ? rep->dictionarySize : 0)
+     << " keep=" << sea::formatFuzzKeep(fo.keep);
+  for (unsigned i = 0; i < sea::kKeepReasons; ++i)
+    os << " kept-" << sea::kKeepNames[i] << "=" << rep->keptBy[i];
+  if (fo.corpusMax)
+    os << " max=" << fo.corpusMax;
+  os << " dropped=" << rep->corpusDropped << "\n";
+  if (!fo.syncDirs.empty())
+    os << "fuzz.sync: imported=" << rep->syncImported
+       << " kept=" << rep->syncKept << " skipped=" << rep->syncSkipped
+       << " polls=" << rep->syncPolls << " dirs=" << fo.syncDirs.size()
+       << " missing=" << rep->syncDirsMissing
+       << " period=" << format("%g", fo.syncSeconds) << "\n";
   for (auto [op, n] : rep->blocked) {
     std::string at = sea::formatLoc(op->getLoc());
     std::string line;

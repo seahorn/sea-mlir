@@ -32,6 +32,10 @@ $ sea-run p.mlir --fuzz=10000 --seed=1 --fuzz-out=out
 | `--fuzz-cmp` | comparison coverage: operand distance buckets of every comparison, branch distances of the blocking assumes (see [Model coverage](#model-coverage)); default on, `--fuzz-cmp=false` turns it off |
 | `--fuzz-gates` | one `fuzz.gate` line per `sea.assume` and `sea.unreachable`: trials that passed it and that it blocked (see [Model coverage](#model-coverage)) |
 | `--fuzz-reachable=<file>` | the output of `sea-vc --reach=blocks` on the same file: block coverage of the reachable blocks, the uncovered ones named (see [Model coverage](#model-coverage)) |
+| `--fuzz-keep=<reason>,...` | why a trial joins the corpus: `blocks` (default), `cmp`, `frontier`, `all` (see [Corpus feedback](#corpus-feedback)) |
+| `--fuzz-corpus-max=<n>` | at most `n` corpus entries; kept trials past it are dropped and counted (default 0: no bound) |
+| `--fuzz-sync=<dir>,...` | every `--fuzz-sync-period` seconds, run the new-coverage files of other processes' `--fuzz-out` directories as trials (see [Corpus sync](#corpus-sync)) |
+| `--fuzz-sync-period=<s>` | the seconds between two reads of the `--fuzz-sync` directories (default 5, not tuned) |
 | `--keep-going` | count failures instead of stopping at the first |
 | `--defer-memory-errors` | go on past memory-safety violations; one is a failure only if the run reaches the end (see below) |
 | `--input-file=<file>` | run once on a corpus file (without `--fuzz`) |
@@ -131,8 +135,9 @@ again reads the same value. So every trial replays through `--input-file`.
 
 A trial reaches new coverage when it enters a block it has not entered
 before, takes a new edge between blocks, or passes a `sea.assume` that no
-earlier run passed. Its input then joins the corpus, and with `--fuzz-out`
-it is written as `cov-<trial>.txt`.
+earlier run passed. By default its input then joins the corpus, and with
+`--fuzz-out` it is written as `cov-<trial>.txt` ([Corpus
+feedback](#corpus-feedback) has the other reasons).
 
 The fuzzer also counts paths: a path is the sequence of blocks a trial
 entered, whatever ended the trial, kept as a 64-bit hash. Paths are a
@@ -153,14 +158,14 @@ its cost (`steps=` and `steps/s=` of `fuzz.trials`).
 the trial that crossed the time, and flushes it:
 
 ```text
-fuzz.progress: 1.000 trials=183513 steps=1449724 blocks=4 edges=5 paths=3 assumes=1 failures=0 frontier=1
+fuzz.progress: 1.000 trials=183513 steps=1449724 blocks=4 edges=5 paths=3 assumes=1 failures=0 frontier=1 cmp-buckets=9 corpus=4
 ```
 
 The fields are the elapsed seconds, then the totals so far: trials,
 steps, blocks entered, edges taken, distinct paths, `sea.assume` ops
-passed, failing trials, the deepest assume frontier, and unless
+passed, failing trials, the deepest assume frontier, unless
 `--fuzz-cmp=false` the comparison buckets covered (`cmp-buckets=`; see
-[Model coverage](#model-coverage)). While blocks, edges, paths or assumes still grow,
+[Model coverage](#model-coverage)), and the corpus entries. While blocks, edges, paths or assumes still grow,
 the fuzzer is reaching new behavior; when they stay flat for a long time,
 more of the same is unlikely to help, and a corpus entry, another
 `--fuzz-range-share` or a look at the `fuzz.blocked` lines is the next step.
@@ -215,9 +220,12 @@ failure and the coverage of each process and of their union:
 $ python3 utils/fuzz-par.py -n 8 --out par --progress 5 -- p.mlir --fuzz-time=600
 ```
 
-Run `utils/fuzz-par.py --agent` for its options and output lines. The time
-to the first failure of `n` processes is the least of `n` independent
-runs. Its `fuzz-par.model` line joins the model coverage of the files:
+Run `utils/fuzz-par.py --agent` for its options and output lines. Without
+`--sync` the processes are independent: the time to the first failure of
+`n` processes is the least of `n` independent runs. With `--sync` each
+process also reads the others' new-coverage files ([Corpus
+sync](#corpus-sync)); `fuzz-par.process` lines then show what each
+imported. Its `fuzz-par.model` line joins the model coverage of the files:
 the deepest frontier, the assumes no process passed, and the buckets of all processes and the least distance of each closed
 assume (the comparison fields are absent with `--fuzz-cmp=false`).
 
@@ -227,7 +235,8 @@ Blocks and edges are what a code fuzzer counts. The program here is a
 model: its assumes say which inputs count, and its comparisons decide
 where runs go. The fuzzer also measures those, on every run, with the
 same inputs and random stream (these are measures; no trial joins the
-corpus for them).
+corpus for them unless `--fuzz-keep` asks, see [Corpus
+feedback](#corpus-feedback)).
 
 **Assume frontier.** A trial's frontier is the number of distinct
 `sea.assume` ops it passed (the approach level of search-based testing).
@@ -327,6 +336,71 @@ and mutants of one function, while the model fuzzer and the default solve
 found them. It is worth a try when the default solve times out on a query
 that looks satisfiable, or as a cross-check. z3's older `qfbv-sls` tactic
 and `sat.local_search` are not recommended.
+
+## Corpus feedback
+
+`--fuzz-keep=<reason>,...` says why a trial joins the corpus:
+
+| reason | a trial is kept when it |
+|---|---|
+| `blocks` | enters a new block, takes a new edge or passes a `sea.assume` no earlier trial passed (the default, the rule of [Coverage](#coverage)) |
+| `cmp` | covers a comparison bucket no earlier trial covered ([Model coverage](#model-coverage); needs the comparison counters, an error with `--fuzz-cmp=false`) |
+| `frontier` | passes more distinct `sea.assume` ops than the trial of any corpus entry (a deeper assume frontier) |
+| `all` | any of them |
+
+A new pass of one gate is a newly passed assume, so `blocks` covers it.
+With the default the corpus and the random stream are those of earlier
+versions. The other reasons are untuned options, not recommendations: the
+measurements so far are on small programs.
+
+`fuzz.corpus` says why entries were kept:
+
+```text
+fuzz.corpus: 92 seeds=0 skipped-lines=0 files=0 dictionary=50 keep=blocks,cmp,frontier kept-blocks=7 kept-cmp=85 kept-frontier=0 dropped=0
+```
+
+A trial with several reasons counts under the first in the order blocks,
+cmp, frontier; `kept-cmp` is what `cmp` added beyond `blocks`. With
+`--fuzz-out` the file of a kept trial names that reason: `cov-<trial>.txt`
+(blocks), `cov-cmp-<trial>.txt`, `cov-frontier-<trial>.txt`, and, unless
+the rule is the default, its header lists every reason
+(`keep=blocks,cmp`).
+
+The corpus cannot grow without bound: each kept trial covers something
+first, so the corpus has at most as many entries as there are blocks,
+edges, assumes, buckets (7 per comparison) and frontier depths.
+`--fuzz-corpus-max=<n>` bounds it further: a kept trial is not added
+when the corpus has `n` entries (its coverage still counts and its file
+is still written), and `dropped=` counts these trials.
+
+## Corpus sync
+
+`--fuzz-sync=<dir>,...` lets processes on the same program share inputs,
+as the main / secondary instances of AFL do. Every
+`--fuzz-sync-period=<s>` seconds (default 5, not tuned) the run lists the
+directories, the `--fuzz-out` directories of the other processes, and
+runs each `cov-*.txt` file it has not read yet as a trial (in name order
+per directory). An imported trial joins this process's corpus by the
+same `--fuzz-keep` rule, and is not written to this process's
+`--fuzz-out` (it stays where it was found, so it does not echo back).
+Failure files are not imported: each process reports its own failures.
+
+```text
+fuzz.sync: imported=31 kept=4 skipped=0 polls=12 dirs=15 missing=0 period=5
+```
+
+`imported`: the files run as trials (also counted in `fuzz.trials`);
+`kept`: of those, the ones that joined the corpus; `skipped`: files that
+do not read or parse, or hold a value that does not fit its site (another
+program); `missing`: the directories that did not exist at the last
+poll. The run's own `--fuzz-out` is never read. The fuzzer writes every
+corpus file as a temporary file renamed into place, so a peer reads a
+file whole or not at all.
+
+Sync gives up reproducibility: which files a process imports, and when,
+depends on the timing of the others, so the same `--seed` no longer gives
+the same trials. `utils/fuzz-par.py --sync` wires each process to the
+others' directories.
 
 ## Failures, memory-safety checks and limits
 
@@ -440,13 +514,13 @@ fuzz.trials: 32 seeds=0 time=0.001 execs/s=54659 steps=139 steps/s=211841
 fuzz.ranges: 0 value-sites=1 assumes=0 skipped=0 draws=0 mode=mix share=0.5 range-trials=0
 fuzz.status: halted=1 assert-failed=1 assume-blocked=30 step-limit=0 error=0
 fuzz.coverage: blocks=3 blocks-total=3 edges=3 assumes=1 assumes-total=1 paths=3
-fuzz.corpus: 3 seeds=0 skipped-lines=0 files=3 dictionary=6
+fuzz.corpus: 3 seeds=0 skipped-lines=0 files=3 dictionary=6 keep=blocks kept-blocks=3 kept-cmp=0 kept-frontier=0 dropped=0
 fuzz.blocked: 30 op=sea.assume at=p.mlir:5:3 sites=0 cond=(eq s0 1234)
 ```
 
 | line | meaning |
 |---|---|
-| `fuzz.progress: <s> trials=<n> steps=<n> blocks=<n> edges=<n> paths=<n> assumes=<n> failures=<n> frontier=<n> [cmp-buckets=<n>]` | `--fuzz-progress`: the totals so far, printed during the run ([Progress](#progress)) |
+| `fuzz.progress: <s> trials=<n> steps=<n> blocks=<n> edges=<n> paths=<n> assumes=<n> failures=<n> frontier=<n> [cmp-buckets=<n>] corpus=<n>` | `--fuzz-progress`: the totals so far, printed during the run ([Progress](#progress)) |
 | `fuzz.failure: <runs> trial=<n> [file=<path>] at=<where> time=<s>` | one per failing `sea.assert`: how many runs failed it, the first trial, its file, the seconds from the start of the trials to it |
 | `fuzz.memory-safety: <runs> trial=<n> [file=<path>] op=<op> [site=<n>] at=<where> time=<s>` | `--defer-memory-errors`: one per operation with a memory-safety finding (the first violation of a run that reached the end or a failing assert) |
 | `fuzz.memory-safety-message: <text>` | the message of the first such run |
@@ -460,7 +534,8 @@ fuzz.blocked: 30 op=sea.assume at=p.mlir:5:3 sites=0 cond=(eq s0 1234)
 | `fuzz.deferred: <runs> memory-error=.. assume-blocked=.. step-limit=.. error=..` | `--defer-memory-errors`: the runs that went past a violation, by how they ended |
 | `fuzz.blocked-before-assert-false: <runs> assumes=<n> deferred=<n>` | when the program has an assume directly followed by `assert false`: the runs blocked at such an assume, the number of them, and of the runs those that went past a deferred memory-safety violation first (`--defer-memory-errors`) ([SeaHorn's export form](#seahorns-export-form)); these runs are also counted as `assume-blocked` |
 | `fuzz.coverage: blocks=<n> blocks-total=<n> edges=<n> assumes=<n> assumes-total=<n> paths=<n> [paths-capped=<cap>]` | blocks entered, edges taken (the entry counts as one), `sea.assume` ops passed at least once, distinct paths ([Coverage](#coverage)) |
-| `fuzz.corpus: <entries> seeds=<files> skipped-lines=<n> files=<n> dictionary=<n>` | corpus entries at the end, seed files read, lines of saved runs that are not inputs, files written, dictionary size |
+| `fuzz.corpus: <entries> seeds=<files> skipped-lines=<n> files=<n> dictionary=<n> keep=<reasons> kept-blocks=<n> kept-cmp=<n> kept-frontier=<n> [max=<n>] dropped=<n>` | corpus entries at the end, seed files read, lines of saved runs that are not inputs, files written, dictionary size; the keep rule, the trials kept per first reason, the bound and the kept trials it dropped ([Corpus feedback](#corpus-feedback)) |
+| `fuzz.sync: imported=<n> kept=<n> skipped=<n> polls=<n> dirs=<n> missing=<n> period=<s>` | `--fuzz-sync`: the peers' files run, kept, skipped ([Corpus sync](#corpus-sync)) |
 | `fuzz.blocked: <runs> op=<op> at=<where> [sites=<n,...> cond=<expr>]` | one per `sea.assume` or `sea.unreachable` that blocked runs, most first; for a `sea.assume`, its condition over the input sites (see [For agents](#for-agents)) |
 | `fuzz.frontier: deepest=<n> trial=<n> end=<status> [gate=<id>] mean=<x> assumes=<n> passed=<n> closed=<n> unreached=<n>` | the assume frontier ([Model coverage](#model-coverage)) |
 | `fuzz.gate-closed: <id> blocked=<n> [distance=<d>\|-] [check=1] at=<where> [sites=<n,...> cond=<expr>]` | one per `sea.assume` that blocked trials and that no trial passed |
@@ -807,7 +882,8 @@ same output, except the `time`, `execs/s` and `steps/s` fields and the
 `fuzz.progress` lines. With `--fuzz-time`, the
 number of trials depends on the machine's speed, so the result is
 reproducible only up to where the time ran out: give `--fuzz` for a fixed
-run.
+run. With `--fuzz-sync` a run is not reproducible ([Corpus
+sync](#corpus-sync)).
 
 ## Logs
 

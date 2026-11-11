@@ -94,21 +94,83 @@ std::string formatAssignment(const Assignment &a) {
   return std::to_string(a.site) + "@" + a.cell + "=" + a.value;
 }
 
+/// Writes `text` to `path` whole: to `.<name>.tmp` in the same directory,
+/// then renamed, so a reader of the directory (a peer's --fuzz-sync) sees
+/// the file complete or not at all.
+static LogicalResult writeWhole(StringRef path, StringRef text,
+                                std::string &error) {
+  llvm::SmallString<128> tmp = llvm::sys::path::parent_path(path);
+  llvm::sys::path::append(tmp,
+                          "." + llvm::sys::path::filename(path).str() + ".tmp");
+  {
+    std::error_code ec;
+    llvm::raw_fd_ostream os(tmp, ec, llvm::sys::fs::OF_Text);
+    if (ec) {
+      error = "cannot write '" + tmp.str().str() + "': " + ec.message();
+      return failure();
+    }
+    os << text;
+    os.close();
+    if (os.has_error()) {
+      error = "cannot write '" + tmp.str().str() + "': " + os.error().message();
+      os.clear_error();
+      return failure();
+    }
+  }
+  if (std::error_code ec = llvm::sys::fs::rename(tmp, path)) {
+    error = "cannot rename '" + tmp.str().str() + "' to '" + path.str() +
+            "': " + ec.message();
+    return failure();
+  }
+  return success();
+}
+
 LogicalResult writeCorpusFile(StringRef path,
                               llvm::ArrayRef<std::string> header,
                               llvm::ArrayRef<Assignment> input,
                               std::string &error) {
-  std::error_code ec;
-  llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_Text);
-  if (ec) {
-    error = "cannot write '" + path.str() + "': " + ec.message();
-    return failure();
-  }
+  std::string text;
+  llvm::raw_string_ostream os(text);
   for (const std::string &h : header)
     os << "# " << h << "\n";
   for (const Assignment &a : input)
     os << formatAssignment(a) << "\n";
+  return writeWhole(path, text, error);
+}
+
+const char *const kKeepNames[kKeepReasons] = {"blocks", "cmp", "frontier"};
+
+LogicalResult parseFuzzKeep(StringRef text, unsigned &keep,
+                            std::string &error) {
+  keep = 0;
+  llvm::SmallVector<StringRef> parts;
+  text.split(parts, ',', -1, /*KeepEmpty=*/true);
+  for (StringRef p : parts) {
+    p = p.trim();
+    if (p == "all") {
+      keep |= kKeepAll;
+      continue;
+    }
+    unsigned bit = 0;
+    for (unsigned i = 0; i < kKeepReasons; ++i)
+      if (p == kKeepNames[i])
+        bit = 1u << i;
+    if (!bit) {
+      error = "unknown keep reason '" + p.str() +
+              "' (expected a list of blocks, cmp, frontier, all)";
+      return failure();
+    }
+    keep |= bit;
+  }
   return success();
+}
+
+std::string formatFuzzKeep(unsigned keep) {
+  std::string s;
+  for (unsigned i = 0; i < kKeepReasons; ++i)
+    if (keep & (1u << i))
+      s += (s.empty() ? "" : ",") + std::string(kKeepNames[i]);
+  return s.empty() ? "-" : s;
 }
 
 /// The k=v fields of a record line's rest.
@@ -417,6 +479,7 @@ public:
     values = std::move(preset);
     used.clear();
     text = seedText;
+    badSeed = false;
   }
 
   FailureOr<APInt> get(NondetOp op, std::string &origin,
@@ -599,8 +662,10 @@ public:
                                 const APInt &b) {
         unsigned i = cmpIdx.lookup(&op);
         FuzzCmpStats &st = report.cmps[i];
-        if (st.counts[cmpBucket(p, a, b)]++ == 0)
+        if (st.counts[cmpBucket(p, a, b)]++ == 0) {
           ++report.cmpBucketsHit;
+          ++runNewBuckets;
+        }
         if (st.role == CmpRole::Assume) {
           CmpLast &l = cmpLast[i];
           l.epoch = epoch;
@@ -634,6 +699,7 @@ public:
     pathHash = 0xcbf29ce484222325ULL;
     ++epoch;
     runFrontier = 0;
+    runNewBuckets = 0;
     return interpret(program, src, runOptions);
   }
 
@@ -651,6 +717,7 @@ public:
     p.failures = failingTrials;
     p.frontier = report.frontierDeepest;
     p.cmpBuckets = report.cmpBucketsHit;
+    p.corpus = corpus.size();
     return p;
   }
 
@@ -885,20 +952,23 @@ public:
   }
 
 private:
-  /// Writes `e` as a corpus file; returns its path.
+  /// Writes `e` as a corpus file, whole; returns its path. `keep`: the
+  /// reasons a new-coverage entry was kept (FuzzKeep), in its header.
   FailureOr<std::string> write(StringRef kind, const Entry &e,
-                               const RunResult &r, std::string &error) {
+                               const RunResult &r, std::string &error,
+                               unsigned keep = 0) {
     llvm::SmallString<128> path(options.outDir);
     llvm::sys::path::append(
         path, (kind + "-" + llvm::Twine(report.trials) + ".txt").str());
-    std::error_code ec;
-    llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_Text);
-    if (ec) {
-      error = "cannot write '" + path.str().str() + "': " + ec.message();
-      return failure();
-    }
+    std::string text;
+    llvm::raw_string_ostream os(text);
     os << "# sea-run --fuzz: trial=" << report.trials
-       << " status=" << stringifyRunStatus(r.status) << "\n";
+       << " status=" << stringifyRunStatus(r.status);
+    // the reasons, unless only blocks can be one (the files of earlier
+    // versions)
+    if (keep && options.keep != kKeepBlocks)
+      os << " keep=" << formatFuzzKeep(keep);
+    os << "\n";
     if (r.status == RunStatus::MemoryError)
       os << "# replay with: sea-run --defer-memory-errors --input-file=<this "
             "file>\n";
@@ -908,15 +978,19 @@ private:
          << " memhavoc-null-noop=" << r.memhavocNullNoopUses << "\n";
     for (const Assignment &a : assignmentsOf(e))
       os << formatAssignment(a) << "\n";
+    if (failed(writeWhole(path, text, error)))
+      return failure();
     ++report.filesWritten;
     return path.str().str();
   }
 
   /// One trial on `preset` (and a seed's text, from corpus file
-  /// `seedName`). Returns failure on an error of the fuzzer (`error` set);
-  /// `stop` when the run must end.
+  /// `seedName`; `imported`: a file of a peer, FuzzOptions::syncDirs).
+  /// Returns failure on an error of the fuzzer (`error` set); `stop` when
+  /// the run must end.
   LogicalResult trial(Entry preset, const std::map<Key, std::string> *seedText,
-                      StringRef seedName, bool &stop, std::string &error);
+                      StringRef seedName, bool &stop, std::string &error,
+                      bool imported = false);
 
   ProgramOp program;
   const FuzzOptions &options;
@@ -955,6 +1029,10 @@ private:
   std::vector<uint64_t> gateEpoch;
   uint64_t epoch = 0;
   unsigned runFrontier = 0;
+  /// the comparison buckets the current run covered first; the deepest
+  /// frontier of a corpus entry's trial (FuzzKeep)
+  unsigned runNewBuckets = 0;
+  unsigned corpusFrontier = 0;
   /// the comparisons' ids; an assume's comparison's last operands, and the
   /// run that computed them
   llvm::DenseMap<Operation *, unsigned> cmpIdx;
@@ -970,15 +1048,22 @@ private:
 
 LogicalResult Fuzzer::trial(Entry preset,
                             const std::map<Key, std::string> *seedText,
-                            StringRef seedName, bool &stop,
-                            std::string &error) {
+                            StringRef seedName, bool &stop, std::string &error,
+                            bool imported) {
   source.reset(std::move(preset), seedText);
   RunResult r = runOn(source);
   ++report.trials;
   if (source.badSeed) {
+    if (imported) {
+      // a peer's file with a value that does not fit (another program?):
+      // skipped; the run up to that site was an execution and counts
+      ++report.syncSkipped;
+      return success();
+    }
     error = r.message;
     return failure();
   }
+  report.syncImported += imported;
   report.steps += r.steps;
   if (!paths.contains(pathHash)) {
     if (paths.size() < kFuzzPathCap)
@@ -1041,19 +1126,47 @@ LogicalResult Fuzzer::trial(Entry preset,
                "fuzz.limit lines count them per op): " +
                    r.message,
                r.at ? std::optional<Location>(r.at->getLoc()) : std::nullopt);
-  if (!newBlocks.empty() || !newEdges.empty() || !newAssumes.empty()) {
-    corpus.push_back(source.used);
+  // the keep rule (FuzzKeep): the reasons this trial has, of those asked for
+  unsigned keep = 0;
+  if (!newBlocks.empty() || !newEdges.empty() || !newAssumes.empty())
+    keep |= kKeepBlocks;
+  if (runNewBuckets)
+    keep |= kKeepCmp;
+  if (runFrontier > corpusFrontier)
+    keep |= kKeepFrontier;
+  keep &= options.keep;
+  if (keep) {
+    unsigned first = 0; // the first reason (kKeepNames order)
+    while (!(keep & (1u << first)))
+      ++first;
+    ++report.keptBy[first];
+    report.syncKept += imported;
+    bool full = options.corpusMax && corpus.size() >= options.corpusMax;
+    if (full) {
+      ++report.corpusDropped;
+    } else {
+      corpus.push_back(source.used);
+      corpusFrontier = std::max(corpusFrontier, runFrontier);
+    }
     SEA_LOG(logFuzz, 2)
         .msg("new-coverage")
         .kv("trial", report.trials)
         .kv("status", stringifyRunStatus(r.status))
+        .kv("keep", formatFuzzKeep(keep))
         .kv("blocks", newBlocks.size())
         .kv("edges", newEdges.size())
         .kv("assumes", newAssumes.size())
-        .kv("corpus", corpus.size());
-    if (!options.outDir.empty() && !failing && !erring)
-      if (failed(write("cov", source.used, r, error)))
+        .kv("cmp-buckets", runNewBuckets)
+        .kv("frontier", runFrontier)
+        .kv("corpus", corpus.size())
+        .kv("dropped", full ? 1 : 0);
+    // an imported entry stays in its peer's directory (no echo back)
+    if (!options.outDir.empty() && !failing && !erring && !imported) {
+      std::string kind =
+          first == 0 ? "cov" : "cov-" + std::string(kKeepNames[first]);
+      if (failed(write(kind, source.used, r, error, keep)))
         return failure();
+    }
   }
   if (!failing && !erring)
     return success();
@@ -1098,6 +1211,18 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
     error = "reach targets need exact runs: not with deferred memory errors "
             "(past a substituted violation a run is not an execution of the "
             "program)";
+    return failure();
+  }
+  if (!options.keep) {
+    error = "no keep reason: give at least one of blocks, cmp, frontier";
+    return failure();
+  }
+  if ((options.keep & kKeepCmp) && !options.cmpCoverage) {
+    error = "keep reason cmp needs the comparison counters (--fuzz-cmp)";
+    return failure();
+  }
+  if (!options.syncDirs.empty() && !(options.syncSeconds > 0)) {
+    error = "corpus sync needs a positive period (--fuzz-sync-period)";
     return failure();
   }
   if (!options.outDir.empty() && llvm::sys::fs::exists(options.outDir)) {
@@ -1160,6 +1285,67 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
     while (nextProgress <= t)
       nextProgress += options.progressSeconds;
   };
+  // corpus sync: every syncSeconds, the peers' cov-*.txt files not read yet
+  // (this run's own outDir excluded), in name order per directory
+  std::vector<std::string> syncDirs;
+  for (const std::string &d : options.syncDirs) {
+    bool own = false;
+    if (!options.outDir.empty())
+      llvm::sys::fs::equivalent(d, options.outDir, own);
+    if (!own)
+      syncDirs.push_back(d);
+  }
+  std::set<std::string> syncSeen;
+  double nextSync = options.syncSeconds;
+  auto sync = [&](bool &stop) -> LogicalResult {
+    if (syncDirs.empty() || elapsed() < nextSync)
+      return success();
+    while (nextSync <= elapsed())
+      nextSync += options.syncSeconds;
+    ++report.syncPolls;
+    unsigned missing = 0;
+    for (const std::string &dir : syncDirs) {
+      if (!llvm::sys::fs::is_directory(dir)) {
+        ++missing;
+        continue;
+      }
+      std::vector<std::string> files;
+      std::error_code ec;
+      for (llvm::sys::fs::directory_iterator it(dir, ec), end; it != end && !ec;
+           it.increment(ec)) {
+        StringRef name = llvm::sys::path::filename(it->path());
+        if (name.starts_with("cov-") && name.ends_with(".txt") &&
+            !syncSeen.count(it->path()))
+          files.push_back(it->path());
+      }
+      if (ec) {
+        // a directory that does not list now: counted as missing this poll
+        ++missing;
+        continue;
+      }
+      llvm::sort(files);
+      for (const std::string &f : files) {
+        if (stop || !budgetLeft())
+          break;
+        syncSeen.insert(f);
+        std::vector<CorpusEntryText> entry;
+        std::string why;
+        if (failed(readCorpusFile(f, entry, why))) {
+          ++report.syncSkipped;
+          SEA_LOG(logFuzz, 2).msg("sync-skip").kv("file", f).kv("why", why);
+          continue;
+        }
+        std::map<Key, std::string> text;
+        for (const Assignment &a : entry.front().assignments)
+          text[{a.site, a.cell}] = a.value;
+        pickStrategy();
+        if (failed(trial({}, &text, f, stop, error, /*imported=*/true)))
+          return failure();
+      }
+    }
+    report.syncDirsMissing = missing;
+    return success();
+  };
   bool stop = false;
   for (const CorpusEntryText &s : seeds) {
     if (stop || !budgetLeft())
@@ -1180,6 +1366,8 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
     if (failed(trial(nextEntry(), nullptr, "", stop, error)))
       return failure();
     tick();
+    if (failed(sync(stop)))
+      return failure();
   }
   report.seconds = elapsed();
   report.paths = paths.size();
