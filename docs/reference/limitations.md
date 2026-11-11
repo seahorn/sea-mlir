@@ -66,6 +66,14 @@
 - `--ptr-mode=address` can be much slower on code that aligns pointers by
   integer arithmetic.
 
+- Pass validation (`utils/cover-diff.py`) runs both lowerings on one
+  placement, written by one side and read by the other (`--place-out`,
+  `--place-in`). It needs one side to have every object of the other, with
+  the same size and alignment. A lowering that creates objects, or that
+  folds an allocation size on one side only (a symbolic size then gets
+  `max-symbolic-size` units there), has no shared placement: the job is
+  `unknown` (`reason=layout`).
+
 ## Programs exported by SeaHorn
 
 These concern only programs that reach sea-mlir through SeaHorn's front end

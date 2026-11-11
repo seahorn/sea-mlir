@@ -133,6 +133,13 @@ python3 utils/query-diff.py --old <base>/sea-vc --new <head>/sea-vc \
 ```
 
 Each job gets one class. Symbols of the two queries are matched by name.
+A symbol that only one query declares is a free input, unless a
+top-level conjunct of that query (through `and` and the bodies of `let`)
+defines it as a numeral (`(= x #x..)`):
+then it is replaced by the numeral before any check (`subst=<n>` on the
+job's line). The replacement is exact, since $\exists x.\, x = c \wedge
+\varphi \equiv \varphi[c/x]$. These symbols are the addresses of objects
+that the other lowering erased (`obj.<name>`), not inputs.
 
 | class | what it proves |
 |---|---|
@@ -245,6 +252,21 @@ What is compared, per input:
 | `removed-true` | (`--no-keep-sites` only) on one side only, a check of the constant true there, and the next target of its block, which is reached iff it is, is equal |
 | `removed-but-reachable` | on one side only, and reachable there: a `DIFF` |
 | `unknown` | an unknown answer decides the class; also a removed check of true with no next target that can stand for it (`--unresolved-true=pass` counts it `removed-true`) |
+
+Both sides run on one placement of the objects. The writer side lowers
+with `sea-vc --place-out=<file>`, the other with `--place-in=<file>`
+([External placement](../reference/output-formats.md#placement-files)), so
+the objects of both sides are at the same addresses. The writer should be
+the side with more objects: A writes first. If B has an object that A's
+file does not name (or one of another size or alignment, a `place.in-*`
+error), B writes and A reads, once. The `layout:` line names the writer.
+If both fail, there is no shared placement, and the job is `unknown`
+(`reason=layout`), not a pass. The placement is part of the forall-exists
+correspondence: for a placement of one side there is one of the other, and
+the file is the witness, as the block ids are for the guards. The reach
+runs, the safety verdicts, the R_T programs and the witness replays all
+use it. Each side's own placement need not agree with the other's on the
+common objects: sccp and cse can run before placement on one side only.
 
 A job is `DIFF` if some key is, or the verdicts are sat and unsat, or
 level 1 finds a `DIFF`. It is `unknown`, never a pass, when no key is

@@ -44,6 +44,20 @@ refused (cover-diff sets them; block targets have no sites). The reach answer of
 memory-safety error (replay=memory-error: it rests on A-INB, which the
 run breaks) counts as unknown.
 
+Placement. Both sides run on one placement of the objects (sea-vc
+--place-out / --place-in): the writer side lowers with --place-out=<file>,
+the other with --place-in=<file>, so their common objects are at the same
+addresses (and their obj.<name> symbols have the same values). The writer
+is the side with more objects: A first; if B has an object A's file does
+not name (or one of another size: a place.in-* error), the reverse, once.
+If both fail, there is no shared placement: the job is unknown
+(reason=layout), never a pass. The placement is part of the forall-exists
+correspondence (for a placement of one side there is one of the other);
+the file is its witness, as the block ids are for the guards. The reach
+runs, the safety verdicts and the R_T programs are each lowered so, the
+writer of the reach runs first; a witness replays on the other side on
+the reach runs' file.
+
 Level 0, coverage equality (always): sea-vc --reach on A and on B, each
 with its own concrete runs first (--fuzz trials, --corpus seeds; the
 inputs of the two sides need not be the same), the solver for the rest.
@@ -76,7 +90,10 @@ one copy is not the target), R_T of A and R_T of B (sea-vc
 dropped and assert(false) at T, its assert tagged sea.reach_target) are
 compared by query-diff's classifier with --project-blocks (sea-vc R_T
 --smt2 <--rt-args>; default: --args without the lowering's flags): equiv-sat says that the same inputs reach T on both
-sides (block guards projected: a forall-exists check). The R_T are paired
+sides (block guards projected: a forall-exists check). An object one
+lowering erased leaves its address, obj.<name> = <base>, in the other's
+query only: query-diff substitutes such a symbol (subst=<n>), it is no
+input. The R_T are paired
 by key, from the reach.program records. identical / order / equiv-sat
 pass; DIFF fails; unknown is unknown; both-unsat and error are errors
 (level 0 answered both reachable).
@@ -104,6 +121,7 @@ import glob
 import importlib.util
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -150,15 +168,24 @@ CLASSES (level 0, per key):
   removed-but-reachable  on one side only, reachable there (a DIFF)
   unknown                an unknown answer decides the class (also a
                          reachable answer with replay=memory-error)
+PLACEMENT: both sides on one placement (sea-vc --place-out on the writer,
+  --place-in on the other): A writes; if B has an object A's file lacks
+  (a place.in-* error), B writes and A reads, once; both fail: the job is
+  unknown reason=layout (level 1 / verdict alone: those unknown). Applies to
+  the reach runs (level 0), the verdicts, the R_T programs and the replays.
 LEVEL 1 (per key reachable on both sides): query-diff --project-blocks on
   R_T(A) vs R_T(B): identical / order / equiv-sat (the same inputs reach
   T) pass, DIFF fails, unknown, both-unsat / error are errors; a key with
-  copies on a side is unknown (reason=copies). Block guards: by name, then
+  copies on a side is unknown (reason=copies). A symbol of one query only
+  that it defines as a numeral (obj.<name> of an object the other side
+  erased) is substituted (subst=<n>), not an input. Block guards: by name, then
   the Skolem hints from the block ids of the two R_T (quantifier-free,
   checked), then the quantified check (--no-hints: no hints).
 OUTPUT (stdout, line-oriented):
   config: a=<args> b=<args> args=<args> fuzz=<n> seed=<n> level=<n>
       rt-args=<args> unresolved-true=unknown|pass keep-sites=0|1
+  layout: <job> writer=a|b [reversed <side>-in=<place.in-kind>]
+  layout: <job> [verdict] unknown reason=layout a-in=<kind> b-in=<kind>
   target: <job> <site>/<role> <class> a=<status> b=<status>
       [cond=true resolved=next|unresolved] [a-copies=<n>] [b-copies=<n>]
       [witness=<side>:<file>]
@@ -168,7 +195,7 @@ OUTPUT (stdout, line-oriented):
       unknown or inconclusive: the job is unknown; a sea-vc exit other
       than 0 / 3 / 4 is an error)
   level1: <job> <site>/<role> <class> [reason=...] [old=.. new=..]
-      [by=identical|names|hints|exists] [hints=<old-new|new-old>:<answer>
+      [subst=<n>] [by=identical|names|hints|exists] [hints=<old-new|new-old>:<answer>
       | hints=incomplete:<n> | hints=none:<why>]   (hints=: why the quantified check ran)
   job: <job> <pass|DIFF|unknown|error> targets=<n> equal=<n> diff=<n>
       removed-ok=<n> removed-true=<n> removed-but-reachable=<n> unknown=<n>
@@ -216,6 +243,25 @@ class SeaVcError(Exception):
     pass
 
 
+class LayoutError(SeaVcError):
+    """A side could not take the other side's placement (--place-in: a
+    place.in-* error, such as an object the file does not name)."""
+
+
+class NoLayout(Exception):
+    """Neither side's placement fits the other: no shared layout."""
+
+
+PLACE_IN_ERROR = re.compile(r"\[(place\.in-[a-z-]+)\]")
+
+
+def check_layout(p):
+    """Raises LayoutError if the run failed on --place-in."""
+    m = PLACE_IN_ERROR.search(p.stderr)
+    if p.returncode == 1 and m:
+        raise LayoutError(m.group(1))
+
+
 def role(rec):
     """The role of a reach record: a folded assume's sea.unreachable is
     its assume (the same top of op), a reach-site marker (sea.print,
@@ -249,6 +295,7 @@ def run_sea_vc(a, argv, timeout, ok=(0, 3, 4)):
         raise SeaVcError("timeout") from None
     # --reach: 0 decided; 3 some target unknown; 4 a replay at a memory error
     if p.returncode not in ok:
+        check_layout(p)
         last = first_error(p.stderr)
         raise SeaVcError(f"sea-vc-exit-{p.returncode}" + (":" + last if last else ""))
     recs = []
@@ -354,8 +401,31 @@ def side_argv(a, f, side_args, extra):
     return [f] + a.common + side_args + ["--reach", "--reach-failures"] + keep + extra
 
 
-def reach_side(a, f, side_args, wdir):
-    extra = [f"--reach-witness={wdir}"]
+def placed(a, work, tag, run, first="a"):
+    """The runs of the two sides on one placement: the writer side
+    (--place-out=<file>) first, then the other (--place-in=<file>). run(side,
+    place_args) runs a side. The writer should be the side with more
+    objects: `first`; if the other cannot take its placement (LayoutError:
+    an object the file does not name, a size that differs), the reverse,
+    once. Returns ({side: result}, writer, file, note), note the first
+    try's failure (or ""); raises NoLayout if both fail."""
+    failed = {}
+    for writer in (first, "b" if first == "a" else "a"):
+        reader = "b" if writer == "a" else "a"
+        f = os.path.join(work, f"{tag}-{writer}.place")
+        out = {writer: run(writer, [f"--place-out={f}"])}
+        try:
+            out[reader] = run(reader, [f"--place-in={f}"])
+        except LayoutError as e:
+            failed[reader] = str(e)
+            continue
+        note = "".join(f"reversed {k}-in={v}" for k, v in failed.items())
+        return out, writer, f, note
+    raise NoLayout(" ".join(f"{k}-in={v}" for k, v in sorted(failed.items())))
+
+
+def reach_side(a, f, side_args, wdir, place=()):
+    extra = [f"--reach-witness={wdir}"] + list(place)
     if a.reach_rlimit:
         extra += [f"--reach-rlimit={a.reach_rlimit}"]
     if a.fuzz:
@@ -365,15 +435,17 @@ def reach_side(a, f, side_args, wdir):
     return run_sea_vc(a, side_argv(a, f, side_args, extra), a.timeout)
 
 
-def replay(a, f, side_args, witness):
-    """The keys the witness's run reaches on a side (no query)."""
+def replay(a, f, side_args, witness, place):
+    """The keys the witness's run reaches on a side (no query), on the
+    placement of the witness's run (place: --place-in=<file>)."""
     recs = run_sea_vc(
         a,
         side_argv(
             a,
             f,
             side_args,
-            ["--reach-query=false", f"--reach-corpus={witness}", "--reach-fuzz=0"],
+            ["--reach-query=false", f"--reach-corpus={witness}", "--reach-fuzz=0"]
+            + place,
         ),
         a.timeout,
     )
@@ -381,10 +453,12 @@ def replay(a, f, side_args, witness):
     return sorted(k for k, rs in by.items() if any(r.get("via") == "run" for r in rs))
 
 
-def rt_programs(a, f, side_args, d):
+def rt_programs(a, f, side_args, d, place=()):
     """key -> R_T file, for the keys with one target on a side."""
     recs = run_sea_vc(
-        a, side_argv(a, f, side_args, [f"--reach-programs={d}"]), a.timeout
+        a,
+        side_argv(a, f, side_args, [f"--reach-programs={d}"] + list(place)),
+        a.timeout,
     )
     out = {}
     for r in recs:
@@ -405,17 +479,18 @@ def smt2(a, rt):
     return None, f"sea-vc-exit-{p.returncode}:" + first_error(p.stderr)
 
 
-def safety_verdict(a, f, side_args):
+def safety_verdict(a, f, side_args, place=()):
     """The sea-vc safety verdict of a side: sat / unsat / unknown, or
     inconclusive (exit 4: a sat that rests on A-INB, which its run breaks).
     Any other exit (1 error, 2 a VC / interpreter mismatch, 5 an invalid
     rewrite) is an error."""
-    cmd = [a.sea_vc, f] + a.common + side_args + ["--format=jsonl"]
+    cmd = [a.sea_vc, f] + a.common + side_args + list(place) + ["--format=jsonl"]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=a.timeout)
     except subprocess.TimeoutExpired:
         raise SeaVcError("verdict-timeout") from None
     if p.returncode not in (0, 3, 4):
+        check_layout(p)
         raise SeaVcError(f"verdict-sea-vc-exit-{p.returncode}:" + first_error(p.stderr))
     for line in p.stdout.splitlines():
         try:
@@ -474,8 +549,24 @@ def one(f, a):
             os.makedirs(work)
         else:
             work = tempfile.mkdtemp(prefix=f"cover-diff-{os.path.basename(job)}-")
-        ra = reach_side(a, f, a.a, os.path.join(work, "a-w"))
-        rb = reach_side(a, fb, a.b, os.path.join(work, "b-w"))
+        inputs = {"a": (f, a.a), "b": (fb, a.b)}
+        # one placement for both sides (the writer's): the same objects at
+        # the same addresses, so that addresses are no inputs that differ
+        # (level 1) and a witness means the same on the other side
+        try:
+            r, writer, layout, note = placed(
+                a,
+                work,
+                "reach",
+                lambda side, pl: reach_side(
+                    a, *inputs[side], os.path.join(work, f"{side}-w"), pl
+                ),
+            )
+        except NoLayout as e:
+            lines.append(f"layout: {job} unknown reason=layout {e}")
+            raise
+        lines.append(f"layout: {job} writer={writer}" + (f" {note}" if note else ""))
+        ra, rb = r["a"], r["b"]
         ma, untagged[0] = collect(ra)
         mb, untagged[1] = collect(rb)
         both_reachable, copies = [], []
@@ -518,7 +609,7 @@ def one(f, a):
                 other_f, other_args = (fb, a.b) if side == "a" else (f, a.a)
                 other = "b" if side == "a" else "a"
                 try:
-                    keys = replay(a, other_f, other_args, w)
+                    keys = replay(a, other_f, other_args, w, [f"--place-in={layout}"])
                     lines.append(
                         f"replay: {job} {key_text(k)} on={other} witness={w} "
                         f"reached={'yes' if k in keys else 'no'} "
@@ -540,7 +631,18 @@ def one(f, a):
             reason = "no-targets"
             lines.append(f"target: {job} - unknown reason=no-targets")
         if a.verdict:
-            va, vb = safety_verdict(a, f, a.a), safety_verdict(a, fb, a.b)
+            try:
+                v, _, _, _ = placed(
+                    a,
+                    work,
+                    "verdict",
+                    lambda side, pl: safety_verdict(a, *inputs[side], pl),
+                    writer,
+                )
+                va, vb = v["a"], v["b"]
+            except NoLayout as e:
+                lines.append(f"layout: {job} verdict unknown reason=layout {e}")
+                va = vb = "unknown"
             if {va, vb} == {"sat", "unsat"}:
                 vcls = "DIFF"
             elif va == vb and va in ("sat", "unsat"):
@@ -555,9 +657,27 @@ def one(f, a):
             # R_T of one copy is not the target: not compared
             l1["unknown"] += 1
             lines.append(f"level1: {job} {key_text(k)} unknown reason=copies")
+        l1_pairs = None
         if a.level >= 1 and both_reachable:
-            pa = rt_programs(a, f, a.a, os.path.join(work, "a-rt"))
-            pb = rt_programs(a, fb, a.b, os.path.join(work, "b-rt"))
+            try:
+                rt, _, _, _ = placed(
+                    a,
+                    work,
+                    "rt",
+                    lambda side, pl: rt_programs(
+                        a, *inputs[side], os.path.join(work, f"{side}-rt"), pl
+                    ),
+                    writer,
+                )
+                l1_pairs = rt["a"], rt["b"]
+            except NoLayout as e:
+                for k in both_reachable:
+                    l1["unknown"] += 1
+                    lines.append(
+                        f"level1: {job} {key_text(k)} unknown reason=layout {e}"
+                    )
+        if l1_pairs:
+            pa, pb = l1_pairs
             qd = query_diff()
             z3 = qd.Z3(a.z3, a.rlimit, a.timeout)
             for k in both_reachable:
@@ -608,6 +728,9 @@ def one(f, a):
             verdict = "error"
         elif counts["unknown"] or l1["unknown"] or no_targets or verdict_unknown:
             verdict = "unknown"
+    except NoLayout:
+        # no placement fits both sides: nothing compared, no pass
+        verdict, reason = "unknown", "layout"
     except SeaVcError as e:
         verdict, reason = "error", str(e)
     except Exception as e:  # noqa: BLE001 - a job's failure is its error
