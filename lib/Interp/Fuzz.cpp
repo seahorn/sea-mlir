@@ -213,6 +213,182 @@ LogicalResult readCorpus(StringRef path, std::vector<CorpusEntryText> &out,
 // The fuzzer
 //===----------------------------------------------------------------------===//
 
+const char *const kCmpBucketNames[kCmpBuckets] = {"-L", "-S", "-1", "0",
+                                                  "+1", "+S", "+L"};
+
+StringRef stringifyCmpRole(CmpRole r) {
+  switch (r) {
+  case CmpRole::Assume:
+    return "assume";
+  case CmpRole::Branch:
+    return "branch";
+  case CmpRole::Value:
+    return "value";
+  }
+  llvm_unreachable("unknown comparison role");
+}
+
+static bool isSignedPred(ICmpPredicate p) {
+  return p == ICmpPredicate::slt || p == ICmpPredicate::sle ||
+         p == ICmpPredicate::sgt || p == ICmpPredicate::sge;
+}
+
+/// The bucket of d = a - b (kCmpBucketNames), from its sign and magnitude.
+static unsigned bucketOf(bool negative, bool zero, bool one, bool small) {
+  if (zero)
+    return 3;
+  if (one)
+    return negative ? 2 : 4;
+  if (small)
+    return negative ? 1 : 5;
+  return negative ? 0 : 6;
+}
+
+/// The distance bucket of a comparison's operands (kCmpBuckets).
+static unsigned cmpBucket(ICmpPredicate p, const APInt &a, const APInt &b) {
+  unsigned w = a.getBitWidth();
+  bool sgn = isSignedPred(p);
+  if (w <= 64) {
+    // exact in 128 bits
+    __int128 x = sgn ? __int128(a.getSExtValue()) : __int128(a.getZExtValue());
+    __int128 y = sgn ? __int128(b.getSExtValue()) : __int128(b.getZExtValue());
+    __int128 d = x - y;
+    __int128 m = d < 0 ? -d : d;
+    return bucketOf(d < 0, m == 0, m == 1, m <= 16);
+  }
+  APInt x = sgn ? a.sext(w + 1) : a.zext(w + 1);
+  APInt y = sgn ? b.sext(w + 1) : b.zext(w + 1);
+  APInt d = x - y;
+  bool neg = d.isNegative();
+  APInt m = neg ? -d : d;
+  return bucketOf(neg, m.isZero(), m.isOne(), m.ule(16));
+}
+
+/// Whether predicate `p` holds on a difference in bucket `k`.
+static bool bucketOutcome(ICmpPredicate p, unsigned k) {
+  int sign = k < 3 ? -1 : k == 3 ? 0 : 1;
+  switch (p) {
+  case ICmpPredicate::eq:
+    return sign == 0;
+  case ICmpPredicate::ne:
+    return sign != 0;
+  case ICmpPredicate::slt:
+  case ICmpPredicate::ult:
+    return sign < 0;
+  case ICmpPredicate::sle:
+  case ICmpPredicate::ule:
+    return sign <= 0;
+  case ICmpPredicate::sgt:
+  case ICmpPredicate::ugt:
+    return sign > 0;
+  case ICmpPredicate::sge:
+  case ICmpPredicate::uge:
+    return sign >= 0;
+  }
+  llvm_unreachable("unknown predicate");
+}
+
+static ICmpPredicate inversePred(ICmpPredicate p) {
+  switch (p) {
+  case ICmpPredicate::eq:
+    return ICmpPredicate::ne;
+  case ICmpPredicate::ne:
+    return ICmpPredicate::eq;
+  case ICmpPredicate::slt:
+    return ICmpPredicate::sge;
+  case ICmpPredicate::sle:
+    return ICmpPredicate::sgt;
+  case ICmpPredicate::sgt:
+    return ICmpPredicate::sle;
+  case ICmpPredicate::sge:
+    return ICmpPredicate::slt;
+  case ICmpPredicate::ult:
+    return ICmpPredicate::uge;
+  case ICmpPredicate::ule:
+    return ICmpPredicate::ugt;
+  case ICmpPredicate::ugt:
+    return ICmpPredicate::ule;
+  case ICmpPredicate::uge:
+    return ICmpPredicate::ult;
+  }
+  llvm_unreachable("unknown predicate");
+}
+
+/// The branch distance of `p` on (a, b), which does not hold: how far one
+/// operand must move for it to hold (FuzzGateStats::bestDistance), at most
+/// 2^64 - 1.
+static uint64_t branchDistance(ICmpPredicate p, const APInt &a,
+                               const APInt &b) {
+  unsigned w = a.getBitWidth();
+  if (p == ICmpPredicate::ne)
+    return 1;
+  if (p == ICmpPredicate::eq) {
+    APInt x = a - b, y = b - a; // modulo 2^w: the short way round
+    return (x.ult(y) ? x : y).getLimitedValue();
+  }
+  bool sgn = isSignedPred(p);
+  APInt x = sgn ? a.sext(w + 2) : a.zext(w + 2);
+  APInt y = sgn ? b.sext(w + 2) : b.zext(w + 2);
+  APInt d = x - y, one(w + 2, 1);
+  APInt r;
+  switch (p) {
+  case ICmpPredicate::slt:
+  case ICmpPredicate::ult:
+    r = d + one; // a >= b: a must drop to b - 1
+    break;
+  case ICmpPredicate::sle:
+  case ICmpPredicate::ule:
+    r = d;
+    break;
+  case ICmpPredicate::sgt:
+  case ICmpPredicate::ugt:
+    r = one - d;
+    break;
+  default: // sge, uge
+    r = -d;
+    break;
+  }
+  // r > 0 when the predicate does not hold; clamp a stale negative to 0
+  if (r.isNegative())
+    return 0;
+  return r.getLimitedValue();
+}
+
+/// The comparison a condition is, through `sea.xor` with true (`negated`:
+/// an odd number of them); null if it is none.
+static Operation *conditionCmp(Value cond, bool &negated) {
+  negated = false;
+  for (unsigned depth = 0; depth < 8; ++depth) {
+    Operation *def = cond.getDefiningOp();
+    if (!def)
+      return nullptr;
+    if (isa<ICmpOp, AddrCmpOp>(def))
+      return def;
+    auto x = dyn_cast<XorOp>(def);
+    if (!x || !x.getType().isInteger(1))
+      return nullptr;
+    auto isTrue = [](Value v) {
+      auto c = v.getDefiningOp<ConstOp>();
+      auto attr = c ? dyn_cast<IntegerAttr>(c.getValue()) : IntegerAttr();
+      return attr && attr.getValue().isOne();
+    };
+    if (isTrue(x.getRhs()))
+      cond = x.getLhs();
+    else if (isTrue(x.getLhs()))
+      cond = x.getRhs();
+    else
+      return nullptr;
+    negated = !negated;
+  }
+  return nullptr;
+}
+
+static ICmpPredicate predOf(Operation *cmp) {
+  if (auto c = dyn_cast<ICmpOp>(cmp))
+    return c.getPredicate();
+  return cast<AddrCmpOp>(cmp).getPredicate();
+}
+
 namespace {
 
 /// A site (cell empty) or a memory cell: the key of an assignment.
@@ -361,6 +537,37 @@ public:
     for (Block &b : program.getBody())
       blockId[&b] = report.blocksTotal++;
     report.dictionarySize = dict.size();
+    // the comparisons, by id, and their roles; the gates and their
+    // conditions
+    program.walk([&](Operation *op) {
+      if (!isa<ICmpOp, AddrCmpOp>(op))
+        return;
+      cmpIdx[op] = report.cmps.size();
+      report.cmps.push_back({});
+      report.cmps.back().op = op;
+    });
+    cmpLast.resize(report.cmps.size());
+    program.walk([&](CondBrOp br) {
+      bool neg;
+      if (Operation *c = conditionCmp(br.getCondition(), neg)) {
+        FuzzCmpStats &st = report.cmps[cmpIdx.lookup(c)];
+        if (st.role == CmpRole::Value)
+          st.role = CmpRole::Branch;
+      }
+    });
+    for (Operation *op : blockingOpsOf(program)) {
+      gateIdx[op] = report.gates.size();
+      report.gates.push_back({});
+      FuzzGateStats &g = report.gates.back();
+      g.op = op;
+      g.beforeAssertFalse = beforeAssertFalse.contains(op);
+      if (auto a = dyn_cast<AssumeOp>(op))
+        if (Operation *c = conditionCmp(a.getCond(), g.negated)) {
+          g.cmp = cmpIdx.lookup(c);
+          report.cmps[*g.cmp].role = CmpRole::Assume;
+        }
+    }
+    gateEpoch.assign(report.gates.size(), 0);
     runOptions.maxSteps = options.maxSteps;
     runOptions.deferMemoryErrors = options.deferMemoryErrors;
     runOptions.addr0IsNull = options.addr0IsNull;
@@ -379,7 +586,28 @@ public:
     runOptions.onAssume = [this](AssumeOp a) {
       if (assumes.insert(a).second)
         newAssumes.push_back(a);
+      // the frontier: distinct assumes passed in this run
+      unsigned i = gateIdx.lookup(a);
+      if (gateEpoch[i] != epoch) {
+        gateEpoch[i] = epoch;
+        ++report.gates[i].passed;
+        ++runFrontier;
+      }
     };
+    if (options.cmpCoverage)
+      runOptions.onCmp = [this](Operation &op, ICmpPredicate p, const APInt &a,
+                                const APInt &b) {
+        unsigned i = cmpIdx.lookup(&op);
+        FuzzCmpStats &st = report.cmps[i];
+        if (st.counts[cmpBucket(p, a, b)]++ == 0)
+          ++report.cmpBucketsHit;
+        if (st.role == CmpRole::Assume) {
+          CmpLast &l = cmpLast[i];
+          l.epoch = epoch;
+          l.a = a;
+          l.b = b;
+        }
+      };
     if (!options.reachTargets.empty()) {
       for (auto [i, op] : llvm::enumerate(options.reachTargets))
         targetIndex[op] = i;
@@ -404,6 +632,8 @@ public:
     newAssumes.clear();
     runHits.clear();
     pathHash = 0xcbf29ce484222325ULL;
+    ++epoch;
+    runFrontier = 0;
     return interpret(program, src, runOptions);
   }
 
@@ -419,11 +649,29 @@ public:
     p.paths = paths.size();
     p.pathsCapped = report.pathsCapped;
     p.failures = failingTrials;
+    p.frontier = report.frontierDeepest;
+    p.cmpBuckets = report.cmpBucketsHit;
     return p;
   }
 
   /// Writes the coverage file to the stream opened before the trials.
   void writeCoverage(llvm::raw_fd_ostream &os);
+
+  /// The comparison totals derived from the bucket counts.
+  void finishCmps() {
+    report.cmpsReached = report.cmpOutcomesHit = 0;
+    for (FuzzCmpStats &c : report.cmps) {
+      ICmpPredicate p = predOf(c.op);
+      bool any = false;
+      for (unsigned k = 0; k < kCmpBuckets; ++k)
+        if (c.counts[k]) {
+          any = true;
+          (bucketOutcome(p, k) ? c.sawTrue : c.sawFalse) = true;
+        }
+      report.cmpsReached += any;
+      report.cmpOutcomesHit += c.sawTrue + c.sawFalse;
+    }
+  }
 
   ServeCoverage coverage() const {
     ServeCoverage c;
@@ -701,6 +949,20 @@ private:
   /// reached that no earlier one did (repeats possible)
   llvm::DenseMap<Operation *, size_t> targetIndex;
   std::vector<size_t> runHits;
+  /// the blocking ops' ids (blockingOpsOf); the run (epoch) that last
+  /// passed each; the current run and its frontier
+  llvm::DenseMap<Operation *, unsigned> gateIdx;
+  std::vector<uint64_t> gateEpoch;
+  uint64_t epoch = 0;
+  unsigned runFrontier = 0;
+  /// the comparisons' ids; an assume's comparison's last operands, and the
+  /// run that computed them
+  llvm::DenseMap<Operation *, unsigned> cmpIdx;
+  struct CmpLast {
+    uint64_t epoch = 0;
+    APInt a, b;
+  };
+  std::vector<CmpLast> cmpLast;
   FuzzReport report;
 };
 
@@ -741,8 +1003,27 @@ LogicalResult Fuzzer::trial(Entry preset,
   report.memhavocNullNoopRuns += r.memhavocNullNoopUses != 0;
   if (r.deferredCount)
     ++report.deferredStatusCount[static_cast<unsigned>(r.status)];
+  report.frontierSum += runFrontier;
+  if (runFrontier > report.frontierDeepest || report.trials == 1) {
+    report.frontierDeepest = runFrontier;
+    report.frontierTrial = report.trials;
+    report.frontierStatus = r.status;
+    report.frontierGate.reset();
+    if (r.status == RunStatus::AssumeBlocked && r.at)
+      report.frontierGate = gateIdx.lookup(r.at);
+  }
   if (r.status == RunStatus::AssumeBlocked && r.at) {
     ++blockedBy[r.at];
+    FuzzGateStats &g = report.gates[gateIdx.lookup(r.at)];
+    ++g.blocked;
+    if (options.cmpCoverage && g.cmp && cmpLast[*g.cmp].epoch == epoch) {
+      const CmpLast &l = cmpLast[*g.cmp];
+      ICmpPredicate p = predOf(report.cmps[*g.cmp].op);
+      uint64_t d = branchDistance(g.negated ? inversePred(p) : p, l.a, l.b);
+      ++g.distanceRuns;
+      if (!g.bestDistance || d < *g.bestDistance)
+        g.bestDistance = d;
+    }
     if (beforeAssertFalse.contains(r.at)) {
       ++report.blockedBeforeAssertFalse;
       report.blockedBeforeAssertFalseDeferred += r.deferredCount != 0;
@@ -902,12 +1183,16 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
   }
   report.seconds = elapsed();
   report.paths = paths.size();
+  finishCmps();
   if (covOs)
     writeCoverage(*covOs);
   report.blocksHit = blocks.size();
   report.edgesHit = edges.size();
   report.assumesPassed = assumes.size();
   report.corpusSize = corpus.size();
+  for (Block *b : blocks)
+    report.coveredBlocks.push_back(blockId.lookup(b));
+  llvm::sort(report.coveredBlocks);
   for (auto [op, n] : blockedBy)
     report.blocked.push_back({op, n});
   llvm::sort(report.blocked, [&](const auto &a, const auto &b) {
@@ -960,6 +1245,26 @@ void Fuzzer::writeCoverage(llvm::raw_fd_ostream &os) {
     os << "assume: " << a << "\n";
   for (uint64_t p : ps)
     os << "path: " << llvm::format_hex(p, 18) << "\n";
+  os << "frontier: deepest=" << report.frontierDeepest
+     << " sum=" << report.frontierSum << "\n";
+  for (auto [id, g] : llvm::enumerate(report.gates)) {
+    os << "gate: " << id << " op=" << g.op->getName() << " passed=" << g.passed
+       << " blocked=" << g.blocked;
+    if (options.cmpCoverage)
+      os << " distance="
+         << (g.bestDistance ? std::to_string(*g.bestDistance) : "-");
+    os << "\n";
+  }
+  if (!options.cmpCoverage)
+    return;
+  for (auto [id, c] : llvm::enumerate(report.cmps)) {
+    os << "cmp: " << id << " pred=" << stringifyICmpPredicate(predOf(c.op))
+       << " role=" << stringifyCmpRole(c.role) << " counts=";
+    for (unsigned k = 0; k < kCmpBuckets; ++k)
+      os << (k ? "," : "") << c.counts[k];
+    std::string at = formatLoc(c.op->getLoc());
+    os << " at=" << (at.empty() ? "-" : at) << "\n";
+  }
 }
 
 FailureOr<FuzzReport> fuzz(ProgramOp program,

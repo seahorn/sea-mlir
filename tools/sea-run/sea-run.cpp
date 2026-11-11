@@ -39,6 +39,7 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -155,6 +156,28 @@ static cl::opt<std::string> fuzzCoverageOut(
     "fuzz-coverage-out",
     cl::desc("Fuzz: write the covered block, edge, assume ids and path "
              "hashes to this file at the end"),
+    cl::value_desc("file"));
+
+static cl::opt<bool> fuzzCmp(
+    "fuzz-cmp",
+    cl::desc("Fuzz: comparison coverage: the operand distance buckets of "
+             "each sea.icmp / sea.addr.cmp the trials evaluate, and the "
+             "branch distance of the assumes that block trials (a measure; "
+             "default off)"),
+    cl::init(false));
+
+static cl::opt<bool> fuzzGates(
+    "fuzz-gates",
+    cl::desc("Fuzz: one fuzz.gate line per sea.assume / sea.unreachable: "
+             "trials that passed it, that it blocked, the best branch "
+             "distance (with --fuzz-cmp)"),
+    cl::init(false));
+
+static cl::opt<std::string> fuzzReachable(
+    "fuzz-reachable",
+    cl::desc("Fuzz: the output of `sea-vc --reach=blocks` on this program; "
+             "report block coverage of the reachable blocks and name the "
+             "uncovered ones"),
     cl::value_desc("file"));
 
 static cl::opt<bool>
@@ -568,7 +591,18 @@ count depends on speed).
                          ids as in SERVE (block: position in the program
                          body; assume: the fuzz.assume id), the same in
                          every process on the same program, so the files
-                         of several runs join (utils/fuzz-par.py)
+                         of several runs join (utils/fuzz-par.py); then
+                         `frontier: deepest=<n> sum=<n>`, one
+                         `gate: <id> op=<op> passed=<n> blocked=<n>
+                         [distance=<d>|-]` per fuzz.assume id, and with
+                         --fuzz-cmp one `cmp: <id> pred=<p>
+                         role=assume|branch|value counts=<7 counts>
+                         at=<where>` per comparison (MODEL COVERAGE)
+  --fuzz-cmp             comparison coverage and branch distances (MODEL
+                         COVERAGE; default off: a measure, costs time)
+  --fuzz-gates           one fuzz.gate line per blocking op
+  --fuzz-reachable=F     F: `sea-vc --reach=blocks` output on the same
+                         file; block coverage of the reachable blocks
   --input-file=F         replays one corpus file (also without --fuzz)
 Cost and paths: trials are a poor cost unit (a trial an early assume
 blocks is cheap); steps (ops executed, over all trials) are the cost.
@@ -585,10 +619,12 @@ Output of --fuzz: the first failure as a plain run on its input
 (the lines of OUTPUT; what --input-file=<its file> [--defer-memory-errors]
 prints; the fuzzer checks the replay ends the same way), then stat lines:
   fuzz.progress: <elapsed s> trials=<n> steps=<n> blocks=<n> edges=<n>
-                 paths=<n> assumes=<n> failures=<n>
+                 paths=<n> assumes=<n> failures=<n> frontier=<n>
+                 [cmp-buckets=<n>]
                                  (--fuzz-progress, during the run, before
                                  the lines below; failures: failing trials
-                                 so far)
+                                 so far; frontier, cmp-buckets: MODEL
+                                 COVERAGE, cmp-buckets with --fuzz-cmp)
   fuzz.failure: <runs> trial=<first> [file=<path>] at=<where> time=<s>
                                  (per failing sea.assert; time: of the
                                  first, since the trials started)
@@ -648,8 +684,52 @@ prints; the fuzzer checks the replay ends the same way), then stat lines:
                 [sites=<n,...>|- cond=<expr>]
                                  (each blocking site, most runs first;
                                  sea.assume: its condition, see COND)
+  fuzz.frontier: deepest=<n> trial=<n> end=<status> [gate=<id>]
+                 mean=<x> assumes=<n> passed=<n> closed=<n> unreached=<n>
+  fuzz.gate-closed: <id> blocked=<n> [distance=<d>|-] [check=1]
+                    at=<where> [sites=<n,...>|- cond=<expr>]
+  fuzz.gate: <id> op=<op> passed=<n> blocked=<n> [distance=<d>|-
+             measured=<n>] [check=1] at=<where>  (--fuzz-gates)
+  fuzz.cmp: <n> reached=<n> buckets=<hit>/<n*7> outcomes=<hit>/<n*2>
+            assume=<hit>/<total> branch=<hit>/<total> value=<hit>/<total>
+                                                (--fuzz-cmp)
+  fuzz.reachable: covered=<n> reachable=<n> unreachable=<n> unknown=<n>
+                  unknown-covered=<n> unlisted=<n>  (--fuzz-reachable)
+  fuzz.uncovered: <block id> at=<where>         (--fuzz-reachable)
+                                 (see MODEL COVERAGE)
 <where> is a location as in LOCATIONS. Logs: --log=fuzz.run (start, end),
 --log=fuzz.run:2 (each trial that reached new coverage).
+
+MODEL COVERAGE (--fuzz; docs/reference/fuzzing.md, "Model coverage"):
+measures of the program as a model, not corpus feedback (the inputs, the
+corpus and the random stream are the same with or without them). Gate ids
+are the fuzz.assume ids of --fuzz-sites.
+  frontier: the distinct sea.assume ops one trial passed (the approach
+    level); deepest: the most of any trial, the first such trial, how it
+    ended and where it was blocked; mean over the trials; of the assumes:
+    passed by some trial, closed (blocked trials, never passed: the first
+    lead), unreached (no trial got to it).
+  fuzz.gate-closed: one per closed assume, with its condition. check=1:
+    the assume is directly followed by `assert false` (SeaHorn's export
+    form: the assume of a check's failure; closed = no trial failed the
+    check, the expected state of a proof, not a lead).
+  --fuzz-cmp: per sea.icmp / sea.addr.cmp evaluated, buckets of d = lhs -
+    rhs, exact, signed for a signed predicate (eq, ne and the unsigned ones:
+    unsigned): -L (< -16), -S (-16..-2), -1, 0, +1, +S, +L. role: the
+    condition of an assume (directly or through xor with true), of a
+    cond_br, or neither. outcomes: true / false seen. sea.ptr.cmp is not
+    counted. distance: the least branch distance of a trial a closed or
+    blocking assume of a comparison blocked: how far one operand had to
+    move (eq: |lhs - rhs| the short way mod 2^w; ne: 1; ult: lhs - rhs +
+    1; ule: lhs - rhs; ugt: rhs - lhs + 1; uge: rhs - lhs; signed alike;
+    clamped at 2^64 - 1); `-`: none measured (not a comparison).
+  --fuzz-reachable=F: F is `sea-vc --reach=blocks` text output on the same
+    file (ids of --reach-targets=blocks); every id must be a block of the
+    program (another program or lowering: error). covered of reachable;
+    unknown-covered: covered blocks sea-vc did not decide; unlisted:
+    blocks F does not list; a covered block F calls unreachable is the
+    error fuzz.reach-inconsistent (exit 1). Not with
+    --defer-memory-errors.
 
 FUZZ SITES (--fuzz-sites: list and exit, no run; not with --fuzz, --input,
 --input-file, --trace, --seed, --max-steps, --defer-memory-errors):
@@ -793,7 +873,9 @@ double free and bad free); 1 error (bad
 input, missing nondet value, unsupported op). --fuzz: 0 when the trials ran
 (assert failures are in the output), 4 when there is a memory-safety
 finding (fuzz.memory-safety), 1 on a bad option or corpus, an unwritable
---fuzz-out or --fuzz-coverage-out, or a failure that does not replay (fuzz.replay-mismatch).
+--fuzz-out or --fuzz-coverage-out, a bad --fuzz-reachable file, a failure
+that does not replay (fuzz.replay-mismatch), or a covered block that
+--fuzz-reachable calls unreachable (fuzz.reach-inconsistent).
 )";
 
 static int fail(const Twine &msg) {
@@ -1088,6 +1170,202 @@ static int emitReach(sea::out::Emitter &out, ArrayRef<sea::ReachTarget> targets,
   return 0;
 }
 
+/// The reachable blocks of --fuzz-reachable: the block targets of the
+/// program (collectReachTargets, the ids of sea-vc --reach=blocks) with the
+/// status the file gives each (reachable, unreachable, unknown; empty: the
+/// file does not list it).
+struct ReachableBlocks {
+  std::vector<sea::ReachTarget> targets;
+  std::vector<std::string> status;
+};
+
+/// Reads the `reach:` lines of `sea-vc --reach=blocks` output (text). Every
+/// id must be a block target of `program`: another program or lowering is
+/// an error, not a partial match.
+static LogicalResult readReachable(StringRef path, sea::ProgramOp program,
+                                   ReachableBlocks &out, std::string &error) {
+  auto buf = MemoryBuffer::getFile(path, /*IsText=*/true);
+  if (!buf) {
+    error = "cannot read --fuzz-reachable file '" + path.str() +
+            "': " + buf.getError().message();
+    return failure();
+  }
+  out.targets = sea::collectReachTargets(program, sea::ReachKind::Blocks);
+  out.status.assign(out.targets.size(), "");
+  llvm::StringMap<size_t> byId;
+  for (auto [i, t] : llvm::enumerate(out.targets))
+    byId[t.id] = i;
+  SmallVector<StringRef> lines;
+  (*buf)->getBuffer().split(lines, '\n');
+  unsigned listed = 0, lineNo = 0;
+  for (StringRef line : lines) {
+    ++lineNo;
+    line = line.trim();
+    if (line.starts_with("reach.config:") && !line.contains(" kind=blocks")) {
+      error = path.str() + ":" + std::to_string(lineNo) +
+              ": not the output of sea-vc --reach=blocks (" + line.str() + ")";
+      return failure();
+    }
+    if (!line.consume_front("reach: "))
+      continue;
+    SmallVector<StringRef> toks;
+    line.split(toks, ' ', -1, /*KeepEmpty=*/false);
+    if (toks.size() < 3 || toks[2] != "op=block") {
+      error = path.str() + ":" + std::to_string(lineNo) +
+              ": expected `reach: <id> <status> op=block ...` "
+              "(sea-vc --reach=blocks)";
+      return failure();
+    }
+    auto it = byId.find(toks[0]);
+    if (it == byId.end()) {
+      error = path.str() + ":" + std::to_string(lineNo) + ": block '" +
+              toks[0].str() +
+              "' is not a block of this program (sea-vc --reach ran on "
+              "another program or lowering: run it on the fuzzed file, or "
+              "fuzz the lowered program)";
+      return failure();
+    }
+    if (toks[1] != "reachable" && toks[1] != "unreachable" &&
+        toks[1] != "unknown") {
+      error = path.str() + ":" + std::to_string(lineNo) +
+              ": unknown reach status '" + toks[1].str() + "'";
+      return failure();
+    }
+    out.status[it->second] = toks[1].str();
+    ++listed;
+  }
+  if (!listed) {
+    error = "--fuzz-reachable file '" + path.str() +
+            "' has no `reach:` lines (sea-vc --reach=blocks output)";
+    return failure();
+  }
+  return success();
+}
+
+/// The model coverage lines of --fuzz: the assume frontier, the gates no
+/// trial passed, with --fuzz-gates every gate, with --fuzz-cmp the
+/// comparison buckets, with --fuzz-reachable the reachable blocks.
+static int emitModelCoverage(sea::out::Emitter &out, sea::ProgramOp program,
+                             const sea::FuzzReport &rep,
+                             const ReachableBlocks &reachable) {
+  raw_ostream &os = out.lines();
+  auto where = [](Operation *op) {
+    std::string at = sea::formatLoc(op->getLoc());
+    return at.empty() ? std::string("-") : at;
+  };
+  auto dist = [](const sea::FuzzGateStats &g) {
+    return g.bestDistance ? std::to_string(*g.bestDistance) : std::string("-");
+  };
+  unsigned assumes = 0, passed = 0, closed = 0, unreached = 0;
+  for (const sea::FuzzGateStats &g : rep.gates) {
+    if (!isa<sea::AssumeOp>(g.op))
+      continue;
+    ++assumes;
+    passed += g.passed != 0;
+    closed += !g.passed && g.blocked;
+    unreached += !g.passed && !g.blocked;
+  }
+  os << "fuzz.frontier: deepest=" << rep.frontierDeepest
+     << " trial=" << rep.frontierTrial
+     << " end=" << sea::stringifyRunStatus(rep.frontierStatus);
+  if (rep.frontierGate)
+    os << " gate=" << *rep.frontierGate;
+  os << " mean="
+     << format("%.2f", rep.trials ? double(rep.frontierSum) / rep.trials : 0.0)
+     << " assumes=" << assumes << " passed=" << passed << " closed=" << closed
+     << " unreached=" << unreached << "\n";
+  // the assumes that blocked trials and that no trial passed: the leads
+  for (auto [id, g] : llvm::enumerate(rep.gates)) {
+    if (!isa<sea::AssumeOp>(g.op) || g.passed || !g.blocked)
+      continue;
+    std::string line;
+    raw_string_ostream ls(line);
+    ls << "fuzz.gate-closed: " << id << " blocked=" << g.blocked;
+    if (fuzzCmp)
+      ls << " distance=" << dist(g);
+    if (g.beforeAssertFalse)
+      ls << " check=1";
+    ls << " at=" << where(g.op);
+    emitBlockerLine(out, line, g.op);
+  }
+  if (fuzzGates)
+    for (auto [id, g] : llvm::enumerate(rep.gates)) {
+      os << "fuzz.gate: " << id << " op=" << g.op->getName()
+         << " passed=" << g.passed << " blocked=" << g.blocked;
+      if (fuzzCmp)
+        os << " distance=" << dist(g) << " measured=" << g.distanceRuns;
+      if (g.beforeAssertFalse)
+        os << " check=1";
+      os << " at=" << where(g.op) << "\n";
+    }
+  if (fuzzCmp) {
+    // buckets per role: what decides control and what does not
+    unsigned hit[3] = {}, n[3] = {};
+    for (const sea::FuzzCmpStats &c : rep.cmps) {
+      unsigned r = static_cast<unsigned>(c.role);
+      ++n[r];
+      for (uint64_t k : c.counts)
+        hit[r] += k != 0;
+    }
+    os << "fuzz.cmp: " << rep.cmps.size() << " reached=" << rep.cmpsReached
+       << " buckets=" << rep.cmpBucketsHit << "/"
+       << rep.cmps.size() * sea::kCmpBuckets
+       << " outcomes=" << rep.cmpOutcomesHit << "/" << rep.cmps.size() * 2;
+    for (sea::CmpRole r :
+         {sea::CmpRole::Assume, sea::CmpRole::Branch, sea::CmpRole::Value}) {
+      unsigned i = static_cast<unsigned>(r);
+      os << " " << sea::stringifyCmpRole(r) << "=" << hit[i] << "/"
+         << n[i] * sea::kCmpBuckets;
+    }
+    os << "\n";
+  }
+  if (reachable.targets.empty())
+    return 0;
+  // block coverage of the reachable blocks; a covered block sea-vc calls
+  // unreachable is a bug of one of the two
+  std::vector<bool> covered(rep.blocksTotal, false);
+  for (unsigned b : rep.coveredBlocks)
+    covered[b] = true;
+  llvm::DenseMap<Block *, unsigned> blockId;
+  unsigned nextId = 0;
+  for (Block &b : program.getBody())
+    blockId[&b] = nextId++;
+  unsigned nReach = 0, nCov = 0, nUnreach = 0, nUnknown = 0, nUnlisted = 0,
+           nUnknownCov = 0;
+  std::vector<size_t> uncovered;
+  for (auto [i, t] : llvm::enumerate(reachable.targets)) {
+    bool cov = covered[blockId.lookup(t.op->getBlock())];
+    const std::string &st = reachable.status[i];
+    if (st.empty()) {
+      ++nUnlisted;
+    } else if (st == "unreachable") {
+      ++nUnreach;
+      if (cov) {
+        out.flush();
+        sea::diag::error("fuzz.reach-inconsistent",
+                         "a trial entered block " + t.id +
+                             ", which sea-vc --reach calls unreachable");
+        return 1;
+      }
+    } else if (st == "unknown") {
+      ++nUnknown;
+      nUnknownCov += cov;
+    } else {
+      ++nReach;
+      nCov += cov;
+      if (!cov)
+        uncovered.push_back(i);
+    }
+  }
+  os << "fuzz.reachable: covered=" << nCov << " reachable=" << nReach
+     << " unreachable=" << nUnreach << " unknown=" << nUnknown
+     << " unknown-covered=" << nUnknownCov << " unlisted=" << nUnlisted << "\n";
+  for (size_t i : uncovered)
+    os << "fuzz.uncovered: " << reachable.targets[i].id
+       << " at=" << where(reachable.targets[i].op) << "\n";
+  return 0;
+}
+
 /// sea-run --fuzz (docs/reference/fuzzing.md): the first failure is
 /// replayed from its input and reported as a plain run; then the `fuzz.*`
 /// stat lines.
@@ -1101,6 +1379,10 @@ static int runFuzz(sea::ProgramOp program) {
   for (const std::string &c : corpus)
     if (failed(sea::readCorpus(c, seeds, error)))
       return fail(error);
+  ReachableBlocks reachable;
+  if (!fuzzReachable.empty() &&
+      failed(readReachable(fuzzReachable, program, reachable, error)))
+    return fail(error);
   sea::FuzzOptions fo;
   fo.trials = fuzzTrials;
   fo.seconds = fuzzTime;
@@ -1116,6 +1398,7 @@ static int runFuzz(sea::ProgramOp program) {
   fo.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
   fo.outDir = fuzzOut;
   fo.coverageOut = fuzzCoverageOut;
+  fo.cmpCoverage = fuzzCmp;
   fo.maxSteps = maxSteps;
   sea::out::Emitter out(outs(), outFormat);
   raw_ostream &os = out.lines();
@@ -1126,7 +1409,10 @@ static int runFuzz(sea::ProgramOp program) {
        << " trials=" << p.trials << " steps=" << p.steps
        << " blocks=" << p.blocksHit << " edges=" << p.edgesHit
        << " paths=" << p.paths << " assumes=" << p.assumesPassed
-       << " failures=" << p.failures << "\n";
+       << " failures=" << p.failures << " frontier=" << p.frontier;
+    if (fuzzCmp)
+      os << " cmp-buckets=" << p.cmpBuckets;
+    os << "\n";
     out.flush();
   };
   std::vector<sea::ReachTarget> targets;
@@ -1271,6 +1557,8 @@ static int runFuzz(sea::ProgramOp program) {
        << " at=" << (at.empty() ? "-" : at);
     emitBlockerLine(out, line, op);
   }
+  if (int rc = emitModelCoverage(out, program, *rep, reachable))
+    return rc;
   if (reachTargets != sea::ReachKind::Off)
     if (int rc = emitReach(out, targets, rep->reachHits, /*plain=*/false))
       return rc;
@@ -1550,6 +1838,14 @@ int main(int argc, char **argv) {
       (fuzzServe || fuzzSites || deferMemoryErrors))
     return fail("--reach-targets reports exact runs: not with --fuzz-serve, "
                 "--fuzz-sites or --defer-memory-errors (past a substituted "
+                "violation a run is not an execution of the program)");
+  if ((fuzzCmp || fuzzGates || !fuzzReachable.empty()) && !fuzzTrials &&
+      fuzzTime <= 0)
+    return fail("--fuzz-cmp, --fuzz-gates and --fuzz-reachable need --fuzz "
+                "or --fuzz-time");
+  if (!fuzzReachable.empty() && deferMemoryErrors)
+    return fail("--fuzz-reachable compares exact runs with sea-vc --reach: "
+                "not with --defer-memory-errors (past a substituted "
                 "violation a run is not an execution of the program)");
   if (!reachWitness.empty() &&
       (reachTargets == sea::ReachKind::Off || (!fuzzTrials && fuzzTime <= 0)))

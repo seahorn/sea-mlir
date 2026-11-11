@@ -58,6 +58,12 @@ OUTPUT (key: value lines, stdout):
       assumes-total=<n> paths=<n> [paths-capped=1] processes=<k>/<N>
       (union of the coverage files of the processes that ended on their
        own; stopped processes write none)
+  fuzz-par.model: frontier-max=<n> closed=<n> closed-gates=<id,...>|-
+      [cmp-buckets=<hit>/<total> closed-distance=<id>:<d>,...|-]
+      (the joined model coverage of the same files: the deepest assume
+       frontier of any trial; the sea.assume gates that blocked trials and
+       that no process passed; with --fuzz-cmp the comparison buckets of
+       all processes and the least branch distance of each closed gate)
   fuzz-par.summary: processes=<N> wall=<s> failures=<processes with one>
 EXIT: 0 ran; 4 a process found a memory-safety finding (as sea-run);
   1 bad options, or a process failed (exit other than 0 / 4, not stopped
@@ -126,8 +132,12 @@ def merged(procs, t):
 
 
 def read_cov(path):
-    """A --fuzz-coverage-out file: (totals fields, {kind: set of ids})."""
+    """A --fuzz-coverage-out file: (totals fields, {kind: set of ids}, model).
+
+    model: frontier (deepest), gates {id: fields}, cmps {id: (pred, counts)}.
+    """
     totals, ids = {}, {"block": set(), "edge": set(), "assume": set(), "path": set()}
+    model = {"frontier": 0, "gate": {}, "cmp": {}}
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -138,9 +148,35 @@ def read_cov(path):
                 totals = fields(rest)
             elif key in ids:
                 ids[key].add(rest)
+            elif key == "frontier":
+                model["frontier"] = int(fields(rest)["deepest"])
+            elif key == "gate":
+                model["gate"][rest.split()[0]] = fields(rest)
+            elif key == "cmp":
+                f_ = fields(rest.split(" at=")[0])
+                counts = [int(c) for c in f_["counts"].split(",")]
+                model["cmp"][rest.split()[0]] = counts
             else:
                 raise ValueError(f"{path}: unexpected line '{line}'")
-    return totals, ids
+    return totals, ids, model
+
+
+def join_model(acc, m):
+    """Joins one file's model coverage into `acc` (the same shape)."""
+    acc["frontier"] = max(acc["frontier"], m["frontier"])
+    for g, f in m["gate"].items():
+        a = acc["gate"].setdefault(
+            g, {"op": f.get("op", "-"), "passed": 0, "blocked": 0, "distance": "-"}
+        )
+        a["passed"] += int(f["passed"])
+        a["blocked"] += int(f["blocked"])
+        d = f.get("distance", "-")
+        if d != "-" and (a["distance"] == "-" or int(d) < int(a["distance"])):
+            a["distance"] = d
+    for c, counts in m["cmp"].items():
+        a = acc["cmp"].setdefault(c, [0] * len(counts))
+        for k, n in enumerate(counts):
+            a[k] += n
 
 
 def emit(line):
@@ -295,11 +331,12 @@ def main():
         emit("fuzz-par.first-failure: none")
 
     union = {"block": set(), "edge": set(), "assume": set(), "path": set()}
+    model = {"frontier": 0, "gate": {}, "cmp": {}}
     totals, capped, joined = {}, False, 0
     for p in procs:
         if p.stopped or not os.path.exists(p.cov):
             continue
-        t, ids = read_cov(p.cov)
+        t, ids, m = read_cov(p.cov)
         if totals and (t.get("blocks-total"), t.get("assumes-total")) != (
             totals.get("blocks-total"),
             totals.get("assumes-total"),
@@ -310,6 +347,7 @@ def main():
         capped |= t.get("paths-capped") == "1"
         for k in union:
             union[k] |= ids[k]
+        join_model(model, m)
         joined += 1
     emit(
         f"fuzz-par.union: blocks={len(union['block'])}"
@@ -320,6 +358,27 @@ def main():
         + (" paths-capped=1" if capped else "")
         + f" processes={joined}/{len(procs)}"
     )
+    if model["gate"]:
+        closed = [
+            g
+            for g, f in sorted(model["gate"].items(), key=lambda x: int(x[0]))
+            if f["op"] == "sea.assume" and not f["passed"] and f["blocked"]
+        ]
+        line = (
+            f"fuzz-par.model: frontier-max={model['frontier']}"
+            f" closed={len(closed)} closed-gates={','.join(closed) or '-'}"
+        )
+        if model["cmp"]:
+            hit = sum(1 for cs in model["cmp"].values() for n in cs if n)
+            total = sum(len(cs) for cs in model["cmp"].values())
+            line += f" cmp-buckets={hit}/{total}"
+            dists = [
+                f"{g}:{f['distance']}"
+                for g, f in sorted(model["gate"].items(), key=lambda x: int(x[0]))
+                if f["distance"] != "-" and not f["passed"]
+            ]
+            line += f" closed-distance={','.join(dists) or '-'}"
+        emit(line)
     emit(
         f"fuzz-par.summary: processes={len(procs)}"
         f" wall={time.monotonic() - start:.3f}"

@@ -29,6 +29,9 @@ $ sea-run p.mlir --fuzz=10000 --seed=1 --fuzz-out=out
 | `--fuzz-range-share=<p>` | the probability that a trial uses range draws; the other trials use the generator without them (default 0.5; see [Ranges](#ranges)) |
 | `--fuzz-progress=<s>` | print a `fuzz.progress` line every `s` seconds (see [Progress](#progress)); default 0: none |
 | `--fuzz-coverage-out=<file>` | write the covered blocks, edges, assumes and paths by id at the end (see [Progress](#progress)) |
+| `--fuzz-cmp` | comparison coverage: operand distance buckets of every comparison, branch distances of the blocking assumes (see [Model coverage](#model-coverage)); default off |
+| `--fuzz-gates` | one `fuzz.gate` line per `sea.assume` and `sea.unreachable`: trials that passed it and that it blocked (see [Model coverage](#model-coverage)) |
+| `--fuzz-reachable=<file>` | the output of `sea-vc --reach=blocks` on the same file: block coverage of the reachable blocks, the uncovered ones named (see [Model coverage](#model-coverage)) |
 | `--keep-going` | count failures instead of stopping at the first |
 | `--defer-memory-errors` | go on past memory-safety violations; one is a failure only if the run reaches the end (see below) |
 | `--input-file=<file>` | run once on a corpus file (without `--fuzz`) |
@@ -150,12 +153,14 @@ its cost (`steps=` and `steps/s=` of `fuzz.trials`).
 the trial that crossed the time, and flushes it:
 
 ```text
-fuzz.progress: 1.000 trials=183513 steps=1449724 blocks=4 edges=5 paths=3 assumes=1 failures=0
+fuzz.progress: 1.000 trials=183513 steps=1449724 blocks=4 edges=5 paths=3 assumes=1 failures=0 frontier=1
 ```
 
 The fields are the elapsed seconds, then the totals so far: trials,
 steps, blocks entered, edges taken, distinct paths, `sea.assume` ops
-passed, failing trials. While blocks, edges, paths or assumes still grow,
+passed, failing trials, the deepest assume frontier, and with `--fuzz-cmp`
+the comparison buckets covered (`cmp-buckets=`; see
+[Model coverage](#model-coverage)). While blocks, edges, paths or assumes still grow,
 the fuzzer is reaching new behavior; when they stay flat for a long time,
 more of the same is unlikely to help, and a corpus entry, another
 `--fuzz-range-share` or a look at the `fuzz.blocked` lines is the next step.
@@ -186,6 +191,19 @@ edge is `<from> <to>`, `-1` for the entry of the run; an assume's id is
 the one `--fuzz-sites` lists. The ids are the same in every process on
 the same program file, so the files of several runs can be joined.
 
+After the paths come the model coverage lines
+([Model coverage](#model-coverage)): `frontier: deepest=<n> sum=<n>`
+(the sum over the trials), one `gate: <id> op=<op> passed=<n>
+blocked=<n>` per `sea.assume` and `sea.unreachable` (`distance=<d>|-`
+with `--fuzz-cmp`), and with `--fuzz-cmp` one line per comparison:
+
+```text
+cmp: 0 pred=ult role=assume counts=0,3,0,1,0,1,0 at=p.mlir:4:9
+```
+
+`counts` are the evaluations per bucket, in the order `-L -S -1 0 +1 +S
++L`.
+
 ### Several processes
 
 The fuzzer is single-threaded. `utils/fuzz-par.py` runs several `sea-run
@@ -199,7 +217,89 @@ $ python3 utils/fuzz-par.py -n 8 --out par --progress 5 -- p.mlir --fuzz-time=60
 
 Run `utils/fuzz-par.py --agent` for its options and output lines. The time
 to the first failure of `n` processes is the least of `n` independent
-runs.
+runs. Its `fuzz-par.model` line joins the model coverage of the files:
+the deepest frontier, the assumes no process passed, and with `--fuzz-cmp`
+the buckets of all processes and the least distance of each closed
+assume.
+
+## Model coverage
+
+Blocks and edges are what a code fuzzer counts. The program here is a
+model: its assumes say which inputs count, and its comparisons decide
+where runs go. The fuzzer also measures those, on every run, with the
+same inputs and random stream (these are measures; no trial joins the
+corpus for them).
+
+**Assume frontier.** A trial's frontier is the number of distinct
+`sea.assume` ops it passed (the approach level of search-based testing).
+Without options, after the `fuzz.blocked` lines:
+
+```text
+fuzz.frontier: deepest=19 trial=1 end=assume-blocked gate=21 mean=7.66 assumes=22 passed=19 closed=1 unreached=2
+fuzz.gate-closed: 21 blocked=7990 check=1 at=kit.cc:67:3 sites=- cond=(xor (eq ? ?) 1)
+```
+
+`deepest`: the most any trial passed, the first trial that did, how it
+ended and the op that blocked it (`gate=`, an id of `--fuzz-sites`);
+`mean` over the trials. Of the assumes, `passed` were passed by some
+trial, `closed` blocked trials and were never passed, `unreached` were
+never reached. A closed assume is the first lead: the trials get there
+and none gets past. A `fuzz.gate-closed` line names each, with its
+condition. `check=1` marks an assume directly followed by `assert false`:
+in SeaHorn's export form the assume of a check's failure, which a proof
+keeps closed ([SeaHorn's export form](#seahorns-export-form)).
+`--fuzz-gates` prints one line per assume and `sea.unreachable`, with
+the trials that passed it and that it blocked.
+
+**Comparison coverage** (`--fuzz-cmp`). For each `sea.icmp` and
+`sea.addr.cmp` a trial evaluates, the bucket of the difference d = lhs -
+rhs, computed exactly (as signed values under a signed predicate,
+otherwise as unsigned): `-L` (d < -16), `-S` (-16 to -2), `-1`, `0`,
+`+1`, `+S` (2 to 16), `+L` (d > 16). A boundary is covered when the runs
+have been on both sides of it and at it: code fuzzers see a branch taken
+or not, not how close the operands came. `sea.ptr.cmp` (abstract
+pointers) is not counted.
+
+```text
+fuzz.cmp: 152 reached=121 buckets=299/1064 outcomes=166/304 assume=79/154 branch=214/889 value=6/21
+```
+
+`reached`: comparisons evaluated; `buckets` and `outcomes` (true and
+false) covered of all; then the buckets by role: comparisons that are the
+condition of an assume (directly or through `sea.xor` with true), of a
+`sea.cond_br`, or neither.
+
+With `--fuzz-cmp`, a trial an assume of a comparison blocked also has a
+branch distance: how far one operand had to move for the condition to
+hold (eq: |lhs - rhs|, the short way modulo 2^w; ne: 1; ult: lhs - rhs +
+1; ule: lhs - rhs; ugt: rhs - lhs + 1; uge: rhs - lhs; the signed
+predicates alike; at most 2^64 - 1). `distance=` on `fuzz.gate-closed`
+and `fuzz.gate` is the least over the run (`-`: none measured; the
+condition is not a comparison). It says how near the runs came to a
+gate they never passed. `ne` gives 1 or nothing, so an assume of
+`x != y` (SeaHorn's form of a failed equality check) shows no gradient.
+
+**Reachable blocks** (`--fuzz-reachable=<file>`). `blocks-total` counts
+blocks no input reaches. `sea-vc --reach=blocks` decides which are
+reachable; give its output on the same file:
+
+```console
+$ sea-vc p.mlir --reach=blocks > reach.txt
+$ sea-run p.mlir --fuzz=100000 --fuzz-reachable=reach.txt
+fuzz.reachable: covered=6 reachable=7 unreachable=1 unknown=0 unknown-covered=0 unlisted=0
+fuzz.uncovered: p.mlir:19:3 at=p.mlir:19:3
+```
+
+The ids are those of `--reach-targets=blocks`. Every id of the file must
+be a block of the program: the output of another program or lowering is
+an error. Run `sea-vc` on the file you fuzz (a program in BMC form, or
+the lowered one: `sea-opt --sea-vc-lower`). `unknown`: blocks sea-vc did
+not decide, of which `unknown-covered` the trials entered; `unlisted`:
+blocks the file does not list. A block a trial entered that the file
+calls unreachable is a bug of one of the two tools
+(`fuzz.reach-inconsistent`, exit status 1). Not with
+`--defer-memory-errors`. `sea-vc --reach` is a solver query per block:
+on a large program it can take long (`--reach-rlimit`).
 
 ## Failures, memory-safety checks and limits
 
@@ -319,7 +419,7 @@ fuzz.blocked: 30 op=sea.assume at=p.mlir:5:3 sites=0 cond=(eq s0 1234)
 
 | line | meaning |
 |---|---|
-| `fuzz.progress: <s> trials=<n> steps=<n> blocks=<n> edges=<n> paths=<n> assumes=<n> failures=<n>` | `--fuzz-progress`: the totals so far, printed during the run ([Progress](#progress)) |
+| `fuzz.progress: <s> trials=<n> steps=<n> blocks=<n> edges=<n> paths=<n> assumes=<n> failures=<n> frontier=<n> [cmp-buckets=<n>]` | `--fuzz-progress`: the totals so far, printed during the run ([Progress](#progress)) |
 | `fuzz.failure: <runs> trial=<n> [file=<path>] at=<where> time=<s>` | one per failing `sea.assert`: how many runs failed it, the first trial, its file, the seconds from the start of the trials to it |
 | `fuzz.memory-safety: <runs> trial=<n> [file=<path>] op=<op> [site=<n>] at=<where> time=<s>` | `--defer-memory-errors`: one per operation with a memory-safety finding (the first violation of a run that reached the end or a failing assert) |
 | `fuzz.memory-safety-message: <text>` | the message of the first such run |
@@ -335,6 +435,12 @@ fuzz.blocked: 30 op=sea.assume at=p.mlir:5:3 sites=0 cond=(eq s0 1234)
 | `fuzz.coverage: blocks=<n> blocks-total=<n> edges=<n> assumes=<n> assumes-total=<n> paths=<n> [paths-capped=<cap>]` | blocks entered, edges taken (the entry counts as one), `sea.assume` ops passed at least once, distinct paths ([Coverage](#coverage)) |
 | `fuzz.corpus: <entries> seeds=<files> skipped-lines=<n> files=<n> dictionary=<n>` | corpus entries at the end, seed files read, lines of saved runs that are not inputs, files written, dictionary size |
 | `fuzz.blocked: <runs> op=<op> at=<where> [sites=<n,...> cond=<expr>]` | one per `sea.assume` or `sea.unreachable` that blocked runs, most first; for a `sea.assume`, its condition over the input sites (see [For agents](#for-agents)) |
+| `fuzz.frontier: deepest=<n> trial=<n> end=<status> [gate=<id>] mean=<x> assumes=<n> passed=<n> closed=<n> unreached=<n>` | the assume frontier ([Model coverage](#model-coverage)) |
+| `fuzz.gate-closed: <id> blocked=<n> [distance=<d>\|-] [check=1] at=<where> [sites=<n,...> cond=<expr>]` | one per `sea.assume` that blocked trials and that no trial passed |
+| `fuzz.gate: <id> op=<op> passed=<n> blocked=<n> [distance=<d>\|- measured=<n>] [check=1] at=<where>` | `--fuzz-gates`: one per `sea.assume` and `sea.unreachable`; `measured`: the blocked trials with a distance |
+| `fuzz.cmp: <n> reached=<n> buckets=<hit>/<total> outcomes=<hit>/<total> assume=<hit>/<total> branch=<hit>/<total> value=<hit>/<total>` | `--fuzz-cmp`: comparison coverage |
+| `fuzz.reachable: covered=<n> reachable=<n> unreachable=<n> unknown=<n> unknown-covered=<n> unlisted=<n>` | `--fuzz-reachable`: blocks covered of the reachable ones |
+| `fuzz.uncovered: <id> at=<where>` | `--fuzz-reachable`: one per reachable block no trial entered |
 
 `<where>` is a location as in the `assert-at:` line: the source position,
 then `inlined-at=` and `name=` when there are any. With `--format=jsonl`,
