@@ -147,7 +147,12 @@ Development gates run before a change is merged:
   `utils/cover-diff.py`, which compares the two versions by reach coverage.
   Level 0 requires that every check be reachable in both or in neither,
   and that the verdicts agree. Level 1 also requires that the same inputs
-  reach each check.
+  reach each check. Comparing two versions whose blocks differ needs a
+  correspondence between the blocks; the simplification carries stable
+  block ids through every change it makes, and they give that
+  correspondence as hints. The hints are checked, never trusted: a wrong
+  hint can only send the comparison back to the slower general check, and
+  never make it pass.
 
 ### Protected oracles
 
@@ -170,6 +175,10 @@ maintainer's review. Fixing the code so that the oracle passes does not.
 - Pass validation covers the optional simplifications. The passes that
   decide semantics, such as the removal of memory havocs of fresh
   objects, are not validated by it.
+- Level 1 of pass validation reports a false difference when one version
+  removed an unused object that the other kept. Taking the placement of
+  objects from the other version, as part of the correspondence, is the
+  planned fix.
 - Checks of completeness are new. A rewriter can be sound and still miss
   rewrites it should make; the result is a slower proof, not a wrong one.
   The benchmark bounds and a fuzzer that writes the same address in
@@ -186,6 +195,12 @@ the replay of the simplified program. Replay on the original program
 caught it, level 0 of pass validation caught it on 48 vcc jobs, level 1
 caught it on jobs level 0 missed, and three of the four `test/QA` corpora
 caught it.
+
+The block-id hints were tested the same way. Thousands of planted wrong
+hint maps on a real difference, and every permutation of the block ids
+on a small program, never produced a pass. With correct hints, level 1
+decided every target on a sample of vcc jobs that had left 11 targets
+unknown before.
 
 The vcc corpus of SeaHorn's exports turned out too regular for this work:
 it contains none of the programs that broke the simplifications. So pass
