@@ -181,6 +181,14 @@ static cl::opt<sea::JoinEncoding> joinEncoding(
                           "fresh constant, guarded equality per edge")),
     cl::init(sea::JoinEncoding::Ite));
 
+static cl::opt<bool> vcJoinCases(
+    "vc-join-cases",
+    cl::desc("Experimental, default off: build each ite join (block "
+             "arguments, pointer companions) as a cases term, expanded at "
+             "once to the same ite chain (the query does not change), and "
+             "print its `cases.<name>: <n>` counters"),
+    cl::init(false));
+
 static cl::opt<bool> seamWide(
     "seam-wide",
     cl::desc("With --seam: a load / store of a byte memory wider than a byte "
@@ -1549,6 +1557,9 @@ TYPICAL:
                                  #   equalities (default ite: a block
                                  #   argument is ite over the incoming edges,
                                  #   as SeaHorn's --horn-vcgen-use-ite)
+  sea-vc p.mlir --vc-join-cases  # experimental: each ite join built as a
+                                 #   cases term and expanded at once (same
+                                 #   query); prints the cases.* counters
 
 OUTPUT (stdout, `key: value` lines):
   tool.version: sea-mlir <x.y.z> (<git describe>)
@@ -1583,6 +1594,15 @@ OUTPUT (stdout, `key: value` lines):
                                   memmoves it records, fresh companion
                                   arrays)
   vc.ptr-companion-arrays: <n>    (companion arrays the query still reads)
+  cases.<counter>: <total> scalar=<n> memory=<n> companion=<n>
+                                  (--vc-join-cases, experimental; stderr
+                                  with --smt2: joins, arity.<n>, values,
+                                  distinct-values, with-dup,
+                                  redundant-values, all-equal,
+                                  adjacent-equal-pairs, ite-folded-pairs,
+                                  last-equal-default, nonadjacent-redundant,
+                                  with-nonadjacent, default-not-most-frequent,
+                                  const-conditions; include/sea/VC/JoinCases.h)
   seam.ptrint: assumed loads=<n>  (--ptr-companion=assume: loads resting on
                                   A-PTRINT; checked loads=<n> with =check,
                                   then `seam.ptrint: holds` (unsat) or
@@ -2570,6 +2590,8 @@ int main(int argc, char **argv) {
     return fail("--words-check needs --seam-words");
   if (seamWords != WordsMode::Off && !xReadTable.empty())
     return fail("--seam-words and --x-read-table exclude each other");
+  if (vcJoinCases && joinEncoding != sea::JoinEncoding::Ite)
+    return fail("--vc-join-cases builds the ite joins: needs --vc-join=ite");
   if (seamStats && !seam && !simplifyOpt)
     return fail("--seam-stats needs --seam or --simplify");
   // the rewriter normalizes under --simplify, and under --seam unless
@@ -3176,6 +3198,7 @@ int main(int argc, char **argv) {
       };
     sea::VCGen vcgen(sem, joinEncoding);
     vcgen.setReach(reach);
+    vcgen.setJoinCases(vcJoinCases);
     lap("setup");
     Phase encodePhase("encode", vcRuns);
     if (failed(vcgen.genVc(program, ctx)))
@@ -4432,6 +4455,8 @@ int main(int argc, char **argv) {
         statOut() << "vc.sink-assumes: " << sunkAssumes << "\n";
       foldLines(statOut());
       companionLine(statOut());
+      if (vcgen.joinCases())
+        vcgen.joinCases()->print(statOut());
       printSeamStats(statOut());
       runSeamCheck();
       runEqAudit();
@@ -4458,6 +4483,8 @@ int main(int argc, char **argv) {
       vout() << "vc.sink-assumes: " << sunkAssumes << "\n";
     foldLines(vout());
     companionLine(vout());
+    if (vcgen.joinCases())
+      vcgen.joinCases()->print(vout());
     brunchStat(vout(), "vc.ptr-mode", addressMode ? "address" : "opaque");
     brunchStat(vout(), "vc.int-to-ptr", llvm::Twine(intToPtr));
     brunchStat(vout(), "vc.ptr-from-int-opaque",

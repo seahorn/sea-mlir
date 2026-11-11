@@ -21,9 +21,12 @@
 #ifndef SEA_VC_VCGEN_H
 #define SEA_VC_VCGEN_H
 
+#include "sea/VC/JoinCases.h"
 #include "sea/VC/OpSem.h"
 
 #include "llvm/ADT/DenseMap.h"
+
+#include <memory>
 
 namespace sea {
 
@@ -84,6 +87,16 @@ public:
   /// null for a block no path from the entry reaches (never encoded).
   expr::Expr guard(mlir::Block *bb) const { return guards.lookup(bb); }
 
+  /// Experimental (sea-vc --vc-join-cases): with the Ite encoding, build
+  /// every join of block arguments and pointer companions as a cases term,
+  /// counted and expanded at once to the same ite chain (sea/VC/JoinCases.h).
+  /// Set before genVc.
+  void setJoinCases(bool on) {
+    cases = on ? std::make_unique<JoinCases>() : nullptr;
+  }
+  /// The counters of setJoinCases; null when off.
+  const JoinCases *joinCases() const { return cases.get(); }
+
 private:
   expr::Expr computePathCondForBb(mlir::Block &bb,
                                   const llvm::DenseSet<mlir::Block *> &reached,
@@ -94,6 +107,7 @@ private:
   bool reach = false;
   llvm::DenseMap<mlir::Block *, expr::Expr> guards;
   double execTime = 0, joinTime = 0;
+  std::unique_ptr<JoinCases> cases;
 };
 
 /// The query: satisfiable iff some execution fails the assertion.

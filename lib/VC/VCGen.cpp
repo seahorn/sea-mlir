@@ -166,7 +166,23 @@ Expr VCGen::computePathCondForBb(Block &bb,
     for (BlockArgument arg : bb.getArguments()) {
       unsigned i = arg.getArgNumber();
       Expr reg = sem.mkSymbReg(arg);
-      if (join == JoinEncoding::Ite) {
+      if (join == JoinEncoding::Ite && cases) {
+        // -- the same join as below, through a cases term (--vc-join-cases)
+        SmallVector<Expr> col;
+        for (auto &v : vals)
+          col.push_back(v[i]);
+        std::string why;
+        Expr val = cases->join(edges, col,
+                               isa<MemType>(arg.getType()) ? JoinKind::Memory
+                                                           : JoinKind::Value,
+                               why);
+        if (!val) {
+          diag::error("vc.cases-join", "join of a block argument: " + why,
+                      bb.getParentOp()->getLoc());
+          return Expr();
+        }
+        ctx.write(reg, val);
+      } else if (join == JoinEncoding::Ite) {
         // -- the edges are disjoint and one holds whenever bb executes:
         // -- the last edge is the default
         Expr val = vals.back()[i];
@@ -187,7 +203,8 @@ Expr VCGen::computePathCondForBb(Block &bb,
   // -- the pointer companions of memory arguments (PtrSort S6), joined
   // -- like the memories (ite)
   if (bb.getNumArguments() > 0 && join == JoinEncoding::Ite)
-    sem.joinCompanions(bb, preds, edges, ctx);
+    if (failed(sem.joinCompanions(bb, preds, edges, ctx, cases.get())))
+      return Expr();
   return bbV;
 }
 
@@ -225,6 +242,8 @@ LogicalResult VCGen::genVc(ProgramOp program, OpSemContext &ctx) {
       auto t0 = Clock::now();
       bbV = computePathCondForBb(*bb, reached, ctx);
       joinTime += secondsSince(t0);
+      if (!bbV) // a refused cases join (--vc-join-cases), reported
+        return failure();
       t0 = Clock::now();
       if (failed(sem.exec(*bb, ctx.pc(bbV))))
         return failure();

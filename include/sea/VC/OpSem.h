@@ -22,6 +22,7 @@
 #include "sea/Expr/BaseRegistry.hh"
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/RewriteTrail.hh"
+#include "sea/VC/JoinCases.h"
 #include "sea/VC/Names.h"
 #include "sea/VC/SymStore.hh"
 
@@ -155,9 +156,14 @@ public:
     return ptrCompanionOn && seamMode && ptrSorted() && !addressMode;
   }
   /// the companions of \p dst's memory arguments: the ite over \p edges of
-  /// the incoming companions (VCGen's ite join)
-  void joinCompanions(mlir::Block &dst, llvm::ArrayRef<mlir::Block *> preds,
-                      llvm::ArrayRef<expr::Expr> edges, OpSemContext &ctx);
+  /// the incoming companions (VCGen's ite join); with \p cases
+  /// (--vc-join-cases) built through a cases term. Fails (reported) only
+  /// when \p cases refuses a join.
+  mlir::LogicalResult joinCompanions(mlir::Block &dst,
+                                     llvm::ArrayRef<mlir::Block *> preds,
+                                     llvm::ArrayRef<expr::Expr> edges,
+                                     OpSemContext &ctx,
+                                     JoinCases *cases = nullptr);
   unsigned companionLoads() const { return numCompanionLoads; }
   unsigned companionStores() const { return numCompanionStores; }
   unsigned companionCopies() const { return numCompanionCopies; }
