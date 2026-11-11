@@ -20,6 +20,9 @@
 // RUN: not %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/sync3 --sync --sea-run %sea_bin/sea-run -- %s --fuzz=10 --fuzz-sync=x 2>&1 | FileCheck %s --check-prefix=SYNCRES
 // RUN: not %python %sea_src_root/utils/fuzz-par.py -n 1 --out %t/sync4 --sync --sea-run %sea_bin/sea-run -- %s --fuzz=10 2>&1 | FileCheck %s --check-prefix=SYNC1
 // RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/model --sea-run %sea_bin/sea-run -- %s --program=safe --fuzz=2000 | FileCheck %s --check-prefix=MODEL
+// The sea-run options pass through; the chain's counters per process.
+// RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/mcmc --sea-run %sea_bin/sea-run -- %s --program=safe --fuzz=2000 --fuzz-strategy=mcmc --fuzz-mcmc-beta=0.5 | FileCheck %s --check-prefix=MCMC
+// RUN: grep -h 'fuzz.mcmc:' %t/mcmc/p0/stdout.txt | FileCheck %s --check-prefix=MCMCP
 
 // SYNC1: --sync needs -n 2 or more
 
@@ -32,6 +35,9 @@
 // SAFE-NOT: cmp-buckets=
 
 // The model coverage joins too: comparison buckets of both processes.
+// MCMC-DAG: fuzz-par.process: 0 seed=1 {{.*}} mcmc-moves={{[1-9][0-9]*}} mcmc-accepted={{[0-9]+}} mcmc-best-cost={{[0-9.]+}} mcmc-stall={{.*}}
+// MCMC-DAG: fuzz-par.process: 1 seed=2 {{.*}} mcmc-moves={{[1-9][0-9]*}}
+// MCMCP: fuzz.mcmc: {{.*}} beta=0.5
 // MODEL: fuzz-par.model: frontier-max=1 closed=0 closed-gates=- cmp-buckets={{[1-9][0-9]*}}/{{[1-9][0-9]*}} closed-distance=-
 
 // Only the seeds run (--fuzz=2); the unseeded input differs by process

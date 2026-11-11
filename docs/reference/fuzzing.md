@@ -36,6 +36,8 @@ $ sea-run p.mlir --fuzz=10000 --seed=1 --fuzz-out=out
 | `--fuzz-corpus-max=<n>` | at most `n` corpus entries; kept trials past it are dropped and counted (default 0: no bound) |
 | `--fuzz-sync=<dir>,...` | every `--fuzz-sync-period` seconds, run the new-coverage files of other processes' `--fuzz-out` directories as trials (see [Corpus sync](#corpus-sync)) |
 | `--fuzz-sync-period=<s>` | the seconds between two reads of the `--fuzz-sync` directories (default 5, not tuned) |
+| `--fuzz-strategy=corpus\|mcmc` | how a trial after the seeds gets its input: a mutated corpus entry (`corpus`, the default) or a chain led by a cost (`mcmc`; see [MCMC strategy](#mcmc-strategy)) |
+| `--fuzz-mcmc-beta=<b>`, `--fuzz-mcmc-restart=<n>`, `--fuzz-mcmc-share=<p>` | with `--fuzz-strategy=mcmc`: the acceptance of a move that raises the cost (default 1), a restart after `n` moves without a new best (default 1000; 0: never), the probability that a trial is a chain move (default 1); not tuned |
 | `--keep-going` | count failures instead of stopping at the first |
 | `--defer-memory-errors` | go on past memory-safety violations; one is a failure only if the run reaches the end (see below) |
 | `--input-file=<file>` | run once on a corpus file (without `--fuzz`) |
@@ -47,9 +49,11 @@ All trials run in one process: the program is parsed once.
 
 ## Trials
 
-The seeds run first, in order. Every later trial picks an entry of the
+The seeds run first, in order. With the default strategy
+(`--fuzz-strategy=corpus`) every later trial picks an entry of the
 corpus, or the empty entry, and changes one, two, four or eight of its
-values. A change is one of:
+values; `--fuzz-strategy=mcmc` changes one value of a current input
+instead ([MCMC strategy](#mcmc-strategy)). A change is one of:
 
 - a fresh random value;
 - one bit flipped;
@@ -200,7 +204,8 @@ After the paths come the model coverage lines
 ([Model coverage](#model-coverage)): `frontier: deepest=<n> sum=<n>`
 (the sum over the trials), one `gate: <id> op=<op> passed=<n>
 blocked=<n>` per `sea.assume` and `sea.unreachable` (`distance=<d>|-`
-with `--fuzz-cmp`), and with `--fuzz-cmp` one line per comparison:
+with `--fuzz-cmp`; `mcmc-moves=<n> mcmc-improved=<n>` with
+`--fuzz-strategy=mcmc`, [MCMC strategy](#mcmc-strategy)), and with `--fuzz-cmp` one line per comparison:
 
 ```text
 cmp: 0 pred=ult role=assume counts=0,3,0,1,0,1,0 at=p.mlir:4:9
@@ -286,8 +291,14 @@ and `fuzz.gate` is the least over the run (`-`: none measured; the
 condition is not a comparison). It says how near the runs came to a
 gate they never passed. `ne` gives 1 or nothing, so an assume of
 `x != y` (SeaHorn's form of a failed equality check) shows no gradient.
-`ne` gives distance 1 even for a gate that can never pass, so
-`distance=1` on a closed gate does not mean it was nearly passed.
+Measuring `|x - y|` there instead would not give one either: a trial
+that such an assume blocks has `x = y`, so the difference is 0 on every
+blocked trial. How close a run came to violating an equality check is
+not in the operands of the check; it would have to come from how `x` and
+`y` are computed. `ne` gives distance 1 even for a gate that can never
+pass, so `distance=1` on a closed gate does not mean it was nearly
+passed. A condition that is an `and` or `or` of comparisons has no
+distance (`-`).
 
 **Reachable blocks** (`--fuzz-reachable=<file>`). `blocks-total` counts
 blocks no input reaches. `sea-vc --reach=blocks` decides which are
@@ -372,6 +383,87 @@ edges, assumes, buckets (7 per comparison) and frontier depths.
 `--fuzz-corpus-max=<n>` bounds it further: a kept trial is not added
 when the corpus has `n` entries (its coverage still counts and its file
 is still written, and it still raises the frontier a `frontier` trial must exceed), and `dropped=` counts these trials.
+
+## MCMC strategy
+
+`--fuzz-strategy=mcmc` searches with a Metropolis-style chain over
+inputs, as STOKE (Schkufza, Sharma and Aiken, ASPLOS 2013) searches over
+programs. The chain has one current input. A move changes one of its
+values by one of the changes of [Trials](#trials) and runs the result as
+a trial; the cost of the trial decides whether the move is accepted, that
+is, whether the trial's input becomes the current one. A trial of the
+chain is a trial like any other: it counts in the coverage, joins the
+corpus by the `--fuzz-keep` rule and is a failure when it fails an
+assertion. Only the choice of the input differs.
+
+**The cost** of a trial is
+
+```text
+cost = 65 * (deepest - frontier) + log2(1 + distance)
+```
+
+`frontier` is the number of distinct assumes the trial passed (its
+approach level, [Model coverage](#model-coverage)), `deepest` the most
+any trial has passed so far, and `distance` the branch distance of the
+assume that blocked it. The second term is 0 when no assume blocked the
+trial, and 64 when the assume has no distance (its condition is not a
+comparison, or it is a `sea.unreachable`). It is at most 64, so passing
+one more assume always lowers the cost. The cost needs the branch
+distances: `--fuzz-cmp=false` is an error with this strategy.
+
+A move that does not raise the cost is accepted. A move that raises it
+by `d` is accepted with probability `exp(-b * d)`, `b` the
+`--fuzz-mcmc-beta` (default 1). With `b = 1`, a move that doubles the
+distance (`d` about 1) is accepted about one time in three, and one that
+passes one assume fewer (`d` at least 1, usually near 65) almost never;
+`b = 0` accepts every move, a random walk. The proposals are not
+symmetric (a move to an input that reads other sites gets fresh values
+for them), so the chain does not sample `exp(-b * cost)`; it is a
+search. The default `b`, the weight 65 and the restart bound are not
+tuned: the subjects measured so far are small.
+
+The chain restarts after `--fuzz-mcmc-restart=<n>` moves (default 1000;
+0: never) without a cost below its best since it started: its next input
+is a corpus entry or the empty entry, picked as the corpus strategy picks
+one but not mutated, and accepted whatever its cost. A trial that fails
+ends the chain, and with `--keep-going` the next trial restarts it (the
+failure is found; staying near it would find it again). A trial that
+stops with an error or at the step limit is a rejected move.
+`--fuzz-mcmc-share=<p>` makes each trial a chain move with probability
+`p`, and a corpus-strategy trial otherwise (default 1; with 0 the trials
+are those of the corpus strategy).
+
+**Reading the output.** The chain adds a line after `fuzz.corpus`, a
+`cost=` field to `fuzz.progress`, and with `--fuzz-gates` two fields to
+`fuzz.gate`:
+
+```text
+fuzz.mcmc: moves=7403 accepted=3641 uphill=1748 restarts=3 failure-restarts=1 best-cost=0.00 best-trial=7407 stall=0:5619 beta=1 restart=1000 share=1
+fuzz.gate: 0 op=sea.assume passed=1 blocked=7406 distance=42 measured=7406 mcmc-moves=7403 mcmc-improved=1784 check=1 at=p.mlir:9:3
+```
+
+`moves` and `accepted` give the acceptance rate; `uphill` counts the
+accepted moves that raised the cost. Nearly every move accepted and
+`uphill` large: `b` is too small for this program, and the chain walks at
+random. Few moves accepted and `uphill` near 0: the chain sits in a local
+minimum, and only restarts move it. `restarts` counts the restarts after
+a stall, `failure-restarts` the failing trials of the chain. `best-cost`
+is the least cost of a trial of the chain, against the deepest frontier
+at the end (0.00: it reached the deepest frontier with nothing left to
+cross, a failing trial included), and `best-trial` the first trial with
+it. `stall=<id>:<n>` names the gate where the chain made the most moves
+that did not lower the cost, and how many; the per-gate counts are on the
+`fuzz.gate` lines (`mcmc-moves`, `mcmc-improved`) and on the `gate:`
+lines of `--fuzz-coverage-out`. In `fuzz.progress`, `cost=` is the cost
+of the current input against the deepest frontier at that time (`-`
+before the chain has one).
+
+A stall at a gate whose distance does not change says the cost does not
+lead there: an assume of `x != y` has distance 1 on every trial it
+blocks ([Model coverage](#model-coverage)), and an assume whose condition
+is not a comparison has none. There the chain drifts among inputs of
+equal cost; a corpus entry, a dictionary value or the corpus strategy is
+the way past.
 
 ## Corpus sync
 
@@ -520,7 +612,7 @@ fuzz.blocked: 30 op=sea.assume at=p.mlir:5:3 sites=0 cond=(eq s0 1234)
 
 | line | meaning |
 |---|---|
-| `fuzz.progress: <s> trials=<n> steps=<n> blocks=<n> edges=<n> paths=<n> assumes=<n> failures=<n> frontier=<n> [cmp-buckets=<n>] corpus=<n>` | `--fuzz-progress`: the totals so far, printed during the run ([Progress](#progress)) |
+| `fuzz.progress: <s> trials=<n> steps=<n> blocks=<n> edges=<n> paths=<n> assumes=<n> failures=<n> frontier=<n> [cmp-buckets=<n>] corpus=<n> [cost=<c>\|-]` | `--fuzz-progress`: the totals so far, printed during the run ([Progress](#progress)); `cost`: with `--fuzz-strategy=mcmc`, the cost of the chain's current input |
 | `fuzz.failure: <runs> trial=<n> [file=<path>] at=<where> time=<s>` | one per failing `sea.assert`: how many runs failed it, the first trial, its file, the seconds from the start of the trials to it |
 | `fuzz.memory-safety: <runs> trial=<n> [file=<path>] op=<op> [site=<n>] at=<where> time=<s>` | `--defer-memory-errors`: one per operation with a memory-safety finding (the first violation of a run that reached the end or a failing assert) |
 | `fuzz.memory-safety-message: <text>` | the message of the first such run |
@@ -536,10 +628,11 @@ fuzz.blocked: 30 op=sea.assume at=p.mlir:5:3 sites=0 cond=(eq s0 1234)
 | `fuzz.coverage: blocks=<n> blocks-total=<n> edges=<n> assumes=<n> assumes-total=<n> paths=<n> [paths-capped=<cap>]` | blocks entered, edges taken (the entry counts as one), `sea.assume` ops passed at least once, distinct paths ([Coverage](#coverage)) |
 | `fuzz.corpus: <entries> seeds=<files> skipped-lines=<n> files=<n> dictionary=<n> keep=<reasons> kept-blocks=<n> kept-cmp=<n> kept-frontier=<n> [max=<n>] dropped=<n>` | corpus entries at the end, seed files read, lines of saved runs that are not inputs, files written, dictionary size; the keep rule, the trials kept per first reason, the bound and the kept trials it dropped ([Corpus feedback](#corpus-feedback)) |
 | `fuzz.sync: imported=<n> kept=<n> skipped=<n> polls=<n> dirs=<n> missing=<n> period=<s>` | `--fuzz-sync`: the peers' files run, kept, skipped ([Corpus sync](#corpus-sync)) |
+| `fuzz.mcmc: moves=<n> accepted=<n> uphill=<n> restarts=<n> failure-restarts=<n> best-cost=<c> best-trial=<n>\|- stall=<id>:<n>\|- beta=<b> restart=<n> share=<p>` | `--fuzz-strategy=mcmc`: the chain ([MCMC strategy](#mcmc-strategy)) |
 | `fuzz.blocked: <runs> op=<op> at=<where> [sites=<n,...> cond=<expr>]` | one per `sea.assume` or `sea.unreachable` that blocked runs, most first; for a `sea.assume`, its condition over the input sites (see [For agents](#for-agents)) |
 | `fuzz.frontier: deepest=<n> trial=<n> end=<status> [gate=<id>] mean=<x> assumes=<n> passed=<n> closed=<n> unreached=<n>` | the assume frontier ([Model coverage](#model-coverage)) |
 | `fuzz.gate-closed: <id> blocked=<n> [distance=<d>\|-] [check=1] at=<where> [sites=<n,...> cond=<expr>]` | one per `sea.assume` that blocked trials and that no trial passed |
-| `fuzz.gate: <id> op=<op> passed=<n> blocked=<n> [distance=<d>\|- measured=<n>] [check=1] at=<where>` | `--fuzz-gates`: one per `sea.assume` and `sea.unreachable`; `measured`: the blocked trials with a distance |
+| `fuzz.gate: <id> op=<op> passed=<n> blocked=<n> [distance=<d>\|- measured=<n>] [mcmc-moves=<n> mcmc-improved=<n>] [check=1] at=<where>` | `--fuzz-gates`: one per `sea.assume` and `sea.unreachable`; `measured`: the blocked trials with a distance; `mcmc-*`: the chain's moves from a trial blocked here, and those that lowered the cost |
 | `fuzz.cmp: <n> reached=<n> buckets=<hit>/<total> outcomes=<hit>/<total> assume=<hit>/<total> branch=<hit>/<total> value=<hit>/<total>` | `--fuzz-cmp`: comparison coverage |
 | `fuzz.reachable: covered=<n> reachable=<n> unreachable=<n> unknown=<n> unknown-covered=<n> unlisted=<n>` | `--fuzz-reachable`: blocks covered of the reachable ones |
 | `fuzz.uncovered: <id> at=<where>` | `--fuzz-reachable`: one per reachable block no trial entered |
@@ -879,7 +972,8 @@ a value that does not fit its site.
 
 The same program, `--seed`, corpus and options give the same trials and the
 same output, except the `time`, `execs/s` and `steps/s` fields and the
-`fuzz.progress` lines. With `--fuzz-time`, the
+`fuzz.progress` lines. The strategy is one of the options: the default
+gives the trials of earlier versions. With `--fuzz-time`, the
 number of trials depends on the machine's speed, so the result is
 reproducible only up to where the time ran out: give `--fuzz` for a fixed
 run. With `--fuzz-sync` a run is not reproducible ([Corpus

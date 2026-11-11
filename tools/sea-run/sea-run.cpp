@@ -235,6 +235,37 @@ static cl::opt<double> fuzzRangeShare(
              "every trial)"),
     cl::value_desc("P"), cl::init(0.5));
 
+static cl::opt<sea::FuzzStrategy> fuzzStrategy(
+    "fuzz-strategy",
+    cl::desc("Fuzz: how a trial after the seeds gets its input"),
+    cl::values(clEnumValN(sea::FuzzStrategy::Corpus, "corpus",
+                          "a corpus entry with 1, 2, 4 or 8 values mutated "
+                          "(default)"),
+               clEnumValN(sea::FuzzStrategy::Mcmc, "mcmc",
+                          "a Metropolis-style chain: one value of the current "
+                          "input mutated, accepted by the cost (approach "
+                          "level and branch distance)")),
+    cl::init(sea::FuzzStrategy::Corpus));
+
+static cl::opt<double> fuzzMcmcBeta(
+    "fuzz-mcmc-beta",
+    cl::desc("Fuzz, mcmc: a move that raises the cost by d is accepted with "
+             "probability exp(-B * d) (default 1, not tuned)"),
+    cl::value_desc("B"), cl::init(1));
+
+static cl::opt<uint64_t> fuzzMcmcRestart(
+    "fuzz-mcmc-restart",
+    cl::desc("Fuzz, mcmc: restart the chain from a corpus entry after N "
+             "moves without a new best cost (default 1000, not tuned; 0: "
+             "never)"),
+    cl::value_desc("N"), cl::init(1000));
+
+static cl::opt<double> fuzzMcmcShare(
+    "fuzz-mcmc-share",
+    cl::desc("Fuzz, mcmc: the probability that a trial is a chain move; the "
+             "others are corpus-strategy trials (default 1)"),
+    cl::value_desc("P"), cl::init(1));
+
 static cl::opt<bool> keepGoing("keep-going",
                                cl::desc("Fuzz past the first failure, "
                                         "counting failures"),
@@ -623,7 +654,8 @@ count depends on speed; --fuzz-sync: not reproducible).
                          of several runs join (utils/fuzz-par.py); then
                          `frontier: deepest=<n> sum=<n>`, one
                          `gate: <id> op=<op> passed=<n> blocked=<n>
-                         [distance=<d>|-]` per fuzz.assume id, and, unless
+                         [distance=<d>|-] [mcmc-moves=<n>
+                         mcmc-improved=<n>]` per fuzz.assume id, and, unless
                          --fuzz-cmp=false, one `cmp: <id> pred=<p>
                          role=assume|branch|value counts=<7 counts>
                          at=<where>` per comparison (MODEL COVERAGE)
@@ -636,6 +668,10 @@ count depends on speed; --fuzz-sync: not reproducible).
   --fuzz-sync-period=S   seconds between two sync reads (default 5, not
                          tuned)
   --fuzz-gates           one fuzz.gate line per blocking op
+  --fuzz-strategy=corpus|mcmc  how a trial after the seeds gets its input:
+                         a mutated corpus entry (default) or a chain led
+                         by a cost (MCMC)
+  --fuzz-mcmc-beta=B, --fuzz-mcmc-restart=N, --fuzz-mcmc-share=P  (MCMC)
   --fuzz-reachable=F     F: `sea-vc --reach=blocks` output on the same
                          file; block coverage of the reachable blocks
   --input-file=F         replays one corpus file (also without --fuzz)
@@ -655,11 +691,12 @@ Output of --fuzz: the first failure as a plain run on its input
 prints; the fuzzer checks the replay ends the same way), then stat lines:
   fuzz.progress: <elapsed s> trials=<n> steps=<n> blocks=<n> edges=<n>
                  paths=<n> assumes=<n> failures=<n> frontier=<n>
-                 [cmp-buckets=<n>] corpus=<n>
+                 [cmp-buckets=<n>] corpus=<n> [cost=<c>|-]
                                  (--fuzz-progress, during the run, before
                                  the lines below; failures: failing trials
                                  so far; frontier, cmp-buckets: MODEL
-                                 COVERAGE, cmp-buckets unless --fuzz-cmp=false)
+                                 COVERAGE, cmp-buckets unless --fuzz-cmp=false;
+                                 cost: the chain's, MCMC)
   fuzz.failure: <runs> trial=<first> [file=<path>] at=<where> time=<s>
                                  (per failing sea.assert; time: of the
                                  first, since the trials started)
@@ -718,6 +755,9 @@ prints; the fuzzer checks the replay ends the same way), then stat lines:
                kept-frontier=<n> [max=<n>] dropped=<n>   (CORPUS)
   fuzz.sync: imported=<n> kept=<n> skipped=<n> polls=<n> dirs=<n>
              missing=<n> period=<s>          (--fuzz-sync; CORPUS)
+  fuzz.mcmc: moves=<n> accepted=<n> uphill=<n> restarts=<n>
+             failure-restarts=<n> best-cost=<c> best-trial=<n>|-
+             stall=<gate id>:<n>|- beta=<b> restart=<n> share=<p>  (MCMC)
   fuzz.blocked: <runs> op=sea.assume|sea.unreachable at=<where>
                 [sites=<n,...>|- cond=<expr>]
                                  (each blocking site, most runs first;
@@ -727,7 +767,8 @@ prints; the fuzzer checks the replay ends the same way), then stat lines:
   fuzz.gate-closed: <id> blocked=<n> [distance=<d>|-] [check=1]
                     at=<where> [sites=<n,...>|- cond=<expr>]
   fuzz.gate: <id> op=<op> passed=<n> blocked=<n> [distance=<d>|-
-             measured=<n>] [check=1] at=<where>  (--fuzz-gates)
+             measured=<n>] [mcmc-moves=<n> mcmc-improved=<n>] [check=1]
+             at=<where>  (--fuzz-gates; mcmc-*: MCMC)
   fuzz.cmp: <n> reached=<n> buckets=<hit>/<n*7> outcomes=<hit>/<n*2>
             assume=<hit>/<total> branch=<hit>/<total> value=<hit>/<total>
                                                 (--fuzz-cmp)
@@ -758,6 +799,32 @@ CORPUS (docs/reference/fuzzing.md, "Corpus feedback", "Corpus sync"):
     last poll. Not reproducible. utils/fuzz-par.py --sync wires N
     processes.
 
+MCMC (--fuzz-strategy=mcmc; docs/reference/fuzzing.md, "MCMC strategy"):
+  a Metropolis-style chain over inputs. One current input; a move mutates
+  one of its values (a mutation of TRIALS) and runs it as a trial (coverage,
+  corpus, failures as any trial). cost = 65 * (deepest - frontier) +
+  log2(1 + distance): frontier = distinct assumes the trial passed, deepest
+  = the most of any trial so far, distance = the branch distance of the
+  blocking assume (0: not blocked; 64 for the term: no distance). One
+  more assume passed always lowers the cost. A move that raises it by d
+  is accepted with probability exp(-B * d), B = --fuzz-mcmc-beta (default
+  1); not raising: accepted. --fuzz-mcmc-restart=N (default 1000, 0:
+  never): after N moves without a new best of the chain, restart from a
+  corpus entry or the empty one (unmutated). A failing trial ends the
+  chain (--keep-going: restart). A trial with an error or at the step
+  limit: rejected. --fuzz-mcmc-share=P: each trial a chain move with
+  probability P, else a corpus-strategy trial (default 1; 0: the corpus
+  strategy's trials). B, 65 and N are not tuned. Needs --fuzz-cmp (default
+  on). Read fuzz.mcmc: accepted/moves = acceptance; uphill = accepted
+  moves that raised the cost (high: B too small, a random walk; ~0 with
+  few accepted: stuck, only restarts move it); best-cost against the
+  deepest frontier at the end (0.00: nothing left to cross, a failure
+  included); stall=<gate>:<n>: the gate with most moves that did not lower
+  the cost (per gate: mcmc-moves, mcmc-improved on fuzz.gate and the
+  coverage file's gate: lines). A stall at an assume of x != y (distance
+  1 on every blocked trial) or of a non-comparison: the cost is flat
+  there; use a corpus entry, the dictionary or the corpus strategy.
+
 MODEL COVERAGE (--fuzz; docs/reference/fuzzing.md, "Model coverage"):
 measures of the program as a model, not corpus feedback unless
 --fuzz-keep asks (the inputs, the corpus and the random stream are the
@@ -781,7 +848,9 @@ are the fuzz.assume ids of --fuzz-sites.
     blocking assume of a comparison blocked: how far one operand had to
     move (eq: |lhs - rhs| the short way mod 2^w; ne: 1; ult: lhs - rhs +
     1; ule: lhs - rhs; ugt: rhs - lhs + 1; uge: rhs - lhs; signed alike;
-    clamped at 2^64 - 1); `-`: none measured (not a comparison).
+    clamped at 2^64 - 1); `-`: none measured (not a comparison; and/or of
+    comparisons included). ne has no gradient: a trial an assume of
+    x != y blocks has x = y, so |x - y| = 0 on every one.
   --fuzz-reachable=F: F is `sea-vc --reach=blocks` text output on the same
     file (ids of --reach-targets=blocks); every id must be a block of the
     program (another program or lowering: error). covered of reachable;
@@ -1358,6 +1427,9 @@ static int emitModelCoverage(sea::out::Emitter &out, sea::ProgramOp program,
          << " passed=" << g.passed << " blocked=" << g.blocked;
       if (fuzzCmp)
         os << " distance=" << dist(g) << " measured=" << g.distanceRuns;
+      if (fuzzStrategy == sea::FuzzStrategy::Mcmc)
+        os << " mcmc-moves=" << g.mcmcMoves
+           << " mcmc-improved=" << g.mcmcImproved;
       if (g.beforeAssertFalse)
         os << " check=1";
       os << " at=" << where(g.op) << "\n";
@@ -1473,6 +1545,10 @@ static int runFuzz(sea::ProgramOp program) {
     return fail("--fuzz-sync-period must be positive");
   fo.syncSeconds = fuzzSyncPeriod;
   fo.maxSteps = maxSteps;
+  fo.strategy = fuzzStrategy;
+  fo.mcmcBeta = fuzzMcmcBeta;
+  fo.mcmcRestart = fuzzMcmcRestart;
+  fo.mcmcShare = fuzzMcmcShare;
   sea::out::Emitter out(outs(), outFormat);
   raw_ostream &os = out.lines();
   // `fuzz.progress:` lines while the trials run, flushed one by one
@@ -1485,7 +1561,15 @@ static int runFuzz(sea::ProgramOp program) {
        << " failures=" << p.failures << " frontier=" << p.frontier;
     if (fuzzCmp)
       os << " cmp-buckets=" << p.cmpBuckets;
-    os << " corpus=" << p.corpus << "\n";
+    os << " corpus=" << p.corpus;
+    if (p.mcmc) {
+      os << " cost=";
+      if (p.mcmcCost)
+        os << format("%.2f", *p.mcmcCost);
+      else
+        os << "-";
+    }
+    os << "\n";
     out.flush();
   };
   std::vector<sea::ReachTarget> targets;
@@ -1634,6 +1718,32 @@ static int runFuzz(sea::ProgramOp program) {
        << " polls=" << rep->syncPolls << " dirs=" << fo.syncDirs.size()
        << " missing=" << rep->syncDirsMissing
        << " period=" << format("%g", fo.syncSeconds) << "\n";
+  if (fo.strategy == sea::FuzzStrategy::Mcmc) {
+    // the chain: acceptance, restarts, its best state, where it stalls
+    // (the gate with the most moves that did not lower the cost)
+    const sea::FuzzMcmcStats &m = rep->mcmc;
+    std::optional<size_t> stall;
+    uint64_t stallMoves = 0;
+    for (auto [id, g] : llvm::enumerate(rep->gates))
+      if (g.mcmcMoves - g.mcmcImproved > stallMoves) {
+        stall = id;
+        stallMoves = g.mcmcMoves - g.mcmcImproved;
+      }
+    os << "fuzz.mcmc: moves=" << m.moves << " accepted=" << m.accepted
+       << " uphill=" << m.uphill << " restarts=" << m.restarts
+       << " failure-restarts=" << m.failureRestarts << " best-cost=";
+    if (m.bestCost)
+      os << format("%.2f", *m.bestCost) << " best-trial=" << m.bestTrial;
+    else
+      os << "-";
+    os << " stall=";
+    if (stall)
+      os << *stall << ":" << stallMoves;
+    else
+      os << "-";
+    os << " beta=" << format("%g", fo.mcmcBeta) << " restart=" << fo.mcmcRestart
+       << " share=" << format("%g", fo.mcmcShare) << "\n";
+  }
   for (auto [op, n] : rep->blocked) {
     std::string at = sea::formatLoc(op->getLoc());
     std::string line;
@@ -1910,6 +2020,23 @@ int main(int argc, char **argv) {
   if (fuzzDictShare.getNumOccurrences() && !fuzzDict)
     return fail("--fuzz-dict-share does not go with --fuzz-dict=false "
                 "(give --fuzz-dict-share=0 for no dictionary values)");
+
+  bool mcmcOpts = fuzzMcmcBeta.getNumOccurrences() ||
+                  fuzzMcmcRestart.getNumOccurrences() ||
+                  fuzzMcmcShare.getNumOccurrences();
+  if ((fuzzStrategy.getNumOccurrences() || mcmcOpts) && !fuzzTrials &&
+      fuzzTime <= 0)
+    return fail("--fuzz-strategy and --fuzz-mcmc-* need --fuzz or --fuzz-time");
+  if (mcmcOpts && fuzzStrategy != sea::FuzzStrategy::Mcmc)
+    return fail("--fuzz-mcmc-beta, --fuzz-mcmc-restart and --fuzz-mcmc-share "
+                "need --fuzz-strategy=mcmc");
+  if (fuzzStrategy == sea::FuzzStrategy::Mcmc && !fuzzCmp)
+    return fail("--fuzz-strategy=mcmc needs the branch distances: not with "
+                "--fuzz-cmp=false");
+  if (!(fuzzMcmcBeta >= 0))
+    return fail("--fuzz-mcmc-beta must not be negative");
+  if (!(fuzzMcmcShare >= 0 && fuzzMcmcShare <= 1))
+    return fail("--fuzz-mcmc-share must be in [0, 1]");
 
   if (fuzzSites &&
       (fuzzTrials || fuzzTime > 0 || !inputs.empty() || !inputFile.empty() ||

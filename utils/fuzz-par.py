@@ -56,11 +56,13 @@ OUTPUT (key: value lines, stdout):
   fuzz-par.process: <i> seed=<s> exit=<rc> end=done|failure|stopped|error
       from=final|progress|none trials=<n> steps=<n> blocks=<n> edges=<n>
       paths=<n> assumes=<n> corpus=<n> [imported=<n> sync-kept=<n>
-      sync-skipped=<n>]
+      sync-skipped=<n>] [mcmc-moves=<n> mcmc-accepted=<n>
+      mcmc-best-cost=<c>|- mcmc-stall=<id>:<n>|-]
       (from: the process's fuzz.trials / fuzz.coverage lines, or its last
        fuzz.progress if it was stopped, or nothing; stopped: by the launcher;
        corpus: its corpus entries; imported, sync-kept, sync-skipped: with
-       --sync, its fuzz.sync line, - if it printed none)
+       --sync, its fuzz.sync line, - if it printed none; mcmc-*: with
+       --fuzz-strategy=mcmc passed through, its fuzz.mcmc line)
   fuzz-par.first-failure: process=<i> seed=<s> kind=failure|memory-safety
       trial=<n> time=<s> wall=<s> at=<where> [file=<path>]
       (time: the process's own clock from its first trial; wall: the
@@ -119,6 +121,7 @@ class Proc:
         self.coverage = None  # fields of fuzz.coverage
         self.corpus = None  # fields of fuzz.corpus
         self.sync = None  # fields of fuzz.sync
+        self.mcmc = None  # fields of fuzz.mcmc
         self.failed = False
         self.stopped = False
 
@@ -288,6 +291,8 @@ def main():
                     p.corpus["entries"] = rest.split()[0]
                 elif key == "fuzz.sync":
                     p.sync = fields(rest)
+                elif key == "fuzz.mcmc":
+                    p.mcmc = fields(rest)
                 elif key in ("fuzz.failure", "fuzz.memory-safety"):
                     p.failed = True
                     if first is None:
@@ -365,6 +370,14 @@ def main():
                     )
                 )
                 if a.sync
+                else ""
+            )
+            + (
+                "".join(
+                    f" mcmc-{k}={p.mcmc.get(k, '-')}"
+                    for k in ("moves", "accepted", "best-cost", "stall")
+                )
+                if p.mcmc
                 else ""
             )
         )

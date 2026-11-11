@@ -137,7 +137,30 @@ struct FuzzProgress {
   unsigned cmpBuckets = 0;
   /// Corpus entries so far.
   uint64_t corpus = 0;
+  /// FuzzStrategy::Mcmc: the cost of the chain's current state (McmcCost),
+  /// none before the chain has one.
+  bool mcmc = false;
+  std::optional<double> mcmcCost;
 };
+
+/// How a trial after the seeds gets its input (sea-run --fuzz-strategy).
+/// Corpus: a corpus entry (or the empty one) with 1, 2, 4 or 8 of its
+/// values mutated (the strategy of every version before the option, the
+/// default). Mcmc: a Metropolis-style chain over inputs: one current
+/// input, a move mutates one of its values, the trial's cost
+/// (kMcmcLevelWeight) decides whether the move is accepted
+/// (FuzzOptions::mcmcBeta).
+enum class FuzzStrategy { Corpus, Mcmc };
+
+/// The cost of an mcmc state: kMcmcLevelWeight * (deepest - frontier) +
+/// log2(1 + branch distance of the gate that blocked the trial), with
+/// deepest the run's deepest frontier so far (FuzzReport::frontierDeepest),
+/// frontier the trial's (the approach level). The second term is in [0,
+/// 64]: 0 for a trial no gate blocked, kMcmcUnknownDistance for a gate
+/// without a branch distance (not a comparison, sea.unreachable). The
+/// level weight exceeds it, so one more gate passed always lowers the cost.
+constexpr double kMcmcLevelWeight = 65;
+constexpr double kMcmcUnknownDistance = 64;
 
 /// Why a trial joins the corpus (FuzzOptions::keep, a set of these bits;
 /// sea-run --fuzz-keep). Blocks: it reached a block, an edge or a passed
@@ -240,6 +263,41 @@ struct FuzzOptions {
   /// is skipped and counted. outDir itself is never read.
   std::vector<std::string> syncDirs;
   double syncSeconds = 0;
+  /// The input strategy of the trials after the seeds (FuzzStrategy).
+  /// Mcmc needs cmpCoverage (the branch distances).
+  FuzzStrategy strategy = FuzzStrategy::Corpus;
+  /// Mcmc: a move that raises the cost by d > 0 is accepted with
+  /// probability exp(-mcmcBeta * d) (one gate fewer passed: d >= 1). Not
+  /// tuned.
+  double mcmcBeta = 1;
+  /// Mcmc: the chain restarts after this many moves without a cost below
+  /// the chain's best since its start (0: never), from a corpus entry or
+  /// the empty one (as the corpus strategy picks, unmutated). Not tuned.
+  uint64_t mcmcRestart = 1000;
+  /// Mcmc: the probability that a trial is a chain move; the others are
+  /// corpus-strategy trials (they do not move the chain). One draw of the
+  /// random stream per trial only when 0 < mcmcShare < 1.
+  double mcmcShare = 1;
+};
+
+/// The chain of FuzzStrategy::Mcmc. A move is a trial on the current
+/// input with one value mutated; a restart is a trial on a corpus entry
+/// (or the empty one), accepted whatever its cost. A failing trial ends
+/// the chain (with keepGoing the next trial restarts: the failure is
+/// found); a trial that stops with an error (a limit) is a rejected move.
+struct FuzzMcmcStats {
+  uint64_t moves = 0, accepted = 0;
+  /// accepted moves that raised the cost
+  uint64_t uphill = 0;
+  /// restarts after mcmcRestart moves without a new chain best, and after
+  /// a failing trial
+  uint64_t restarts = 0, failureRestarts = 0;
+  /// the least cost of a chain state, its trial and its frontier
+  /// (McmcCost against the deepest frontier at the end)
+  std::optional<double> bestCost;
+  uint64_t bestTrial = 0;
+  unsigned bestFrontier = 0;
+  double bestDistance = 0;
 };
 
 /// The operand distance buckets of a comparison: d = lhs - rhs, exact (as
@@ -288,6 +346,10 @@ struct FuzzGateStats {
   /// most 2^64 - 1), and the blocked trials it was measured on.
   std::optional<uint64_t> bestDistance;
   uint64_t distanceRuns = 0;
+  /// FuzzStrategy::Mcmc: the moves proposed while the chain's current
+  /// trial was blocked here, and of those the ones that lowered the cost
+  /// (moves - improved: where the chain stalls).
+  uint64_t mcmcMoves = 0, mcmcImproved = 0;
 };
 
 /// The first trial that reached a reach target (FuzzOptions::reachTargets):
@@ -420,6 +482,8 @@ struct FuzzReport {
   /// per comparison).
   std::vector<FuzzCmpStats> cmps;
   unsigned cmpBucketsHit = 0, cmpsReached = 0, cmpOutcomesHit = 0;
+  /// FuzzStrategy::Mcmc
+  FuzzMcmcStats mcmc;
 };
 
 /// Fuzzes `program`: first the seeds, in order, then mutated entries.

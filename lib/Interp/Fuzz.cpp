@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <optional>
 #include <random>
 #include <set>
@@ -721,6 +722,9 @@ public:
     p.frontier = report.frontierDeepest;
     p.cmpBuckets = report.cmpBucketsHit;
     p.corpus = corpus.size();
+    p.mcmc = options.strategy == FuzzStrategy::Mcmc;
+    if (chain.valid)
+      p.mcmcCost = chainCost(chain.frontier, chain.distance);
     return p;
   }
 
@@ -995,6 +999,37 @@ private:
                       StringRef seedName, bool &stop, std::string &error,
                       bool imported = false);
 
+  /// FuzzStrategy::Mcmc: one trial of the chain, a move or a restart.
+  LogicalResult mcmcStep(bool &stop, std::string &error);
+
+  /// The cost of an mcmc state against the deepest frontier so far
+  /// (kMcmcLevelWeight).
+  double chainCost(unsigned frontier, double distance) const {
+    return kMcmcLevelWeight *
+               (double(report.frontierDeepest) - double(frontier)) +
+           distance;
+  }
+
+  /// How the last trial ended (trial() sets them): its status class, the
+  /// gate that blocked it and the branch distance there.
+  bool lastFailing = false, lastErring = false;
+  std::optional<unsigned> lastGate;
+  std::optional<uint64_t> lastDistance;
+
+  /// The mcmc chain: the current input (the values its trial read), that
+  /// trial's frontier, distance term and blocking gate; the chain's best
+  /// cost (as kMcmcLevelWeight * -frontier + distance, so independent of
+  /// the deepest frontier) and the moves since it last improved.
+  struct Chain {
+    bool valid = false;
+    Entry entry;
+    unsigned frontier = 0;
+    double distance = 0;
+    std::optional<unsigned> gate;
+    double best = 0;
+    uint64_t sinceBest = 0;
+  } chain;
+
   ProgramOp program;
   const FuzzOptions &options;
   std::mt19937_64 rng;
@@ -1071,6 +1106,8 @@ LogicalResult Fuzzer::trial(Entry preset,
   }
   ++report.trials;
   report.syncImported += imported;
+  lastGate.reset();
+  lastDistance.reset();
   report.steps += r.steps;
   if (!paths.contains(pathHash)) {
     if (paths.size() < kFuzzPathCap)
@@ -1106,12 +1143,14 @@ LogicalResult Fuzzer::trial(Entry preset,
   }
   if (r.status == RunStatus::AssumeBlocked && r.at) {
     ++blockedBy[r.at];
-    FuzzGateStats &g = report.gates[gateIdx.lookup(r.at)];
+    lastGate = gateIdx.lookup(r.at);
+    FuzzGateStats &g = report.gates[*lastGate];
     ++g.blocked;
     if (options.cmpCoverage && g.cmp && cmpLast[*g.cmp].epoch == epoch) {
       const CmpLast &l = cmpLast[*g.cmp];
       ICmpPredicate p = predOf(report.cmps[*g.cmp].op);
       uint64_t d = branchDistance(g.negated ? inversePred(p) : p, l.a, l.b);
+      lastDistance = d;
       ++g.distanceRuns;
       if (!g.bestDistance || d < *g.bestDistance)
         g.bestDistance = d;
@@ -1124,6 +1163,8 @@ LogicalResult Fuzzer::trial(Entry preset,
   bool failing =
       r.status == RunStatus::AssertFailed || r.status == RunStatus::MemoryError;
   bool erring = r.status == RunStatus::Error;
+  lastFailing = failing;
+  lastErring = erring || r.status == RunStatus::StepLimit;
   // a memory-safety check that stopped the run (no deferMemoryErrors), or
   // a limit (a layout error included)
   bool memoryCheck = erring && isMemorySafetyError(r);
@@ -1213,6 +1254,103 @@ LogicalResult Fuzzer::trial(Entry preset,
   return success();
 }
 
+LogicalResult Fuzzer::mcmcStep(bool &stop, std::string &error) {
+  FuzzMcmcStats &m = report.mcmc;
+  bool restart = !chain.valid || (options.mcmcRestart &&
+                                  chain.sinceBest >= options.mcmcRestart);
+  Entry proposal;
+  std::optional<unsigned> from; // the gate the move starts at
+  if (restart) {
+    // a restart (the first start included, not counted): a corpus entry or
+    // the empty one, as nextEntry picks, unmutated
+    if (chain.valid)
+      ++m.restarts;
+    chain.valid = false;
+    uint64_t pick = rng() % (corpus.size() + 1);
+    if (pick < corpus.size())
+      proposal = corpus[pick];
+  } else {
+    // a move: one value of the current input mutated (none read: the empty
+    // input, all values fresh)
+    ++m.moves;
+    from = chain.gate;
+    proposal = chain.entry;
+    if (!proposal.empty()) {
+      auto it = proposal.begin();
+      std::advance(it, rng() % proposal.size());
+      it->second = mutate(it->first, it->second, proposal);
+    }
+  }
+  if (failed(trial(std::move(proposal), nullptr, "", stop, error)))
+    return failure();
+  if (lastFailing) {
+    // the chain found a failure: it ends there (keepGoing: a restart next)
+    ++m.failureRestarts;
+    // a failing trial is the chain's best state, no gate left to cross
+    if (!m.bestCost ||
+        -kMcmcLevelWeight * double(runFrontier) <
+            -kMcmcLevelWeight * double(m.bestFrontier) + m.bestDistance) {
+      m.bestCost = 0;
+      m.bestTrial = report.trials;
+      m.bestFrontier = runFrontier;
+      m.bestDistance = 0;
+    }
+    if (from) {
+      ++report.gates[*from].mcmcMoves;
+      ++report.gates[*from].mcmcImproved;
+    }
+    chain.valid = false;
+    return success();
+  }
+  double distance = !lastGate      ? 0
+                    : lastDistance ? std::log2(double(*lastDistance) + 1)
+                                   : kMcmcUnknownDistance;
+  // the cost as kMcmcLevelWeight * -frontier + distance (chainCost minus a
+  // term every state shares)
+  auto raw = [](unsigned frontier, double d) {
+    return -kMcmcLevelWeight * double(frontier) + d;
+  };
+  double cost = raw(runFrontier, distance);
+  bool accept;
+  if (lastErring) {
+    accept = false; // no cost: a limit or an error
+  } else if (restart) {
+    accept = true;
+  } else {
+    double d = cost - raw(chain.frontier, chain.distance);
+    accept = d <= 0 || chance(std::exp(-options.mcmcBeta * d));
+    m.uphill += accept && d > 0;
+  }
+  if (from) {
+    FuzzGateStats &g = report.gates[*from];
+    ++g.mcmcMoves;
+    g.mcmcImproved += accept && cost < raw(chain.frontier, chain.distance);
+  }
+  if (!accept) {
+    ++chain.sinceBest;
+    return success();
+  }
+  m.accepted += !restart;
+  chain.entry = source.used;
+  chain.frontier = runFrontier;
+  chain.distance = distance;
+  chain.gate = lastGate;
+  if (!chain.valid || cost < chain.best) {
+    chain.best = cost;
+    chain.sinceBest = 0;
+  } else {
+    ++chain.sinceBest;
+  }
+  chain.valid = true;
+  if (!m.bestCost || cost < raw(m.bestFrontier, m.bestDistance)) {
+    m.bestCost = cost; // made relative at the end
+    m.bestTrial = report.trials;
+    m.bestFrontier = runFrontier;
+    m.bestDistance = distance;
+  }
+  return success();
+}
+
 FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
                                   std::string &error) {
   if (!options.reachTargets.empty() && options.deferMemoryErrors) {
@@ -1228,6 +1366,17 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
   if ((options.keep & kKeepCmp) && !options.cmpCoverage) {
     error = "keep reason cmp needs the comparison counters (--fuzz-cmp)";
     return failure();
+  }
+  if (options.strategy == FuzzStrategy::Mcmc) {
+    if (!options.cmpCoverage) {
+      error = "the mcmc strategy needs the branch distances (--fuzz-cmp)";
+      return failure();
+    }
+    if (!(options.mcmcBeta >= 0) || !(options.mcmcShare >= 0) ||
+        !(options.mcmcShare <= 1)) {
+      error = "mcmc: beta must be >= 0 and the share in [0, 1]";
+      return failure();
+    }
   }
   if (!options.syncDirs.empty() && !(options.syncSeconds > 0)) {
     error = "corpus sync needs a positive period (--fuzz-sync-period)";
@@ -1380,16 +1529,27 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
     ++report.seedTrials;
     tick();
   }
+  bool mcmc = options.strategy == FuzzStrategy::Mcmc;
   while (!stop && budgetLeft()) {
     pickStrategy();
-    if (failed(trial(nextEntry(), nullptr, "", stop, error)))
+    // mcmc: a chain step, or with a share below 1 sometimes a corpus trial
+    bool step = mcmc && (options.mcmcShare >= 1 ||
+                         (options.mcmcShare > 0 && chance(options.mcmcShare)));
+    if (step) {
+      if (failed(mcmcStep(stop, error)))
+        return failure();
+    } else if (failed(trial(nextEntry(), nullptr, "", stop, error))) {
       return failure();
+    }
     tick();
     if (failed(sync(stop)))
       return failure();
   }
   report.seconds = elapsed();
   report.paths = paths.size();
+  if (report.mcmc.bestCost)
+    report.mcmc.bestCost =
+        chainCost(report.mcmc.bestFrontier, report.mcmc.bestDistance);
   finishCmps();
   if (covOs)
     writeCoverage(*covOs);
@@ -1460,6 +1620,9 @@ void Fuzzer::writeCoverage(llvm::raw_fd_ostream &os) {
     if (options.cmpCoverage)
       os << " distance="
          << (g.bestDistance ? std::to_string(*g.bestDistance) : "-");
+    if (options.strategy == FuzzStrategy::Mcmc)
+      os << " mcmc-moves=" << g.mcmcMoves
+         << " mcmc-improved=" << g.mcmcImproved;
     os << "\n";
   }
   if (!options.cmpCoverage)
