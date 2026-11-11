@@ -10,9 +10,10 @@
 // last edge's value the default, as the ite join does. The term is counted
 // and expanded at once (expr::op::cases::expand) to the ite chain the join
 // builds without the option, before the value is written to the store: no
-// rewriter, OpSem rule, solver or evaluator sees `cases`, and the query is
-// the same as without the option. A join over one edge is its value, as
-// without the option: no cases term, not counted.
+// rewriter, OpSem rule, solver or evaluator sees `cases`, and with neither
+// rearrangement option on the query is the same as without the option. A join
+// over one edge is its value, as without the option: no cases term, not
+// counted.
 //
 // The counters (`cases.*` lines, print) measure where an n-ary join term
 // would matter: repeated values among the n values, the ones a sequential

@@ -59,7 +59,7 @@ Expr iteJoin(const ExprVector &edges, const ExprVector &vals) {
 
 std::string str(Expr e) {
   std::ostringstream os;
-  os << str(e);
+  os << *e;
   return os.str();
 }
 
