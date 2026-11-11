@@ -165,6 +165,13 @@ static cl::opt<bool> fuzzRanges(
              "without ranges)"),
     cl::init(true));
 
+static cl::opt<double> fuzzRangeShare(
+    "fuzz-range-share",
+    cl::desc("Fuzz: the probability that a trial uses range draws; the "
+             "others use the generator without ranges (default 0.5; 1: "
+             "every trial)"),
+    cl::value_desc("P"), cl::init(0.5));
+
 static cl::opt<bool> keepGoing("keep-going",
                                cl::desc("Fuzz past the first failure, "
                                         "counting failures"),
@@ -510,7 +517,10 @@ comparisons and arithmetic, +-1, sized to the site's width
 (--fuzz-dict=false: none). Dictionary share: 1/2 of fresh values, 1/5 of
 mutations; --fuzz-dict-share=P: P of both (the other mutations equally
 likely). Ranges (--fuzz-ranges, default on; =false: the generator without
-them, same trials as before for a seed): a sea.nondet site of <= 64 bits
+them, same trials as before for a seed): each trial picks, from the seeded
+random stream, range draws with probability --fuzz-range-share=P (default
+0.5; 1: every trial, 0: none, no draw for the pick at 0 or 1 or without a
+range) or the generator without ranges. In a range trial, a sea.nondet site of <= 64 bits
 bounded by an assume (ult sN K) -> [0,K-1], (ult (add sN M) K) ->
 [-M, -M+K-1], (ule sN E), E a sum of sites and constants -> [0,E] per
 trial, gets its fresh values and its fresh-random mutation from the range:
@@ -564,8 +574,12 @@ prints; the fuzzer checks the replay ends the same way), then stat lines:
                                  a layout error)
   fuzz.trials: <n> seeds=<n> time=<s> execs/s=<n>
   fuzz.ranges: <sites> value-sites=<n> assumes=<n> skipped=<n> draws=<n>
-               mode=edge|off   (value sites with a range; the assumes used;
-                                recognized but unused; values drawn)
+               mode=mix|edge|off share=<p> range-trials=<n>
+                               (value sites with a range; the assumes used;
+                                recognized but unused; values drawn; mode:
+                                both generators, range draws only, none;
+                                the share asked for; the trials that used
+                                range draws)
   fuzz.status: halted=<n> assert-failed=<n> assume-blocked=<n>
                step-limit=<n> error=<n> [memory-error=<n>]
   fuzz.deferred: <runs> memory-error=<n> assume-blocked=<n> step-limit=<n>
@@ -1053,6 +1067,7 @@ static int runFuzz(sea::ProgramOp program) {
   if (fuzzDictShare.getNumOccurrences())
     fo.dictShare = fuzzDictShare;
   fo.ranges = fuzzRanges;
+  fo.rangeShare = fuzzRangeShare;
   fo.keepGoing = keepGoing;
   fo.deferMemoryErrors = deferMemoryErrors;
   fo.addr0IsNull = addr0IsNull;
@@ -1137,7 +1152,12 @@ static int runFuzz(sea::ProgramOp program) {
   os << "fuzz.ranges: " << rep->ranges.sites
      << " value-sites=" << rep->valueSites << " assumes=" << rep->ranges.assumes
      << " skipped=" << rep->ranges.skipped << " draws=" << rep->rangeDraws
-     << " mode=" << (fuzzRanges ? "edge" : "off") << "\n";
+     << " mode="
+     << (!fuzzRanges || fuzzRangeShare <= 0 ? "off"
+         : fuzzRangeShare >= 1              ? "edge"
+                                            : "mix")
+     << " share=" << format("%g", fuzzRanges ? double(fuzzRangeShare) : 0.0)
+     << " range-trials=" << rep->rangeTrials << "\n";
   os << "fuzz.status:";
   for (sea::RunStatus st :
        {sea::RunStatus::Halted, sea::RunStatus::AssertFailed,
@@ -1436,9 +1456,16 @@ int main(int argc, char **argv) {
   if (!fuzzTrials && fuzzTime <= 0 &&
       (!corpus.empty() || !fuzzOut.empty() || keepGoing ||
        fuzzDict.getNumOccurrences() || fuzzDictShare.getNumOccurrences() ||
-       fuzzRanges.getNumOccurrences()))
+       fuzzRanges.getNumOccurrences() || fuzzRangeShare.getNumOccurrences()))
     return fail("--corpus, --fuzz-out, --fuzz-dict, --fuzz-dict-share, "
-                "--fuzz-ranges and --keep-going need --fuzz or --fuzz-time");
+                "--fuzz-ranges, --fuzz-range-share and --keep-going need "
+                "--fuzz or --fuzz-time");
+  if (fuzzRangeShare.getNumOccurrences() &&
+      !(fuzzRangeShare >= 0 && fuzzRangeShare <= 1))
+    return fail("--fuzz-range-share must be in [0, 1]");
+  if (fuzzRangeShare.getNumOccurrences() && !fuzzRanges)
+    return fail("--fuzz-range-share does not go with --fuzz-ranges=false "
+                "(give --fuzz-range-share=0 for no range trials)");
   if (fuzzDictShare.getNumOccurrences() &&
       !(fuzzDictShare >= 0 && fuzzDictShare <= 1))
     return fail("--fuzz-dict-share must be in [0, 1]");

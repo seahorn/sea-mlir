@@ -462,7 +462,7 @@ private:
 
   /// The range of a value site, if it has one at width `w`.
   const InputRange *rangeOf(const Key &k, unsigned w) const {
-    if (!k.second.empty())
+    if (!trialRanges || !k.second.empty())
       return nullptr;
     auto it = ranges.find(k.first);
     return it != ranges.end() && it->second.width == w ? &it->second : nullptr;
@@ -572,6 +572,21 @@ private:
   }
 
   /// The next trial's preset: a corpus entry (or the empty one) with 1, 2,
+  /// Picks the generation strategy of the next trial: range draws or the
+  /// generator without ranges (FuzzOptions::rangeShare). Draws from the
+  /// random stream only when both are possible.
+  void pickStrategy() {
+    if (ranges.empty())
+      trialRanges = false;
+    else if (options.rangeShare >= 1)
+      trialRanges = true;
+    else if (options.rangeShare <= 0)
+      trialRanges = false;
+    else
+      trialRanges = chance(options.rangeShare);
+    report.rangeTrials += trialRanges;
+  }
+
   /// 4 or 8 mutations.
   Entry nextEntry() {
     uint64_t pick = rng() % (corpus.size() + 1);
@@ -640,6 +655,8 @@ private:
   std::set<std::pair<unsigned, uint64_t>> dictSeen;
   /// FuzzOptions::ranges: the value sites' ranges, by site
   std::map<uint64_t, InputRange> ranges;
+  /// whether the current trial draws from `ranges` (pickStrategy)
+  bool trialRanges = false;
   /// the assumes directly followed by assert false
   llvm::DenseSet<Operation *> beforeAssertFalse;
   llvm::DenseMap<Operation *, unsigned> opOrder;
@@ -801,15 +818,18 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
     std::map<Key, std::string> text;
     for (const Assignment &a : s.assignments)
       text[{a.site, a.cell}] = a.value;
+    pickStrategy();
     if (failed(trial({}, &text, s.name, stop, error))) {
       error = s.name + ": " + error;
       return failure();
     }
     ++report.seedTrials;
   }
-  while (!stop && budgetLeft())
+  while (!stop && budgetLeft()) {
+    pickStrategy();
     if (failed(trial(nextEntry(), nullptr, "", stop, error)))
       return failure();
+  }
   report.seconds = elapsed();
   report.blocksHit = blocks.size();
   report.edgesHit = edges.size();

@@ -134,6 +134,15 @@ struct FuzzOptions {
   /// Off here (sea-vc --reach-fuzz: the generator without ranges); sea-run
   /// --fuzz turns it on by default.
   bool ranges = false;
+  /// With `ranges`: the probability that a trial uses range draws
+  /// (sea-run --fuzz-range-share); the other trials use the generator
+  /// without ranges. Each trial's choice is one draw of the seeded random
+  /// stream, made before the trial's input, only when 0 < rangeShare < 1
+  /// and the program has a range: 1 gives the trials of all-range draws,
+  /// 0 those of `ranges` off. sea-run's default is 1/2, not tuned: range
+  /// draws make rarer the values plain mutation reaches, which some bugs
+  /// need.
+  double rangeShare = 1;
   /// Count failures (assert failures, memory-safety findings) instead of
   /// stopping at the first.
   bool keepGoing = false;
@@ -204,6 +213,8 @@ struct FuzzReport {
   unsigned valueSites = 0;
   RangeStats ranges;
   uint64_t rangeDraws = 0;
+  /// The trials that used range draws (FuzzOptions::rangeShare).
+  uint64_t rangeTrials = 0;
   /// Runs blocked at an assume that is directly followed by `assert false`
   /// (isAssumeBeforeAssertFalse), and the number of such assumes. In
   /// SeaHorn's export form (a check is an assume of its failure, then

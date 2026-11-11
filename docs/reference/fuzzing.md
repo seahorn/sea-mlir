@@ -26,6 +26,7 @@ $ sea-run p.mlir --fuzz=10000 --seed=1 --fuzz-out=out
 | `--fuzz-dict=false` | no dictionary values (see below) |
 | `--fuzz-dict-share=<p>` | the probability that a fresh value and that a mutation is a dictionary value; unset: 1/2 of fresh values and 1/5 of mutations (see below) |
 | `--fuzz-ranges=false` | no range draws: the generator without them (see [Ranges](#ranges)); default on |
+| `--fuzz-range-share=<p>` | the probability that a trial uses range draws; the other trials use the generator without them (default 0.5; see [Ranges](#ranges)) |
 | `--keep-going` | count failures instead of stopping at the first |
 | `--defer-memory-errors` | go on past memory-safety violations; one is a failure only if the run reaches the end (see below) |
 | `--input-file=<file>` | run once on a corpus file (without `--fuzz`) |
@@ -48,8 +49,9 @@ values. A change is one of:
 - a dictionary value.
 
 A site or memory cell that the entry does not set gets a random value or a
-dictionary value. Every value fits the width of its site. A value site with
-a range (below) gets values from its range instead of random ones.
+dictionary value. Every value fits the width of its site. In a range
+trial (below), a value site with a range gets values from its range
+instead of random ones.
 
 The dictionary holds the integer constants that the program compares with
 or computes with (`sea.icmp`, add, sub, mul, div, rem, min, max and the
@@ -97,6 +99,17 @@ range), each with probability 1/6, or a uniform value in the range with
 probability 2/6. The other mutations stay as they are: a bit flip, plus or
 minus one, or 0, 1 or -1 may leave the range, and the assume then blocks
 the run; such changes find bugs that need small or equal values.
+
+Each trial is either a range trial, which draws as above, or a trial of
+the generator without ranges. `--fuzz-range-share=<p>` is the probability
+of a range trial (default 0.5). The choice is one draw of the seeded random
+stream before the trial's input, so a seed gives the same trials. There is
+no such draw when `p` is 0 or 1 or the program has no range: with 1 every
+trial is a range trial, with 0 the trials are those of
+`--fuzz-ranges=false`. Range draws keep a site in its range, which finds
+the bugs at its ends sooner, but makes rarer the values that the generator
+without ranges reaches by plain mutation, and some bugs need those. The
+default 1/2 keeps both; it is not tuned.
 
 The range only guides the choice of values. Every trial still runs the
 assume. `--fuzz-ranges=false` turns the draws off: the trials are then the
@@ -223,7 +236,7 @@ Then come the `fuzz.*` lines:
 ```text
 fuzz.failure: 1 trial=32 file=out/failure-32.txt at=p.mlir:12:3
 fuzz.trials: 32 seeds=0 time=0.001 execs/s=54659
-fuzz.ranges: 0 value-sites=1 assumes=0 skipped=0 draws=0 mode=edge
+fuzz.ranges: 0 value-sites=1 assumes=0 skipped=0 draws=0 mode=mix share=0.5 range-trials=0
 fuzz.status: halted=1 assert-failed=1 assume-blocked=30 step-limit=0 error=0
 fuzz.coverage: blocks=3 blocks-total=3 edges=3 assumes=1 assumes-total=1
 fuzz.corpus: 3 seeds=0 skipped-lines=0 files=3 dictionary=6
@@ -240,7 +253,7 @@ fuzz.blocked: 30 op=sea.assume at=p.mlir:5:3 sites=0 cond=(eq s0 1234)
 | `fuzz.limit: <runs> trial=<n> [file=<path>] op=<op> [site=<n>] at=<where>` | one per operation that stopped runs at an interpreter limit or a layout error |
 | `fuzz.limit-message: <text>` | the message of the first such run |
 | `fuzz.trials: <n> seeds=<n> time=<s> execs/s=<n>` | trials run (seed runs included), time, trials per second |
-| `fuzz.ranges: <sites> value-sites=<n> assumes=<n> skipped=<n> draws=<n> mode=edge\|off` | value sites with a range, of all value sites; the range assumes they come from, the recognized ones not used, and the values drawn from a range ([Ranges](#ranges)); `mode=off` with `--fuzz-ranges=false` (then `draws=0`) |
+| `fuzz.ranges: <sites> value-sites=<n> assumes=<n> skipped=<n> draws=<n> mode=mix\|edge\|off share=<p> range-trials=<n>` | value sites with a range, of all value sites; the range assumes they come from, the recognized ones not used, and the values drawn from a range; the mode (`mix`: both generators, `edge`: range trials only, `off`: none, with `--fuzz-ranges=false` or a share of 0), the share of range trials asked for, and the trials that were range trials ([Ranges](#ranges)) |
 | `fuzz.status: halted=.. assert-failed=.. assume-blocked=.. step-limit=.. error=.. [memory-error=..]` | runs per status (`memory-error` with `--defer-memory-errors`) |
 | `fuzz.deferred: <runs> memory-error=.. assume-blocked=.. step-limit=.. error=..` | `--defer-memory-errors`: the runs that went past a violation, by how they ended |
 | `fuzz.blocked-before-assert-false: <runs> assumes=<n>` | when the program has an assume directly followed by `assert false`: the runs blocked at such an assume, and the number of them ([SeaHorn's export form](#seahorns-export-form)); these runs are also counted as `assume-blocked` |
