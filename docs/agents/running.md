@@ -24,6 +24,7 @@ benchmark harness.
 |---|---|
 | Does the assertion hold for all inputs? | `sea-vc` |
 | What does the program do on these inputs? | `sea-run --input=<site>=<value>,...` |
+| Which inputs get past an assume, and how far do random runs get? | `sea-run --fuzz` ([Steering the fuzzer](fuzzing.md)) |
 | Is the program well formed? What does a pass do to it? | `sea-opt` (`--sea-vc-lower` is what `sea-vc --lower` runs) |
 | What does the solver see? | `sea-vc --smt2` |
 | How large is the query, without solving it? | `sea-vc --vcgen-only` |

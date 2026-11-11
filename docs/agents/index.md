@@ -43,7 +43,8 @@ sea-vc --agent
 ```
 
 Read it once per session before running the tools
-([Running the tools](running.md)). The guide is maintained with the code.
+([Running the tools](running.md)). To steer `sea-run --fuzz` read
+[Steering the fuzzer](fuzzing.md). The guide is maintained with the code.
 
 ### 3. Run the controls, then tune
 

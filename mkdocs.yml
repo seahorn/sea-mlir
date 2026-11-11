@@ -97,6 +97,7 @@ nav:
       - Running the tools: agents/running.md
       - Profiles: agents/profiles.md
       - Minimizing a problem: agents/minimizing.md
+      - Steering the fuzzer: agents/fuzzing.md
   - Contributing to Sea-MLIR:
       - Contributor gates: agents/gates.md
       - Contributor rules: agents/rules.md
