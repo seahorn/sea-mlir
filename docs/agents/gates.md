@@ -133,13 +133,14 @@ python3 utils/query-diff.py --old <base>/sea-vc --new <head>/sea-vc \
 ```
 
 Each job gets one class. Symbols of the two queries are matched by name.
-A symbol that only one query declares is a free input, unless a
-top-level conjunct of that query (through `and` and the bodies of `let`)
-defines it as a numeral (`(= x #x..)`):
-then it is replaced by the numeral before any check (`subst=<n>` on the
-job's line). The replacement is exact, since $\exists x.\, x = c \wedge
-\varphi \equiv \varphi[c/x]$. These symbols are the addresses of objects
-that the other lowering erased (`obj.<name>`), not inputs.
+A symbol that only one query declares is a free input, unless it is named
+`obj.<name>` (the address of a placed object) and a top-level conjunct of
+that query (through `and` and the bodies of `let`) defines it as a numeral
+(`(= x #x..)`): then it is replaced by the numeral before any check
+(`subst=<n>` on the job's line). The replacement is exact, since
+$\exists x.\, x = c \wedge \varphi \equiv \varphi[c/x]$. The other
+lowering may have erased the object. A program input defined on one side
+only (`nd.<site>`) stays free.
 
 | class | what it proves |
 |---|---|
@@ -261,9 +262,10 @@ the side with more objects: A writes first. If B has an object that A's
 file does not name (or one of another size or alignment, a `place.in-*`
 error), B writes and A reads, once. The `layout:` line names the writer.
 If both fail, there is no shared placement, and the job is `unknown`
-(`reason=layout`), not a pass. The placement is part of the forall-exists
-correspondence: for a placement of one side there is one of the other, and
-the file is the witness, as the block ids are for the guards. The reach
+(`reason=layout`), not a pass. The gate does not check all placements: both
+lowerings are compared on one placement, the writer's; the reader takes it
+as an allocator would (checked for alignment, size, kind, overlap, null
+and width). The reach
 runs, the safety verdicts, the R_T programs and the witness replays all
 use it. Each side's own placement need not agree with the other's on the
 common objects: sccp and cse can run before placement on one side only.

@@ -38,15 +38,16 @@ first class that applies, in this order:
               queries cannot be compared (a symbol with two sorts,
               an unsupported command).
 
-Defined one-sided symbols: a symbol declared in one query only (not a
-block guard, not a bound name) that a top-level conjunct of that query
-(through `and` and `let` bodies) defines as a numeral, (= x c), is
+Defined object addresses: a symbol obj.<name> declared in one query only
+(not a block guard, not a bound name) that a top-level conjunct of that
+query (through `and` and `let` bodies) defines as a numeral, (= x c), is
 substituted by c in that query before any z3 check
-(details: subst=<n>). Exact: exists x. (x = c and phi) is phi[c/x]. Such
-symbols are addresses of objects the other lowering erased (obj.<name>
-= <base>), not inputs; without the substitution the other query leaves
-them free and the equivalence check finds a "difference" in them. Any
-other one-sided symbol stays a free input.
+(details: subst=<n>). Exact: exists x. (x = c and phi) is phi[c/x]. OpSem
+names the address of a placed object obj.<segment name>; the other
+lowering may have erased the object, and without the substitution its
+query leaves the symbol free and the equivalence check finds a
+"difference" in it. Any other one-sided symbol (a program input, nd.<site>
+too) stays a free input.
 
 Checks, cheapest first: the text checks; then sat(OLD) and sat(NEW), one
 z3 run each (the common unsat-unsat case ends here, as does a verdict
@@ -124,10 +125,10 @@ CLASSES (what each proves; OLD/NEW = the queries, symbols matched by name):
   DIFF        one sat and one unsat, or a distinguishing assignment
   unknown     a z3 check gave unknown (rlimit, timeout): no proof either way
   error       sea-vc or z3 failed, or the queries are not comparable
-SUBST: a symbol of one query only (not a guard) that a top-level
-  conjunct of it (through and / let bodies) defines as a numeral, (= x #x..), is replaced by the
-  numeral (exact; obj.<name> of an object one lowering erased): subst=<n>.
-  Other one-sided symbols are free inputs.
+SUBST: a symbol obj.<name> declared in one query only (not a guard) that a
+  top-level conjunct of it (through and / let bodies) defines as a numeral,
+  (= x #x..), is replaced by the numeral (exact; the address of an object
+  one lowering erased): subst=<n>. Other one-sided symbols are free inputs.
 ORDER: identical, order, sat(OLD) + sat(NEW), then (distinct OLD NEW)
   unless both are unsat or one is sat and the other unsat;
   --project-blocks: after the by-name check found a difference, the
@@ -299,14 +300,18 @@ def substitute_defined(q, other_names):
     a top-level conjunct of q (through `and` and `let` bodies) defines as
     a numeral, (= x c) or (= c x): x is replaced
     by c everywhere in q's asserts and its declaration dropped. Exact:
-    exists x. (x = c and phi) is phi[c/x]; such an x (a placed object's
-    address, obj.<name>) is not an input, so it must not count as one
-    that the other query leaves free. Other one-sided symbols stay.
+    exists x. (x = c and phi) is phi[c/x]; only symbols named
+    obj.<name> (a placed object's address) are candidates: they are not
+    inputs, so they must not count as ones that the other query leaves
+    free. Other one-sided symbols (program inputs) stay.
     Returns the number of symbols eliminated."""
     own = {
         x
         for x, (sort, _) in q.decls.items()
-        if x not in other_names and not GUARD.fullmatch(x) and sort.startswith("() ")
+        if x not in other_names
+        and x.startswith("obj.")
+        and not GUARD.fullmatch(x)
+        and sort.startswith("() ")
     }
     if not own:
         return 0

@@ -161,8 +161,9 @@ is an error. Objects are matched by their segment names, which survive
 folding (the site attribute). An object the file does not name is an
 error; objects of the file the program lacks are holes. Its use is
 validation: two lowerings of one program on one file have their common
-objects at the same addresses (`utils/cover-diff.py`; for every placement
-of one there is one of the other, and the file is the witness). The file
+objects at the same addresses (`utils/cover-diff.py` compares both lowerings on one placement, the
+writer's; the reader takes it as an allocator would, so the gate does not
+check all placements). The file
 format is in [Placement files](../reference/output-formats.md#placement-files).
 
 A symbolic-size allocation gets `max-symbolic-size` units of room, and the

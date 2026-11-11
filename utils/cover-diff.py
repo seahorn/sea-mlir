@@ -51,9 +51,10 @@ addresses (and their obj.<name> symbols have the same values). The writer
 is the side with more objects: A first; if B has an object A's file does
 not name (or one of another size: a place.in-* error), the reverse, once.
 If both fail, there is no shared placement: the job is unknown
-(reason=layout), never a pass. The placement is part of the forall-exists
-correspondence (for a placement of one side there is one of the other);
-the file is its witness, as the block ids are for the guards. The reach
+(reason=layout), never a pass. The gate does not check all placements:
+both lowerings are compared on one placement, the writer's; the reader
+takes it as an allocator would (checked for alignment, size, kind,
+overlap, null and width). The reach
 runs, the safety verdicts and the R_T programs are each lowered so, the
 writer of the reach runs first; a witness replays on the other side on
 the reach runs' file.
@@ -92,8 +93,8 @@ compared by query-diff's classifier with --project-blocks (sea-vc R_T
 --smt2 <--rt-args>; default: --args without the lowering's flags): equiv-sat says that the same inputs reach T on both
 sides (block guards projected: a forall-exists check). An object one
 lowering erased leaves its address, obj.<name> = <base>, in the other's
-query only: query-diff substitutes such a symbol (subst=<n>), it is no
-input. The R_T are paired
+query only: query-diff substitutes such a symbol (a symbol obj.<name> declared in one
+query only, defined as a numeral; subst=<n>), it is no input. The R_T are paired
 by key, from the reach.program records. identical / order / equiv-sat
 pass; DIFF fails; unknown is unknown; both-unsat and error are errors
 (level 0 answered both reachable).
@@ -176,9 +177,9 @@ PLACEMENT: both sides on one placement (sea-vc --place-out on the writer,
 LEVEL 1 (per key reachable on both sides): query-diff --project-blocks on
   R_T(A) vs R_T(B): identical / order / equiv-sat (the same inputs reach
   T) pass, DIFF fails, unknown, both-unsat / error are errors; a key with
-  copies on a side is unknown (reason=copies). A symbol of one query only
-  that it defines as a numeral (obj.<name> of an object the other side
-  erased) is substituted (subst=<n>), not an input. Block guards: by name, then
+  copies on a side is unknown (reason=copies). A symbol obj.<name>
+  declared in one query only and defined as a numeral is substituted
+  (subst=<n>); other one-sided symbols are inputs. Block guards: by name, then
   the Skolem hints from the block ids of the two R_T (quantifier-free,
   checked), then the quantified check (--no-hints: no hints).
 OUTPUT (stdout, line-oriented):
@@ -252,7 +253,7 @@ class NoLayout(Exception):
     """Neither side's placement fits the other: no shared layout."""
 
 
-PLACE_IN_ERROR = re.compile(r"\[(place\.in-[a-z-]+)\]")
+PLACE_IN_ERROR = re.compile(r"\[(place\.in-(?:unplaced|mismatch))\]")
 
 
 def check_layout(p):

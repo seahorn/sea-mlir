@@ -26,6 +26,12 @@
 // NONE: layout: few unknown reason=layout a-in=place.in-unplaced b-in=place.in-unplaced
 // NONE: job: few unknown {{.*}}reason=layout
 // NONE: status: unknown
+
+// A program input that only A constrains (assume x == 5) is not an object
+// address: it stays free, so the job is a DIFF, not a pass.
+// RUN: not %{cd} %t/assume.mlir --b-input=%t/noassume.mlir | FileCheck %s --check-prefix=INPUT
+// INPUT: job: assume DIFF
+// INPUT: status: DIFF
 // REQUIRES: z3
 
 //--- dead.mlir
@@ -84,6 +90,26 @@ sea.program @main {
   sea.assume %big {sea.reach_site = 0 : i64}
   %ne = sea.ptr.cmp ne, %h, %z : !sea.ptr<64>
   sea.assert %ne {sea.reach_site = 1 : i64}
+  sea.halt
+}
+
+//--- assume.mlir
+sea.program @main {
+  %x = sea.nondet "x" [2] : i8
+  %c5 = sea.const 5 : i8
+  %e = sea.icmp eq, %x, %c5 : i8
+  sea.assume %e {sea.reach_site = 0 : i64}
+  %f = sea.const 0 : i1
+  sea.assert %f {sea.reach_site = 1 : i64}
+  sea.halt
+}
+
+//--- noassume.mlir
+sea.program @main {
+  %t = sea.const 1 : i1
+  sea.assume %t {sea.reach_site = 0 : i64}
+  %f = sea.const 0 : i1
+  sea.assert %f {sea.reach_site = 1 : i64}
   sea.halt
 }
 

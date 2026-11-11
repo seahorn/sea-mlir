@@ -180,44 +180,53 @@ assert d == ["by=exists", "hints=incomplete:1"], d
 assert expect("identical", h_old, old) == []
 
 
-# A symbol of one query only that it defines as a numeral (an object's
-# address, obj.<name> = base, of an object the other lowering erased) is
-# substituted: exists o. (o = c and phi) is phi[c/o]; not a free input.
-O = "(declare-fun o () (_ BitVec 8))\n"
+# A symbol obj.<name> of one query only that it defines as a numeral (an
+# object's address, of an object the other lowering erased) is
+# substituted: exists o. (obj.o = c and phi) is phi[c/o]; not a free input.
+O = "(declare-fun obj.o () (_ BitVec 8))\n"
 d = expect(
-    "equiv-sat", q("(and (= o #x10) (bvult x #x05))", X + O), q("(bvult x #x05)")
+    "equiv-sat", q("(and (= obj.o #x10) (bvult x #x05))", X + O), q("(bvult x #x05)")
 )
 assert d == ["subst=1"], d
 # either side, either order of the equality, nested and, (_ bvN w)
 d = expect(
     "equiv-sat",
     q("(bvult x #x05)"),
-    q("(and (bvult x #x05) (and (= (_ bv16 8) o) (bvult x (bvadd o #x00))))", X + O),
+    q(
+        "(and (bvult x #x05) (and (= (_ bv16 8) obj.o) (bvult x (bvadd obj.o #x00))))",
+        X + O,
+    ),
 )
 assert d == ["subst=1"], d
 # through let bodies (z3 prints shared terms as lets)
 d = expect(
     "equiv-sat",
-    q("(let ((a!1 (bvult x #x05))) (and (= o #x10) a!1))", X + O),
+    q("(let ((a!1 (bvult x #x05))) (and (= obj.o #x10) a!1))", X + O),
     q("(bvult x #x05)"),
 )
 assert d == ["subst=1"], d
 # a name a binder also uses is not substituted (it may be the binder's)
 expect(
     "DIFF",
-    q("(and (= o #x10) (let ((o x)) (bvult o #x05)))", X + O),
+    q("(and (= obj.o #x10) (let ((obj.o x)) (bvult obj.o #x05)))", X + O),
     q("(bvult x #x05)"),
 )
-# the value counts: o = #x10 with x < o is not x < 5
+# the value counts: obj.o = #x10 with x < obj.o is not x < 5
 assert "subst=1" in expect(
-    "DIFF", q("(and (= o #x10) (bvult x o))", X + O), q("(bvult x #x05)")
+    "DIFF", q("(and (= obj.o #x10) (bvult x obj.o))", X + O), q("(bvult x #x05)")
 )
 # a one-sided symbol that is not defined (under an implication, or by a
 # non-numeral) stays a free input: today's behavior
-expect("DIFF", q("(=> (bvult x #x05) (= o #x10))", X + O), q("true"))
-expect("DIFF", q("(and (= o x) (bvult o #x05))", X + O), q("(bvult x #x05)"))
+expect("DIFF", q("(=> (bvult x #x05) (= obj.o #x10))", X + O), q("true"))
+expect("DIFF", q("(and (= obj.o x) (bvult obj.o #x05))", X + O), q("(bvult x #x05)"))
 # a symbol of both queries is never substituted
-expect("DIFF", q("(and (= o #x10) (bvult x #x05))", X + O), q("(bvult x #x05)", X + O))
+expect(
+    "DIFF", q("(and (= obj.o #x10) (bvult x #x05))", X + O), q("(bvult x #x05)", X + O)
+)
+
+
+# an input defined on one side only is not an object address: it stays free
+expect("DIFF", q("(and (= x #x05) true)"), q("true", ""))
 
 
 # Derived verdicts (a stub z3 answers in order: OLD, NEW, equivalence).
