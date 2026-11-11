@@ -1,0 +1,77 @@
+// utils/cover-diff.py level 1 with Skolem hints: canonicalize merges two
+// blocks on B's side (--lower-opt=false keeps them on A's), so the R_T
+// queries differ in their block guards. The hints from the block ids make
+// each pair quantifier-free (by=hints); --no-hints leaves the quantified
+// check (by=exists).
+// RUN: split-file %s %t
+// (the checks carry their sea.reach_site: --b-input matches by tags)
+// DEFINE: %{cd} = %python %sea_src_root/utils/cover-diff.py --sea-vc %sea_vc --z3 %z3 --par 1 --level=1 --a=--lower-opt=false --b=
+// RUN: %{cd} %t/merged.mlir | FileCheck %s --check-prefix=HINTS
+// HINTS: level1: merged 0/assume equiv-sat by=hints
+// HINTS: level1: merged 1/assume equiv-sat by=hints
+// HINTS: level1: merged 2/assert equiv-sat by=hints
+// HINTS: level1: {{.*}} by-hints=4 by-exists=0
+// HINTS: status: pass
+// RUN: %{cd} --no-hints %t/merged.mlir | FileCheck %s --check-prefix=EXISTS
+// EXISTS: level1: merged 0/assume equiv-sat by=exists
+// EXISTS: level1: {{.*}} by-hints=0 by-exists=4
+// EXISTS: status: pass
+// The hints do not hide a difference: B's assume of the merged block is
+// another one (x != 2 for x != 1), the same blocks and ids.
+// RUN: not %{cd} --fuzz=0 --no-verdict %t/merged.mlir --b-input=%t/changed.mlir | FileCheck %s --check-prefix=DIFF
+// DIFF: level1: merged 2/assert DIFF reason=model by=exists hints=old-new:sat
+// DIFF: status: DIFF
+// REQUIRES: z3
+
+//--- merged.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %c5 = sea.const 5 : i8
+  %c = sea.icmp ult, %x, %c5 : i8
+  sea.cond_br %c, ^a, ^b
+^a:
+  sea.br ^a2
+^a2:
+  %c1 = sea.const 1 : i8
+  %y = sea.icmp ne, %x, %c1 : i8
+  sea.assume %y {sea.reach_site = 0 : i64}
+  sea.br ^j
+^b:
+  %c9 = sea.const 9 : i8
+  %z = sea.icmp ne, %x, %c9 : i8
+  sea.assume %z {sea.reach_site = 1 : i64}
+  sea.br ^j
+^j:
+  %c3 = sea.const 3 : i8
+  %ok = sea.icmp ne, %x, %c3 : i8
+  sea.assert %ok {sea.reach_site = 2 : i64}
+  sea.halt
+}
+
+//--- changed.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %c5 = sea.const 5 : i8
+  %c = sea.icmp ult, %x, %c5 : i8
+  sea.cond_br %c, ^a, ^b
+^a:
+  sea.br ^a2
+^a2:
+  %c1 = sea.const 2 : i8
+  %y = sea.icmp ne, %x, %c1 : i8
+  sea.assume %y {sea.reach_site = 0 : i64}
+  sea.br ^j
+^b:
+  %c9 = sea.const 9 : i8
+  %z = sea.icmp ne, %x, %c9 : i8
+  sea.assume %z {sea.reach_site = 1 : i64}
+  sea.br ^j
+^j:
+  %c3 = sea.const 3 : i8
+  %ok = sea.icmp ne, %x, %c3 : i8
+  sea.assert %ok {sea.reach_site = 2 : i64}
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

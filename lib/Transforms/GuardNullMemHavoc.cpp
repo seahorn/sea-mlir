@@ -112,6 +112,7 @@ void GuardNullMemHavocPass::runOnOperation() {
   });
   Region &body = program.getBody();
   OpBuilder b(&getContext());
+  BlockIdNamer ids(program);
   for (MemHavocOp op : havocs) {
     Location loc = op.getLoc();
     Block *blk = op->getBlock();
@@ -124,13 +125,18 @@ void GuardNullMemHavocPass::runOnOperation() {
     body.getBlocks().insertAfter(Region::iterator(blk), havoc);
     op->moveBefore(havoc, havoc->end());
     b.setInsertionPointToEnd(havoc);
-    BrOp::create(b, loc, ValueRange{op.getResult()}, join);
+    // block ids (kBlockIdsAttr): blk keeps them, join is a piece of the
+    // block, the havoc block is new (role h)
+    BlockIdNamer::set(BrOp::create(b, loc, ValueRange{op.getResult()}, join),
+                      ids.derive(join, "h"));
     b.setInsertionPointToEnd(blk);
     Value null = PtrNullOp::create(b, loc, op.getAddr().getType());
     Value isNull =
         PtrCmpOp::create(b, loc, ICmpPredicate::eq, op.getAddr(), null);
-    CondBrOp::create(b, loc, isNull, ValueRange{mem}, ValueRange{}, join,
-                     havoc);
+    auto cbr = CondBrOp::create(b, loc, isNull, ValueRange{mem}, ValueRange{},
+                                join, havoc);
+    if (ArrayAttr l = ids.splitTail(join))
+      cbr->setAttr(kBlockIdsAttr, l);
   }
   // postcondition: each guarded memhavoc is entered only from the false
   // side of a cond_br on `ptr.cmp eq <its pointer>, null`

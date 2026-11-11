@@ -109,22 +109,21 @@ struct SimplifyCondBr : OpRewritePattern<CondBrOp> {
 
   LogicalResult matchAndRewrite(CondBrOp op,
                                 PatternRewriter &rewriter) const override {
-    if (matchPattern(op.getCondition(), m_One())) {
-      rewriter.replaceOpWithNewOp<BrOp>(op, op.getTrueDestOperands(),
-                                        op.getTrueDest());
+    // the block stays: its ids (kBlockIdsAttr) go to the new branch
+    auto toBr = [&](ValueRange args, Block *dest) {
+      ArrayAttr ids = op->getAttrOfType<ArrayAttr>(kBlockIdsAttr);
+      auto br = rewriter.replaceOpWithNewOp<BrOp>(op, args, dest);
+      if (ids)
+        br->setAttr(kBlockIdsAttr, ids);
       return success();
-    }
-    if (matchPattern(op.getCondition(), m_Zero())) {
-      rewriter.replaceOpWithNewOp<BrOp>(op, op.getFalseDestOperands(),
-                                        op.getFalseDest());
-      return success();
-    }
+    };
+    if (matchPattern(op.getCondition(), m_One()))
+      return toBr(op.getTrueDestOperands(), op.getTrueDest());
+    if (matchPattern(op.getCondition(), m_Zero()))
+      return toBr(op.getFalseDestOperands(), op.getFalseDest());
     if (op.getTrueDest() == op.getFalseDest() &&
-        op.getTrueDestOperands() == op.getFalseDestOperands()) {
-      rewriter.replaceOpWithNewOp<BrOp>(op, op.getTrueDestOperands(),
-                                        op.getTrueDest());
-      return success();
-    }
+        op.getTrueDestOperands() == op.getFalseDestOperands())
+      return toBr(op.getTrueDestOperands(), op.getTrueDest());
     return failure();
   }
 };
@@ -210,8 +209,16 @@ struct SimplifyBr : OpRewritePattern<BrOp> {
         return failure();
     Location loc = op.getLoc();
     SmallVector<Value> operands(op.getOperands());
+    // the merged block holds both: the ids (kBlockIdsAttr) of this block,
+    // then those of ^succ, on ^succ's terminator
+    ArrayAttr ids = concatBlockIds(op->getAttrOfType<ArrayAttr>(kBlockIdsAttr),
+                                   blockIdsOf(succ));
     rewriter.eraseOp(op);
     rewriter.mergeBlocks(succ, parent, operands);
+    if (ids)
+      rewriter.modifyOpInPlace(parent->getTerminator(), [&] {
+        parent->getTerminator()->setAttr(kBlockIdsAttr, ids);
+      });
     noteFold("br-merge", loc);
     return success();
   }
@@ -268,9 +275,11 @@ struct FoldConstAssume : OpRewritePattern<AssumeOp> {
     Location loc = op.getLoc();
     Attribute site = op->getAttr(kReachSiteAttr);
     Block *b = op->getBlock();
-    rewriter.splitBlock(b, op->getIterator());
+    Block *rest = rewriter.splitBlock(b, op->getIterator());
     rewriter.setInsertionPointToEnd(b);
     auto u = UnreachableOp::create(rewriter, loc);
+    // the block stays (its rest goes): its ids (kBlockIdsAttr)
+    copyBlockIds(rest, u);
     // the same top of op: the assume's reach site (kReachSiteAttr)
     if (site)
       u->setAttr(kReachSiteAttr, site);
@@ -306,9 +315,11 @@ struct FoldConstAssert : OpRewritePattern<AssertOp> {
         op.getLoc());
     noteFold("assert-false", op.getLoc());
     Block *b = op->getBlock();
-    rewriter.splitBlock(b, std::next(op->getIterator()));
+    Block *rest = rewriter.splitBlock(b, std::next(op->getIterator()));
     rewriter.setInsertionPointToEnd(b);
-    HaltOp::create(rewriter, op.getLoc());
+    auto h = HaltOp::create(rewriter, op.getLoc());
+    // the block stays (its rest goes): its ids (kBlockIdsAttr)
+    copyBlockIds(rest, h);
     return success();
   }
 };
@@ -807,6 +818,103 @@ Operation *createReachSiteMarker(OpBuilder &b, Location loc, StringRef of,
                            StringAttr(), TypeAttr(), StringAttr(), ArrayAttr());
   m->setAttr(kReachSiteAttr, site);
   return m;
+}
+
+//===----------------------------------------------------------------------===//
+// Stable block ids (kBlockIdsAttr)
+//===----------------------------------------------------------------------===//
+
+ArrayAttr blockIdsOf(Block *b) {
+  if (!b || b->empty() || !b->back().hasTrait<OpTrait::IsTerminator>())
+    return {};
+  return b->getTerminator()->getAttrOfType<ArrayAttr>(kBlockIdsAttr);
+}
+
+void copyBlockIds(Block *from, Operation *to) {
+  if (ArrayAttr ids = blockIdsOf(from))
+    to->setAttr(kBlockIdsAttr, ids);
+}
+
+ArrayAttr concatBlockIds(ArrayAttr a, ArrayAttr b) {
+  if (!a)
+    return b;
+  if (!b)
+    return a;
+  SmallVector<Attribute> out(a.begin(), a.end());
+  for (Attribute x : b)
+    if (!llvm::is_contained(out, x))
+      out.push_back(x);
+  return ArrayAttr::get(a.getContext(), out);
+}
+
+unsigned countBlocksWithoutIds(ProgramOp program, Operation **first) {
+  Region &body = program.getBody();
+  if (body.empty())
+    return 0;
+  bool any = llvm::any_of(body, [](Block &b) { return bool(blockIdsOf(&b)); });
+  if (!any)
+    return 0;
+  unsigned n = 0;
+  llvm::SmallPtrSet<Block *, 16> seen;
+  SmallVector<Block *> work{&body.front()};
+  while (!work.empty()) {
+    Block *b = work.pop_back_val();
+    if (!seen.insert(b).second)
+      continue;
+    if (!blockIdsOf(b)) {
+      if (!n && first)
+        *first = b->empty() ? program.getOperation() : &b->back();
+      ++n;
+    }
+    llvm::append_range(work, b->getSuccessors());
+  }
+  return n;
+}
+
+BlockIdNamer::BlockIdNamer(ProgramOp program) : ctx(program.getContext()) {
+  for (Block &b : program.getBody())
+    if (ArrayAttr ids = blockIdsOf(&b))
+      for (Attribute x : ids)
+        if (auto s = dyn_cast<StringAttr>(x))
+          used.insert(s.getValue());
+}
+
+StringAttr BlockIdNamer::fresh(StringRef base) {
+  std::string id = base.str();
+  for (unsigned k = 1; used.contains(id); ++k)
+    id = (base + "." + Twine(k)).str();
+  used.insert(id);
+  return StringAttr::get(ctx, id);
+}
+
+StringAttr BlockIdNamer::derive(Block *parent, StringRef role) {
+  ArrayAttr ids = blockIdsOf(parent);
+  if (!ids || ids.empty())
+    return {};
+  auto last = dyn_cast<StringAttr>(ids[ids.size() - 1]);
+  if (!last)
+    return {};
+  std::string base = (last.getValue() + "." + role).str();
+  std::string id;
+  for (unsigned k = 0;; ++k) {
+    id = base + std::to_string(k);
+    if (!used.contains(id))
+      break;
+  }
+  used.insert(id);
+  return StringAttr::get(ctx, id);
+}
+
+ArrayAttr BlockIdNamer::splitTail(Block *tail) {
+  ArrayAttr ids = blockIdsOf(tail);
+  if (ids)
+    set(tail->getTerminator(), derive(tail, "s"));
+  return ids;
+}
+
+void BlockIdNamer::set(Operation *term, StringAttr id) {
+  if (id)
+    term->setAttr(kBlockIdsAttr, ArrayAttr::get(term->getContext(), {id}));
 }
 
 bool isPrintOp(Operation *op) {

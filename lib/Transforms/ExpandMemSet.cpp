@@ -90,6 +90,17 @@ static void markBound(AssumeOp a, uint64_t k) {
              IntegerAttr::get(IntegerType::get(a->getContext(), 64), k));
 }
 
+/// Block ids (kBlockIdsAttr), if the program has them: `before` keeps the
+/// ids of the expanded op's block, `join` is a piece of it; the blocks of
+/// the expansion, all between them, are new (role m).
+static void keepBlockIds(Block *before, Block *join, BlockIdNamer &ids) {
+  for (auto it = std::next(Region::iterator(before));
+       it != Region::iterator(join); ++it)
+    BlockIdNamer::set(it->getTerminator(), ids.derive(join, "m"));
+  if (ArrayAttr l = ids.splitTail(join))
+    before->getTerminator()->setAttr(kBlockIdsAttr, l);
+}
+
 void ExpandMemSetPass::runOnOperation() {
   if (mode != "assume" && mode != "assert") {
     getOperation().emitError("sea-expand-memset: mode must be assume or "
@@ -97,6 +108,7 @@ void ExpandMemSetPass::runOnOperation() {
     return signalPassFailure();
   }
   OpBuilder b(&getContext());
+  BlockIdNamer ids(getOperation());
   SmallVector<MemSetOp> todo;
   SmallVector<MemMoveOp> moves;
   // A length computed from constants (calloc's n * size) is a constant:
@@ -191,6 +203,7 @@ void ExpandMemSetPass::runOnOperation() {
     b.setInsertionPointToEnd(checks[k]);
     BrOp::create(b, loc, ValueRange{checks[k]->getArgument(0)}, join);
 
+    keepBlockIds(before, join, ids);
     op.getResult().replaceAllUsesWith(result);
     op.erase();
   }
@@ -270,6 +283,7 @@ void ExpandMemSetPass::runOnOperation() {
     }
     b.setInsertionPointToEnd(checks[k]);
     BrOp::create(b, loc, ValueRange{checks[k]->getArgument(0)}, join);
+    keepBlockIds(before, join, ids);
     op.getResult().replaceAllUsesWith(result);
     op.erase();
   }

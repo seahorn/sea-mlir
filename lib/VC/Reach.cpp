@@ -144,6 +144,19 @@ LogicalResult tagReachSites(mlir::ModuleOp module) {
   return success();
 }
 
+void tagBlockIds(mlir::ModuleOp module) {
+  for (auto p : module.getOps<ProgramOp>()) {
+    if (llvm::any_of(p.getBody(),
+                     [](Block &b) { return bool(blockIdsOf(&b)); }))
+      continue;
+    Builder b(p.getContext());
+    for (auto [n, blk] : llvm::enumerate(p.getBody()))
+      if (!blk.empty() && blk.back().hasTrait<OpTrait::IsTerminator>())
+        blk.getTerminator()->setAttr(kBlockIdsAttr,
+                                     b.getStrArrayAttr({std::to_string(n)}));
+  }
+}
+
 namespace {
 
 /// Where the targets are in the abstract program: a check site the

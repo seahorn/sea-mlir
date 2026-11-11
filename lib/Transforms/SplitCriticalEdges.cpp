@@ -48,6 +48,7 @@ static unsigned numPredecessorEdges(Block *b) {
 
 void SplitCriticalEdgesPass::runOnOperation() {
   OpBuilder b(&getContext());
+  BlockIdNamer ids(getOperation());
   SmallVector<Block *> blocks;
   for (Block &block : getOperation().getBody())
     blocks.push_back(&block);
@@ -63,7 +64,15 @@ void SplitCriticalEdgesPass::runOnOperation() {
       SmallVector<Value> forwarded(args.getForwardedOperands());
       Block *edge = b.createBlock(target);
       b.setInsertionPointToEnd(edge);
-      BrOp::create(b, br.getLoc(), forwarded, target);
+      auto eb = BrOp::create(b, br.getLoc(), forwarded, target);
+      // block ids (kBlockIdsAttr): the edge `<last of block>><first of
+      // target>`, so that the same edge has the same id in two lowerings
+      ArrayAttr from = blockIdsOf(block), to = blockIdsOf(target);
+      if (from && to && !from.empty() && !to.empty())
+        BlockIdNamer::set(
+            eb, ids.fresh((cast<StringAttr>(from[from.size() - 1]).getValue() +
+                           ">" + cast<StringAttr>(to[0]).getValue())
+                              .str()));
       args.erase(0, args.size());
       br->setSuccessor(edge, i);
     }

@@ -187,6 +187,26 @@ failing assert, a memory-safety stop) does not matter.
 - The targets the runs decide are not checked against the VC: a run is the
   reference semantics.
 
+#### Block ids
+
+`--reach` also gives every block of the input a stable id before any pass:
+`sea.block_ids = ["<n>"]` on its terminator, n its position in the
+program. The passes keep them: a block merged into its only predecessor
+holds both lists; a split leaves the list on the head and gives the tail
+the id `<last>.s<k>` (a piece of the block); a block a pass adds gets
+`<last>.<role><k>` (`h` the guarded memhavoc, `m` the memset expansion,
+`f` the landing block of a merged assert, `p` / `q` the pass and fail
+blocks of an assert's failure target), `x` the exit block of the merged
+asserts and `t` R_T's target block; an edge block of
+`sea-split-critical-edges` gets `<a>><b>` (the last id of its source, the
+first of its target); the ids of an erased block are gone. R_T keeps the
+ids, and `sea-vc --smt2` on a program that carries them ends the query
+with one comment per block guard, `; sea.block-ids <guard> <id>,<id>...`:
+`utils/query-diff.py` builds its Skolem hints from them. A block a path
+from the entry reaches without ids (a pass lost them) is the warning
+`vc.block-ids-missing`. Without `--reach` (and on a program without ids)
+nothing is added.
+
 #### R_T programs
 
 `--reach-programs=<dir>` writes, for each target T, R_T: the program the

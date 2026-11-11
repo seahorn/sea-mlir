@@ -52,11 +52,21 @@ projected one); only when it finds a distinguishing assignment does a
 quantified check run (equiv-sat by=exists when it proves equivalence).
 Sat checks are unchanged: exists g. OLD is sat iff OLD is.
 
-Skolem hints (designed, not implemented): a map from each guard of one
-query to a term over the symbols of the other replaces the quantifier:
-NEW(x, g') => OLD(x, s(g')) and OLD(x, g) => NEW(x, t(g)) are
-quantifier-free. A wrong hint makes a check sat: it can cost a fallback
-to the quantified check, never a false pass. See project_equiv().
+Skolem hints: before the quantified check, a map s from each guard of
+OLD to a term over NEW's guards, and t from each guard of NEW to a term
+over OLD's, replace the quantifiers: OLD(x, g) and not NEW(x, t(g)), and
+NEW(x, g') and not OLD(x, s(g')), two quantifier-free checks. Both unsat
+proves (exists g. OLD) <=> (exists g'. NEW) (equiv-sat by=hints): t(g)
+and s(g') are the witnesses. The hints are checked, not trusted: a wrong
+one makes its check sat, and the quantified check runs (by=exists, with
+hints=<direction>:<answer> saying which failed); it never makes a pass.
+The hints come from the block ids sea-vc prints with a query of a program
+that carries them (`; sea.block-ids <guard> <id>,...`: sea-vc --reach
+programs, R_T): each guard gets the conjunction of the guards of the
+other query whose blocks hold one of its ids, false for an input block
+the other lowering erased, or no term (a block the other lowering did not
+make), and then the check expands its cases (at most HINT_CASES_MAX per
+check). See derive_hints() and project_equiv().
 
 Gate: both-unsat passes (it keeps the verdict), but its weakness is
 shown: the evidence line counts the jobs by what they prove, and
@@ -88,6 +98,7 @@ USAGE:
   utils/query-diff.py --old <sea-vc> --new <sea-vc> <corpus-dir | f.mlir...>
       [--args="--lower --widen-memory=8 --seam"] [--par 12]
       [--z3 <z3>] [--rlimit 200000000] [--timeout 300] [--project-blocks]
+      [--no-hints]
       [--strict] [--keep <dir>]
 CLASSES (what each proves; OLD/NEW = the queries, symbols matched by name):
   identical   byte-identical queries
@@ -98,17 +109,21 @@ CLASSES (what each proves; OLD/NEW = the queries, symbols matched by name):
   equiv-sat   both sat and OLD <=> NEW for every assignment (z3)
               (reason=derived: one sat check unknown, sat by equivalence)
               (by=exists: (exists guards. OLD) <=> (exists guards'. NEW))
+              (by=hints: the same, by the quantifier-free Skolem-hint
+              checks; both queries carry `; sea.block-ids` lines)
   DIFF        one sat and one unsat, or a distinguishing assignment
   unknown     a z3 check gave unknown (rlimit, timeout): no proof either way
   error       sea-vc or z3 failed, or the queries are not comparable
 ORDER: identical, order, sat(OLD) + sat(NEW), then (distinct OLD NEW)
   unless both are unsat or one is sat and the other unsat;
-  --project-blocks: a quantified check of the ^bbN_k guards only after
-  the by-name check found a difference.
+  --project-blocks: after the by-name check found a difference, the
+  Skolem-hint checks (queries with `; sea.block-ids` lines: sea-vc on R_T),
+  then, if a hint check is sat or unknown, the quantified check.
 OUTPUT (stdout, one line per job, then totals):
-  <job> <class> [reason=<r>] [old=<verdict> new=<verdict>] [by=exists]
+  <job> <class> [reason=<r>] [old=<verdict> new=<verdict>]
+      [by=hints|by=exists [hints=<old-new|new-old>:<answer>|incomplete:<n>|none:<why>]]
       [inb old=<acc>/<cond> new=<acc>/<cond>]
-  total: identical=<n> order=<n> both-unsat=<n> equiv-sat=<n> diff=<n> unknown=<n> error=<n> [by-exists=<n>]
+  total: identical=<n> order=<n> both-unsat=<n> equiv-sat=<n> diff=<n> unknown=<n> error=<n> [by-hints=<n> by-exists=<n>]
   evidence: equiv-sat=<n> identical+order=<n> both-unsat=<n> (verdict only)
   limits: rlimit=<n> timeout=<s> project-blocks=<0|1>
   [strict: fail both-unsat=<n> (verdict only, no evidence about the change)]
@@ -122,6 +137,12 @@ STATUS: 0 if every job is identical / order / both-unsat / equiv-sat;
 COMM = {"bvadd", "bvmul", "and", "or", "="}
 CLASSES = ("identical", "order", "both-unsat", "equiv-sat", "DIFF", "unknown", "error")
 GUARD = re.compile(r"\^bb\d+_\d+")
+BLOCK_IDS = re.compile(r"; sea\.block-ids (\S+) (\S+)")
+
+
+def strip_comments(text):
+    """The query without its comment lines (the block ids)."""
+    return "\n".join(x for x in text.splitlines() if not x.lstrip().startswith(";"))
 
 
 def tokens(s):
@@ -187,7 +208,13 @@ class Query:
 
     def __init__(self, text):
         self.decls, self.defs, self.asserts = {}, [], []
-        for f in parse(tokens(text)):
+        # guard -> the ids of its block (sea-vc's `; sea.block-ids` lines)
+        self.block_ids = {}
+        for line in text.splitlines():
+            m = BLOCK_IDS.fullmatch(line.strip())
+            if m:
+                self.block_ids[m.group(1)] = m.group(2).split(",")
+        for f in parse(tokens(strip_comments(text))):
             if not isinstance(f, list) or not f:
                 raise Incomparable(f"unsupported-form:{ser(f)[:40]}")
             head = f[0]
@@ -255,23 +282,174 @@ def exists(q):
     return f"(exists ({binders}) {q.formula()})"
 
 
-def project_equiv(o, n, hints=None):
-    """Unsat iff (exists g. OLD) <=> (exists g'. NEW), g / g' the block
-    guards of each query; the other symbols are matched by name.
+# a guard without a hint stays existential; up to this many per check are
+# expanded into a disjunction of their cases (2^k applications of the
+# query); more: no hints (untuned)
+HINT_CASES_MAX = 6
 
-    hints: the hook for Skolem hints, a pair of maps (old guard -> term over
-    the symbols of NEW, new guard -> term over the symbols of OLD), e.g.
-    from a side file written by the pass (lines `old-symbol new-term`).
-    With them the check would be two quantifier-free scripts,
-    NEW and not OLD[g := s(g')], and OLD and not NEW[g' := t(g)], each unsat;
-    a sat one falls back to this quantified script. Not implemented."""
+
+def derive_hints(o, n):
+    """(s, t, missing) from the block ids of the two queries: s maps each
+    guard of OLD to a term over NEW's guards (or None: no hint), t each
+    guard of NEW to one over OLD's; missing counts the guards without ids.
+    None if a query has no ids at all (no hints: the normal queries).
+
+    Ids: `<n>` an input block; derived ones (`<id>.<role><k>`, `x`, `t`)
+    blocks a pass made on a path of their own; `<a>><b>` the block
+    sea-split-critical-edges put on the edge from the block of a to the
+    block of b. A guard's term, from its block's ids:
+      - the conjunction of the guards of the other query whose blocks hold
+        one of its ids;
+      - none held, an edge a>b: the conjunction of the guards of the blocks
+        that hold a and b (not exact: both ends can be on a path that takes
+        another edge out of a);
+      - none held, only input ids: false (the other lowering erased the
+        block: no path reaches it);
+      - else no hint (a block the other lowering did not make, such as the
+        pass / fail blocks of an assert it folded): the guard stays
+        existential (see project_equiv()).
+    Why the conjunction is the other side's guard: in a model of a
+    BMC-form query the true guards are the blocks of one entry-to-halt path
+    (an edge is pred && succ, a cond_br block has at most one successor
+    whose edge condition holds, the halt block's guard is asserted); blocks
+    that share an id are halves of one input block (a split) or a block
+    merged into its only predecessor, on a path together. So on the path of
+    an input x the term is the other query's guard of the block on its path
+    of x."""
+    if not o.block_ids or not n.block_ids:
+        return None
+
+    def side(src, dst):
+        held = {}
+        dst_guards = set(dst.guards())
+        for g, ids in dst.block_ids.items():
+            if g in dst_guards:
+                for i in ids:
+                    held.setdefault(i, set()).add(g)
+
+        def conj(gs):
+            gs = sorted(gs)
+            return gs[0] if len(gs) == 1 else "(and " + " ".join(gs) + ")"
+
+        out, missing = {}, 0
+        for g in src.guards():
+            ids = src.block_ids.get(g)
+            if ids is None:
+                missing += 1
+                continue
+            hs = set().union(*(held.get(i, set()) for i in ids))
+            ends = [i.split(">", 1) for i in ids if ">" in i]
+            if hs:
+                out[g] = conj(hs)
+            elif ends and all(held.get(a) and held.get(b) for a, b in ends):
+                out[g] = conj(set().union(*(held[a] | held[b] for a, b in ends)))
+            elif all(i.isdigit() for i in ids):
+                out[g] = "false"
+            else:
+                out[g] = None
+        return out, missing
+
+    s, ms = side(o, n)
+    t, mt = side(n, o)
+    return s, t, ms + mt
+
+
+class NoHints(Exception):
+    """The hints cannot make a quantifier-free check (reported, then the
+    quantified check runs)."""
+
+
+def implies_script(a, b, hint):
+    """Unsat iff A(x, g) => exists r. B(x, hint(g), r) for every x and g:
+    g the guards of A, B's guards replaced by their hints (terms over A's
+    guards), r B's guards without one (hint None), expanded into the
+    disjunction of their 2^|r| cases."""
+    gs = set(b.guards())
+    for name, cmd in b.defs:
+        if gs & set(tokens(cmd)):
+            raise Incomparable(f"guard-in-define:{name}")
+    if gs - set(hint):
+        raise NoHints("guard-without-ids")
+    rest = sorted(g for g in gs if hint[g] is None)
+    if len(rest) > HINT_CASES_MAX:
+        raise NoHints(f"cases:{len(rest)}")
+    # a guard name of both queries is A's (B's is replaced)
+    out = shared_decls(a, b, gs - set(a.guards()))
+    named = sorted(g for g in gs if hint[g] is not None)
+    out += [f"(define-fun hint!{g} () Bool {hint[g]})" for g in named]
+
+    def rename(x):
+        if isinstance(x, str):
+            return ("hint!" if x in gs else "") + x
+        return [rename(k) for k in x]
+
+    body = ser(rename(parse(tokens(b.formula()))[0]))
+    params = " ".join(f"(hint!{g} Bool)" for g in rest)
+    out.append(f"(define-fun B__h ({params}) Bool {body})")
+    cases = []
+    for k in range(1 << len(rest)):
+        vals = " ".join("true" if k >> j & 1 else "false" for j in range(len(rest)))
+        cases.append(f"(B__h {vals})" if rest else "B__h")
+    out.append(f"(assert {a.formula()})")
+    return out + [f"(assert (not (or false {' '.join(cases)})))"]
+
+
+def project_equiv(o, n, hints=None):
+    """The scripts, (name, lines) each to be unsat, that prove
+    (exists g. OLD) <=> (exists g'. NEW), g / g' the block guards of each
+    query; the other symbols are matched by name.
+
+    hints None: one quantified script (`exists`). hints = (s, t): s maps
+    each guard of OLD to a term over the guards of NEW, t each guard of NEW
+    to a term over the guards of OLD, or None for no term (derive_hints());
+    two scripts, OLD and not NEW[g' := t(g)] (`old-new`) and NEW and not
+    OLD[g := s(g')] (`new-old`), quantifier-free: a guard without a term is
+    expanded by cases. Unsat says t(g) (s(g')) witnesses the existential; a
+    wrong hint makes its script sat, which proves nothing either way.
+    Raises NoHints when the hints cannot make such a script."""
     if hints is not None:
-        raise NotImplementedError("Skolem hints for --project-blocks")
+        s, t = hints
+        return [
+            ("old-new", implies_script(o, n, t)),
+            ("new-old", implies_script(n, o, s)),
+        ]
     skip = set(o.guards()) | set(n.guards())
     out = shared_decls(o, n, skip)
     out.append(f"(define-fun OLD__q () Bool {exists(o)})")
     out.append(f"(define-fun NEW__q () Bool {exists(n)})")
-    return out + ["(assert (distinct OLD__q NEW__q))"]
+    return [("exists", out + ["(assert (distinct OLD__q NEW__q))"])]
+
+
+def projected(o, n, z3, hints="auto"):
+    """(answer, details) of the projected equivalence: unsat proves it.
+    The Skolem-hint checks first (hints: "auto" = derive_hints(), None =
+    none, or a pair (s, t)), the quantified check if one is not unsat."""
+    details = []
+    if hints == "auto":
+        d = derive_hints(o, n)
+        if d is None:
+            hints = None
+        elif d[2]:
+            hints = None
+            details.append(f"hints=incomplete:{d[2]}")
+        else:
+            hints = d[:2]
+    if hints is not None:
+        try:
+            scripts = project_equiv(o, n, hints)
+        except NoHints as e:
+            scripts = []
+            details.append(f"hints=none:{e}")
+        for name, script in scripts:
+            r = z3.check(script)
+            if r != "unsat":
+                details.append(f"hints={name}:{r.replace(' ', '_')}")
+                break
+        else:
+            if scripts:
+                return "unsat", ["by=hints"]
+    ((_, script),) = project_equiv(o, n)
+    return z3.check(script), ["by=exists"] + details
 
 
 class Z3:
@@ -313,11 +491,14 @@ class Z3:
         return "error:z3:" + (first or z.stderr.strip())[:60].replace(" ", "_")
 
 
-def classify(old, new, z3, project_blocks=False):
-    """(class, details) for two query texts; details are key=value strings."""
-    if old == new:
+def classify(old, new, z3, project_blocks=False, hints="auto"):
+    """(class, details) for two query texts; details are key=value strings.
+    hints: the Skolem hints of --project-blocks (see projected())."""
+    # the block-id comments are not part of the query
+    old_q, new_q = strip_comments(old), strip_comments(new)
+    if old_q == new_q:
         return "identical", []
-    if normalized(old) == normalized(new):
+    if normalized(old_q) == normalized(new_q):
         return "order", []
     try:
         o, n = Query(old), Query(new)
@@ -338,8 +519,7 @@ def classify(old, new, z3, project_blocks=False):
         e = z3.check(equiv_script(o, n))
         by = []
         if e == "sat" and project_blocks and (o.guards() or n.guards()):
-            e = z3.check(project_equiv(o, n))
-            by = ["by=exists"]
+            e, by = projected(o, n, z3, hints)
     except Incomparable as x:
         return "error", [f"reason={x}"]
     if e.startswith("error"):
@@ -384,7 +564,11 @@ def one(f, a):
         cls, details = "error", ["reason=sea-vc"]
     else:
         cls, details = classify(
-            old, new, Z3(a.z3, a.rlimit, a.timeout), a.project_blocks
+            old,
+            new,
+            Z3(a.z3, a.rlimit, a.timeout),
+            a.project_blocks,
+            "auto" if a.hints else None,
         )
     if a.keep and cls in ("DIFF", "unknown", "error"):
         os.makedirs(a.keep, exist_ok=True)
@@ -429,6 +613,13 @@ def main():
         help="equivalence up to existential projection of ^bbN_k guards",
     )
     ap.add_argument(
+        "--hints",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="with --project-blocks: the Skolem-hint checks from the queries'"
+        " block ids before the quantified check (default on)",
+    )
+    ap.add_argument(
         "--strict",
         action="store_true",
         help="exit 3 when some job is only both-unsat (verdict, not equivalence)",
@@ -445,12 +636,13 @@ def main():
             sorted(glob.glob(os.path.join(i, "*.mlir"))) if os.path.isdir(i) else [i]
         )
     counts = {k: 0 for k in CLASSES}
-    by_exists = 0
+    by_exists = by_hints = 0
     inb = [0, 0, 0, 0]
     with cf.ThreadPoolExecutor(a.par) as ex:
         for job, cls, details, io, iN in ex.map(lambda f: one(f, a), files):
             counts[cls] += 1
             by_exists += cls == "equiv-sat" and "by=exists" in details
+            by_hints += cls == "equiv-sat" and "by=hints" in details
             line = " ".join([job, cls] + details)
             if io and iN:
                 line += f" inb old={io[0]}/{io[1]} new={iN[0]}/{iN[1]}"
@@ -458,7 +650,7 @@ def main():
             print(line, flush=True)
     total = " ".join(f"{k.lower()}={v}" for k, v in counts.items())
     if a.project_blocks:
-        total += f" by-exists={by_exists}"
+        total += f" by-hints={by_hints} by-exists={by_exists}"
     print("total: " + total)
     print(
         f"evidence: equiv-sat={counts['equiv-sat']} "

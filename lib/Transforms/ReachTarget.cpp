@@ -73,7 +73,7 @@ LogicalResult buildReachTargetProgram(ProgramOp program, Operation *target,
   HaltOp halt;
   Value no;
   if (!dead) {
-    head->splitBlock(target);
+    Block *rest = head->splitBlock(target);
     Block *err = new Block();
     body.push_back(err);
     b.setInsertionPointToEnd(err);
@@ -83,7 +83,13 @@ LogicalResult buildReachTargetProgram(ProgramOp program, Operation *target,
     check->setAttr(kReachTargetAttr, b.getStringAttr(id));
     halt = HaltOp::create(b, loc);
     b.setInsertionPointToEnd(head);
-    BrOp::create(b, loc, ValueRange{}, err);
+    auto br = BrOp::create(b, loc, ValueRange{}, err);
+    // block ids (kBlockIdsAttr), if the program has them: the head keeps
+    // its block's (the rest goes); the new block is T's (id t)
+    if (ArrayAttr ids = blockIdsOf(rest)) {
+      br->setAttr(kBlockIdsAttr, ids);
+      BlockIdNamer::set(halt, BlockIdNamer(program).fresh("t"));
+    }
   }
   // T and the rest of its block, and whatever only they reached
   IRRewriter rewriter(program.getContext());
@@ -99,7 +105,7 @@ LogicalResult buildReachTargetProgram(ProgramOp program, Operation *target,
     a->erase();
   for (Operation *h : halts) {
     b.setInsertionPoint(h);
-    UnreachableOp::create(b, h->getLoc());
+    copyBlockIds(h->getBlock(), UnreachableOp::create(b, h->getLoc()));
     h->erase();
   }
   // the postcondition
