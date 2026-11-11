@@ -135,7 +135,32 @@ struct FuzzProgress {
   /// FuzzOptions::cmpCoverage the comparison buckets covered.
   unsigned frontier = 0;
   unsigned cmpBuckets = 0;
+  /// Corpus entries so far.
+  uint64_t corpus = 0;
 };
+
+/// Why a trial joins the corpus (FuzzOptions::keep, a set of these bits;
+/// sea-run --fuzz-keep). Blocks: it reached a block, an edge or a passed
+/// sea.assume no earlier trial did (the rule of every version before the
+/// option, the default). Cmp: a comparison bucket no earlier trial did
+/// (needs FuzzOptions::cmpCoverage). Frontier: it passed more distinct
+/// sea.assume ops than any corpus entry's trial (a new per-gate pass is a
+/// new passed assume: blocks).
+enum FuzzKeep : unsigned {
+  kKeepBlocks = 1,
+  kKeepCmp = 2,
+  kKeepFrontier = 4,
+  kKeepAll = 7,
+};
+/// The reasons, in the order a kept entry is attributed to its first
+/// (FuzzReport::keptBy, the --fuzz-out file names).
+constexpr unsigned kKeepReasons = 3;
+extern const char *const kKeepNames[kKeepReasons];
+/// Parses a comma-separated list of blocks, cmp, frontier, all.
+mlir::LogicalResult parseFuzzKeep(llvm::StringRef text, unsigned &keep,
+                                  std::string &error);
+/// The list of the set bits (blocks,cmp,frontier order).
+std::string formatFuzzKeep(unsigned keep);
 
 struct FuzzOptions {
   /// Stop after this many trials (0: no bound), or after `seconds` of wall
@@ -201,6 +226,20 @@ struct FuzzOptions {
   /// comparison blocked (FuzzGateStats::bestDistance). A measure, not corpus
   /// feedback.
   bool cmpCoverage = false;
+  /// Corpus feedback (FuzzKeep bits): why a trial joins the corpus.
+  unsigned keep = kKeepBlocks;
+  /// At most this many corpus entries (0: no bound). A trial kept when the
+  /// corpus is full is not added (FuzzReport::corpusDropped counts it; its
+  /// coverage still counts, and with outDir its file is still written).
+  uint64_t corpusMax = 0;
+  /// Corpus sync (sea-run --fuzz-sync): every syncSeconds of wall clock,
+  /// the new-coverage files (`cov-*.txt`) of these directories (other
+  /// processes' outDir) that this run has not read yet run as trials, and
+  /// join the corpus by the keep rule. Not written to outDir (the peers
+  /// read them where they were found). A file that does not read or parse
+  /// is skipped and counted. outDir itself is never read.
+  std::vector<std::string> syncDirs;
+  double syncSeconds = 0;
 };
 
 /// The operand distance buckets of a comparison: d = lhs - rhs, exact (as
@@ -303,6 +342,18 @@ struct FuzzReport {
   unsigned edgesHit = 0;
   unsigned assumesPassed = 0, assumesTotal = 0;
   uint64_t corpusSize = 0; // entries in the corpus at the end
+  /// Entries kept per reason (kKeepNames order; an entry with several
+  /// reasons counts under its first), and the kept trials not added
+  /// because the corpus was full (FuzzOptions::corpusMax).
+  uint64_t keptBy[kKeepReasons] = {};
+  uint64_t corpusDropped = 0;
+  /// Corpus sync (FuzzOptions::syncDirs): the polls, the files run as
+  /// trials (also counted in trials), of those the ones that joined the
+  /// corpus, the files skipped (unreadable, not a corpus file, or a value
+  /// that does not fit its site), and the directories that did not exist
+  /// at the last poll.
+  uint64_t syncPolls = 0, syncImported = 0, syncKept = 0, syncSkipped = 0;
+  unsigned syncDirsMissing = 0;
   /// Range draws (FuzzOptions::ranges): value sites, sites with a range,
   /// the assumes the ranges came from, recognized range assumes not used
   /// (RangeStats), and the values drawn from a range.
@@ -374,7 +425,9 @@ struct FuzzReport {
 /// Fuzzes `program`: first the seeds, in order, then mutated entries.
 /// Writes failure-<trial>.txt (the first of each failure),
 /// memory-check-<trial>.txt / limit-<trial>.txt (the first of each error)
-/// and cov-<trial>.txt (new coverage) to FuzzOptions::outDir, and the
+/// and cov-<trial>.txt (kept for new blocks), cov-cmp-<trial>.txt,
+/// cov-frontier-<trial>.txt (kept for the other reasons, FuzzKeep) to
+/// FuzzOptions::outDir, each whole (a temporary file renamed), and the
 /// covered ids to FuzzOptions::coverageOut. Warns
 /// fuzz.limit (once, then counted) when trials stop at a limit.
 /// Fails (with `error`) on a seed value that does not fit its site, or an
@@ -389,8 +442,9 @@ mlir::FailureOr<FuzzReport> fuzz(ProgramOp program,
 std::string formatAssignment(const Assignment &a);
 
 /// Writes a corpus file: `header` (its lines are written as `# ` comments),
-/// then one assignment per line. Fails (with `error`) when the file cannot
-/// be written.
+/// then one assignment per line, whole (a temporary file in the same
+/// directory, renamed). Fails (with `error`) when the file cannot be
+/// written.
 mlir::LogicalResult writeCorpusFile(llvm::StringRef path,
                                     llvm::ArrayRef<std::string> header,
                                     llvm::ArrayRef<Assignment> input,

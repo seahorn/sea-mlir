@@ -6,7 +6,8 @@
 The fuzzer is single-threaded; this runs N processes with distinct seeds,
 each with its own --fuzz-out directory and --fuzz-coverage-out file, merges
 their fuzz.progress lines, reports the first failure and the coverage of
-each process and of their union. No exchange between the processes.
+each process and of their union. With --sync, each process also reads the
+new-coverage files of the others (sea-run --fuzz-sync).
 """
 
 import argparse
@@ -25,7 +26,8 @@ WHY: the fuzzer is single-threaded; N processes find a failure in the least
   time of N independent runs, and their coverage joins.
 USAGE:
   utils/fuzz-par.py -n N --out DIR [--seed-base B] [--sea-run PATH]
-      [--progress S] [--wait-all] -- <program.mlir> <sea-run args>...
+      [--progress S] [--wait-all] [--sync [--sync-period S]]
+      -- <program.mlir> <sea-run args>...
   The args after -- go to every process (give --fuzz=<n> and/or
   --fuzz-time=<s>). Not allowed there (the launcher sets them): --seed,
   --fuzz-out, --fuzz-coverage-out, --fuzz-progress, --format.
@@ -39,6 +41,12 @@ USAGE:
   processes are stopped (SIGTERM), unless --wait-all. sea-run prints that
   line at its end: with --keep-going passed through, the first failure is
   known only when a process ends (time= still says when it was found).
+  --sync: process i also gets --fuzz-sync=<the out dirs of the others>:
+  every --sync-period S seconds (sea-run's --fuzz-sync-period, default 5,
+  not tuned) it runs their new cov-*.txt files as trials, and keeps those
+  that add coverage by its own --fuzz-keep rule. Not reproducible: what a
+  process imports depends on timing. Without --sync the processes are
+  independent (same seeds = same runs).
 OUTPUT (key: value lines, stdout):
   fuzz-par.progress: <wall s> reported=<k>/<N> trials-sum=<n> steps-sum=<n>
       failures-sum=<n> blocks-max=<n> edges-max=<n> paths-max=<n>
@@ -47,9 +55,12 @@ OUTPUT (key: value lines, stdout):
        of the cost, max of the coverage: the union needs the ids, at the end)
   fuzz-par.process: <i> seed=<s> exit=<rc> end=done|failure|stopped|error
       from=final|progress|none trials=<n> steps=<n> blocks=<n> edges=<n>
-      paths=<n> assumes=<n>
+      paths=<n> assumes=<n> corpus=<n> [imported=<n> sync-kept=<n>
+      sync-skipped=<n>]
       (from: the process's fuzz.trials / fuzz.coverage lines, or its last
-       fuzz.progress if it was stopped, or nothing; stopped: by the launcher)
+       fuzz.progress if it was stopped, or nothing; stopped: by the launcher;
+       corpus: its corpus entries; imported, sync-kept, sync-skipped: with
+       --sync, its fuzz.sync line, - if it printed none)
   fuzz-par.first-failure: process=<i> seed=<s> kind=failure|memory-safety
       trial=<n> time=<s> wall=<s> at=<where> [file=<path>]
       (time: the process's own clock from its first trial; wall: the
@@ -67,6 +78,7 @@ OUTPUT (key: value lines, stdout):
        closed gate; none when the program has no sea.assume /
        sea.unreachable)
   fuzz-par.summary: processes=<N> wall=<s> failures=<processes with one>
+      sync=on|off
 EXIT: 0 ran; 4 a process found a memory-safety finding (as sea-run);
   1 bad options, or a process failed (exit other than 0 / 4, not stopped
   by the launcher: fuzz-par.error line).
@@ -79,6 +91,8 @@ RESERVED = (
     "--fuzz-progress",
     "--format",
 )
+
+SYNC_RESERVED = ("--fuzz-sync", "--fuzz-sync-period")
 
 KV = re.compile(r"(\S+)=(\S+)")
 
@@ -103,6 +117,8 @@ class Proc:
         self.progress = None  # fields of the latest fuzz.progress
         self.trials = None  # fields of fuzz.trials
         self.coverage = None  # fields of fuzz.coverage
+        self.corpus = None  # fields of fuzz.corpus
+        self.sync = None  # fields of fuzz.sync
         self.failed = False
         self.stopped = False
 
@@ -197,6 +213,8 @@ def main():
     ap.add_argument("--sea-run", default="sea-run")
     ap.add_argument("--progress", type=float, default=0)
     ap.add_argument("--wait-all", action="store_true")
+    ap.add_argument("--sync", action="store_true", help="corpus sync")
+    ap.add_argument("--sync-period", type=float, help="seconds (with --sync)")
     ap.add_argument("args", nargs=argparse.REMAINDER)
     a = ap.parse_args()
     args = a.args[1:] if a.args[:1] == ["--"] else a.args
@@ -206,9 +224,14 @@ def main():
         ap.error("--progress must not be negative")
     if not args:
         ap.error("give the program and the sea-run args after --")
+    if a.sync_period is not None and not a.sync:
+        ap.error("--sync-period needs --sync")
+    if a.sync_period is not None and a.sync_period <= 0:
+        ap.error("--sync-period must be positive")
+    reserved = RESERVED + (SYNC_RESERVED if a.sync else ())
     for x in args:
-        if "--" + x.split("=")[0].lstrip("-") in RESERVED:
-            ap.error(f"{x}: the launcher sets {', '.join(RESERVED)}")
+        if "--" + x.split("=")[0].lstrip("-") in reserved:
+            ap.error(f"{x}: the launcher sets {', '.join(reserved)}")
     if os.path.exists(a.out) and (not os.path.isdir(a.out) or os.listdir(a.out)):
         ap.error(f"--out {a.out} is not a new or empty directory")
 
@@ -223,6 +246,13 @@ def main():
             cmd = [a.sea_run, *args, f"--seed={seed}"]
             cmd += [f"--fuzz-out={os.path.join(pdir, 'out')}"]
             cmd += [f"--fuzz-coverage-out={os.path.join(pdir, 'cov.txt')}"]
+            if a.sync and a.n > 1:
+                peers = [
+                    os.path.join(a.out, f"p{j}", "out") for j in range(a.n) if j != i
+                ]
+                cmd.append(f"--fuzz-sync={','.join(peers)}")
+                if a.sync_period is not None:
+                    cmd.append(f"--fuzz-sync-period={a.sync_period:g}")
             if a.progress > 0:
                 cmd.append(f"--fuzz-progress={a.progress:g}")
             p = Proc(i, seed, cmd, pdir)
@@ -251,6 +281,11 @@ def main():
                     p.trials["trials"] = rest.split()[0]
                 elif key == "fuzz.coverage":
                     p.coverage = fields(rest)
+                elif key == "fuzz.corpus":
+                    p.corpus = fields(rest)
+                    p.corpus["entries"] = rest.split()[0]
+                elif key == "fuzz.sync":
+                    p.sync = fields(rest)
                 elif key in ("fuzz.failure", "fuzz.memory-safety"):
                     p.failed = True
                     if first is None:
@@ -316,6 +351,19 @@ def main():
             + "".join(
                 f" {k}={d.get(k, '-')}"
                 for k in ("trials", "steps", "blocks", "edges", "paths", "assumes")
+            )
+            + f" corpus={(p.corpus or {}).get('entries', d.get('corpus', '-'))}"
+            + (
+                "".join(
+                    f" {name}={(p.sync or {}).get(k, '-')}"
+                    for name, k in (
+                        ("imported", "imported"),
+                        ("sync-kept", "kept"),
+                        ("sync-skipped", "skipped"),
+                    )
+                )
+                if a.sync
+                else ""
             )
         )
 
@@ -385,6 +433,7 @@ def main():
         f"fuzz-par.summary: processes={len(procs)}"
         f" wall={time.monotonic() - start:.3f}"
         f" failures={sum(p.failed for p in procs)}"
+        f" sync={'on' if a.sync else 'off'}"
     )
     return rc
 

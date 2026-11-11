@@ -12,6 +12,12 @@
 // RUN: mkdir -p %t/seeds && printf '0=3\n' > %t/seeds/a.txt && printf '0=3\n' > %t/seeds/b.txt
 // RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/seeded --sea-run %sea_bin/sea-run -- %s --program=gate --fuzz=2 --corpus=%t/seeds | FileCheck %s --check-prefix=SEEDED
 // RUN: %python %sea_src_root/utils/fuzz-par.py --agent | FileCheck %s --check-prefix=AGENT
+// With --sync each process reads the other's cov files (sync.mlir checks
+// that an import adds coverage).
+// RUN: mkdir -p %t/rare && printf '0=1215171618\n' > %t/rare/a.txt
+// RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/sync --sync --sync-period 0.1 --sea-run %sea_bin/sea-run -- %s --program=rare --fuzz-time=1 --corpus=%t/rare | FileCheck %s --check-prefix=SYNC
+// RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/sync2 --sea-run %sea_bin/sea-run -- %s --program=rare --fuzz=10 | FileCheck %s --check-prefix=NOSYNC
+// RUN: not %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/sync3 --sync --sea-run %sea_bin/sea-run -- %s --fuzz=10 --fuzz-sync=x 2>&1 | FileCheck %s --check-prefix=SYNCRES
 // RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/model --sea-run %sea_bin/sea-run -- %s --program=safe --fuzz=2000 | FileCheck %s --check-prefix=MODEL
 
 // The union joins the coverage files of the processes that ended.
@@ -30,6 +36,15 @@
 // (y = 154 and 221: the buckets -L and -S of the comparison with 230; the
 // gate stays closed, its least distance 231 - 221 = 10.)
 // SEEDED: fuzz-par.model: frontier-max=1 closed=1 closed-gates=1 cmp-buckets=3/14 closed-distance=1:10
+
+// Each process writes the seed's run as a cov file (new coverage), and the
+// other imports it.
+// SYNC-DAG: fuzz-par.process: 0 {{.*}} imported={{[1-9][0-9]*}} sync-kept={{[0-9]+}} sync-skipped=0
+// SYNC-DAG: fuzz-par.process: 1 {{.*}} imported={{[1-9][0-9]*}} sync-kept={{[0-9]+}} sync-skipped=0
+// SYNC: fuzz-par.summary: {{.*}} sync=on
+// NOSYNC-NOT: imported=
+// NOSYNC: fuzz-par.summary: {{.*}} sync=off
+// SYNCRES: --fuzz-sync=x: the launcher sets
 
 // FAIL: fuzz-par.process: 0 seed=1 exit=0 end=failure from=final
 // FAIL: fuzz-par.process: 1 seed=2 exit=0 end=failure from=final
@@ -70,6 +85,19 @@ sea.program @gate {
   %c230 = sea.const 230 : i8
   %gt = sea.icmp ugt, %y, %c230 : i8
   sea.assume %gt
+  sea.halt
+}
+
+sea.program @rare {
+  %x = sea.nondet "nondet_u32" [0] : i32
+  %k = sea.const 1515870810 : i32
+  %y = sea.xor %x, %k : i32
+  %c = sea.const 305419896 : i32
+  %eq = sea.icmp eq, %y, %c : i32
+  sea.cond_br %eq, ^rare, ^done
+^rare:
+  sea.br ^done
+^done:
   sea.halt
 }
 

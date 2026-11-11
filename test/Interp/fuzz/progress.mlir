@@ -10,8 +10,8 @@
 // RUN: not sea-run %s --program=safe --fuzz-coverage-out=%t.cov 2>&1 | FileCheck %s --check-prefix=NOFUZZ
 // RUN: not sea-run %s --program=safe --fuzz=10 --fuzz-progress=-1 2>&1 | FileCheck %s --check-prefix=NEG
 
-// CHECK: fuzz.progress: {{0\.[1-9][0-9]*}} trials={{[1-9][0-9]*}} steps={{[1-9][0-9]*}} blocks=4 edges=5 paths=3 assumes=1 failures=0 frontier=1 cmp-buckets={{[1-9][0-9]*}}{{$}}
-// NOCMP: fuzz.progress: {{.*}} frontier=1{{$}}
+// CHECK: fuzz.progress: {{0\.[1-9][0-9]*}} trials={{[1-9][0-9]*}} steps={{[1-9][0-9]*}} blocks=4 edges=5 paths=3 assumes=1 failures=0 frontier=1 cmp-buckets={{[1-9][0-9]*}} corpus={{[1-9][0-9]*}}{{$}}
+// NOCMP: fuzz.progress: {{.*}} frontier=1 corpus={{[1-9][0-9]*}}{{$}}
 // CHECK: fuzz.trials:
 
 // JSONL: {"kind":"stat","key":"fuzz.progress","value":{{[0-9.]+}},"trials":{{[0-9]+}},"steps":{{[0-9]+}},"blocks":{{[0-9]+}},"edges":{{[0-9]+}},"paths":{{[0-9]+}},"assumes":{{[0-9]+}},"failures":0,
