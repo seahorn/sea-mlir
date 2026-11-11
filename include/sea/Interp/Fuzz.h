@@ -140,7 +140,7 @@ struct FuzzProgress {
   /// FuzzStrategy::Mcmc: the cost of the chain's current state (McmcCost),
   /// none before the chain has one.
   bool mcmc = false;
-  std::optional<double> mcmcCost;
+  std::optional<int64_t> mcmcCost;
 };
 
 /// How a trial after the seeds gets its input (sea-run --fuzz-strategy).
@@ -153,14 +153,15 @@ struct FuzzProgress {
 enum class FuzzStrategy { Corpus, Mcmc };
 
 /// The cost of an mcmc state: kMcmcLevelWeight * (deepest - frontier) +
-/// log2(1 + branch distance of the gate that blocked the trial), with
+/// the bit length of the branch distance of the gate that blocked the
+/// trial (64 - countl_zero(d), 0 for d = 0; an integer), with
 /// deepest the run's deepest frontier so far (FuzzReport::frontierDeepest),
 /// frontier the trial's (the approach level). The second term is in [0,
 /// 64]: 0 for a trial no gate blocked, kMcmcUnknownDistance for a gate
 /// without a branch distance (not a comparison, sea.unreachable). The
 /// level weight exceeds it, so one more gate passed always lowers the cost.
-constexpr double kMcmcLevelWeight = 65;
-constexpr double kMcmcUnknownDistance = 64;
+constexpr int64_t kMcmcLevelWeight = 65;
+constexpr int64_t kMcmcUnknownDistance = 64;
 
 /// Why a trial joins the corpus (FuzzOptions::keep, a set of these bits;
 /// sea-run --fuzz-keep). Blocks: it reached a block, an edge or a passed
@@ -267,8 +268,9 @@ struct FuzzOptions {
   /// Mcmc needs cmpCoverage (the branch distances).
   FuzzStrategy strategy = FuzzStrategy::Corpus;
   /// Mcmc: a move that raises the cost by d > 0 is accepted with
-  /// probability exp(-mcmcBeta * d) (one gate fewer passed: d >= 1). Not
-  /// tuned.
+  /// probability exp(-mcmcBeta * d) (one gate fewer passed: d >= 1), decided
+  /// by an integer threshold per d (exp evaluated once per d, rounded to 64
+  /// bits). Not tuned.
   double mcmcBeta = 1;
   /// Mcmc: the chain restarts after this many moves without a cost below
   /// the chain's best since its start (0: never), from a corpus entry or
@@ -292,12 +294,15 @@ struct FuzzMcmcStats {
   /// restarts after mcmcRestart moves without a new chain best, and after
   /// a failing trial
   uint64_t restarts = 0, failureRestarts = 0;
+  /// restarts whose trial erred or hit a limit (no state: the next trial
+  /// restarts again)
+  uint64_t restartsRejected = 0;
   /// the least cost of a chain state, its trial and its frontier
   /// (McmcCost against the deepest frontier at the end)
-  std::optional<double> bestCost;
+  std::optional<int64_t> bestCost;
   uint64_t bestTrial = 0;
   unsigned bestFrontier = 0;
-  double bestDistance = 0;
+  int64_t bestDistance = 0;
 };
 
 /// The operand distance buckets of a comparison: d = lhs - rhs, exact (as

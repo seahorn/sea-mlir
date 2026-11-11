@@ -756,7 +756,8 @@ prints; the fuzzer checks the replay ends the same way), then stat lines:
   fuzz.sync: imported=<n> kept=<n> skipped=<n> polls=<n> dirs=<n>
              missing=<n> period=<s>          (--fuzz-sync; CORPUS)
   fuzz.mcmc: moves=<n> accepted=<n> uphill=<n> restarts=<n>
-             failure-restarts=<n> best-cost=<c> best-trial=<n>|-
+             restarts-rejected=<n> failure-restarts=<n>
+             best-cost=<c> best-trial=<n>|best-cost=-
              stall=<gate id>:<n>|- beta=<b> restart=<n> share=<p>  (MCMC)
   fuzz.blocked: <runs> op=sea.assume|sea.unreachable at=<where>
                 [sites=<n,...>|- cond=<expr>]
@@ -803,7 +804,7 @@ MCMC (--fuzz-strategy=mcmc; docs/reference/fuzzing.md, "MCMC strategy"):
   a Metropolis-style chain over inputs. One current input; a move mutates
   one of its values (a mutation of TRIALS) and runs it as a trial (coverage,
   corpus, failures as any trial). cost = 65 * (deepest - frontier) +
-  log2(1 + distance): frontier = distinct assumes the trial passed, deepest
+  bitlen(distance): frontier = distinct assumes the trial passed, deepest
   = the most of any trial so far, distance = the branch distance of the
   blocking assume (0: not blocked; 64 for the term: no distance). One
   more assume passed always lowers the cost. A move that raises it by d
@@ -818,8 +819,10 @@ MCMC (--fuzz-strategy=mcmc; docs/reference/fuzzing.md, "MCMC strategy"):
   on). Read fuzz.mcmc: accepted/moves = acceptance; uphill = accepted
   moves that raised the cost (high: B too small, a random walk; ~0 with
   few accepted: stuck, only restarts move it); best-cost against the
-  deepest frontier at the end (0.00: nothing left to cross, a failure
-  included); stall=<gate>:<n>: the gate with most moves that did not lower
+  deepest frontier at the end (0: a chain state at the deepest frontier
+  with nothing left to cross; a failure at a shallower frontier is not the
+  best state); restarts-rejected: restarts whose trial erred or hit the
+  step limit; stall=<gate>:<n>: the gate with most moves that did not lower
   the cost (per gate: mcmc-moves, mcmc-improved on fuzz.gate and the
   coverage file's gate: lines). A stall at an assume of x != y (distance
   1 on every blocked trial) or of a non-comparison: the cost is flat
@@ -1565,7 +1568,7 @@ static int runFuzz(sea::ProgramOp program) {
     if (p.mcmc) {
       os << " cost=";
       if (p.mcmcCost)
-        os << format("%.2f", *p.mcmcCost);
+        os << *p.mcmcCost;
       else
         os << "-";
     }
@@ -1731,9 +1734,10 @@ static int runFuzz(sea::ProgramOp program) {
       }
     os << "fuzz.mcmc: moves=" << m.moves << " accepted=" << m.accepted
        << " uphill=" << m.uphill << " restarts=" << m.restarts
+       << " restarts-rejected=" << m.restartsRejected
        << " failure-restarts=" << m.failureRestarts << " best-cost=";
     if (m.bestCost)
-      os << format("%.2f", *m.bestCost) << " best-trial=" << m.bestTrial;
+      os << *m.bestCost << " best-trial=" << m.bestTrial;
     else
       os << "-";
     os << " stall=";

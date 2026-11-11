@@ -15,6 +15,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/bit.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -1004,9 +1005,9 @@ private:
 
   /// The cost of an mcmc state against the deepest frontier so far
   /// (kMcmcLevelWeight).
-  double chainCost(unsigned frontier, double distance) const {
+  int64_t chainCost(unsigned frontier, int64_t distance) const {
     return kMcmcLevelWeight *
-               (double(report.frontierDeepest) - double(frontier)) +
+               (int64_t(report.frontierDeepest) - int64_t(frontier)) +
            distance;
   }
 
@@ -1024,11 +1025,27 @@ private:
     bool valid = false;
     Entry entry;
     unsigned frontier = 0;
-    double distance = 0;
+    int64_t distance = 0;
     std::optional<unsigned> gate;
-    double best = 0;
+    int64_t best = 0;
     uint64_t sinceBest = 0;
   } chain;
+
+  /// The acceptance thresholds of an uphill move by d > 0: exp(-beta * d)
+  /// * 2^64 rounded, by d, filled on demand (exp runs once per d; a 1-ulp
+  /// libm difference almost never changes a decision). A move is accepted
+  /// iff a draw of the stream is below it.
+  std::map<int64_t, uint64_t> acceptThreshold;
+  uint64_t acceptAt(int64_t d) {
+    auto [it, fresh] = acceptThreshold.try_emplace(d, 0);
+    if (fresh) {
+      double s = std::ldexp(std::exp(-options.mcmcBeta * double(d)), 64);
+      it->second = !(s < 0x1.0p64) ? UINT64_MAX
+                   : !(s >= 1.0)   ? 0
+                                   : uint64_t(std::nearbyint(s));
+    }
+    return it->second;
+  }
 
   ProgramOp program;
   const FuzzOptions &options;
@@ -1258,6 +1275,11 @@ LogicalResult Fuzzer::mcmcStep(bool &stop, std::string &error) {
   FuzzMcmcStats &m = report.mcmc;
   bool restart = !chain.valid || (options.mcmcRestart &&
                                   chain.sinceBest >= options.mcmcRestart);
+  // the cost as kMcmcLevelWeight * -frontier + distance (chainCost minus a
+  // term every state shares)
+  auto raw = [](unsigned frontier, int64_t d) {
+    return -kMcmcLevelWeight * int64_t(frontier) + d;
+  };
   Entry proposal;
   std::optional<unsigned> from; // the gate the move starts at
   if (restart) {
@@ -1286,10 +1308,11 @@ LogicalResult Fuzzer::mcmcStep(bool &stop, std::string &error) {
   if (lastFailing) {
     // the chain found a failure: it ends there (keepGoing: a restart next)
     ++m.failureRestarts;
-    // a failing trial is the chain's best state, no gate left to cross
+    // a failing trial (distance 0) becomes the chain's best state when its
+    // frontier beats the best
     if (!m.bestCost ||
-        -kMcmcLevelWeight * double(runFrontier) <
-            -kMcmcLevelWeight * double(m.bestFrontier) + m.bestDistance) {
+        -kMcmcLevelWeight * int64_t(runFrontier) <
+            -kMcmcLevelWeight * int64_t(m.bestFrontier) + m.bestDistance) {
       m.bestCost = 0;
       m.bestTrial = report.trials;
       m.bestFrontier = runFrontier;
@@ -1297,28 +1320,26 @@ LogicalResult Fuzzer::mcmcStep(bool &stop, std::string &error) {
     }
     if (from) {
       ++report.gates[*from].mcmcMoves;
-      ++report.gates[*from].mcmcImproved;
+      report.gates[*from].mcmcImproved +=
+          raw(runFrontier, 0) < raw(chain.frontier, chain.distance);
     }
     chain.valid = false;
     return success();
   }
-  double distance = !lastGate      ? 0
-                    : lastDistance ? std::log2(double(*lastDistance) + 1)
-                                   : kMcmcUnknownDistance;
-  // the cost as kMcmcLevelWeight * -frontier + distance (chainCost minus a
-  // term every state shares)
-  auto raw = [](unsigned frontier, double d) {
-    return -kMcmcLevelWeight * double(frontier) + d;
-  };
-  double cost = raw(runFrontier, distance);
+  int64_t distance = !lastGate ? 0
+                     : lastDistance
+                         ? int64_t(64 - llvm::countl_zero(*lastDistance))
+                         : kMcmcUnknownDistance;
+  int64_t cost = raw(runFrontier, distance);
   bool accept;
   if (lastErring) {
     accept = false; // no cost: a limit or an error
+    m.restartsRejected += restart;
   } else if (restart) {
     accept = true;
   } else {
-    double d = cost - raw(chain.frontier, chain.distance);
-    accept = d <= 0 || chance(std::exp(-options.mcmcBeta * d));
+    int64_t d = cost - raw(chain.frontier, chain.distance);
+    accept = d <= 0 || rng() < acceptAt(d);
     m.uphill += accept && d > 0;
   }
   if (from) {

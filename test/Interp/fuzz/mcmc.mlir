@@ -1,6 +1,6 @@
 // --fuzz-strategy=mcmc: a chain over inputs; a move mutates one value of the
-// current input and is accepted by the cost (approach level and the log2 of
-// the branch distance of the blocking gate). @narrow has one gate, an
+// current input and is accepted by the cost (approach level and the bit length
+// of the branch distance of the blocking gate). @narrow has one gate, an
 // equality of 3x + 7 with a constant: one input in 2^32 passes it (and
 // fails the assert after it), and the dictionary does not hold it. The
 // branch distance leads the chain there; the corpus strategy, in the same
@@ -31,15 +31,26 @@
 // RUN: sea-run %s --program=safe --fuzz=2000 --seed=1 --fuzz-strategy=mcmc --fuzz-gates --format=jsonl > %t.jsonl
 // RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.txt --jsonl %t.jsonl --require stat:moves,accepted,stall,beta
 //
+// the acceptance rule: a huge beta accepts no uphill move; beta 0 without
+// restarts accepts every move
+// RUN: sea-run %s --program=safe --fuzz=2000 --seed=1 --fuzz-strategy=mcmc --fuzz-mcmc-beta=1e9 | FileCheck %s --check-prefix=BIGBETA
+// RUN: sea-run %s --program=safe --fuzz=2000 --seed=1 --fuzz-strategy=mcmc --fuzz-mcmc-beta=0 --fuzz-mcmc-restart=0 | FileCheck %s --check-prefix=ZEROBETA
+// (@safe has no uphill move at beta 1; @narrow does, so there the huge beta matters)
+// RUN: sea-run %s --program=narrow --fuzz=3000 --seed=1 --fuzz-strategy=mcmc | FileCheck %s --check-prefix=NARROWB1
+// RUN: sea-run %s --program=narrow --fuzz=3000 --seed=1 --fuzz-strategy=mcmc --fuzz-mcmc-beta=1e9 | FileCheck %s --check-prefix=NARROWBIG
+//
 // RUN: not sea-run %s --program=safe --fuzz=10 --fuzz-mcmc-beta=2 2>&1 | FileCheck %s --check-prefix=NOSTRAT
 // RUN: not sea-run %s --program=safe --fuzz-strategy=mcmc 2>&1 | FileCheck %s --check-prefix=NOFUZZ
 // RUN: not sea-run %s --program=safe --fuzz=10 --fuzz-strategy=mcmc --fuzz-cmp=false 2>&1 | FileCheck %s --check-prefix=NOCMP
 // RUN: not sea-run %s --program=safe --fuzz=10 --fuzz-strategy=mcmc --fuzz-mcmc-beta=-1 2>&1 | FileCheck %s --check-prefix=BETA
 // RUN: not sea-run %s --program=safe --fuzz=10 --fuzz-strategy=mcmc --fuzz-mcmc-share=2 2>&1 | FileCheck %s --check-prefix=SHAREBAD
 
-// MCMC: fuzz.failure: 1 trial={{[0-9]+}} at={{.*}}mcmc.mlir:[[@LINE+36]]:3
+// NOTE: the catch at seed 1 is seed-dependent (39 of 40 seeds catch within
+// 20000 trials); it re-rolls when mutate() or the draws of the stream
+// change. Re-pin then: keep a seed that catches.
+// MCMC: fuzz.failure: 1 trial={{[0-9]+}} at={{.*}}mcmc.mlir:[[@LINE+41]]:3
 // the failing trial is the chain's best state: cost 0
-// MCMC: fuzz.mcmc: moves={{[1-9][0-9]*}} accepted={{[1-9][0-9]*}} uphill={{[0-9]+}} restarts={{[0-9]+}} failure-restarts=1 best-cost=0.00 best-trial={{[1-9][0-9]*}} stall=0:{{[1-9][0-9]*}} beta=1 restart=1000 share=1
+// MCMC: fuzz.mcmc: moves={{[1-9][0-9]*}} accepted={{[1-9][0-9]*}} uphill={{[0-9]+}} restarts={{[0-9]+}} restarts-rejected={{[0-9]+}} failure-restarts=1 best-cost=0 best-trial={{[1-9][0-9]*}} stall=0:{{[1-9][0-9]*}} beta=1 restart=1000 share=1
 // MCMC: fuzz.gate: 0 op=sea.assume passed=1 {{.*}} mcmc-moves={{[1-9][0-9]*}} mcmc-improved={{[1-9][0-9]*}} check=1
 // FILE: gate: 0 op=sea.assume passed=1 blocked={{[0-9]+}} distance={{[0-9]+}} mcmc-moves={{[1-9][0-9]*}} mcmc-improved={{[1-9][0-9]*}}{{$}}
 
@@ -50,13 +61,18 @@
 // FILE0: gate: 0 op=sea.assume passed=0 blocked=20000 distance={{[0-9]+}}{{$}}
 
 // RESTART: fuzz.mcmc: moves={{[0-9]+}} {{.*}} restarts={{[1-9][0-9]*}} {{.*}} restart=1 share=1
-// NORESTART: fuzz.mcmc: moves=299 {{.*}} restarts=0 failure-restarts=0 {{.*}} restart=0 share=1
+// NORESTART: fuzz.mcmc: moves=299 {{.*}} restarts=0 restarts-rejected=0 failure-restarts=0 {{.*}} restart=0 share=1
 
-// SHARE0: fuzz.mcmc: moves=0 accepted=0 uphill=0 restarts=0 failure-restarts=0 best-cost=- stall=- beta=1 restart=1000 share=0
+// SHARE0: fuzz.mcmc: moves=0 accepted=0 uphill=0 restarts=0 restarts-rejected=0 failure-restarts=0 best-cost=- stall=- beta=1 restart=1000 share=0
 // SHARE: fuzz.mcmc: moves={{[1-9][0-9]*}} {{.*}} share=0.5
 
-// PROGRESS: fuzz.progress: {{.*}} corpus={{[0-9]+}} cost={{[0-9]+\.[0-9][0-9]}}{{$}}
+// PROGRESS: fuzz.progress: {{.*}} corpus={{[0-9]+}} cost={{[0-9]+}}{{$}}
 // PROGRESS: fuzz.mcmc:
+
+// BIGBETA: fuzz.mcmc: moves={{[0-9]+}} accepted={{[0-9]+}} uphill=0 restarts=
+// NARROWB1: fuzz.mcmc: moves={{[0-9]+}} accepted={{[0-9]+}} uphill={{[1-9][0-9]*}} restarts=
+// NARROWBIG: fuzz.mcmc: moves={{[0-9]+}} accepted={{[0-9]+}} uphill=0 restarts=
+// ZEROBETA: fuzz.mcmc: moves=1999 accepted=1999 uphill={{[0-9]+}} restarts=0
 
 // NOSTRAT: need --fuzz-strategy=mcmc
 // NOFUZZ: need --fuzz or --fuzz-time
