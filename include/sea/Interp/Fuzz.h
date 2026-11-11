@@ -116,8 +116,9 @@ struct RangeStats {
   unsigned skipped = 0; // recognized but not used
 };
 
-/// The distinct paths FuzzReport::paths counts at most (2^20 hashes, 8 MiB):
-/// a program with loops has unboundedly many.
+/// The distinct paths FuzzReport::paths counts at most (2^20 hashes, about 16
+/// MiB in a DenseSet<uint64_t> of 2^21 buckets): a program with loops has
+/// unboundedly many.
 constexpr uint64_t kFuzzPathCap = uint64_t(1) << 20;
 
 /// The running totals of a fuzz run (FuzzOptions::onProgress): the cost so

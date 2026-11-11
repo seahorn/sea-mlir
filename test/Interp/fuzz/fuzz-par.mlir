@@ -6,6 +6,8 @@
 // RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/fail --wait-all --sea-run %sea_bin/sea-run -- %s --program=fail --fuzz=100000 | FileCheck %s --check-prefix=FAIL
 // RUN: %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/prog --progress 0.1 --sea-run %sea_bin/sea-run -- %s --program=safe --fuzz-time=0.5 | FileCheck %s --check-prefix=PROG
 // RUN: not %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/bad --sea-run %sea_bin/sea-run -- %s --fuzz=10 --seed=3 2>&1 | FileCheck %s --check-prefix=RESERVED
+// RUN: not %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/bad1 --sea-run %sea_bin/sea-run -- %s --fuzz=10 -seed=3 2>&1 | FileCheck %s --check-prefix=SINGLE
+// RUN: not %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/err --sea-run %sea_bin/sea-run -- %s --program=nosuch --fuzz=10 | FileCheck %s --check-prefix=ERR
 // RUN: not %python %sea_src_root/utils/fuzz-par.py -n 2 --out %t/safe --sea-run %sea_bin/sea-run -- %s --fuzz=10 2>&1 | FileCheck %s --check-prefix=NONEMPTY
 // RUN: %python %sea_src_root/utils/fuzz-par.py --agent | FileCheck %s --check-prefix=AGENT
 
@@ -23,6 +25,9 @@
 // PROG: fuzz-par.progress: {{[0-9.]+}} reported=2/2 trials-sum={{[1-9][0-9]*}} steps-sum={{[1-9][0-9]*}} failures-sum=0 blocks-max=4 edges-max=5 paths-max=3 assumes-max=1
 // PROG: fuzz-par.union: {{.*}} processes=2/2
 
+// SINGLE: -seed=3: the launcher sets
+// ERR: fuzz-par.error: process=
+// ERR: fuzz-par.process: 0 seed=1 exit=1 end=error
 // RESERVED: --seed=3: the launcher sets
 // NONEMPTY: is not a new or empty directory
 // AGENT: fuzz-par: run N `sea-run --fuzz` processes

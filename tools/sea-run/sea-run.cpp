@@ -793,7 +793,7 @@ double free and bad free); 1 error (bad
 input, missing nondet value, unsupported op). --fuzz: 0 when the trials ran
 (assert failures are in the output), 4 when there is a memory-safety
 finding (fuzz.memory-safety), 1 on a bad option or corpus, an unwritable
---fuzz-out, or a failure that does not replay (fuzz.replay-mismatch).
+--fuzz-out or --fuzz-coverage-out, or a failure that does not replay (fuzz.replay-mismatch).
 )";
 
 static int fail(const Twine &msg) {

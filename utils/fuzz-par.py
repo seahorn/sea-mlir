@@ -13,6 +13,7 @@ import argparse
 import os
 import queue
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -44,7 +45,7 @@ OUTPUT (key: value lines, stdout):
       assumes-max=<n>
       (the latest fuzz.progress of each process that has printed one; sums
        of the cost, max of the coverage: the union needs the ids, at the end)
-  fuzz-par.process: <i> seed=<s> exit=<rc> end=done|failure|stopped
+  fuzz-par.process: <i> seed=<s> exit=<rc> end=done|failure|stopped|error
       from=final|progress|none trials=<n> steps=<n> blocks=<n> edges=<n>
       paths=<n> assumes=<n>
       (from: the process's fuzz.trials / fuzz.coverage lines, or its last
@@ -90,6 +91,7 @@ class Proc:
         self.popen = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=self.err, text=True, bufsize=1
         )
+        self.errored = False
         self.progress = None  # fields of the latest fuzz.progress
         self.trials = None  # fields of fuzz.trials
         self.coverage = None  # fields of fuzz.coverage
@@ -146,7 +148,8 @@ def emit(line):
 
 
 def main():
-    if "--agent" in sys.argv:
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    if "--agent" in sys.argv[: sys.argv.index("--") if "--" in sys.argv else None]:
         sys.stdout.write(AGENT)
         return 0
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -166,7 +169,7 @@ def main():
     if not args:
         ap.error("give the program and the sea-run args after --")
     for x in args:
-        if x.split("=")[0] in RESERVED:
+        if "--" + x.split("=")[0].lstrip("-") in RESERVED:
             ap.error(f"{x}: the launcher sets {', '.join(RESERVED)}")
     if os.path.exists(a.out) and (not os.path.isdir(a.out) or os.listdir(a.out)):
         ap.error(f"--out {a.out} is not a new or empty directory")
@@ -174,55 +177,63 @@ def main():
     start = time.monotonic()
     events = queue.Queue()
     procs = []
-    for i in range(a.n):
-        pdir = os.path.join(a.out, f"p{i}")
-        os.makedirs(pdir)
-        seed = a.seed_base + i
-        cmd = [a.sea_run, *args, f"--seed={seed}"]
-        cmd += [f"--fuzz-out={os.path.join(pdir, 'out')}"]
-        cmd += [f"--fuzz-coverage-out={os.path.join(pdir, 'cov.txt')}"]
-        if a.progress > 0:
-            cmd.append(f"--fuzz-progress={a.progress:g}")
-        p = Proc(i, seed, cmd, pdir)
-        threading.Thread(target=reader, args=(p, events), daemon=True).start()
-        procs.append(p)
+    try:
+        for i in range(a.n):
+            pdir = os.path.join(a.out, f"p{i}")
+            os.makedirs(pdir)
+            seed = a.seed_base + i
+            cmd = [a.sea_run, *args, f"--seed={seed}"]
+            cmd += [f"--fuzz-out={os.path.join(pdir, 'out')}"]
+            cmd += [f"--fuzz-coverage-out={os.path.join(pdir, 'cov.txt')}"]
+            if a.progress > 0:
+                cmd.append(f"--fuzz-progress={a.progress:g}")
+            p = Proc(i, seed, cmd, pdir)
+            threading.Thread(target=reader, args=(p, events), daemon=True).start()
+            procs.append(p)
 
-    first = None
-    open_streams = len(procs)
-    next_tick = a.progress
-    while open_streams:
-        timeout = None
-        if a.progress > 0:
-            timeout = max(0.0, start + next_tick - time.monotonic())
-        try:
-            p, line, wall = events.get(timeout=timeout)
-        except queue.Empty:
-            p = None
-        if p is not None and line is None:
-            open_streams -= 1
-        elif p is not None:
-            key, _, rest = line.partition(": ")
-            if key == "fuzz.progress":
-                p.progress = fields(rest)
-            elif key == "fuzz.trials":
-                p.trials = fields(rest)
-                p.trials["trials"] = rest.split()[0]
-            elif key == "fuzz.coverage":
-                p.coverage = fields(rest)
-            elif key in ("fuzz.failure", "fuzz.memory-safety"):
-                p.failed = True
-                if first is None:
-                    f = fields(rest)
-                    first = (p, key.split(".")[1], f, wall - start)
-                    if not a.wait_all:
-                        for q in procs:
-                            if q is not p and q.popen.poll() is None:
-                                q.stopped = True
-                                q.popen.terminate()
-        if a.progress > 0 and time.monotonic() >= start + next_tick:
-            emit(merged(procs, time.monotonic() - start))
-            while next_tick <= time.monotonic() - start:
-                next_tick += a.progress
+        first = None
+        open_streams = len(procs)
+        next_tick = a.progress
+        while open_streams:
+            timeout = None
+            if a.progress > 0:
+                timeout = max(0.0, start + next_tick - time.monotonic())
+            try:
+                p, line, wall = events.get(timeout=timeout)
+            except queue.Empty:
+                p = None
+            if p is not None and line is None:
+                open_streams -= 1
+            elif p is not None:
+                key, _, rest = line.partition(": ")
+                if key == "fuzz.progress":
+                    p.progress = fields(rest)
+                elif key == "fuzz.trials":
+                    p.trials = fields(rest)
+                    p.trials["trials"] = rest.split()[0]
+                elif key == "fuzz.coverage":
+                    p.coverage = fields(rest)
+                elif key in ("fuzz.failure", "fuzz.memory-safety"):
+                    p.failed = True
+                    if first is None:
+                        f = fields(rest)
+                        first = (p, key.split(".")[1], f, wall - start)
+                        if not a.wait_all:
+                            for q in procs:
+                                if q is not p and q.popen.poll() is None:
+                                    q.stopped = True
+                                    q.popen.terminate()
+            if a.progress > 0 and time.monotonic() >= start + next_tick:
+                emit(merged(procs, time.monotonic() - start))
+                while next_tick <= time.monotonic() - start:
+                    next_tick += a.progress
+    finally:
+        for p in procs:
+            if p.popen.poll() is None:
+                p.popen.terminate()
+        for p in procs:
+            if p.popen.poll() is None:
+                p.popen.wait()
 
     rc = 0
     for p in procs:
@@ -231,6 +242,7 @@ def main():
         if code == 4:
             rc = max(rc, 4)
         elif code != 0 and not p.stopped:
+            p.errored = True
             with open(os.path.join(p.dir, "stderr.txt")) as f:
                 msg = f.readline().strip()
             emit(f"fuzz-par.error: process={p.i} exit={code} stderr={msg}")
@@ -251,7 +263,15 @@ def main():
             src, d = "progress", p.progress
         else:
             src, d = "none", {}
-        end = "failure" if p.failed else "stopped" if p.stopped else "done"
+        end = (
+            "failure"
+            if p.failed
+            else "stopped"
+            if p.stopped
+            else "error"
+            if p.errored
+            else "done"
+        )
         emit(
             f"fuzz-par.process: {p.i} seed={p.seed} exit={p.code} end={end}"
             f" from={src}"

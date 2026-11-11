@@ -8,7 +8,8 @@
 // RUN: sea-run %s --program=diamonds --fuzz=2000 --seed=1 --fuzz-coverage-out=%t.cov | FileCheck %s --check-prefix=PATHS
 // RUN: FileCheck %s --check-prefix=COV < %t.cov
 // A loop: each trip count is another path (the trip count is the nondet
-// value, < 8 by the assume).
+// value, < 8 by the assume): the 9 paths are the 8 trip counts plus the run
+// the assume blocks in the entry.
 // RUN: sea-run %s --program=loop --fuzz=2000 --seed=1 | FileCheck %s --check-prefix=LOOP
 
 // LINE: steps: [[#K:]]

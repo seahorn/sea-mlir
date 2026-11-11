@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <optional>
 #include <random>
 #include <set>
 
@@ -421,8 +422,8 @@ public:
     return p;
   }
 
-  /// Writes FuzzOptions::coverageOut.
-  LogicalResult writeCoverage(std::string &error);
+  /// Writes the coverage file to the stream opened before the trials.
+  void writeCoverage(llvm::raw_fd_ostream &os);
 
   ServeCoverage coverage() const {
     ServeCoverage c;
@@ -834,6 +835,16 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
       error = "cannot create '" + options.outDir + "': " + ec.message();
       return failure();
     }
+  // open the coverage file now: a bad path fails before the trials, not after
+  std::error_code covEc;
+  std::optional<llvm::raw_fd_ostream> covOs;
+  if (!options.coverageOut.empty()) {
+    covOs.emplace(options.coverageOut, covEc, llvm::sys::fs::OF_Text);
+    if (covEc) {
+      error = "cannot write '" + options.coverageOut + "': " + covEc.message();
+      return failure();
+    }
+  }
   SEA_LOG(logFuzz, 1)
       .msg("start")
       .kv("program", ("@" + program.getSymName()).str())
@@ -891,8 +902,8 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
   }
   report.seconds = elapsed();
   report.paths = paths.size();
-  if (!options.coverageOut.empty() && failed(writeCoverage(error)))
-    return failure();
+  if (covOs)
+    writeCoverage(*covOs);
   report.blocksHit = blocks.size();
   report.edgesHit = edges.size();
   report.assumesPassed = assumes.size();
@@ -919,13 +930,7 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
   return report;
 }
 
-LogicalResult Fuzzer::writeCoverage(std::string &error) {
-  std::error_code ec;
-  llvm::raw_fd_ostream os(options.coverageOut, ec, llvm::sys::fs::OF_Text);
-  if (ec) {
-    error = "cannot write '" + options.coverageOut + "': " + ec.message();
-    return failure();
-  }
+void Fuzzer::writeCoverage(llvm::raw_fd_ostream &os) {
   // sorted ids, so equal coverage gives equal files
   std::vector<unsigned> bs;
   for (Block *b : blocks)
@@ -955,7 +960,6 @@ LogicalResult Fuzzer::writeCoverage(std::string &error) {
     os << "assume: " << a << "\n";
   for (uint64_t p : ps)
     os << "path: " << llvm::format_hex(p, 18) << "\n";
-  return success();
 }
 
 FailureOr<FuzzReport> fuzz(ProgramOp program,
