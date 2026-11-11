@@ -9,6 +9,21 @@
 // A fold that ends a block early (assume false) keeps the block's ids.
 // RUN: sea-opt --canonicalize %t/fold.mlir | FileCheck %s --check-prefix=FOLD
 // FOLD: sea.unreachable {sea.block_ids = ["1"]
+// An assert of constant false ends its block (sea.halt): the head keeps its
+// ids, the erased rest's (here the branch to ^b and ^b) are gone. An assert
+// of constant true is erased and the ids stay.
+// RUN: sea-opt --canonicalize %t/foldassert.mlir | FileCheck %s --check-prefix=FA
+// FA:     sea.assert
+// FA-NEXT: sea.halt {sea.block_ids = ["0"]}
+// FA-NOT: sea.block_ids
+// RUN: sea-opt --canonicalize %t/asserttrue.mlir | FileCheck %s --check-prefix=AT
+// AT:     sea.halt {sea.block_ids = ["0"]}
+// Reach target: the halts that become sea.unreachable keep their ids; the
+// head keeps its ids on the branch to the target's new block.
+// RUN: sea-opt --sea-reach-target="id=t.c:5:1" %t/target.mlir | FileCheck %s --check-prefix=RT
+// RT:     sea.br ^{{bb[0-9]+}} {sea.block_ids = ["1"]}
+// RT:     sea.unreachable {sea.block_ids = ["2"]}
+// RT-NOT: sea.halt {sea.block_ids = ["2"]}
 // Splits: the head keeps the ids, the tail is a piece `<last>.s<k>`, new
 // blocks get `<last>.<role><k>`.
 // RUN: sea-opt --sea-split-assert-failures %t/assert.mlir | FileCheck %s --check-prefix=SAF
@@ -71,6 +86,37 @@ sea.program @main {
   sea.br ^b {sea.block_ids = ["1"]}
 ^b:
   sea.assert %f
+  sea.halt {sea.block_ids = ["2"]}
+}
+
+//--- foldassert.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8
+  %f = sea.const false
+  sea.assert %f
+  %c = sea.icmp ult, %x, %x : i8
+  sea.assume %c
+  sea.br ^b {sea.block_ids = ["0"]}
+^b:
+  sea.halt {sea.block_ids = ["1"]}
+}
+
+//--- asserttrue.mlir
+sea.program @main {
+  %t = sea.const true
+  sea.assert %t
+  sea.halt {sea.block_ids = ["0"]}
+}
+
+//--- target.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("t.c":2:1)
+  %c = sea.icmp ult, %x, %x : i8 loc("t.c":2:2)
+  sea.cond_br %c, ^a, ^b {sea.block_ids = ["0"]} loc("t.c":2:3)
+^a:
+  sea.assume %c loc("t.c":5:1)
+  sea.halt {sea.block_ids = ["1"]}
+^b:
   sea.halt {sea.block_ids = ["2"]}
 }
 
