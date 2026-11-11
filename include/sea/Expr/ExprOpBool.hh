@@ -12,7 +12,7 @@
 
 namespace expr {
 namespace op {
-enum class BoolOpKind { TRUE, FALSE, AND, OR, XOR, NEG, IMPL, ITE, IFF };
+enum class BoolOpKind { TRUE, FALSE, AND, OR, XOR, NEG, IMPL, ITE, IFF, CASES };
 
 namespace typeCheck {
 namespace boolType {
@@ -61,6 +61,28 @@ struct ITE : public TypeCheckBase {
   }
 };
 
+/// cases(c0, v0, ..., ck, vk, vdefault) (experimental, see op::cases): odd
+/// arity >= 3, every ci Boolean, every value of one sort, the sort of the
+/// term.
+struct Cases : public TypeCheckBase {
+  inline Expr inferType(Expr exp, TypeChecker &tc) override {
+    const size_t n = exp->arity();
+    if (n < 3 || n % 2 == 0)
+      return tc.fail(exp, "cases: arity " + std::to_string(n) +
+                              ", expected an odd arity >= 3");
+    Expr sort = tc.typeOf(exp->last());
+    for (size_t i = 0; i + 1 < n; i += 2) {
+      if (!isOp<BOOL_TY>(tc.typeOf(exp->arg(i))))
+        return tc.fail(exp, "cases: condition " + std::to_string(i / 2) +
+                                " is not Boolean");
+      if (tc.typeOf(exp->arg(i + 1)) != sort)
+        return tc.fail(exp, "cases: value " + std::to_string(i / 2) +
+                                " has a sort other than the default's");
+    }
+    return sort;
+  }
+};
+
 struct TrueFalse : public TypeCheckBase {
   inline Expr inferType(Expr exp, TypeChecker &tc) override {
     return sort::boolTy(exp->efac());
@@ -83,6 +105,9 @@ NOP(NEG, "!", PREFIX, BoolOp, typeCheck::boolType::Unary)
 NOP(IMPL, "->", INFIX, BoolOp, typeCheck::boolType::Binary)
 NOP(ITE, "ite", FUNCTIONAL, BoolOp, typeCheck::boolType::ITE)
 NOP(IFF, "<->", INFIX, BoolOp, typeCheck::boolType::Binary)
+// experimental: built only under sea-vc --vc-join-cases and expanded at once
+// (op::cases::expand); no rewriter, solver or evaluator knows it
+NOP(CASES, "cases", FUNCTIONAL, BoolOp, typeCheck::boolType::Cases)
 
 /// Boolean construction helpers: the supported way to build Boolean terms.
 ///
@@ -261,5 +286,49 @@ Expr nnf(Expr exp);
 Expr pp(Expr exp);
 
 } // namespace boolop
+
+/// cases(c0, v0, ..., ck, vk, vdefault): the first vi whose ci holds, else
+/// vdefault; the value of ite(c0, v0, ite(c1, v1, ... vdefault)).
+/// Experimental (sea-vc --vc-join-cases): VCGen builds its ite joins as cases
+/// and expands each one at once, so no other code sees the operator.
+namespace cases {
+/// Builds cases over `args` = c0, v0, ..., ck, vk, vdefault, flat, the
+/// default last, exactly as given (no folds). Checks, with `tc`: an odd
+/// arity >= 3 (at least one pair), every argument non-null, every ci
+/// Boolean, every value of the default's sort. On a failed check returns
+/// null and sets `why`.
+inline Expr make(const ExprVector &args, TypeChecker &tc, std::string &why) {
+  const size_t n = args.size();
+  if (n < 3 || n % 2 == 0) {
+    why = "cases: " + std::to_string(n) +
+          " arguments, expected an odd number >= 3";
+    return Expr();
+  }
+  for (size_t i = 0; i < n; ++i)
+    if (!args[i]) {
+      why = "cases: argument " + std::to_string(i) + " is null";
+      return Expr();
+    }
+  Expr e = mknary<CASES>(args.begin(), args.end());
+  TypeChecker::Result r = tc.check(e);
+  if (!r) {
+    why = r.why.empty() ? std::string("cases: ill-sorted") : r.why;
+    return Expr();
+  }
+  return e;
+}
+
+/// The ite chain of a cases term, built from the default outward with
+/// boolop::lite: lite(c0, v0, lite(c1, v1, ... lite(ck, vk, vdefault))).
+/// Equal to the chain VCGen builds for a join with the same edges and values
+/// (VCGen.cpp, computePathCondForBb).
+inline Expr expand(Expr e) {
+  assert(isOpX<CASES>(e) && e->arity() >= 3 && e->arity() % 2 == 1);
+  Expr val = e->last();
+  for (size_t j = e->arity() - 1; j >= 2; j -= 2)
+    val = boolop::lite(e->arg(j - 2), e->arg(j - 1), val);
+  return val;
+}
+} // namespace cases
 } // namespace op
 } // namespace expr

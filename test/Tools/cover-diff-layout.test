@@ -1,0 +1,117 @@
+// utils/cover-diff.py: both sides on one placement. The writer side lowers
+// with sea-vc --place-out, the other with --place-in of its file; if the
+// other has an object the writer does not, the reverse, once; if that
+// fails too, the job is unknown (reason=layout), never a pass.
+// RUN: rm -rf %t && split-file %s %t
+// DEFINE: %{cd} = %python %sea_src_root/utils/cover-diff.py --sea-vc %sea_vc --z3 %z3 --par 1 --level=1 --args="--lower --seam"
+
+// A keeps an object B's canonicalize erases (a dead pointer comparison):
+// on one placement, A's query defines obj.nondet.<k> as its address and B
+// has no such symbol; query-diff substitutes it (subst=), so the pair is
+// equivalent.
+// RUN: %{cd} --a=--lower-opt=false --b= %t/dead.mlir | FileCheck %s --check-prefix=DEAD
+// DEAD: layout: dead writer=a
+// DEAD: level1: dead 0/assume equiv-sat subst=2
+// DEAD: job: dead pass
+// DEAD: status: pass
+
+// B has an object A does not: B cannot take A's placement, A takes B's.
+// RUN: %{cd} %t/few.mlir --b-input=%t/more.mlir | FileCheck %s --check-prefix=REV
+// REV: layout: few writer=b reversed b-in=place.in-unplaced
+// REV: job: few pass
+// REV: status: pass
+
+// Each side has an object the other does not: no shared placement.
+// RUN: not %{cd} %t/few.mlir --b-input=%t/other.mlir | FileCheck %s --check-prefix=NONE
+// NONE: layout: few unknown reason=layout a-in=place.in-unplaced b-in=place.in-unplaced
+// NONE: job: few unknown {{.*}}reason=layout
+// NONE: status: unknown
+
+// A program input that only A constrains (assume x == 5) is not an object
+// address: it stays free, so the job is a DIFF, not a pass.
+// RUN: not %{cd} %t/assume.mlir --b-input=%t/noassume.mlir | FileCheck %s --check-prefix=INPUT
+// INPUT: job: assume DIFF
+// INPUT: status: DIFF
+// REQUIRES: z3
+
+//--- dead.mlir
+sea.program @main {
+  %p = sea.ptr.nondet "p" [0] : !sea.ptr<64>
+  %q = sea.ptr.nondet "q" [1] : !sea.ptr<64>
+  %e = sea.ptr.cmp eq, %p, %q : !sea.ptr<64>
+  %x = sea.nondet "x" [2] : i8
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8
+  sea.assume %big
+  %f = sea.const 0 : i1
+  sea.assert %f
+  sea.halt
+}
+
+//--- few.mlir
+sea.program @main {
+  %n = sea.const 8 : i64
+  %a = sea.alloca %n align 8 [1] : i64 -> !sea.ptr<64>
+  %z = sea.ptr.null : !sea.ptr<64>
+  %x = sea.nondet "x" [2] : i8
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8
+  sea.assume %big {sea.reach_site = 0 : i64}
+  %ne = sea.ptr.cmp ne, %a, %z : !sea.ptr<64>
+  sea.assert %ne {sea.reach_site = 1 : i64}
+  sea.halt
+}
+
+//--- more.mlir
+sea.program @main {
+  %n = sea.const 8 : i64
+  %a = sea.alloca %n align 8 [1] : i64 -> !sea.ptr<64>
+  %h = sea.malloc %n align 8 [3] : i64 -> !sea.ptr<64>
+  %z = sea.ptr.null : !sea.ptr<64>
+  %x = sea.nondet "x" [2] : i8
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8
+  sea.assume %big {sea.reach_site = 0 : i64}
+  %nh = sea.ptr.cmp ne, %h, %z : !sea.ptr<64>
+  sea.assume %nh
+  %ne = sea.ptr.cmp ne, %a, %z : !sea.ptr<64>
+  sea.assert %ne {sea.reach_site = 1 : i64}
+  sea.halt
+}
+
+//--- other.mlir
+sea.program @main {
+  %n = sea.const 8 : i64
+  %h = sea.malloc %n align 8 [3] : i64 -> !sea.ptr<64>
+  %z = sea.ptr.null : !sea.ptr<64>
+  %x = sea.nondet "x" [2] : i8
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8
+  sea.assume %big {sea.reach_site = 0 : i64}
+  %ne = sea.ptr.cmp ne, %h, %z : !sea.ptr<64>
+  sea.assert %ne {sea.reach_site = 1 : i64}
+  sea.halt
+}
+
+//--- assume.mlir
+sea.program @main {
+  %x = sea.nondet "x" [2] : i8
+  %c5 = sea.const 5 : i8
+  %e = sea.icmp eq, %x, %c5 : i8
+  sea.assume %e {sea.reach_site = 0 : i64}
+  %f = sea.const 0 : i1
+  sea.assert %f {sea.reach_site = 1 : i64}
+  sea.halt
+}
+
+//--- noassume.mlir
+sea.program @main {
+  %t = sea.const 1 : i1
+  sea.assume %t {sea.reach_site = 0 : i64}
+  %f = sea.const 0 : i1
+  sea.assert %f {sea.reach_site = 1 : i64}
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -291,6 +291,71 @@ void testTcDeep() {
     llvm::outs() << "test: tc-deep ok\n";
 }
 
+/// cases (experimental, sea-vc --vc-join-cases): the constructor's checks
+/// (arity, null, Boolean conditions, one sort), the sort, and the expansion
+/// to the lite chain.
+void testCases() {
+  int before = failures;
+  Env E;
+  TypeChecker tc;
+  Expr c0 = E.b("c0"), c1 = E.b("c1"), c2 = E.b("c2");
+  Expr x = bvc(E, "x", 8), y = bvc(E, "y", 8), z = bvc(E, "z", 8),
+       w = bvc(E, "w", 16);
+  std::string why;
+  auto refused = [&](const ExprVector &args, const std::string &part) {
+    why.clear();
+    Expr e = cases::make(args, tc, why);
+    return !e && why.find(part) != std::string::npos;
+  };
+  // arity: odd, at least one pair
+  CHECK(refused({}, "0 arguments"), "no arguments");
+  CHECK(refused({x}, "1 arguments"), "default only");
+  CHECK(refused({c0, x}, "2 arguments"), "pair without default");
+  CHECK(refused({c0, x, c1, y}, "4 arguments"), "even arity");
+  CHECK(refused({c0, Expr(), y}, "argument 1 is null"), "null value");
+  // conditions Boolean, values of one sort
+  CHECK(refused({x, y, z}, "condition 0 is not Boolean"), "bv condition");
+  CHECK(refused({c0, x, y, z, x}, "condition 1 is not Boolean"),
+        "second condition");
+  CHECK(refused({c0, w, x}, "value 0 has a sort other"), "value sort");
+  CHECK(refused({c0, x, c1, w, y}, "value 1 has a sort other"),
+        "second value sort");
+  CHECK(refused({c0, x, w}, "value 0 has a sort other"), "default sort");
+  // an ill-sorted value: the culprit's reason
+  CHECK(refused({c0, mk<BADD>(x, w), y}, ""), "ill-sorted value");
+
+  // well-formed: flat, as given, the values' sort
+  Expr one = cases::make({c0, x, y}, tc, why);
+  CHECK(one && isOpX<CASES>(one) && one->arity() == 3, "one pair");
+  CHECK(one && tc.typeOf(one) == bvs(E, 8), "sort of cases");
+  Expr three = cases::make({c0, x, c1, y, c2, z, x}, tc, why);
+  CHECK(three && three->arity() == 7, "three pairs");
+  // the same values are kept (no folds at construction)
+  Expr same = cases::make({c0, x, x}, tc, why);
+  CHECK(same && isOpX<CASES>(same), "no fold at construction");
+  Expr boolVals = cases::make({c0, c1, c2}, tc, why);
+  CHECK(boolVals && tc.typeOf(boolVals) == sort::boolTy(E.efac),
+        "Boolean values");
+
+  // expansion: the lite chain from the default outward
+  CHECK(one && cases::expand(one) == mk<ITE>(c0, x, y), "expand one pair");
+  CHECK(three && cases::expand(three) ==
+                     mk<ITE>(c0, x, mk<ITE>(c1, y, mk<ITE>(c2, z, x))),
+        "expand three pairs");
+  CHECK(same && cases::expand(same) == x, "expand folds ite(c, v, v)");
+  Expr tail = cases::make({c0, y, c1, x, c2, x, x}, tc, why);
+  CHECK(tail && cases::expand(tail) == mk<ITE>(c0, y, x),
+        "expand folds the run equal to the default");
+  Expr inner = cases::make({c0, x, c1, x, y}, tc, why);
+  CHECK(inner && cases::expand(inner) == mk<ITE>(c0, x, mk<ITE>(c1, x, y)),
+        "expand keeps adjacent equal values before the default");
+  Expr lit = cases::make({c0, x, E.t, y, z}, tc, why);
+  CHECK(lit && cases::expand(lit) == mk<ITE>(c0, x, y),
+        "expand folds a true condition");
+  if (failures == before)
+    llvm::outs() << "test: cases ok\n";
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -299,6 +364,7 @@ int main(int argc, char **argv) {
   testTcFunctions();
   testTcWidthsAndErrors();
   testTcDeep();
+  testCases();
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

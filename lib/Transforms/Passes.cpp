@@ -246,7 +246,8 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
                              unsigned widenMemory, bool expandMemSet,
                              bool widenReport, bool keepByteWide,
                              bool checkAlign, unsigned checkPtrIndex, bool opt,
-                             bool memhavocNullNoop, unsigned disable) {
+                             bool memhavocNullNoop, unsigned disable,
+                             const PlaceFiles &place) {
   const bool cse = opt && !(disable & LowerDisableCse);
   const bool canonicalize = opt && !(disable & LowerDisableCanonicalize);
   OpPassManager &prog = pm.nest<ProgramOp>();
@@ -265,7 +266,10 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
       prog.addPass(createGuardNullMemHavocPass());
     prog.addPass(createLowerTrackingPass());
     prog.addPass(createLowerFatPointersPass());
-    prog.addPass(createPlaceStaticPass());
+    prog.addPass(createPlaceStaticPass(place));
+  } else if (!place.in.empty() || !place.out.empty()) {
+    // nothing to place; the file is still read (checked) or written (empty)
+    prog.addPass(createPlaceStaticPass(place));
   }
   // the A-ALIGN discharge job: every `align` promise asserted while the
   // promises are all still there (widening relies on them, splitting drops

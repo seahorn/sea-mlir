@@ -223,10 +223,12 @@ using Entry = std::map<Key, APInt>;
 /// value per trial.
 class FuzzSource : public NondetSource {
 public:
-  /// `fresh` returns none when a key without a value stops the run (serve
-  /// mode, Missing::Error).
-  explicit FuzzSource(std::function<std::optional<APInt>(unsigned)> fresh)
-      : fresh(std::move(fresh)) {}
+  /// `fresh` makes the value of a key the trial has none for, at a width,
+  /// given the trial's values so far. It returns none when a key without a
+  /// value stops the run (serve mode, Missing::Error).
+  using Fresh =
+      std::function<std::optional<APInt>(const Key &, unsigned, const Entry &)>;
+  explicit FuzzSource(Fresh fresh) : fresh(std::move(fresh)) {}
 
   /// The origin of a read value (NondetRead / CellRead): from the preset or
   /// the text, and fresh.
@@ -301,7 +303,7 @@ private:
       }
       v = *p;
     } else {
-      std::optional<APInt> f = fresh(width);
+      std::optional<APInt> f = fresh(key, width, values);
       if (!f) {
         error =
             "no input for " + (key.second.empty()
@@ -318,7 +320,7 @@ private:
     return v;
   }
 
-  std::function<std::optional<APInt>(unsigned)> fresh;
+  Fresh fresh;
   Entry values;
   const std::map<Key, std::string> *text = nullptr;
 
@@ -332,15 +334,28 @@ class Fuzzer {
 public:
   Fuzzer(ProgramOp program, const FuzzOptions &options)
       : program(program), options(options), rng(options.seed),
-        source([this](unsigned w) { return std::optional(freshValue(w)); }) {
+        source([this](const Key &k, unsigned w, const Entry &values) {
+          return std::optional(freshValue(k, w, values));
+        }) {
     unsigned order = 0;
     program.walk([&](Operation *op) {
       opOrder[op] = order++;
-      if (isa<AssumeOp>(op))
+      if (isa<AssumeOp>(op)) {
         ++report.assumesTotal;
+        if (isAssumeBeforeAssertFalse(op)) {
+          beforeAssertFalse.insert(op);
+          ++report.assumesBeforeAssertFalse;
+        }
+      }
       if (auto c = dyn_cast<ConstOp>(op))
         addDictionary(c);
     });
+    for (const InputSite &s : inputSitesOf(program))
+      report.valueSites += !s.memory;
+    std::vector<InputRange> rs = inputRangesOf(program, report.ranges);
+    if (options.ranges)
+      for (InputRange &r : rs)
+        ranges.emplace(r.site, std::move(r));
     for (Block &b : program.getBody())
       (void)b, ++report.blocksTotal;
     report.dictionarySize = dict.size();
@@ -442,18 +457,95 @@ private:
 
   bool useDict() { return options.dictionary && !dict.empty(); }
 
-  /// A value for a site the entry does not set: random or dictionary.
-  APInt freshValue(unsigned w) {
-    if (useDict() && (rng() & 1))
+  /// True with probability p.
+  bool chance(double p) { return double(rng() >> 11) * 0x1.0p-53 < p; }
+
+  /// The range of a value site, if it has one at width `w`.
+  const InputRange *rangeOf(const Key &k, unsigned w) const {
+    if (!trialRanges || !k.second.empty())
+      return nullptr;
+    auto it = ranges.find(k.first);
+    return it != ranges.end() && it->second.width == w ? &it->second : nullptr;
+  }
+
+  /// A value of range `r` (as the native runner draws: lo, hi, lo + [0,64),
+  /// hi - [0,64) with 1/6 each, uniform with 2/6). A bound is evaluated on
+  /// the trial's `values`; one that names a site without a value yet (read
+  /// later) is not used.
+  APInt rangeValue(const InputRange &r, const Entry &values) {
+    uint64_t mask = r.width == 64 ? ~uint64_t(0) : (uint64_t(1) << r.width) - 1;
+    uint64_t span = r.spanConst.value_or(mask);
+    for (const InputRange::Sum &b : r.bounds) {
+      uint64_t v = b.constant;
+      bool known = true;
+      for (uint64_t t : b.sites) {
+        auto it = values.find({t, ""});
+        if (it == values.end() || it->second.getBitWidth() != r.width) {
+          known = false;
+          break;
+        }
+        v += it->second.getZExtValue();
+      }
+      if (known)
+        span = std::min(span, v & mask);
+    }
+    // the number of values, 0 for 2^64
+    uint64_t n = span + 1;
+    uint64_t near = n == 0 || n > 64 ? 64 : n;
+    uint64_t x;
+    switch (rng() % 6) {
+    case 0:
+      x = 0;
+      break;
+    case 1:
+      x = span;
+      break;
+    case 2:
+      x = rng() % near;
+      break;
+    case 3:
+      x = span - rng() % near;
+      break;
+    default:
+      x = n == 0 ? rng() : rng() % n;
+    }
+    ++report.rangeDraws;
+    return APInt(r.width, (r.lo + x) & mask);
+  }
+
+  /// A fresh random value of key `k`: from its range, if it has one.
+  APInt randomValue(const Key &k, unsigned w, const Entry &values) {
+    if (const InputRange *r = rangeOf(k, w))
+      return rangeValue(*r, values);
+    return randomValue(w);
+  }
+
+  /// A value for a key the entry does not set: from its range, if it has
+  /// one, else random or dictionary.
+  APInt freshValue(const Key &k, unsigned w, const Entry &values) {
+    if (const InputRange *r = rangeOf(k, w))
+      return rangeValue(*r, values);
+    if (useDict() &&
+        (options.dictShare ? chance(*options.dictShare) : bool(rng() & 1)))
       return dictValue(w);
     return randomValue(w);
   }
 
-  APInt mutate(const APInt &v) {
+  /// A mutation of the value `v` of key `k` in entry `e`.
+  APInt mutate(const Key &k, const APInt &v, const Entry &e) {
     unsigned w = v.getBitWidth();
-    switch (rng() % 5) {
+    unsigned kind;
+    if (options.dictShare) {
+      // dictionary with the given probability, else the other four kinds
+      if (useDict() && chance(*options.dictShare))
+        return dictValue(w);
+      kind = rng() % 4;
+    } else {
+      kind = rng() % 5;
+    }
+    switch (kind) {
     case 0:
-      return randomValue(w);
+      return randomValue(k, w, e);
     case 1: {
       APInt r = v;
       r.flipBit(rng() % w);
@@ -475,11 +567,26 @@ private:
         return APInt::getSignedMaxValue(w);
       }
     default:
-      return useDict() ? dictValue(w) : randomValue(w);
+      return useDict() ? dictValue(w) : randomValue(k, w, e);
     }
   }
 
   /// The next trial's preset: a corpus entry (or the empty one) with 1, 2,
+  /// Picks the generation strategy of the next trial: range draws or the
+  /// generator without ranges (FuzzOptions::rangeShare). Draws from the
+  /// random stream only when both are possible.
+  void pickStrategy() {
+    if (ranges.empty())
+      trialRanges = false;
+    else if (options.rangeShare >= 1)
+      trialRanges = true;
+    else if (options.rangeShare <= 0)
+      trialRanges = false;
+    else
+      trialRanges = chance(options.rangeShare);
+    report.rangeTrials += trialRanges;
+  }
+
   /// 4 or 8 mutations.
   Entry nextEntry() {
     uint64_t pick = rng() % (corpus.size() + 1);
@@ -492,7 +599,7 @@ private:
     for (unsigned i = 0; i < n; ++i) {
       auto it = e.begin();
       std::advance(it, rng() % e.size());
-      it->second = mutate(it->second);
+      it->second = mutate(it->first, it->second, e);
     }
     return e;
   }
@@ -546,6 +653,12 @@ private:
   RunOptions runOptions;
   std::vector<APInt> dict;
   std::set<std::pair<unsigned, uint64_t>> dictSeen;
+  /// FuzzOptions::ranges: the value sites' ranges, by site
+  std::map<uint64_t, InputRange> ranges;
+  /// whether the current trial draws from `ranges` (pickStrategy)
+  bool trialRanges = false;
+  /// the assumes directly followed by assert false
+  llvm::DenseSet<Operation *> beforeAssertFalse;
   llvm::DenseMap<Operation *, unsigned> opOrder;
   std::vector<Entry> corpus;
   llvm::DenseSet<Block *> blocks;
@@ -589,8 +702,13 @@ LogicalResult Fuzzer::trial(Entry preset,
   report.memhavocNullNoopRuns += r.memhavocNullNoopUses != 0;
   if (r.deferredCount)
     ++report.deferredStatusCount[static_cast<unsigned>(r.status)];
-  if (r.status == RunStatus::AssumeBlocked && r.at)
+  if (r.status == RunStatus::AssumeBlocked && r.at) {
     ++blockedBy[r.at];
+    if (beforeAssertFalse.contains(r.at)) {
+      ++report.blockedBeforeAssertFalse;
+      report.blockedBeforeAssertFalseDeferred += r.deferredCount != 0;
+    }
+  }
   bool failing =
       r.status == RunStatus::AssertFailed || r.status == RunStatus::MemoryError;
   bool erring = r.status == RunStatus::Error;
@@ -702,15 +820,18 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
     std::map<Key, std::string> text;
     for (const Assignment &a : s.assignments)
       text[{a.site, a.cell}] = a.value;
+    pickStrategy();
     if (failed(trial({}, &text, s.name, stop, error))) {
       error = s.name + ": " + error;
       return failure();
     }
     ++report.seedTrials;
   }
-  while (!stop && budgetLeft())
+  while (!stop && budgetLeft()) {
+    pickStrategy();
     if (failed(trial(nextEntry(), nullptr, "", stop, error)))
       return failure();
+  }
   report.seconds = elapsed();
   report.blocksHit = blocks.size();
   report.edgesHit = edges.size();
@@ -753,7 +874,9 @@ class FuzzServerImpl {
 public:
   FuzzServerImpl(ProgramOp program, const FuzzOptions &options)
       : options(options), fuzzer(program, this->options), rng(options.seed),
-        source([this](unsigned w) { return freshValue(w); }) {
+        source([this](const Key &, unsigned w, const Entry &) {
+          return freshValue(w);
+        }) {
     source.givenOrigin = "input";
     unsigned i = 0;
     for (Block &b : program.getBody())

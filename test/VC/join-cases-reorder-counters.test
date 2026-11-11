@@ -1,0 +1,40 @@
+// The rearrangements of sea-vc --vc-cases-reorder / --vc-cases-drop-default
+// (include/sea/VC/JoinCases.h) on cases terms (sea-join-cases-test reorder):
+// first every equality pattern of the values of joins over 1..6 pairs and a
+// default, each with merge, drop-default and both, is checked against the
+// first-match value over every assignment of the conditions (a failure is a
+// FAIL line and a nonzero count); then fixed joins, each checked for its ite
+// chain, and their counters:
+// merge:
+//   scalar    [x, y, x, y]     pair 2 merged into pair 0, skipping pair 1
+//   memory    [x, x, y]        adjacent pairs merged, no negation
+//   companion [y, x, x, x]     a run of the default only: unchanged
+//   scalar    [x, y]           distinct: unchanged
+// merge and drop-default:
+//   scalar    [x, y, x]        pair 0 equals the default: dropped, !e0 into
+//                              pair 1
+//   memory    [x, y, y, x, z]  an adjacent merge, then pair 3 merged into pair
+//                              0 skipping the merged pair 1
+//   companion [x, x]           all equal: the default
+RUN: sea-join-cases-test reorder | FileCheck %s
+CHECK: reorder.exhaustive: 3462
+CHECK: reorder: merge
+CHECK: cases.reorder-joins: 2 scalar=1 memory=1 companion=0
+CHECK-NEXT: cases.reorder-merged-pairs: 2 scalar=1 memory=1 companion=0
+CHECK-NEXT: cases.reorder-merged-adjacent: 1 scalar=0 memory=1 companion=0
+CHECK-NEXT: cases.reorder-merge-negations: 1 scalar=1 memory=0 companion=0
+CHECK-NEXT: cases.reorder-dropped-default: 0 scalar=0 memory=0 companion=0
+CHECK-NEXT: cases.reorder-drop-negations: 0 scalar=0 memory=0 companion=0
+CHECK-NEXT: cases.reorder-pairs: 5 scalar=3 memory=1 companion=1
+CHECK: reorder: merge drop-default
+CHECK: cases.reorder-joins: 2 scalar=1 memory=1 companion=0
+CHECK-NEXT: cases.reorder-merged-pairs: 2 scalar=0 memory=2 companion=0
+CHECK-NEXT: cases.reorder-merged-adjacent: 1 scalar=0 memory=1 companion=0
+CHECK-NEXT: cases.reorder-merge-negations: 1 scalar=0 memory=1 companion=0
+CHECK-NEXT: cases.reorder-dropped-default: 1 scalar=1 memory=0 companion=0
+CHECK-NEXT: cases.reorder-drop-negations: 1 scalar=1 memory=0 companion=0
+CHECK-NEXT: cases.reorder-pairs: 3 scalar=1 memory=2 companion=0
+CHECK-NEXT: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

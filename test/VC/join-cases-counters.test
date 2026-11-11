@@ -1,0 +1,33 @@
+// The counters of sea-vc --vc-join-cases (include/sea/VC/JoinCases.h,
+// experimental) on fixed joins, one line per counter, totals then per kind;
+// each join is also checked to be the ite join (sea-join-cases-test). The
+// joins (values; the last is the default):
+//   scalar    [x, y]           distinct
+//   scalar    [x, x]           all equal: one adjacent pair, folded by ite
+//   scalar    [x, y, x]        one copy, not adjacent: needs a reordering
+//   memory    [x, x, y]        one adjacent pair before the default: a
+//                              sequential merge folds it, ite does not;
+//                              the default is not the most frequent value
+//   companion [y, x, x, x]     a run of the default: ite folds both pairs
+//   scalar    [x, y]           with a literal true edge
+// A join over one edge and two refused joins are not counted.
+RUN: sea-join-cases-test | FileCheck %s
+CHECK: cases.joins: 6 scalar=4 memory=1 companion=1
+CHECK-NEXT: cases.arity.2: 3 scalar=3 memory=0 companion=0
+CHECK-NEXT: cases.arity.3: 2 scalar=1 memory=1 companion=0
+CHECK-NEXT: cases.arity.4: 1 scalar=0 memory=0 companion=1
+CHECK-NEXT: cases.values: 16 scalar=9 memory=3 companion=4
+CHECK-NEXT: cases.distinct-values: 11 scalar=7 memory=2 companion=2
+CHECK-NEXT: cases.with-dup: 4 scalar=2 memory=1 companion=1
+CHECK-NEXT: cases.redundant-values: 5 scalar=2 memory=1 companion=2
+CHECK-NEXT: cases.all-equal: 1 scalar=1 memory=0 companion=0
+CHECK-NEXT: cases.adjacent-equal-pairs: 4 scalar=1 memory=1 companion=2
+CHECK-NEXT: cases.ite-folded-pairs: 3 scalar=1 memory=0 companion=2
+CHECK-NEXT: cases.last-equal-default: 2 scalar=1 memory=0 companion=1
+CHECK-NEXT: cases.nonadjacent-redundant: 1 scalar=1 memory=0 companion=0
+CHECK-NEXT: cases.with-nonadjacent: 1 scalar=1 memory=0 companion=0
+CHECK-NEXT: cases.default-not-most-frequent: 1 scalar=0 memory=1 companion=0
+CHECK-NEXT: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

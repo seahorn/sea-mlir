@@ -28,6 +28,8 @@ The input is a module with a `sea.program` in BMC form, or a program that
 |---|---|
 | `--lower` | run the lowering first (the passes of `sea-opt --sea-vc-lower`): constant folding, struct scalarization, placement of abstract objects, memory widening, intrinsics, splitting critical edges |
 | `--lower-opt=false` | with `--lower`: no cse and no canonicalize (every op stays) |
+| `--place-out=<file>` | with `--lower`: write the placement of the program's objects to a file, one object per line ([Placement files](output-formats.md#placement-files)) |
+| `--place-in=<file>` | with `--lower`: place the objects at the bases a `--place-out` file gives, checked as placement does; an object the file does not name is an error (`place.in-unplaced`). Two lowerings that share a file put their common objects at the same addresses |
 | `--lower-disable=<pass>,...` | with `--lower`: leave these optimization passes out of the lowering: `sccp`, `cse`, `canonicalize`. The lowering without one against the lowering with it validates the pass (`utils/cover-diff.py`, [Pass validation](../agents/gates.md#pass-validation)). `sea-drop-fresh-memhavoc` is refused: it is a semantics decision (a memhavoc of a fresh object is no tracked modification; without it, one after `sea_tracking_on` is) |
 | `--seam` | the SeaM memory rewriter ([Background: SeaM](seam.md)) |
 | `--seam-inb=0` | SeaM without the in-bounds assumption |
@@ -38,6 +40,9 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--mem=array|lambda` | the memory encoding; `lambda` is SeaHorn's lambda encoding, z3 only |
 | `--config=<name|file>` | read options from a profile ([Profiles](profiles.md)) |
 | `--sink-assumes` | experimental: replace the program's assumes by one assume of their conjunction on the path, before the assertion (exact in BMC form); a solver tradeoff, off by default |
+| `--vc-join-cases` | experimental prototype, off by default: build each ite join (block arguments, values and memories, and the pointer companions of `--ptr-companion`) as a `cases` term, expanded at once to the same ite chain: the query does not change. Prints `cases.<counter>: <total> scalar=<n> memory=<n> companion=<n>` lines (stderr with `--smt2`): the joins, their arity, the repeated values among the joined values, the ones adjacent (a sequential merge folds them; `ite-folded-pairs` are those the ite chain already folds) and the ones only a reordering could fold (`nonadjacent-redundant`). Needs `--vc-join=ite`. The join order is the predecessor use-list order, so the default (last) value is the edge from the branch created first |
+| `--vc-cases-reorder` | experimental, off by default, needs `--vc-join-cases`; changes the query: a pair of a join whose value is an earlier pair's value merges into that pair, with the condition `c_i | (c_j & !c_(i+1) & ... & !c_(j-1))` (moving a pair ahead conjoins the negations of the conditions it skips; first-match semantics, no exclusivity of the edges used). Adds the `cases.reorder-*` counters: `reorder-joins` (joins changed), `reorder-merged-pairs` (of which `reorder-merged-adjacent` skip no pair), `reorder-merge-negations`, `reorder-pairs` (pairs left) |
+| `--vc-cases-drop-default` | experimental, off by default, needs `--vc-join-cases`; changes the query: a pair of a join whose value is the default is dropped, and the negation of its condition is conjoined into the later pairs (`cases.reorder-dropped-default`, `cases.reorder-drop-negations`). Combines with `--vc-cases-reorder` |
 
 **Solving**
 
@@ -112,7 +117,9 @@ sea-run <file.mlir> [options]
 | `--print`, `--print-refs`, `--print-limit`, `--print-locs` | as for `sea-vc` |
 | `--input-file=<file>` | inputs from a corpus file ([Fuzzing](fuzzing.md)) |
 | `--fuzz=<n>`, `--fuzz-time=<s>` | fuzz: run trials on generated inputs ([Fuzzing](fuzzing.md)) |
-| `--fuzz-sites` | list the input sites and the assumes with their conditions, and exit ([For agents](fuzzing.md#for-agents)) |
+| `--fuzz-ranges=false`, `--fuzz-range-share=<p>` | with `--fuzz`: no range draws, or the probability `p` that a trial uses them (default on, `p` = 0.5: in a range trial a value site that an assume bounds gets values from its range, biased to the ends; the other trials use the generator without ranges) ([Ranges](fuzzing.md#ranges)) |
+| `--fuzz-dict=false`, `--fuzz-dict-share=<p>` | with `--fuzz`: no dictionary values, or the probability `p` that a fresh value and that a mutation is one (default: 1/2 of fresh values, 1/5 of mutations) ([Trials](fuzzing.md#trials)) |
+| `--fuzz-sites` | list the input sites, the assumes with their conditions and the ranges, and exit ([For agents](fuzzing.md#for-agents)) |
 | `--fuzz-serve` | run on inputs sent as JSON lines on stdin, one response per line ([Driving the fuzzer from Python](fuzzing.md#driving-the-fuzzer-from-python)) |
 | `--memhavoc-null=noop\|error` | `sea.memhavoc` of the null pointer: a no-op (default; an open semantics decision, counted as `assume.memhavoc-null-noop: uses=<n>` and warned) or a memory-safety error |
 | `--addr0-is-null=false` | turn off the named assumption that address 0 is the null pointer (default on): zero bytes loaded as a pointer, a null pointer's bytes loaded as an integer, and `ptr.to_int` of null then stop the run; on, each such step counts (`assume.addr0-is-null: uses=<n>`) ([Memory-Step2](../design/Memory-Step2.md)) |
@@ -153,7 +160,7 @@ nondet sites, cast widths, terminators.
 | `sea-opt p.mlir` | parse, verify, print |
 | `sea-opt p.mlir --sea-vc-lower` | the lowering that `sea-vc --lower` runs |
 | `sea-opt p.mlir --sccp` | fold constants |
-| `sea-opt p.mlir --sea-place-static` | place abstract objects at addresses |
+| `sea-opt p.mlir --sea-place-static` | place abstract objects at addresses (`--sea-place-static="place-out=<file>"` writes the placement, `place-in=<file>` takes it from a file) |
 | `sea-opt p.mlir --sea-reach-target="id=<id>"` | R_T of a reach target (an id of `sea-vc --reach`; `kind=blocks` for a block target): every assert dropped, an `assert(false)` at the top of the target, every other `sea.halt` a `sea.unreachable` |
 | `sea-opt p.mlir --mlir-print-debuginfo` | keep locations, and with them print names, between tools |
 | `sea-opt --help` | every pass and option |

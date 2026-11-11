@@ -78,6 +78,43 @@ mlir::LogicalResult readCorpus(llvm::StringRef path,
                                std::vector<CorpusEntryText> &out,
                                std::string &error);
 
+/// A range of a value site, read off the assumes that bound it: the site
+/// takes values lo + x (mod 2^width) with x in [0, span], where span is the
+/// least of `spanConst` and of each bound's value in the trial. Recognized
+/// (the condition operand of a sea.assume, through block arguments with
+/// one incoming value, as describeCondition walks):
+///   (ult sN K)          -> lo = 0, span = K - 1   (K > 0)
+///   (ult (add sN M) K)  -> lo = -M, span = K - 1  (K > 0)
+///   (ule sN E)          -> lo = 0, span = E, E a sum (add) of value sites
+///                          and constants, evaluated per trial on the
+///                          values read so far (not used if a site of E
+///                          has none yet)
+/// with sN a sea.nondet of at most 64 bits. Several such assumes of one
+/// site intersect when their lo agrees; one with another lo is not used.
+struct InputRange {
+  /// A sum c + s_1 + ... (mod 2^width) of constants and value sites.
+  struct Sum {
+    uint64_t constant = 0;
+    std::vector<uint64_t> sites;
+  };
+  uint64_t site = 0;
+  unsigned width = 0;
+  uint64_t lo = 0;
+  std::optional<uint64_t> spanConst;
+  std::vector<Sum> bounds;
+  /// The assumes it came from (ids of blockingOpsOf), ascending.
+  std::vector<unsigned> assumes;
+};
+
+/// inputRangesOf's counts. Skipped: assumes of a recognized form that no
+/// range uses: a lo that differs from the site's first one, `(ult .. 0)`
+/// (no value passes), or a range whose bounds form a cycle through sites.
+struct RangeStats {
+  unsigned sites = 0;   // sites with a range
+  unsigned assumes = 0; // assumes used by them
+  unsigned skipped = 0; // recognized but not used
+};
+
 struct FuzzOptions {
   /// Stop after this many trials (0: no bound), or after `seconds` of wall
   /// clock (0: no bound); at least one is set.
@@ -87,6 +124,25 @@ struct FuzzOptions {
   /// Use the dictionary (the program's comparison and arithmetic
   /// constants, +-1).
   bool dictionary = true;
+  /// The probability that a fresh value and that a mutation is a
+  /// dictionary value (sea-run --fuzz-dict-share). None: the original mix,
+  /// 1/2 of fresh values and 1/5 of mutations (and the same random stream).
+  std::optional<double> dictShare;
+  /// Range-relative edge draws (sea-run --fuzz-ranges): a value site that
+  /// an assume bounds (inputRangesOf) gets its fresh values, and its
+  /// "fresh random value" mutation, from its range, biased to the ends.
+  /// Off here (sea-vc --reach-fuzz: the generator without ranges); sea-run
+  /// --fuzz turns it on by default.
+  bool ranges = false;
+  /// With `ranges`: the probability that a trial uses range draws
+  /// (sea-run --fuzz-range-share); the other trials use the generator
+  /// without ranges. Each trial's choice is one draw of the seeded random
+  /// stream, made before the trial's input, only when 0 < rangeShare < 1
+  /// and the program has a range: 1 gives the trials of all-range draws,
+  /// 0 those of `ranges` off. sea-run's default is 1/2, not tuned: range
+  /// draws make rarer the values plain mutation reaches, which some bugs
+  /// need.
+  double rangeShare = 1;
   /// Count failures (assert failures, memory-safety findings) instead of
   /// stopping at the first.
   bool keepGoing = false;
@@ -150,7 +206,26 @@ struct FuzzReport {
   unsigned blocksHit = 0, blocksTotal = 0;
   unsigned edgesHit = 0;
   unsigned assumesPassed = 0, assumesTotal = 0;
-  uint64_t corpusSize = 0;   // entries in the corpus at the end
+  uint64_t corpusSize = 0; // entries in the corpus at the end
+  /// Range draws (FuzzOptions::ranges): value sites, sites with a range,
+  /// the assumes the ranges came from, recognized range assumes not used
+  /// (RangeStats), and the values drawn from a range.
+  unsigned valueSites = 0;
+  RangeStats ranges;
+  uint64_t rangeDraws = 0;
+  /// The trials that used range draws (FuzzOptions::rangeShare).
+  uint64_t rangeTrials = 0;
+  /// Runs blocked at an assume that is directly followed by `assert false`
+  /// (isAssumeBeforeAssertFalse), and the number of such assumes. In
+  /// SeaHorn's export form (a check is an assume of its failure, then
+  /// assert false; halt) these are the runs that passed the check. Also
+  /// counted in statusCount (assume-blocked) and blocked.
+  uint64_t blockedBeforeAssertFalse = 0;
+  /// Of those, the runs that went past a deferred memory-safety violation
+  /// first (FuzzOptions::deferMemoryErrors): not executions of the program,
+  /// so not passed checks.
+  uint64_t blockedBeforeAssertFalseDeferred = 0;
+  unsigned assumesBeforeAssertFalse = 0;
   uint64_t filesWritten = 0; // in outDir
   unsigned dictionarySize = 0;
   /// Failures, by the op that ended the run, in order found: assert
@@ -292,6 +367,15 @@ std::vector<InputSite> inputSitesOf(ProgramOp program);
 /// sea.unreachable. A blocking op's id is its index here (the id of
 /// --fuzz-sites' fuzz.assume lines and of --fuzz-serve's responses).
 std::vector<mlir::Operation *> blockingOpsOf(ProgramOp program);
+
+/// The ranges of the value sites of `program`, by site ascending.
+std::vector<InputRange> inputRangesOf(ProgramOp program, RangeStats &stats);
+
+/// Whether `op` is a sea.assume directly followed by `sea.assert` of a
+/// constant false: nothing but pure ops and unconditional `sea.br` hops
+/// between them (SeaHorn's export form: a check becomes an assume of its
+/// failure, then assert false; halt).
+bool isAssumeBeforeAssertFalse(mlir::Operation *op);
 
 /// The bounds of describeCondition: values more than this many ops below
 /// the condition, and nodes past this many, render as `?`.

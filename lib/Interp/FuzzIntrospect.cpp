@@ -16,10 +16,13 @@
 
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 
+#include <functional>
+#include <map>
 #include <set>
 
 using namespace mlir;
@@ -121,7 +124,9 @@ static const llvm::StringSet<> *allowedAttrs(Operation *op) {
   return it == table.end() ? nullptr : &it->second;
 }
 
-Value CondWriter::singleIncoming(BlockArgument arg) {
+/// The one value every predecessor passes to block argument `arg`, or null
+/// (none or several; the entry block).
+static Value singleIncomingValue(BlockArgument arg) {
   Block *b = arg.getOwner();
   Value in;
   for (auto it = b->pred_begin(), e = b->pred_end(); it != e; ++it) {
@@ -135,6 +140,10 @@ Value CondWriter::singleIncoming(BlockArgument arg) {
     in = v;
   }
   return in;
+}
+
+Value CondWriter::singleIncoming(BlockArgument arg) {
+  return singleIncomingValue(arg);
 }
 
 std::string CondWriter::render(Value v, unsigned depth) {
@@ -231,6 +240,220 @@ std::string CondWriter::render(Value v, unsigned depth) {
       text += " nuw";
   }
   return text + ")";
+}
+
+//===----------------------------------------------------------------------===//
+// Ranges of value sites, and the export form's final assume
+//===----------------------------------------------------------------------===//
+
+/// `v`, through block arguments with one incoming value (at most
+/// kConditionDepth of them, as describeCondition).
+static Value strip(Value v) {
+  for (unsigned i = 0; i < kConditionDepth; ++i) {
+    auto arg = dyn_cast<BlockArgument>(v);
+    if (!arg)
+      return v;
+    Value in = singleIncomingValue(arg);
+    if (!in)
+      return v;
+    v = in;
+  }
+  return v;
+}
+
+/// The site of a sea.nondet of at most 64 bits.
+static std::optional<uint64_t> rangeSite(Value v) {
+  auto n = strip(v).getDefiningOp<NondetOp>();
+  if (!n || n.getType().getIntOrFloatBitWidth() > 64)
+    return std::nullopt;
+  return n.getSite();
+}
+
+static std::optional<uint64_t> constOf(Value v) {
+  auto c = strip(v).getDefiningOp<ConstOp>();
+  auto a = c ? dyn_cast<IntegerAttr>(c.getValue()) : IntegerAttr();
+  if (!a || a.getValue().getBitWidth() > 64)
+    return std::nullopt;
+  return a.getValue().getZExtValue();
+}
+
+/// `v` as a sum of constants and value sites (sea.add, any flags: the value
+/// does not depend on them), within describeCondition's bounds.
+static bool sumOf(Value v, unsigned depth, unsigned &nodes, uint64_t mask,
+                  InputRange::Sum &out) {
+  if (++nodes > kConditionNodes)
+    return false;
+  if (std::optional<uint64_t> c = constOf(v)) {
+    out.constant = (out.constant + *c) & mask;
+    return true;
+  }
+  if (std::optional<uint64_t> s = rangeSite(v)) {
+    out.sites.push_back(*s);
+    return true;
+  }
+  auto add = strip(v).getDefiningOp<AddOp>();
+  if (!add || depth >= kConditionDepth)
+    return false;
+  return sumOf(add.getLhs(), depth + 1, nodes, mask, out) &&
+         sumOf(add.getRhs(), depth + 1, nodes, mask, out);
+}
+
+namespace {
+/// One recognized range assume: site in lo + [0, span or bound].
+struct RangeFact {
+  uint64_t site = 0;
+  unsigned width = 0;
+  uint64_t lo = 0;
+  std::optional<uint64_t> span;
+  std::optional<InputRange::Sum> bound;
+  bool empty = false; // (ult .. 0)
+};
+} // namespace
+
+static std::optional<RangeFact> rangeFactOf(AssumeOp a) {
+  auto cmp = strip(a.getCond()).getDefiningOp<ICmpOp>();
+  if (!cmp)
+    return std::nullopt;
+  unsigned w = cmp.getLhs().getType().getIntOrFloatBitWidth();
+  if (w > 64)
+    return std::nullopt;
+  uint64_t mask = w == 64 ? ~uint64_t(0) : (uint64_t(1) << w) - 1;
+  RangeFact f;
+  f.width = w;
+  ICmpPredicate pred = cmp.getPredicate();
+  if (pred == ICmpPredicate::ult) {
+    std::optional<uint64_t> k = constOf(cmp.getRhs());
+    if (!k)
+      return std::nullopt;
+    if (std::optional<uint64_t> s = rangeSite(cmp.getLhs())) {
+      f.site = *s;
+    } else if (auto add = strip(cmp.getLhs()).getDefiningOp<AddOp>()) {
+      // (ult (add sN M) K): sN - (-M) in [0, K-1]
+      std::optional<uint64_t> s = rangeSite(add.getLhs());
+      std::optional<uint64_t> m = constOf(add.getRhs());
+      if (!s || !m) {
+        s = rangeSite(add.getRhs());
+        m = constOf(add.getLhs());
+      }
+      if (!s || !m)
+        return std::nullopt;
+      f.site = *s;
+      f.lo = (0 - *m) & mask;
+    } else {
+      return std::nullopt;
+    }
+    if (*k == 0)
+      f.empty = true;
+    else
+      f.span = *k - 1;
+    return f;
+  }
+  if (pred == ICmpPredicate::ule) {
+    std::optional<uint64_t> s = rangeSite(cmp.getLhs());
+    if (!s)
+      return std::nullopt;
+    f.site = *s;
+    InputRange::Sum e;
+    unsigned nodes = 0;
+    if (!sumOf(cmp.getRhs(), 0, nodes, mask, e))
+      return std::nullopt;
+    if (e.sites.empty())
+      f.span = e.constant;
+    else
+      f.bound = std::move(e);
+    return f;
+  }
+  return std::nullopt;
+}
+
+std::vector<InputRange> inputRangesOf(ProgramOp program, RangeStats &stats) {
+  stats = RangeStats();
+  std::map<uint64_t, InputRange> bySite;
+  for (auto [id, op] : llvm::enumerate(blockingOpsOf(program))) {
+    auto a = dyn_cast<AssumeOp>(op);
+    if (!a)
+      continue;
+    std::optional<RangeFact> f = rangeFactOf(a);
+    if (!f)
+      continue;
+    if (f->empty) {
+      ++stats.skipped;
+      continue;
+    }
+    auto [it, fresh] = bySite.try_emplace(f->site);
+    InputRange &r = it->second;
+    if (fresh) {
+      r.site = f->site;
+      r.width = f->width;
+      r.lo = f->lo;
+    } else if (r.lo != f->lo) {
+      ++stats.skipped; // another offset: intervals do not intersect simply
+      continue;
+    }
+    if (f->span)
+      r.spanConst = r.spanConst ? std::min(*r.spanConst, *f->span) : *f->span;
+    if (f->bound)
+      r.bounds.push_back(std::move(*f->bound));
+    r.assumes.push_back(id);
+  }
+  // drop the ranges whose bounds reach back to themselves (cycles)
+  std::map<uint64_t, int> state; // 0 new, 1 on the stack, 2 done
+  std::set<uint64_t> cyclic;
+  std::function<bool(uint64_t)> visit = [&](uint64_t s) {
+    int &st = state[s];
+    if (st == 1)
+      return false;
+    if (st == 2)
+      return !cyclic.count(s);
+    st = 1;
+    bool ok = true;
+    if (auto it = bySite.find(s); it != bySite.end())
+      for (const InputRange::Sum &b : it->second.bounds)
+        for (uint64_t t : b.sites)
+          ok = visit(t) && ok;
+    state[s] = 2;
+    if (!ok)
+      cyclic.insert(s);
+    return ok;
+  };
+  std::vector<InputRange> out;
+  for (auto &[s, r] : bySite) {
+    if (!visit(s)) {
+      stats.skipped += r.assumes.size();
+      continue;
+    }
+    ++stats.sites;
+    stats.assumes += r.assumes.size();
+    out.push_back(std::move(r));
+  }
+  return out;
+}
+
+bool isAssumeBeforeAssertFalse(Operation *op) {
+  if (!isa_and_nonnull<AssumeOp>(op))
+    return false;
+  llvm::SmallPtrSet<Block *, 4> seen;
+  Operation *next = op->getNextNode();
+  while (next) {
+    if (auto br = dyn_cast<BrOp>(next)) {
+      Block *dest = br.getDest();
+      if (!seen.insert(dest).second || dest->empty())
+        return false;
+      next = &dest->front();
+      continue;
+    }
+    auto as = dyn_cast<AssertOp>(next);
+    if (!as) {
+      // pure ops (the constant of the assert) change nothing on the way
+      if (!isPure(next))
+        return false;
+      next = next->getNextNode();
+      continue;
+    }
+    std::optional<uint64_t> c = constOf(as.getCond());
+    return c && *c == 0;
+  }
+  return false;
 }
 
 ConditionText describeCondition(Value cond) {

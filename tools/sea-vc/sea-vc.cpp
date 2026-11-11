@@ -118,6 +118,21 @@ static cl::list<std::string> lowerDisable(
              "by utils/cover-diff.py, validates it"),
     cl::value_desc("pass,..."), cl::CommaSeparated);
 
+static cl::opt<std::string> placeOut(
+    "place-out",
+    cl::desc("With --lower: write the placement of the program's objects "
+             "(sea-place-static place-out) to this file, one object per "
+             "line, for another lowering's --place-in"),
+    cl::value_desc("file"));
+
+static cl::opt<std::string> placeIn(
+    "place-in",
+    cl::desc("With --lower: place the objects at the bases of this file "
+             "(written by --place-out; sea-place-static place-in), checked "
+             "as placement does; an object the file does not name is an "
+             "error (place.in-unplaced)"),
+    cl::value_desc("file"));
+
 static cl::opt<bool> addr0IsNull(
     "addr0-is-null",
     cl::desc("The named assumption addr0-is-null (default on) in the "
@@ -165,6 +180,30 @@ static cl::opt<sea::JoinEncoding> joinEncoding(
                clEnumValN(sea::JoinEncoding::Eq, "eq",
                           "fresh constant, guarded equality per edge")),
     cl::init(sea::JoinEncoding::Ite));
+
+static cl::opt<bool> vcJoinCases(
+    "vc-join-cases",
+    cl::desc("Experimental, default off: build each ite join (block "
+             "arguments, pointer companions) as a cases term, expanded at "
+             "once to the same ite chain (the query does not change), and "
+             "print its `cases.<name>: <n>` counters"),
+    cl::init(false));
+
+static cl::opt<bool> vcCasesReorder(
+    "vc-cases-reorder",
+    cl::desc("Experimental, default off, needs --vc-join-cases: merge a pair "
+             "of a cases join whose value is an earlier pair's value into "
+             "that pair, conjoining the negations of the conditions it skips "
+             "(first-match semantics; changes the query)"),
+    cl::init(false));
+
+static cl::opt<bool> vcCasesDropDefault(
+    "vc-cases-drop-default",
+    cl::desc("Experimental, default off, needs --vc-join-cases: drop a pair "
+             "of a cases join whose value is the default, conjoining the "
+             "negation of its condition into the later pairs (changes the "
+             "query)"),
+    cl::init(false));
 
 static cl::opt<bool> seamWide(
     "seam-wide",
@@ -1216,6 +1255,18 @@ TYPICAL:
                                  #   sea-drop-fresh-memhavoc: it decides
                                  #   that a fresh memhavoc is no tracked
                                  #   write (a semantics decision)
+  sea-vc p.mlir --lower --place-out=p.place  # write the placement (one
+                                 #   object per line: name= kind= base=
+                                 #   size= align=)
+  sea-vc p.mlir --lower --place-in=p.place  # place the objects at the
+                                 #   file's bases (another lowering's
+                                 #   --place-out), checked as placement
+                                 #   does (place.in-*); an object the
+                                 #   file does not name is an error
+                                 #   (place.in-unplaced), file objects
+                                 #   the program lacks are holes. Two
+                                 #   lowerings on one file: common objects
+                                 #   at the same addresses (cover-diff)
   sea-vc p.mlir --lower --reach --reach-failures  # also each tagged
                                  #   assert's failure (reached with its
                                  #   condition false): op=sea.print
@@ -1522,6 +1573,16 @@ TYPICAL:
                                  #   equalities (default ite: a block
                                  #   argument is ite over the incoming edges,
                                  #   as SeaHorn's --horn-vcgen-use-ite)
+  sea-vc p.mlir --vc-join-cases  # experimental: each ite join built as a
+                                 #   cases term and expanded at once (same
+                                 #   query); prints the cases.* counters
+  sea-vc p.mlir --vc-join-cases --vc-cases-reorder [--vc-cases-drop-default]
+                                 # experimental, changes the query: merge
+                                 #   pairs of a join with equal values (the
+                                 #   moved pair's condition conjoins the
+                                 #   negations of the conditions it skips);
+                                 #   drop pairs equal to the default (their
+                                 #   negation conjoined into later pairs)
 
 OUTPUT (stdout, `key: value` lines):
   tool.version: sea-mlir <x.y.z> (<git describe>)
@@ -1556,6 +1617,22 @@ OUTPUT (stdout, `key: value` lines):
                                   memmoves it records, fresh companion
                                   arrays)
   vc.ptr-companion-arrays: <n>    (companion arrays the query still reads)
+  cases.<counter>: <total> scalar=<n> memory=<n> companion=<n>
+                                  (--vc-join-cases, experimental; stderr
+                                  with --smt2: joins, arity.<n>, values,
+                                  distinct-values, with-dup,
+                                  redundant-values, all-equal,
+                                  adjacent-equal-pairs, ite-folded-pairs,
+                                  last-equal-default, nonadjacent-redundant,
+                                  with-nonadjacent, default-not-most-frequent;
+                                  with --vc-cases-reorder or
+                                  --vc-cases-drop-default also reorder-joins
+                                  (joins changed), reorder-merged-pairs,
+                                  reorder-merged-adjacent,
+                                  reorder-merge-negations,
+                                  reorder-dropped-default,
+                                  reorder-drop-negations, reorder-pairs
+                                  (pairs left); include/sea/VC/JoinCases.h)
   seam.ptrint: assumed loads=<n>  (--ptr-companion=assume: loads resting on
                                   A-PTRINT; checked loads=<n> with =check,
                                   then `seam.ptrint: holds` (unsat) or
@@ -2447,6 +2524,10 @@ int main(int argc, char **argv) {
   }
   if (!lowerDisable.empty() && !lower)
     return fail("--lower-disable needs --lower");
+  if ((!placeIn.empty() || !placeOut.empty()) && !lower)
+    return fail("--place-in and --place-out need --lower");
+  if (!placeIn.empty() && !placeOut.empty())
+    return fail("--place-in and --place-out exclude each other");
   if (reachSeed.getNumOccurrences() && !reachFuzz)
     return fail("--reach-seed is the seed of --reach-fuzz");
   if (!reachPrograms.empty() &&
@@ -2539,6 +2620,11 @@ int main(int argc, char **argv) {
     return fail("--words-check needs --seam-words");
   if (seamWords != WordsMode::Off && !xReadTable.empty())
     return fail("--seam-words and --x-read-table exclude each other");
+  if (vcJoinCases && joinEncoding != sea::JoinEncoding::Ite)
+    return fail("--vc-join-cases builds the ite joins: needs --vc-join=ite");
+  if ((vcCasesReorder || vcCasesDropDefault) && !vcJoinCases)
+    return fail("--vc-cases-reorder and --vc-cases-drop-default rearrange "
+                "cases joins: need --vc-join-cases");
   if (seamStats && !seam && !simplifyOpt)
     return fail("--seam-stats needs --seam or --simplify");
   // the rewriter normalizes under --simplify, and under --seam unless
@@ -2700,7 +2786,8 @@ int main(int argc, char **argv) {
         /*expandMemSet=*/!seam && !lambdaMem, widenMemoryReport,
         /*keepByteWide=*/seam && seamWide, checkAlign,
         checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt,
-        memhavocNull == MemhavocNull::Noop, lowerDisableMask);
+        memhavocNull == MemhavocNull::Noop, lowerDisableMask,
+        sea::PlaceFiles{placeIn, placeOut});
     if (failed(configurePM(pm)) || failed(pm.run(*module)))
       return 1;
     SEA_PHASE_END(lowerPhase)
@@ -3144,6 +3231,7 @@ int main(int argc, char **argv) {
       };
     sea::VCGen vcgen(sem, joinEncoding);
     vcgen.setReach(reach);
+    vcgen.setJoinCases(vcJoinCases, {vcCasesReorder, vcCasesDropDefault});
     lap("setup");
     Phase encodePhase("encode", vcRuns);
     if (failed(vcgen.genVc(program, ctx)))
@@ -4400,6 +4488,8 @@ int main(int argc, char **argv) {
         statOut() << "vc.sink-assumes: " << sunkAssumes << "\n";
       foldLines(statOut());
       companionLine(statOut());
+      if (vcgen.joinCases())
+        vcgen.joinCases()->print(statOut());
       printSeamStats(statOut());
       runSeamCheck();
       runEqAudit();
@@ -4426,6 +4516,8 @@ int main(int argc, char **argv) {
       vout() << "vc.sink-assumes: " << sunkAssumes << "\n";
     foldLines(vout());
     companionLine(vout());
+    if (vcgen.joinCases())
+      vcgen.joinCases()->print(vout());
     brunchStat(vout(), "vc.ptr-mode", addressMode ? "address" : "opaque");
     brunchStat(vout(), "vc.int-to-ptr", llvm::Twine(intToPtr));
     brunchStat(vout(), "vc.ptr-from-int-opaque",

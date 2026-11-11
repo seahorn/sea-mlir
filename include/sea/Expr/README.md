@@ -28,6 +28,14 @@ sea-mlir uses Expr for SMT terms only. Changes from SeaHorn:
   the Yices backend and shared with it.
 - `ExprToZ.def`: a failed conversion to z3 exits after reporting (SeaHorn
   only asserted, so release builds continued with a null term).
+- Experimental: the operator `cases(c0, v0, ..., ck, vk, vdefault)`
+  (`ExprOpBool.hh`, `op::cases`): flat, odd arity >= 3, the default last;
+  the value of the first `vi` whose `ci` holds, else `vdefault` (the ite
+  chain). `cases::make` checks the arity, Boolean conditions and one sort for
+  the values; `cases::expand` gives the `boolop::lite` chain. Only `sea-vc
+  --vc-join-cases` (a prototype, off by default) builds it, at the joins,
+  and expands it at once (`sea/VC/JoinCases.h`): no rewriter, solver,
+  backend or evaluator knows it.
 - Boolean construction: `boolop::land` / `lor` also take a range and the
   factory (`land(r, efac)`: empty is true); binary `lor(x, x)` is `x`. The
   folds of each helper are documented in `ExprOpBool.hh`.

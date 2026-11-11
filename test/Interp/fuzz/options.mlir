@@ -6,7 +6,7 @@
 // RUN: not sea-run %s --fuzz=10 --fuzz-out=%t/dir 2>&1 | FileCheck %s --check-prefix=NONEMPTY
 // RUN: mkdir -p %t/empty && sea-run %s --fuzz=10 --fuzz-out=%t/empty | FileCheck %s --check-prefix=EMPTY
 
-// NEEDS: --corpus, --fuzz-out, --fuzz-dict and --keep-going need --fuzz or --fuzz-time
+// NEEDS: --corpus, {{.*}} need --fuzz or --fuzz-time
 // NEG: --fuzz-time must not be negative
 // DIR: --input-file '{{.*}}dir' is a directory; give one corpus file
 // NONEMPTY: --fuzz-out directory '{{.*}}dir' is not empty

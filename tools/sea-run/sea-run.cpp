@@ -151,6 +151,27 @@ static cl::opt<bool>
                       "(default on)"),
              cl::init(true));
 
+static cl::opt<double> fuzzDictShare(
+    "fuzz-dict-share",
+    cl::desc("Fuzz: the probability that a fresh value and that a mutation "
+             "is a dictionary value (default: unset, the original mix: 1/2 "
+             "of fresh values, 1/5 of mutations)"),
+    cl::value_desc("P"));
+
+static cl::opt<bool> fuzzRanges(
+    "fuzz-ranges",
+    cl::desc("Fuzz: draw the values of a site that an assume bounds from its "
+             "range, biased to the ends (default on; false: the generator "
+             "without ranges)"),
+    cl::init(true));
+
+static cl::opt<double> fuzzRangeShare(
+    "fuzz-range-share",
+    cl::desc("Fuzz: the probability that a trial uses range draws; the "
+             "others use the generator without ranges (default 0.5; 1: "
+             "every trial)"),
+    cl::value_desc("P"), cl::init(0.5));
+
 static cl::opt<bool> keepGoing("keep-going",
                                cl::desc("Fuzz past the first failure, "
                                         "counting failures"),
@@ -493,8 +514,19 @@ per site and cell (fresh random, bit flip, +-1, 0/1/-1/min/max of the
 width, dictionary); sites the entry does not set get random or dictionary
 values. The dictionary is the program's integer constants used by
 comparisons and arithmetic, +-1, sized to the site's width
-(--fuzz-dict=false: none). A site has one value per trial, as with
---input. An input that reaches a new block, edge or passed sea.assume
+(--fuzz-dict=false: none). Dictionary share: 1/2 of fresh values, 1/5 of
+mutations; --fuzz-dict-share=P: P of both (the other mutations equally
+likely). Ranges (--fuzz-ranges, default on; =false: the generator without
+them, same trials as before for a seed): each trial picks, from the seeded
+random stream, range draws with probability --fuzz-range-share=P (default
+0.5; 1: every trial, 0: none, no draw for the pick at 0 or 1 or without a
+range) or the generator without ranges. In a range trial, a sea.nondet site of <= 64 bits
+bounded by an assume (ult sN K) -> [0,K-1], (ult (add sN M) K) ->
+[-M, -M+K-1], (ule sN E), E a sum of sites and constants -> [0,E] per
+trial, gets its fresh values and its fresh-random mutation from the range:
+lo, hi, lo+r, hi-r (r < 64) with 1/6 each, uniform 2/6. The other
+mutations may leave the range (the assume then blocks the run). A site has
+one value per trial, as with --input. An input that reaches a new block, edge or passed sea.assume
 joins the corpus. The fuzzer stops at the first failure: an assert
 failure, or with --defer-memory-errors a memory-safety finding (status
 memory-error) (--keep-going: counts them instead). A run that stops with
@@ -541,11 +573,26 @@ prints; the fuzzer checks the replay ends the same way), then stat lines:
                                  (per op that stopped a run at a limit or
                                  a layout error)
   fuzz.trials: <n> seeds=<n> time=<s> execs/s=<n>
+  fuzz.ranges: <sites> value-sites=<n> assumes=<n> skipped=<n> draws=<n>
+               mode=mix|edge|off share=<p> range-trials=<n>
+                               (value sites with a range; the assumes used;
+                                recognized but unused; values drawn; mode:
+                                both generators, range draws only, none;
+                                the share asked for; the trials that used
+                                range draws)
   fuzz.status: halted=<n> assert-failed=<n> assume-blocked=<n>
                step-limit=<n> error=<n> [memory-error=<n>]
   fuzz.deferred: <runs> memory-error=<n> assume-blocked=<n> step-limit=<n>
                  error=<n>       (--defer-memory-errors: runs that went
                                  past a violation, by final status)
+  fuzz.blocked-before-assert-false: <runs> assumes=<n> deferred=<n>
+                                 (only if the program has an assume
+                                 directly followed by `assert false`, pure
+                                 ops and sea.br between: runs blocked at
+                                 one; in SeaHorn's export form these
+                                 passed the check; still in assume-blocked;
+                                 deferred: of them, runs past a deferred
+                                 memory-safety violation, not passed checks)
   fuzz.assumptions: addr0-is-null=<uses> addr0-is-null-runs=<n>
                     memhavoc-null-noop=<uses> memhavoc-null-noop-runs=<n>
                                  (any > 0: what the trials rested on, the
@@ -573,6 +620,10 @@ FUZZ SITES (--fuzz-sites: list and exit, no run; not with --fuzz, --input,
                                           (each op that can block a run;
                                           sea.assume: its condition, see
                                           COND)
+  fuzz.range: <site> width=<w> lo=<n> span=<n>|- bounds=<sum,...>|-
+              assumes=<id,...>   (each value site with a range: lo + [0,
+                                 span] mod 2^w, span also <= each bound
+                                 sum `s<N>+...+<const>` per trial)
   fuzz.sites: <n> value=<n> memory=<n> assumes=<n> unreachables=<n>
                                           (last; 0: no input sites;
                                           assumes: sea.assume ops, as
@@ -885,6 +936,28 @@ static int listSites(sea::ProgramOp program) {
        << " at=" << (at.empty() ? "-" : at);
     emitBlockerLine(out, line, op);
   }
+  // the ranges the fuzzer draws from (--fuzz-ranges)
+  sea::RangeStats rstats;
+  for (const sea::InputRange &r : sea::inputRangesOf(program, rstats)) {
+    auto ids = [](ArrayRef<unsigned> xs) {
+      return join(map_range(xs, [](unsigned x) { return std::to_string(x); }),
+                  ",");
+    };
+    std::vector<std::string> bounds;
+    for (const sea::InputRange::Sum &b : r.bounds) {
+      std::vector<std::string> terms;
+      for (uint64_t x : b.sites)
+        terms.push_back("s" + std::to_string(x));
+      if (b.constant || terms.empty())
+        terms.push_back(std::to_string(b.constant));
+      bounds.push_back(join(terms, "+"));
+    }
+    out.lines() << "fuzz.range: " << r.site << " width=" << r.width
+                << " lo=" << r.lo << " span="
+                << (r.spanConst ? std::to_string(*r.spanConst) : "-")
+                << " bounds=" << (bounds.empty() ? "-" : join(bounds, ","))
+                << " assumes=" << ids(r.assumes) << "\n";
+  }
   out.lines() << "fuzz.sites: " << sites.size()
               << " value=" << sites.size() - memories << " memory=" << memories
               << " assumes="
@@ -993,6 +1066,10 @@ static int runFuzz(sea::ProgramOp program) {
   fo.seconds = fuzzTime;
   fo.seed = seed;
   fo.dictionary = fuzzDict;
+  if (fuzzDictShare.getNumOccurrences())
+    fo.dictShare = fuzzDictShare;
+  fo.ranges = fuzzRanges;
+  fo.rangeShare = fuzzRangeShare;
   fo.keepGoing = keepGoing;
   fo.deferMemoryErrors = deferMemoryErrors;
   fo.addr0IsNull = addr0IsNull;
@@ -1074,6 +1151,15 @@ static int runFuzz(sea::ProgramOp program) {
   os << "fuzz.trials: " << rep->trials << " seeds=" << rep->seedTrials
      << " time=" << format("%.3f", rep->seconds)
      << " execs/s=" << format("%.0f", rate) << "\n";
+  os << "fuzz.ranges: " << rep->ranges.sites
+     << " value-sites=" << rep->valueSites << " assumes=" << rep->ranges.assumes
+     << " skipped=" << rep->ranges.skipped << " draws=" << rep->rangeDraws
+     << " mode="
+     << (!fuzzRanges || fuzzRangeShare <= 0 ? "off"
+         : fuzzRangeShare >= 1              ? "edge"
+                                            : "mix")
+     << " share=" << format("%g", fuzzRanges ? double(fuzzRangeShare) : 0.0)
+     << " range-trials=" << rep->rangeTrials << "\n";
   os << "fuzz.status:";
   for (sea::RunStatus st :
        {sea::RunStatus::Halted, sea::RunStatus::AssertFailed,
@@ -1098,6 +1184,12 @@ static int runFuzz(sea::ProgramOp program) {
          << rep->deferredStatusCount[static_cast<unsigned>(st)];
     os << "\n";
   }
+  // of the assume-blocked runs: those blocked right before `assert false`
+  // (SeaHorn's export form: they passed the program's check)
+  if (rep->assumesBeforeAssertFalse)
+    os << "fuzz.blocked-before-assert-false: " << rep->blockedBeforeAssertFalse
+       << " assumes=" << rep->assumesBeforeAssertFalse
+       << " deferred=" << rep->blockedBeforeAssertFalseDeferred << "\n";
   if (rep->addr0IsNullUses || rep->memhavocNullNoopUses)
     os << "fuzz.assumptions: addr0-is-null=" << rep->addr0IsNullUses
        << " addr0-is-null-runs=" << rep->addr0IsNullRuns
@@ -1366,9 +1458,23 @@ int main(int argc, char **argv) {
     return fail("--fuzz-time must not be negative");
   if (!fuzzTrials && fuzzTime <= 0 &&
       (!corpus.empty() || !fuzzOut.empty() || keepGoing ||
-       fuzzDict.getNumOccurrences()))
-    return fail("--corpus, --fuzz-out, --fuzz-dict and --keep-going need "
+       fuzzDict.getNumOccurrences() || fuzzDictShare.getNumOccurrences() ||
+       fuzzRanges.getNumOccurrences() || fuzzRangeShare.getNumOccurrences()))
+    return fail("--corpus, --fuzz-out, --fuzz-dict, --fuzz-dict-share, "
+                "--fuzz-ranges, --fuzz-range-share and --keep-going need "
                 "--fuzz or --fuzz-time");
+  if (fuzzRangeShare.getNumOccurrences() &&
+      !(fuzzRangeShare >= 0 && fuzzRangeShare <= 1))
+    return fail("--fuzz-range-share must be in [0, 1]");
+  if (fuzzRangeShare.getNumOccurrences() && !fuzzRanges)
+    return fail("--fuzz-range-share does not go with --fuzz-ranges=false "
+                "(give --fuzz-range-share=0 for no range trials)");
+  if (fuzzDictShare.getNumOccurrences() &&
+      !(fuzzDictShare >= 0 && fuzzDictShare <= 1))
+    return fail("--fuzz-dict-share must be in [0, 1]");
+  if (fuzzDictShare.getNumOccurrences() && !fuzzDict)
+    return fail("--fuzz-dict-share does not go with --fuzz-dict=false "
+                "(give --fuzz-dict-share=0 for no dictionary values)");
 
   if (fuzzSites &&
       (fuzzTrials || fuzzTime > 0 || !inputs.empty() || !inputFile.empty() ||

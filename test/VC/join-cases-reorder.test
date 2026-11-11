@@ -1,0 +1,113 @@
+// sea-vc --vc-cases-reorder / --vc-cases-drop-default (experimental, need
+// --vc-join-cases; include/sea/VC/JoinCases.h): the cases term of a join is
+// rearranged before its expansion, which changes the query. Checked here: the
+// counters, the verdict and its replay, and that each rearranged query is
+// equivalent to the query without the options for every assignment
+// (query-diff equiv-sat, z3), plain, with --lower and with --lower --seam.
+// The joins of ^k (predecessor order dd, cc, b, a; the last is the default):
+//   %u  [x, x+1, x, x+2]   x again after x+1: merged with !(cond of x+1)
+//   %v  [1, 2, 2, 1]       2 twice, adjacent; 1 = the default
+//   %m  [m0, m2, m0, m1]   m0 again after m2: merged with !(cond of m2)
+REQUIRES: z3
+RUN: split-file %s %t
+RUN: sed -i 's|SEA_VC|%sea_vc|' %t/reorder.sh %t/drop.sh %t/both.sh
+RUN: chmod +x %t/reorder.sh %t/drop.sh %t/both.sh
+RUN: sea-vc %t/vals.mlir --vc-join-cases --vc-cases-reorder | FileCheck %s --check-prefix=MERGE
+RUN: sea-vc %t/vals.mlir --vc-join-cases --vc-cases-drop-default | FileCheck %s --check-prefix=DROP
+RUN: sea-vc %t/vals.mlir --vc-join-cases --vc-cases-reorder --vc-cases-drop-default | FileCheck %s --check-prefix=BOTH
+Without a rearrangement no reorder counter is printed.
+RUN: sea-vc %t/vals.mlir --vc-join-cases | FileCheck %s --check-prefix=NONE
+RUN: not sea-vc %t/vals.mlir --vc-cases-reorder 2>&1 | FileCheck %s --check-prefix=NEED
+RUN: not sea-vc %t/vals.mlir --vc-cases-drop-default 2>&1 | FileCheck %s --check-prefix=NEED
+The equivalence of the queries, option off (old) vs on (new).
+RUN: %python %sea_src_root/utils/query-diff.py --old %sea_vc --new %t/reorder.sh --z3 %z3 --par 1 --args= %t/vals.mlir | FileCheck %s --check-prefix=EQ
+RUN: %python %sea_src_root/utils/query-diff.py --old %sea_vc --new %t/drop.sh --z3 %z3 --par 1 --args= %t/vals.mlir | FileCheck %s --check-prefix=EQ
+RUN: %python %sea_src_root/utils/query-diff.py --old %sea_vc --new %t/both.sh --z3 %z3 --par 1 --args= %t/vals.mlir | FileCheck %s --check-prefix=EQ
+RUN: %python %sea_src_root/utils/query-diff.py --old %sea_vc --new %t/both.sh --z3 %z3 --par 1 --args=--lower %t/vals.mlir | FileCheck %s --check-prefix=EQ
+RUN: %python %sea_src_root/utils/query-diff.py --old %sea_vc --new %t/both.sh --z3 %z3 --par 1 "--args=--lower --widen-memory=8 --seam" %t/vals.mlir | FileCheck %s --check-prefix=EQ
+RUN: %python %sea_src_root/utils/query-diff.py --old %sea_vc --new %t/reorder.sh --z3 %z3 --par 1 "--args=--lower --widen-memory=8 --seam" %t/vals.mlir | FileCheck %s --check-prefix=EQ
+
+MERGE: cases.reorder-joins: 3 scalar=2 memory=1 companion=0
+MERGE-NEXT: cases.reorder-merged-pairs: 3 scalar=2 memory=1 companion=0
+MERGE-NEXT: cases.reorder-merged-adjacent: 1 scalar=1 memory=0 companion=0
+MERGE-NEXT: cases.reorder-merge-negations: 2 scalar=1 memory=1 companion=0
+MERGE-NEXT: cases.reorder-dropped-default: 0
+MERGE-NEXT: cases.reorder-drop-negations: 0
+MERGE-NEXT: cases.reorder-pairs: 6 scalar=4 memory=2 companion=0
+MERGE: result: sat
+MERGE: validate: {{.*}} mismatches=0
+
+DROP: cases.reorder-joins: 1 scalar=1 memory=0 companion=0
+DROP-NEXT: cases.reorder-merged-pairs: 0
+DROP: cases.reorder-dropped-default: 1 scalar=1 memory=0 companion=0
+DROP-NEXT: cases.reorder-drop-negations: 2 scalar=2 memory=0 companion=0
+DROP-NEXT: cases.reorder-pairs: 8 scalar=5 memory=3 companion=0
+DROP: result: sat
+DROP: validate: {{.*}} mismatches=0
+
+BOTH: cases.reorder-joins: 3 scalar=2 memory=1 companion=0
+BOTH-NEXT: cases.reorder-merged-pairs: 3 scalar=2 memory=1 companion=0
+BOTH: cases.reorder-dropped-default: 1 scalar=1 memory=0 companion=0
+BOTH-NEXT: cases.reorder-drop-negations: 2 scalar=2 memory=0 companion=0
+BOTH-NEXT: cases.reorder-pairs: 5 scalar=3 memory=2 companion=0
+BOTH: result: sat
+BOTH: validate: {{.*}} mismatches=0
+
+NONE: cases.joins: 3
+NONE-NOT: cases.reorder
+NONE: result: sat
+
+NEED: need --vc-join-cases
+
+EQ: vals equiv-sat
+EQ: total: identical=0 order=0 both-unsat=0 equiv-sat=1 diff=0 unknown=0 error=0
+
+//--- reorder.sh
+#!/bin/sh
+exec SEA_VC --vc-join-cases --vc-cases-reorder "$@"
+//--- drop.sh
+#!/bin/sh
+exec SEA_VC --vc-join-cases --vc-cases-drop-default "$@"
+//--- both.sh
+#!/bin/sh
+exec SEA_VC --vc-join-cases --vc-cases-reorder --vc-cases-drop-default "$@"
+//--- vals.mlir
+!m8 = !sea.mem<!sea.addr<8>, i8>
+sea.program @vals {
+  %m0 = sea.mem.nondet "m" [0] : !m8
+  %x = sea.nondet "nondet_u8" [1] : i8
+  %c = sea.nondet "nondet_bool" [2] : i1
+  %d = sea.nondet "nondet_bool" [3] : i1
+  %e = sea.nondet "nondet_bool" [4] : i1
+  %c1 = sea.const 1 : i8
+  %c2 = sea.const 2 : i8
+  %a0 = sea.addr.from_int %c1 : i8 to !sea.addr<8>
+  sea.cond_br %c, ^a, ^r1
+^r1:
+  sea.cond_br %d, ^b, ^r2
+^r2:
+  sea.cond_br %e, ^cc, ^dd
+^a:
+  %z = sea.add %x, %c2 : i8
+  %m1 = sea.store %m0[%a0], %c1 inplace : !m8, i8
+  sea.br ^k(%z, %c1, %m1 : i8, i8, !m8)
+^b:
+  sea.br ^k(%x, %c2, %m0 : i8, i8, !m8)
+^cc:
+  %y = sea.add %x, %c1 : i8
+  %m2 = sea.store %m0[%a0], %c2 inplace : !m8, i8
+  sea.br ^k(%y, %c2, %m2 : i8, i8, !m8)
+^dd:
+  sea.br ^k(%x, %c1, %m0 : i8, i8, !m8)
+^k(%u : i8, %v : i8, %m : !m8):
+  %s = sea.add %u, %v : i8
+  %l = sea.load %m[%a0] : !m8 -> i8
+  %t = sea.add %s, %l : i8
+  %c9 = sea.const 9 : i8
+  %ok = sea.icmp ne, %t, %c9 : i8
+  sea.assert %ok
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

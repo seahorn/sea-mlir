@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 add_mlir_library(SeaVC
+  JoinCases.cpp
   Names.cpp
   OpSem.cpp
   Reach.cpp

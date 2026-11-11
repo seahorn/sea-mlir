@@ -152,7 +152,10 @@ Development gates run before a change is merged:
   block ids through every change it makes, and they give that
   correspondence as hints. The hints are checked, never trusted: a wrong
   hint can only send the comparison back to the slower general check, and
-  never make it pass.
+  never make it pass. Both versions run on one placement of the program's
+  objects, written by one and read by the other, so that an object's
+  address is the same on both sides. If neither version can take the
+  other's placement, the comparison is inconclusive, not a pass.
 
 ### Protected oracles
 

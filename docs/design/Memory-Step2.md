@@ -150,6 +150,21 @@ its alignment. Options:
 | `max-symbolic-size` | 4096 | the room reserved for an allocation whose size is not a constant |
 | `symbolic-size` | `assume` | `assume`: insert `sea.assume(size <= max)`; `assert`: insert `sea.assert(size <= max)`; `refuse`: error |
 | `layout` | `seahorn` | segment bases and stack window (SeaHorn's constants) |
+| `place-out` | none | write the placement to a file, one object per line |
+| `place-in` | none | take the bases from such a file instead of computing them |
+
+**External placement** (`place-in`). The pass is still the allocator: it
+takes each object's base from the file and checks it as it checks its own
+(kind, size and alignment equal to the object's, base aligned, inside the
+address width, null at 0 and nothing else there, no overlap); a violation
+is an error. Objects are matched by their segment names, which survive
+folding (the site attribute). An object the file does not name is an
+error; objects of the file the program lacks are holes. Its use is
+validation: two lowerings of one program on one file have their common
+objects at the same addresses (`utils/cover-diff.py` compares both lowerings on one placement, the
+writer's; the reader takes it as an allocator would, so the gate does not
+check all placements). The file
+format is in [Placement files](../reference/output-formats.md#placement-files).
 
 A symbolic-size allocation gets `max-symbolic-size` units of room, and the
 assumption or assertion that makes that sound is explicit in the IR (the

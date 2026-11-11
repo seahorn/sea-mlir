@@ -9,6 +9,7 @@
 #include "mlir/Pass/Pass.h"
 
 #include <memory>
+#include <string>
 
 namespace mlir {
 class PassManager;
@@ -23,6 +24,16 @@ class ProgramOp;
 /// the placement as sea.segment ops; a segment's result (the object's base
 /// address) replaces the object's uses.
 std::unique_ptr<mlir::Pass> createPlaceStaticPass();
+
+/// External placement (sea-place-static place-in / place-out; sea-vc
+/// --place-in / --place-out): `out` writes the placement the pass computed,
+/// one object per line; `in` takes every object's base from such a file
+/// instead of computing it, and checks it as placement does (an object the
+/// file does not name is an error). Empty: not used.
+struct PlaceFiles {
+  std::string in, out;
+};
+std::unique_ptr<mlir::Pass> createPlaceStaticPass(const PlaceFiles &files);
 
 /// sea-split-wide-access: loads and stores spanning several cells become
 /// cell accesses joined with sea.concat / split with sea.extract.
@@ -199,15 +210,17 @@ enum LowerDisable : unsigned {
 /// runs last either way. \p disable: the optimization passes left out
 /// (LowerDisable bits; sea-vc --lower-disable), each one whose absence
 /// keeps the output in BMC form, so that a lowering with and without it
-/// can be compared (utils/cover-diff.py).
+/// can be compared (utils/cover-diff.py). \p place: external placement
+/// files of sea-place-static (with either file the pass runs on a concrete
+/// program too: it has no objects to place, and writes an empty file).
 void buildVCLoweringPipeline(mlir::OpPassManager &pm, bool abstract,
                              bool nativeMulOverflow = false, bool fold = true,
                              unsigned widenMemory = 0, bool expandMemSet = true,
                              bool widenReport = false,
                              bool keepByteWide = false, bool checkAlign = false,
                              unsigned checkPtrIndex = 0, bool opt = true,
-                             bool memhavocNullNoop = true,
-                             unsigned disable = 0);
+                             bool memhavocNullNoop = true, unsigned disable = 0,
+                             const PlaceFiles &place = {});
 
 /// Attaches the `lower.pass` log (one level-1 event per pass run: ops
 /// before and after, time; lib/Transforms/PassLog.cpp) to \p pm. Costs a

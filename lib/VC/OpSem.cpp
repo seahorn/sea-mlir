@@ -1324,10 +1324,11 @@ Expr SeaOpSem::companionOf(Value mem, OpSemContext &ctx) {
   return c;
 }
 
-void SeaOpSem::joinCompanions(Block &dst, ArrayRef<Block *> preds,
-                              ArrayRef<Expr> edges, OpSemContext &ctx) {
+LogicalResult SeaOpSem::joinCompanions(Block &dst, ArrayRef<Block *> preds,
+                                       ArrayRef<Expr> edges, OpSemContext &ctx,
+                                       JoinCases *cases) {
   if (!ptrCompanion() || !companionNeeded.value_or(false))
-    return;
+    return success();
   for (BlockArgument arg : dst.getArguments()) {
     if (!isa<MemType>(arg.getType()))
       continue;
@@ -1345,6 +1346,18 @@ void SeaOpSem::joinCompanions(Block &dst, ArrayRef<Block *> preds,
     }
     if (vals.empty() || !vals.back())
       continue;
+    if (cases) {
+      // the same join as below, through a cases term (--vc-join-cases)
+      std::string why;
+      Expr val = cases->join(edges, vals, JoinKind::Companion, why);
+      if (!val) {
+        diag::error("vc.cases-join", "join of a pointer companion: " + why,
+                    arg.getLoc());
+        return failure();
+      }
+      companions[arg] = val;
+      continue;
+    }
     // VCGen's ite join: the last edge is the default
     Expr val = vals.back();
     for (unsigned j = vals.size() - 1; j > 0; --j)
@@ -1352,6 +1365,7 @@ void SeaOpSem::joinCompanions(Block &dst, ArrayRef<Block *> preds,
         val = boolop::lite(edges[j - 1], vals[j - 1], val);
     companions[arg] = val;
   }
+  return success();
 }
 
 Expr SeaOpSem::companionLoad(AddrFromBitsOp fb, Expr bits, OpSemContext &ctx) {
