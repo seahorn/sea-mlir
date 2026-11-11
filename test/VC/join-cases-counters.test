@@ -27,7 +27,6 @@ CHECK-NEXT: cases.last-equal-default: 2 scalar=1 memory=0 companion=1
 CHECK-NEXT: cases.nonadjacent-redundant: 1 scalar=1 memory=0 companion=0
 CHECK-NEXT: cases.with-nonadjacent: 1 scalar=1 memory=0 companion=0
 CHECK-NEXT: cases.default-not-most-frequent: 1 scalar=0 memory=1 companion=0
-CHECK-NEXT: cases.const-conditions: 1 scalar=1 memory=0 companion=0
 CHECK-NEXT: failures: 0
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors

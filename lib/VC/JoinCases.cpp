@@ -77,10 +77,6 @@ void JoinCases::count(llvm::ArrayRef<Expr> edges, llvm::ArrayRef<Expr> vals,
     most = std::max(most, m);
   if (mult.lookup(vals.back().get()) < most)
     ++defaultNotMostFrequent[k];
-
-  for (size_t j = 0; j + 1 < n; ++j)
-    if (isOpX<TRUE>(edges[j]) || isOpX<FALSE>(edges[j]))
-      ++constConditions[k];
 }
 
 void JoinCases::print(llvm::raw_ostream &os) const {
@@ -104,7 +100,6 @@ void JoinCases::print(llvm::raw_ostream &os) const {
   line("nonadjacent-redundant", nonAdjacent);
   line("with-nonadjacent", withNonAdjacent);
   line("default-not-most-frequent", defaultNotMostFrequent);
-  line("const-conditions", constConditions);
 }
 
 } // namespace sea

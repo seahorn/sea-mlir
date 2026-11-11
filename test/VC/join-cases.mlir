@@ -27,6 +27,8 @@
 // VALS: cases.arity.2: 1 scalar=1
 // VALS: cases.arity.3: 2 scalar=2
 // VALS: cases.with-dup: 2 scalar=2
+// VALS: cases.ite-folded-pairs: 1 scalar=1
+// VALS: cases.nonadjacent-redundant: 1 scalar=1
 sea.program @vals {
   %x = sea.nondet "nondet_u8" [0] : i8
   %c = sea.nondet "nondet_bool" [1] : i1
@@ -65,6 +67,9 @@ sea.program @vals {
 // MEM: cases.joins: 2 scalar=1 memory=1 companion=0
 // MEM: cases.arity.3: 2 scalar=1 memory=1
 // MEM: cases.redundant-values: 1 scalar=0 memory=1
+// MEM: cases.adjacent-equal-pairs: 1 scalar=0 memory=1
+// MEM: cases.ite-folded-pairs: 0
+// MEM: cases.default-not-most-frequent: 1 scalar=0 memory=1
 // SOLVE: cases.joins: 2
 // SOLVE: result: sat
 // OFF-NOT: cases.

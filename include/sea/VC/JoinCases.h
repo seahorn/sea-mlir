@@ -62,7 +62,7 @@ private:
   expr::TypeChecker tc;
   Count built{}, values{}, distinct{}, withDup{}, redundant{}, allEqual{},
       adjacentEqual{}, iteFolded{}, lastEqualDefault{}, nonAdjacent{},
-      withNonAdjacent{}, defaultNotMostFrequent{}, constConditions{};
+      withNonAdjacent{}, defaultNotMostFrequent{};
   std::map<size_t, Count> arity;
 };
 

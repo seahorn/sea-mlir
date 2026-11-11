@@ -1601,8 +1601,8 @@ OUTPUT (stdout, `key: value` lines):
                                   redundant-values, all-equal,
                                   adjacent-equal-pairs, ite-folded-pairs,
                                   last-equal-default, nonadjacent-redundant,
-                                  with-nonadjacent, default-not-most-frequent,
-                                  const-conditions; include/sea/VC/JoinCases.h)
+                                  with-nonadjacent, default-not-most-frequent;
+                                  include/sea/VC/JoinCases.h)
   seam.ptrint: assumed loads=<n>  (--ptr-companion=assume: loads resting on
                                   A-PTRINT; checked loads=<n> with =check,
                                   then `seam.ptrint: holds` (unsat) or
