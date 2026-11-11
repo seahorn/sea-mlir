@@ -16,12 +16,14 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <chrono>
+#include <optional>
 #include <random>
 #include <set>
 
@@ -92,21 +94,85 @@ std::string formatAssignment(const Assignment &a) {
   return std::to_string(a.site) + "@" + a.cell + "=" + a.value;
 }
 
+/// Writes `text` to `path` whole: to `.<name>.tmp` in the same directory,
+/// then renamed, so a reader of the directory (a peer's --fuzz-sync) sees
+/// the file complete or not at all.
+static LogicalResult writeWhole(StringRef path, StringRef text,
+                                std::string &error) {
+  llvm::SmallString<128> tmp = llvm::sys::path::parent_path(path);
+  llvm::sys::path::append(tmp,
+                          "." + llvm::sys::path::filename(path).str() + ".tmp");
+  {
+    std::error_code ec;
+    llvm::raw_fd_ostream os(tmp, ec, llvm::sys::fs::OF_Text);
+    if (ec) {
+      error = "cannot write '" + tmp.str().str() + "': " + ec.message();
+      return failure();
+    }
+    os << text;
+    os.close();
+    if (os.has_error()) {
+      error = "cannot write '" + tmp.str().str() + "': " + os.error().message();
+      os.clear_error();
+      llvm::sys::fs::remove(tmp);
+      return failure();
+    }
+  }
+  if (std::error_code ec = llvm::sys::fs::rename(tmp, path)) {
+    error = "cannot rename '" + tmp.str().str() + "' to '" + path.str() +
+            "': " + ec.message();
+    llvm::sys::fs::remove(tmp);
+    return failure();
+  }
+  return success();
+}
+
 LogicalResult writeCorpusFile(StringRef path,
                               llvm::ArrayRef<std::string> header,
                               llvm::ArrayRef<Assignment> input,
                               std::string &error) {
-  std::error_code ec;
-  llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_Text);
-  if (ec) {
-    error = "cannot write '" + path.str() + "': " + ec.message();
-    return failure();
-  }
+  std::string text;
+  llvm::raw_string_ostream os(text);
   for (const std::string &h : header)
     os << "# " << h << "\n";
   for (const Assignment &a : input)
     os << formatAssignment(a) << "\n";
+  return writeWhole(path, text, error);
+}
+
+const char *const kKeepNames[kKeepReasons] = {"blocks", "cmp", "frontier"};
+
+LogicalResult parseFuzzKeep(StringRef text, unsigned &keep,
+                            std::string &error) {
+  keep = 0;
+  llvm::SmallVector<StringRef> parts;
+  text.split(parts, ',', -1, /*KeepEmpty=*/true);
+  for (StringRef p : parts) {
+    p = p.trim();
+    if (p == "all") {
+      keep |= kKeepAll;
+      continue;
+    }
+    unsigned bit = 0;
+    for (unsigned i = 0; i < kKeepReasons; ++i)
+      if (p == kKeepNames[i])
+        bit = 1u << i;
+    if (!bit) {
+      error = "unknown keep reason '" + p.str() +
+              "' (expected a list of blocks, cmp, frontier, all)";
+      return failure();
+    }
+    keep |= bit;
+  }
   return success();
+}
+
+std::string formatFuzzKeep(unsigned keep) {
+  std::string s;
+  for (unsigned i = 0; i < kKeepReasons; ++i)
+    if (keep & (1u << i))
+      s += (s.empty() ? "" : ",") + std::string(kKeepNames[i]);
+  return s.empty() ? "-" : s;
 }
 
 /// The k=v fields of a record line's rest.
@@ -193,7 +259,8 @@ LogicalResult readCorpus(StringRef path, std::vector<CorpusEntryText> &out,
   std::error_code ec;
   for (llvm::sys::fs::directory_iterator it(path, ec), end; it != end && !ec;
        it.increment(ec))
-    if (llvm::sys::fs::is_regular_file(it->path()))
+    if (!llvm::sys::path::filename(it->path()).starts_with(".") &&
+        llvm::sys::fs::is_regular_file(it->path()))
       files.push_back(it->path());
   if (ec) {
     error =
@@ -210,6 +277,182 @@ LogicalResult readCorpus(StringRef path, std::vector<CorpusEntryText> &out,
 //===----------------------------------------------------------------------===//
 // The fuzzer
 //===----------------------------------------------------------------------===//
+
+const char *const kCmpBucketNames[kCmpBuckets] = {"-L", "-S", "-1", "0",
+                                                  "+1", "+S", "+L"};
+
+StringRef stringifyCmpRole(CmpRole r) {
+  switch (r) {
+  case CmpRole::Assume:
+    return "assume";
+  case CmpRole::Branch:
+    return "branch";
+  case CmpRole::Value:
+    return "value";
+  }
+  llvm_unreachable("unknown comparison role");
+}
+
+static bool isSignedPred(ICmpPredicate p) {
+  return p == ICmpPredicate::slt || p == ICmpPredicate::sle ||
+         p == ICmpPredicate::sgt || p == ICmpPredicate::sge;
+}
+
+/// The bucket of d = a - b (kCmpBucketNames), from its sign and magnitude.
+static unsigned bucketOf(bool negative, bool zero, bool one, bool small) {
+  if (zero)
+    return 3;
+  if (one)
+    return negative ? 2 : 4;
+  if (small)
+    return negative ? 1 : 5;
+  return negative ? 0 : 6;
+}
+
+/// The distance bucket of a comparison's operands (kCmpBuckets).
+static unsigned cmpBucket(ICmpPredicate p, const APInt &a, const APInt &b) {
+  unsigned w = a.getBitWidth();
+  bool sgn = isSignedPred(p);
+  if (w <= 64) {
+    // exact in 128 bits
+    __int128 x = sgn ? __int128(a.getSExtValue()) : __int128(a.getZExtValue());
+    __int128 y = sgn ? __int128(b.getSExtValue()) : __int128(b.getZExtValue());
+    __int128 d = x - y;
+    __int128 m = d < 0 ? -d : d;
+    return bucketOf(d < 0, m == 0, m == 1, m <= 16);
+  }
+  APInt x = sgn ? a.sext(w + 1) : a.zext(w + 1);
+  APInt y = sgn ? b.sext(w + 1) : b.zext(w + 1);
+  APInt d = x - y;
+  bool neg = d.isNegative();
+  APInt m = neg ? -d : d;
+  return bucketOf(neg, m.isZero(), m.isOne(), m.ule(16));
+}
+
+/// Whether predicate `p` holds on a difference in bucket `k`.
+static bool bucketOutcome(ICmpPredicate p, unsigned k) {
+  int sign = k < 3 ? -1 : k == 3 ? 0 : 1;
+  switch (p) {
+  case ICmpPredicate::eq:
+    return sign == 0;
+  case ICmpPredicate::ne:
+    return sign != 0;
+  case ICmpPredicate::slt:
+  case ICmpPredicate::ult:
+    return sign < 0;
+  case ICmpPredicate::sle:
+  case ICmpPredicate::ule:
+    return sign <= 0;
+  case ICmpPredicate::sgt:
+  case ICmpPredicate::ugt:
+    return sign > 0;
+  case ICmpPredicate::sge:
+  case ICmpPredicate::uge:
+    return sign >= 0;
+  }
+  llvm_unreachable("unknown predicate");
+}
+
+static ICmpPredicate inversePred(ICmpPredicate p) {
+  switch (p) {
+  case ICmpPredicate::eq:
+    return ICmpPredicate::ne;
+  case ICmpPredicate::ne:
+    return ICmpPredicate::eq;
+  case ICmpPredicate::slt:
+    return ICmpPredicate::sge;
+  case ICmpPredicate::sle:
+    return ICmpPredicate::sgt;
+  case ICmpPredicate::sgt:
+    return ICmpPredicate::sle;
+  case ICmpPredicate::sge:
+    return ICmpPredicate::slt;
+  case ICmpPredicate::ult:
+    return ICmpPredicate::uge;
+  case ICmpPredicate::ule:
+    return ICmpPredicate::ugt;
+  case ICmpPredicate::ugt:
+    return ICmpPredicate::ule;
+  case ICmpPredicate::uge:
+    return ICmpPredicate::ult;
+  }
+  llvm_unreachable("unknown predicate");
+}
+
+/// The branch distance of `p` on (a, b), which does not hold: how far one
+/// operand must move for it to hold (FuzzGateStats::bestDistance), at most
+/// 2^64 - 1.
+static uint64_t branchDistance(ICmpPredicate p, const APInt &a,
+                               const APInt &b) {
+  unsigned w = a.getBitWidth();
+  if (p == ICmpPredicate::ne)
+    return 1;
+  if (p == ICmpPredicate::eq) {
+    APInt x = a - b, y = b - a; // modulo 2^w: the short way round
+    return (x.ult(y) ? x : y).getLimitedValue();
+  }
+  bool sgn = isSignedPred(p);
+  APInt x = sgn ? a.sext(w + 2) : a.zext(w + 2);
+  APInt y = sgn ? b.sext(w + 2) : b.zext(w + 2);
+  APInt d = x - y, one(w + 2, 1);
+  APInt r;
+  switch (p) {
+  case ICmpPredicate::slt:
+  case ICmpPredicate::ult:
+    r = d + one; // a >= b: a must drop to b - 1
+    break;
+  case ICmpPredicate::sle:
+  case ICmpPredicate::ule:
+    r = d;
+    break;
+  case ICmpPredicate::sgt:
+  case ICmpPredicate::ugt:
+    r = one - d;
+    break;
+  default: // sge, uge
+    r = -d;
+    break;
+  }
+  // r > 0 when the predicate does not hold; clamp a stale negative to 0
+  if (r.isNegative())
+    return 0;
+  return r.getLimitedValue();
+}
+
+/// The comparison a condition is, through `sea.xor` with true (`negated`:
+/// an odd number of them); null if it is none.
+static Operation *conditionCmp(Value cond, bool &negated) {
+  negated = false;
+  for (unsigned depth = 0; depth < 8; ++depth) {
+    Operation *def = cond.getDefiningOp();
+    if (!def)
+      return nullptr;
+    if (isa<ICmpOp, AddrCmpOp>(def))
+      return def;
+    auto x = dyn_cast<XorOp>(def);
+    if (!x || !x.getType().isInteger(1))
+      return nullptr;
+    auto isTrue = [](Value v) {
+      auto c = v.getDefiningOp<ConstOp>();
+      auto attr = c ? dyn_cast<IntegerAttr>(c.getValue()) : IntegerAttr();
+      return attr && attr.getValue().isOne();
+    };
+    if (isTrue(x.getRhs()))
+      cond = x.getLhs();
+    else if (isTrue(x.getLhs()))
+      cond = x.getRhs();
+    else
+      return nullptr;
+    negated = !negated;
+  }
+  return nullptr;
+}
+
+static ICmpPredicate predOf(Operation *cmp) {
+  if (auto c = dyn_cast<ICmpOp>(cmp))
+    return c.getPredicate();
+  return cast<AddrCmpOp>(cmp).getPredicate();
+}
 
 namespace {
 
@@ -239,6 +482,7 @@ public:
     values = std::move(preset);
     used.clear();
     text = seedText;
+    badSeed = false;
   }
 
   FailureOr<APInt> get(NondetOp op, std::string &origin,
@@ -357,8 +601,39 @@ public:
       for (InputRange &r : rs)
         ranges.emplace(r.site, std::move(r));
     for (Block &b : program.getBody())
-      (void)b, ++report.blocksTotal;
+      blockId[&b] = report.blocksTotal++;
     report.dictionarySize = dict.size();
+    // the comparisons, by id, and their roles; the gates and their
+    // conditions
+    program.walk([&](Operation *op) {
+      if (!isa<ICmpOp, AddrCmpOp>(op))
+        return;
+      cmpIdx[op] = report.cmps.size();
+      report.cmps.push_back({});
+      report.cmps.back().op = op;
+    });
+    cmpLast.resize(report.cmps.size());
+    program.walk([&](CondBrOp br) {
+      bool neg;
+      if (Operation *c = conditionCmp(br.getCondition(), neg)) {
+        FuzzCmpStats &st = report.cmps[cmpIdx.lookup(c)];
+        if (st.role == CmpRole::Value)
+          st.role = CmpRole::Branch;
+      }
+    });
+    for (Operation *op : blockingOpsOf(program)) {
+      gateIdx[op] = report.gates.size();
+      report.gates.push_back({});
+      FuzzGateStats &g = report.gates.back();
+      g.op = op;
+      g.beforeAssertFalse = beforeAssertFalse.contains(op);
+      if (auto a = dyn_cast<AssumeOp>(op))
+        if (Operation *c = conditionCmp(a.getCond(), g.negated)) {
+          g.cmp = cmpIdx.lookup(c);
+          report.cmps[*g.cmp].role = CmpRole::Assume;
+        }
+    }
+    gateEpoch.assign(report.gates.size(), 0);
     runOptions.maxSteps = options.maxSteps;
     runOptions.deferMemoryErrors = options.deferMemoryErrors;
     runOptions.addr0IsNull = options.addr0IsNull;
@@ -366,6 +641,9 @@ public:
     runOptions.facts = programFactsOf(program);
     runOptions.prints = false;
     runOptions.onBlock = [this](Block *from, Block *to) {
+      // the path: a hash of the ids of the blocks entered, in order
+      pathHash = (pathHash ^ (blockId.lookup(to) + 1)) * 0x100000001b3ULL;
+      pathHash ^= pathHash >> 29;
       if (blocks.insert(to).second)
         newBlocks.push_back(to);
       if (edges.insert({from, to}).second)
@@ -374,7 +652,30 @@ public:
     runOptions.onAssume = [this](AssumeOp a) {
       if (assumes.insert(a).second)
         newAssumes.push_back(a);
+      // the frontier: distinct assumes passed in this run
+      unsigned i = gateIdx.lookup(a);
+      if (gateEpoch[i] != epoch) {
+        gateEpoch[i] = epoch;
+        ++report.gates[i].passed;
+        ++runFrontier;
+      }
     };
+    if (options.cmpCoverage)
+      runOptions.onCmp = [this](Operation &op, ICmpPredicate p, const APInt &a,
+                                const APInt &b) {
+        unsigned i = cmpIdx.lookup(&op);
+        FuzzCmpStats &st = report.cmps[i];
+        if (st.counts[cmpBucket(p, a, b)]++ == 0) {
+          ++report.cmpBucketsHit;
+          ++runNewBuckets;
+        }
+        if (st.role == CmpRole::Assume) {
+          CmpLast &l = cmpLast[i];
+          l.epoch = epoch;
+          l.a = a;
+          l.b = b;
+        }
+      };
     if (!options.reachTargets.empty()) {
       for (auto [i, op] : llvm::enumerate(options.reachTargets))
         targetIndex[op] = i;
@@ -398,7 +699,48 @@ public:
     newEdges.clear();
     newAssumes.clear();
     runHits.clear();
+    pathHash = 0xcbf29ce484222325ULL;
+    ++epoch;
+    runFrontier = 0;
+    runNewBuckets = 0;
     return interpret(program, src, runOptions);
+  }
+
+  /// The running totals (FuzzOptions::onProgress).
+  FuzzProgress progress(double seconds) const {
+    FuzzProgress p;
+    p.seconds = seconds;
+    p.trials = report.trials;
+    p.steps = report.steps;
+    p.blocksHit = blocks.size();
+    p.edgesHit = edges.size();
+    p.assumesPassed = assumes.size();
+    p.paths = paths.size();
+    p.pathsCapped = report.pathsCapped;
+    p.failures = failingTrials;
+    p.frontier = report.frontierDeepest;
+    p.cmpBuckets = report.cmpBucketsHit;
+    p.corpus = corpus.size();
+    return p;
+  }
+
+  /// Writes the coverage file to the stream opened before the trials.
+  void writeCoverage(llvm::raw_fd_ostream &os);
+
+  /// The comparison totals derived from the bucket counts.
+  void finishCmps() {
+    report.cmpsReached = report.cmpOutcomesHit = 0;
+    for (FuzzCmpStats &c : report.cmps) {
+      ICmpPredicate p = predOf(c.op);
+      bool any = false;
+      for (unsigned k = 0; k < kCmpBuckets; ++k)
+        if (c.counts[k]) {
+          any = true;
+          (bucketOutcome(p, k) ? c.sawTrue : c.sawFalse) = true;
+        }
+      report.cmpsReached += any;
+      report.cmpOutcomesHit += c.sawTrue + c.sawFalse;
+    }
   }
 
   ServeCoverage coverage() const {
@@ -613,20 +955,23 @@ public:
   }
 
 private:
-  /// Writes `e` as a corpus file; returns its path.
+  /// Writes `e` as a corpus file, whole; returns its path. `keep`: the
+  /// reasons a new-coverage entry was kept (FuzzKeep), in its header.
   FailureOr<std::string> write(StringRef kind, const Entry &e,
-                               const RunResult &r, std::string &error) {
+                               const RunResult &r, std::string &error,
+                               unsigned keep = 0) {
     llvm::SmallString<128> path(options.outDir);
     llvm::sys::path::append(
         path, (kind + "-" + llvm::Twine(report.trials) + ".txt").str());
-    std::error_code ec;
-    llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_Text);
-    if (ec) {
-      error = "cannot write '" + path.str().str() + "': " + ec.message();
-      return failure();
-    }
+    std::string text;
+    llvm::raw_string_ostream os(text);
     os << "# sea-run --fuzz: trial=" << report.trials
-       << " status=" << stringifyRunStatus(r.status) << "\n";
+       << " status=" << stringifyRunStatus(r.status);
+    // the reasons, unless only blocks can be one (the files of earlier
+    // versions)
+    if (keep && options.keep != kKeepBlocks)
+      os << " keep=" << formatFuzzKeep(keep);
+    os << "\n";
     if (r.status == RunStatus::MemoryError)
       os << "# replay with: sea-run --defer-memory-errors --input-file=<this "
             "file>\n";
@@ -636,15 +981,19 @@ private:
          << " memhavoc-null-noop=" << r.memhavocNullNoopUses << "\n";
     for (const Assignment &a : assignmentsOf(e))
       os << formatAssignment(a) << "\n";
+    if (failed(writeWhole(path, text, error)))
+      return failure();
     ++report.filesWritten;
     return path.str().str();
   }
 
   /// One trial on `preset` (and a seed's text, from corpus file
-  /// `seedName`). Returns failure on an error of the fuzzer (`error` set);
-  /// `stop` when the run must end.
+  /// `seedName`; `imported`: a file of a peer, FuzzOptions::syncDirs).
+  /// Returns failure on an error of the fuzzer (`error` set); `stop` when
+  /// the run must end.
   LogicalResult trial(Entry preset, const std::map<Key, std::string> *seedText,
-                      StringRef seedName, bool &stop, std::string &error);
+                      StringRef seedName, bool &stop, std::string &error,
+                      bool imported = false);
 
   ProgramOp program;
   const FuzzOptions &options;
@@ -661,14 +1010,40 @@ private:
   llvm::DenseSet<Operation *> beforeAssertFalse;
   llvm::DenseMap<Operation *, unsigned> opOrder;
   std::vector<Entry> corpus;
+  /// a block's id: its position in the program body
+  llvm::DenseMap<Block *, unsigned> blockId;
   llvm::DenseSet<Block *> blocks;
   llvm::DenseSet<std::pair<Block *, Block *>> edges;
+  /// the current run's path hash, and the distinct ones (kFuzzPathCap)
+  uint64_t pathHash = 0;
+  llvm::DenseSet<uint64_t> paths;
+  uint64_t failingTrials = 0;
+  /// the run's start (failure times, progress)
+  std::chrono::steady_clock::time_point start;
   llvm::DenseSet<Operation *> assumes;
   llvm::DenseMap<Operation *, uint64_t> blockedBy;
   /// FuzzOptions::reachTargets: op -> index; the targets the current run
   /// reached that no earlier one did (repeats possible)
   llvm::DenseMap<Operation *, size_t> targetIndex;
   std::vector<size_t> runHits;
+  /// the blocking ops' ids (blockingOpsOf); the run (epoch) that last
+  /// passed each; the current run and its frontier
+  llvm::DenseMap<Operation *, unsigned> gateIdx;
+  std::vector<uint64_t> gateEpoch;
+  uint64_t epoch = 0;
+  unsigned runFrontier = 0;
+  /// the comparison buckets the current run covered first; the deepest
+  /// frontier of a corpus entry's trial (FuzzKeep)
+  unsigned runNewBuckets = 0;
+  unsigned corpusFrontier = 0;
+  /// the comparisons' ids; an assume's comparison's last operands, and the
+  /// run that computed them
+  llvm::DenseMap<Operation *, unsigned> cmpIdx;
+  struct CmpLast {
+    uint64_t epoch = 0;
+    APInt a, b;
+  };
+  std::vector<CmpLast> cmpLast;
   FuzzReport report;
 };
 
@@ -676,14 +1051,32 @@ private:
 
 LogicalResult Fuzzer::trial(Entry preset,
                             const std::map<Key, std::string> *seedText,
-                            StringRef seedName, bool &stop,
-                            std::string &error) {
+                            StringRef seedName, bool &stop, std::string &error,
+                            bool imported) {
   source.reset(std::move(preset), seedText);
   RunResult r = runOn(source);
-  ++report.trials;
   if (source.badSeed) {
+    if (imported) {
+      // a peer's file with a value that does not fit (another program?):
+      // skipped, and not a trial
+      ++report.syncSkipped;
+      diag::warn("fuzz.sync-skip",
+                 "a --fuzz-sync file was skipped (a value that does not fit "
+                 "its site); the fuzz.sync line counts them: " +
+                     seedName.str());
+      return success();
+    }
     error = r.message;
     return failure();
+  }
+  ++report.trials;
+  report.syncImported += imported;
+  report.steps += r.steps;
+  if (!paths.contains(pathHash)) {
+    if (paths.size() < kFuzzPathCap)
+      paths.insert(pathHash);
+    else
+      report.pathsCapped = true;
   }
   for (size_t i : runHits) {
     ReachHit &h = report.reachHits[i];
@@ -702,8 +1095,27 @@ LogicalResult Fuzzer::trial(Entry preset,
   report.memhavocNullNoopRuns += r.memhavocNullNoopUses != 0;
   if (r.deferredCount)
     ++report.deferredStatusCount[static_cast<unsigned>(r.status)];
+  report.frontierSum += runFrontier;
+  if (runFrontier > report.frontierDeepest || report.trials == 1) {
+    report.frontierDeepest = runFrontier;
+    report.frontierTrial = report.trials;
+    report.frontierStatus = r.status;
+    report.frontierGate.reset();
+    if (r.status == RunStatus::AssumeBlocked && r.at)
+      report.frontierGate = gateIdx.lookup(r.at);
+  }
   if (r.status == RunStatus::AssumeBlocked && r.at) {
     ++blockedBy[r.at];
+    FuzzGateStats &g = report.gates[gateIdx.lookup(r.at)];
+    ++g.blocked;
+    if (options.cmpCoverage && g.cmp && cmpLast[*g.cmp].epoch == epoch) {
+      const CmpLast &l = cmpLast[*g.cmp];
+      ICmpPredicate p = predOf(report.cmps[*g.cmp].op);
+      uint64_t d = branchDistance(g.negated ? inversePred(p) : p, l.a, l.b);
+      ++g.distanceRuns;
+      if (!g.bestDistance || d < *g.bestDistance)
+        g.bestDistance = d;
+    }
     if (beforeAssertFalse.contains(r.at)) {
       ++report.blockedBeforeAssertFalse;
       report.blockedBeforeAssertFalseDeferred += r.deferredCount != 0;
@@ -721,22 +1133,52 @@ LogicalResult Fuzzer::trial(Entry preset,
                "fuzz.limit lines count them per op): " +
                    r.message,
                r.at ? std::optional<Location>(r.at->getLoc()) : std::nullopt);
-  if (!newBlocks.empty() || !newEdges.empty() || !newAssumes.empty()) {
-    corpus.push_back(source.used);
+  // the keep rule (FuzzKeep): the reasons this trial has, of those asked for
+  unsigned keep = 0;
+  if (!newBlocks.empty() || !newEdges.empty() || !newAssumes.empty())
+    keep |= kKeepBlocks;
+  if (runNewBuckets)
+    keep |= kKeepCmp;
+  if (runFrontier > corpusFrontier)
+    keep |= kKeepFrontier;
+  keep &= options.keep;
+  if (keep) {
+    unsigned first = 0; // the first reason (kKeepNames order)
+    while (!(keep & (1u << first)))
+      ++first;
+    ++report.keptBy[first];
+    report.syncKept += imported;
+    bool full = options.corpusMax && corpus.size() >= options.corpusMax;
+    // the frontier rises with every kept trial, dropped or not: a later
+    // trial is kept for it only when deeper than any kept trial
+    corpusFrontier = std::max(corpusFrontier, runFrontier);
+    if (full)
+      ++report.corpusDropped;
+    else
+      corpus.push_back(source.used);
     SEA_LOG(logFuzz, 2)
         .msg("new-coverage")
         .kv("trial", report.trials)
         .kv("status", stringifyRunStatus(r.status))
+        .kv("keep", formatFuzzKeep(keep))
         .kv("blocks", newBlocks.size())
         .kv("edges", newEdges.size())
         .kv("assumes", newAssumes.size())
-        .kv("corpus", corpus.size());
-    if (!options.outDir.empty() && !failing && !erring)
-      if (failed(write("cov", source.used, r, error)))
+        .kv("cmp-buckets", runNewBuckets)
+        .kv("frontier", runFrontier)
+        .kv("corpus", corpus.size())
+        .kv("dropped", full ? 1 : 0);
+    // an imported entry stays in its peer's directory (no echo back)
+    if (!options.outDir.empty() && !failing && !erring && !imported) {
+      std::string kind =
+          first == 0 ? "cov" : "cov-" + std::string(kKeepNames[first]);
+      if (failed(write(kind, source.used, r, error, keep)))
         return failure();
+    }
   }
   if (!failing && !erring)
     return success();
+  failingTrials += failing;
   std::vector<FuzzFailure> &list = failing       ? report.failures
                                    : memoryCheck ? report.memoryChecks
                                                  : report.limits;
@@ -752,6 +1194,9 @@ LogicalResult Fuzzer::trial(Entry preset,
     f.message = r.message;
     f.input = assignmentsOf(source.used);
     f.count = 1;
+    f.seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+            .count();
     if (!options.outDir.empty()) {
       FailureOr<std::string> p = write(failing       ? "failure"
                                        : memoryCheck ? "memory-check"
@@ -776,6 +1221,18 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
             "program)";
     return failure();
   }
+  if (!options.keep) {
+    error = "no keep reason: give at least one of blocks, cmp, frontier";
+    return failure();
+  }
+  if ((options.keep & kKeepCmp) && !options.cmpCoverage) {
+    error = "keep reason cmp needs the comparison counters (--fuzz-cmp)";
+    return failure();
+  }
+  if (!options.syncDirs.empty() && !(options.syncSeconds > 0)) {
+    error = "corpus sync needs a positive period (--fuzz-sync-period)";
+    return failure();
+  }
   if (!options.outDir.empty() && llvm::sys::fs::exists(options.outDir)) {
     std::error_code ec;
     llvm::sys::fs::directory_iterator it(options.outDir, ec);
@@ -792,6 +1249,16 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
       error = "cannot create '" + options.outDir + "': " + ec.message();
       return failure();
     }
+  // open the coverage file now: a bad path fails before the trials, not after
+  std::error_code covEc;
+  std::optional<llvm::raw_fd_ostream> covOs;
+  if (!options.coverageOut.empty()) {
+    covOs.emplace(options.coverageOut, covEc, llvm::sys::fs::OF_Text);
+    if (covEc) {
+      error = "cannot write '" + options.coverageOut + "': " + covEc.message();
+      return failure();
+    }
+  }
   SEA_LOG(logFuzz, 1)
       .msg("start")
       .kv("program", ("@" + program.getSymName()).str())
@@ -800,7 +1267,7 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
       .kv("seconds", options.seconds)
       .kv("seed", options.seed)
       .kv("dictionary", options.dictionary ? dict.size() : 0);
-  auto start = std::chrono::steady_clock::now();
+  start = std::chrono::steady_clock::now();
   auto elapsed = [&] {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                          start)
@@ -812,6 +1279,91 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
     if (options.seconds > 0 && elapsed() >= options.seconds)
       return false;
     return true;
+  };
+  // onProgress at k * progressSeconds, after the trial that crossed it
+  bool progressOn = options.progressSeconds > 0 && options.onProgress;
+  double nextProgress = options.progressSeconds;
+  auto tick = [&] {
+    if (!progressOn)
+      return;
+    double t = elapsed();
+    if (t < nextProgress)
+      return;
+    options.onProgress(this->progress(t));
+    while (nextProgress <= t)
+      nextProgress += options.progressSeconds;
+  };
+  // corpus sync: every syncSeconds, the peers' cov-*.txt files not read yet
+  // (this run's own outDir excluded), in name order per directory
+  std::vector<std::string> syncDirs;
+  for (const std::string &d : options.syncDirs) {
+    bool own = false;
+    if (!options.outDir.empty())
+      llvm::sys::fs::equivalent(d, options.outDir, own);
+    if (!own)
+      syncDirs.push_back(d);
+  }
+  std::set<llvm::sys::fs::UniqueID> syncSeen;
+  double nextSync = options.syncSeconds;
+  auto sync = [&](bool &stop) -> LogicalResult {
+    if (syncDirs.empty() || elapsed() < nextSync)
+      return success();
+    while (nextSync <= elapsed())
+      nextSync += options.syncSeconds;
+    ++report.syncPolls;
+    unsigned missing = 0;
+    for (const std::string &dir : syncDirs) {
+      if (!llvm::sys::fs::is_directory(dir)) {
+        ++missing;
+        continue;
+      }
+      std::vector<std::string> files;
+      std::error_code ec;
+      for (llvm::sys::fs::directory_iterator it(dir, ec), end; it != end && !ec;
+           it.increment(ec)) {
+        StringRef name = llvm::sys::path::filename(it->path());
+        if (name.starts_with("cov-") && name.ends_with(".txt"))
+          files.push_back(it->path());
+      }
+      if (ec) {
+        // a directory that does not list now: counted as missing this poll
+        ++missing;
+        continue;
+      }
+      llvm::sort(files);
+      for (const std::string &f : files) {
+        if (stop || !budgetLeft())
+          break;
+        // by file identity: one directory under two spellings is read once
+        llvm::sys::fs::UniqueID id;
+        if (llvm::sys::fs::getUniqueID(f, id)) {
+          ++report.syncSkipped;
+          diag::warn("fuzz.sync-skip",
+                     "a --fuzz-sync file was skipped (unreadable): " + f);
+          continue;
+        }
+        if (!syncSeen.insert(id).second)
+          continue;
+        std::vector<CorpusEntryText> entry;
+        std::string why;
+        if (failed(readCorpusFile(f, entry, why))) {
+          ++report.syncSkipped;
+          diag::warn("fuzz.sync-skip", "a --fuzz-sync file was skipped (" +
+                                           why +
+                                           "); the fuzz.sync line counts them");
+          SEA_LOG(logFuzz, 2).msg("sync-skip").kv("file", f).kv("why", why);
+          continue;
+        }
+        std::map<Key, std::string> text;
+        for (const Assignment &a : entry.front().assignments)
+          text[{a.site, a.cell}] = a.value;
+        pickStrategy();
+        if (failed(trial({}, &text, f, stop, error, /*imported=*/true)))
+          return failure();
+      }
+    }
+    report.syncDirsMissing = missing;
+    return success();
   };
   bool stop = false;
   for (const CorpusEntryText &s : seeds) {
@@ -826,17 +1378,28 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
       return failure();
     }
     ++report.seedTrials;
+    tick();
   }
   while (!stop && budgetLeft()) {
     pickStrategy();
     if (failed(trial(nextEntry(), nullptr, "", stop, error)))
       return failure();
+    tick();
+    if (failed(sync(stop)))
+      return failure();
   }
   report.seconds = elapsed();
+  report.paths = paths.size();
+  finishCmps();
+  if (covOs)
+    writeCoverage(*covOs);
   report.blocksHit = blocks.size();
   report.edgesHit = edges.size();
   report.assumesPassed = assumes.size();
   report.corpusSize = corpus.size();
+  for (Block *b : blocks)
+    report.coveredBlocks.push_back(blockId.lookup(b));
+  llvm::sort(report.coveredBlocks);
   for (auto [op, n] : blockedBy)
     report.blocked.push_back({op, n});
   llvm::sort(report.blocked, [&](const auto &a, const auto &b) {
@@ -857,6 +1420,58 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
       .kv("errors",
           report.statusCount[static_cast<unsigned>(RunStatus::Error)]);
   return report;
+}
+
+void Fuzzer::writeCoverage(llvm::raw_fd_ostream &os) {
+  // sorted ids, so equal coverage gives equal files
+  std::vector<unsigned> bs;
+  for (Block *b : blocks)
+    bs.push_back(blockId.lookup(b));
+  llvm::sort(bs);
+  std::vector<std::pair<int64_t, unsigned>> es;
+  for (auto [from, to] : edges)
+    es.push_back(
+        {from ? int64_t(blockId.lookup(from)) : -1, blockId.lookup(to)});
+  llvm::sort(es);
+  std::vector<unsigned> as;
+  for (auto [id, op] : llvm::enumerate(blockingOpsOf(program)))
+    if (assumes.contains(op))
+      as.push_back(id);
+  std::vector<uint64_t> ps(paths.begin(), paths.end());
+  llvm::sort(ps);
+  os << "# sea-run --fuzz coverage: program=@" << program.getSymName()
+     << " trials=" << report.trials << "\n";
+  os << "totals: blocks-total=" << report.blocksTotal
+     << " assumes-total=" << report.assumesTotal
+     << " paths-capped=" << (report.pathsCapped ? 1 : 0) << "\n";
+  for (unsigned b : bs)
+    os << "block: " << b << "\n";
+  for (auto [from, to] : es)
+    os << "edge: " << from << " " << to << "\n";
+  for (unsigned a : as)
+    os << "assume: " << a << "\n";
+  for (uint64_t p : ps)
+    os << "path: " << llvm::format_hex(p, 18) << "\n";
+  os << "frontier: deepest=" << report.frontierDeepest
+     << " sum=" << report.frontierSum << "\n";
+  for (auto [id, g] : llvm::enumerate(report.gates)) {
+    os << "gate: " << id << " op=" << g.op->getName() << " passed=" << g.passed
+       << " blocked=" << g.blocked;
+    if (options.cmpCoverage)
+      os << " distance="
+         << (g.bestDistance ? std::to_string(*g.bestDistance) : "-");
+    os << "\n";
+  }
+  if (!options.cmpCoverage)
+    return;
+  for (auto [id, c] : llvm::enumerate(report.cmps)) {
+    os << "cmp: " << id << " pred=" << stringifyICmpPredicate(predOf(c.op))
+       << " role=" << stringifyCmpRole(c.role) << " counts=";
+    for (unsigned k = 0; k < kCmpBuckets; ++k)
+      os << (k ? "," : "") << c.counts[k];
+    std::string at = formatLoc(c.op->getLoc());
+    os << " at=" << (at.empty() ? "-" : at) << "\n";
+  }
 }
 
 FailureOr<FuzzReport> fuzz(ProgramOp program,

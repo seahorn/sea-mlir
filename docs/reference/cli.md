@@ -52,7 +52,7 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--timeout=<s>` | wall-clock limit of the solver's check; does not bound query generation |
 | `--mem-limit=<GB>` | address-space limit of the process (`RLIMIT_AS`) |
 | `--z3-param=<key=value>` | a global z3 parameter (repeatable) |
-| `--z3-tactic=<tactic>` | z3's default tactic |
+| `--z3-tactic=<tactic>` | z3's default tactic; `sls-smt` is z3's stochastic local search (see [Local search in the solver](fuzzing.md#local-search-in-the-solver)) |
 | `--yices-param=<key=value>` | a Yices search parameter (repeatable), e.g. `random-seed=N`; Yices times vary widely with the seed, so compare medians over several seeds |
 | `--yices-config=<key=value>`, `--yices-logic=<logic>` | the Yices context configuration and logic |
 | `--smt2` | print the query as SMT-LIB and exit |
@@ -119,6 +119,10 @@ sea-run <file.mlir> [options]
 | `--fuzz=<n>`, `--fuzz-time=<s>` | fuzz: run trials on generated inputs ([Fuzzing](fuzzing.md)) |
 | `--fuzz-ranges=false`, `--fuzz-range-share=<p>` | with `--fuzz`: no range draws, or the probability `p` that a trial uses them (default on, `p` = 0.5: in a range trial a value site that an assume bounds gets values from its range, biased to the ends; the other trials use the generator without ranges) ([Ranges](fuzzing.md#ranges)) |
 | `--fuzz-dict=false`, `--fuzz-dict-share=<p>` | with `--fuzz`: no dictionary values, or the probability `p` that a fresh value and that a mutation is one (default: 1/2 of fresh values, 1/5 of mutations) ([Trials](fuzzing.md#trials)) |
+| `--fuzz-progress=<s>`, `--fuzz-coverage-out=<file>` | with `--fuzz`: a `fuzz.progress` line (cost and coverage so far) every `s` seconds; the covered block, edge, assume ids and path hashes written to `file` at the end ([Progress](fuzzing.md#progress)) |
+| `--fuzz-cmp`, `--fuzz-gates`, `--fuzz-reachable=<file>` | with `--fuzz`: model coverage, measures only (`--fuzz-cmp` is on by default, `--fuzz-cmp=false` turns it off): comparison buckets and branch distances; one `fuzz.gate` line per assume; block coverage of the reachable blocks of a `sea-vc --reach=blocks` output on the same file ([Model coverage](fuzzing.md#model-coverage)) |
+| `--fuzz-keep=<reason>,...`, `--fuzz-corpus-max=<n>` | with `--fuzz`: why a trial joins the corpus, `blocks` (default), `cmp`, `frontier`, `all`; at most `n` entries, kept trials past it dropped and counted ([Corpus feedback](fuzzing.md#corpus-feedback)) |
+| `--fuzz-sync=<dir>,...`, `--fuzz-sync-period=<s>` | with `--fuzz`: every `s` seconds (default 5) run the new-coverage files of other processes' `--fuzz-out` directories as trials; not reproducible ([Corpus sync](fuzzing.md#corpus-sync)) |
 | `--fuzz-sites` | list the input sites, the assumes with their conditions and the ranges, and exit ([For agents](fuzzing.md#for-agents)) |
 | `--fuzz-serve` | run on inputs sent as JSON lines on stdin, one response per line ([Driving the fuzzer from Python](fuzzing.md#driving-the-fuzzer-from-python)) |
 | `--memhavoc-null=noop\|error` | `sea.memhavoc` of the null pointer: a no-op (default; an open semantics decision, counted as `assume.memhavoc-null-noop: uses=<n>` and warned) or a memory-safety error |

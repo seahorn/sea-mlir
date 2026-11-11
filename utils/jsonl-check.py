@@ -8,7 +8,7 @@
 
 1. Every line of J is one JSON object with a string "kind" and "text".
 2. The "text" fields, one per line, are T (timings masked: two runs;
-   also time=<s> and execs/s=<n> fields).
+   also time=<s>, execs/s=<n> and steps/s=<n> fields).
 3. Records with a fixed rendering are rendered from their fields and must
    equal their "text": stat (key: value k=v ...; BRUNCH_STAT), program,
    result, nondet, memread, validate, object, print.object, print
@@ -24,7 +24,7 @@ import re
 import sys
 
 TIME = re.compile(r"(\S*time\S*:? )-?[0-9]+\.[0-9]+")
-TIME_KV = re.compile(r"\b((?:time|execs/s)=)-?[0-9]+(?:\.[0-9]+)?")
+TIME_KV = re.compile(r"\b((?:time|execs/s|steps/s)=)-?[0-9]+(?:\.[0-9]+)?")
 
 
 def mask(s):

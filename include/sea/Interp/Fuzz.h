@@ -30,6 +30,7 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -115,6 +116,52 @@ struct RangeStats {
   unsigned skipped = 0; // recognized but not used
 };
 
+/// The distinct paths FuzzReport::paths counts at most (2^20 hashes, about 16
+/// MiB in a DenseSet<uint64_t> of 2^21 buckets): a program with loops has
+/// unboundedly many.
+constexpr uint64_t kFuzzPathCap = uint64_t(1) << 20;
+
+/// The running totals of a fuzz run (FuzzOptions::onProgress): the cost so
+/// far (trials, interpreter steps), the coverage so far (as FuzzReport),
+/// and the failing trials (assert failures, memory-safety findings).
+struct FuzzProgress {
+  double seconds = 0;
+  uint64_t trials = 0, steps = 0;
+  unsigned blocksHit = 0, edgesHit = 0, assumesPassed = 0;
+  uint64_t paths = 0;
+  bool pathsCapped = false;
+  uint64_t failures = 0;
+  /// The assume frontier so far (FuzzReport::frontierDeepest), and with
+  /// FuzzOptions::cmpCoverage the comparison buckets covered.
+  unsigned frontier = 0;
+  unsigned cmpBuckets = 0;
+  /// Corpus entries so far.
+  uint64_t corpus = 0;
+};
+
+/// Why a trial joins the corpus (FuzzOptions::keep, a set of these bits;
+/// sea-run --fuzz-keep). Blocks: it reached a block, an edge or a passed
+/// sea.assume no earlier trial did (the rule of every version before the
+/// option, the default). Cmp: a comparison bucket no earlier trial did
+/// (needs FuzzOptions::cmpCoverage). Frontier: it passed more distinct
+/// sea.assume ops than any corpus entry's trial (a new per-gate pass is a
+/// new passed assume: blocks).
+enum FuzzKeep : unsigned {
+  kKeepBlocks = 1,
+  kKeepCmp = 2,
+  kKeepFrontier = 4,
+  kKeepAll = 7,
+};
+/// The reasons, in the order a kept entry is attributed to its first
+/// (FuzzReport::keptBy, the --fuzz-out file names).
+constexpr unsigned kKeepReasons = 3;
+extern const char *const kKeepNames[kKeepReasons];
+/// Parses a comma-separated list of blocks, cmp, frontier, all.
+mlir::LogicalResult parseFuzzKeep(llvm::StringRef text, unsigned &keep,
+                                  std::string &error);
+/// The list of the set bits (blocks,cmp,frontier order).
+std::string formatFuzzKeep(unsigned keep);
+
 struct FuzzOptions {
   /// Stop after this many trials (0: no bound), or after `seconds` of wall
   /// clock (0: no bound); at least one is set.
@@ -157,6 +204,15 @@ struct FuzzOptions {
   /// Write failing and new-coverage inputs here (empty: none). The
   /// directory must be new or empty.
   std::string outDir;
+  /// Write the covered blocks, edges, assumes and path hashes here at the
+  /// end of the run (empty: none), by the ids of serve mode (ServeResult):
+  /// the same program gives the same ids in every process, so files of
+  /// several runs can be joined (utils/fuzz-par.py).
+  std::string coverageOut;
+  /// Call onProgress every progressSeconds of wall clock (0: never), after
+  /// the trial that crossed the time.
+  double progressSeconds = 0;
+  std::function<void(const FuzzProgress &)> onProgress;
   /// Per-trial interpreter options (maxSteps; prints are off in trials).
   uint64_t maxSteps = 1'000'000;
   /// Reach coverage (sea-run --reach-targets, sea-vc --reach-corpus): the
@@ -164,6 +220,74 @@ struct FuzzOptions {
   /// first reached the top of each. Not with deferMemoryErrors (past a
   /// substituted violation a run is not an execution of the program).
   std::vector<mlir::Operation *> reachTargets;
+  /// Comparison coverage (sea-run --fuzz-cmp): per sea.icmp and
+  /// sea.addr.cmp the runs evaluate, the distance buckets of its operands
+  /// (FuzzCmpStats), and the branch distance of each run an assume of a
+  /// comparison blocked (FuzzGateStats::bestDistance). A measure, not corpus
+  /// feedback.
+  bool cmpCoverage = false;
+  /// Corpus feedback (FuzzKeep bits): why a trial joins the corpus.
+  unsigned keep = kKeepBlocks;
+  /// At most this many corpus entries (0: no bound). A trial kept when the
+  /// corpus is full is not added (FuzzReport::corpusDropped counts it; its
+  /// coverage still counts, and with outDir its file is still written).
+  uint64_t corpusMax = 0;
+  /// Corpus sync (sea-run --fuzz-sync): every syncSeconds of wall clock,
+  /// the new-coverage files (`cov-*.txt`) of these directories (other
+  /// processes' outDir) that this run has not read yet run as trials, and
+  /// join the corpus by the keep rule. Not written to outDir (the peers
+  /// read them where they were found). A file that does not read or parse
+  /// is skipped and counted. outDir itself is never read.
+  std::vector<std::string> syncDirs;
+  double syncSeconds = 0;
+};
+
+/// The operand distance buckets of a comparison: d = lhs - rhs, exact (as
+/// signed values for a signed predicate, else as unsigned), by sign and
+/// |d|: > 16, 2..16, 1; 0. Index order: -L -S -1 0 +1 +S +L.
+constexpr unsigned kCmpBuckets = 7;
+/// The bucket names, in index order.
+extern const char *const kCmpBucketNames[kCmpBuckets];
+
+/// What a comparison decides: the condition of a sea.assume (directly or
+/// through `sea.xor` with true), of a sea.cond_br, or neither.
+enum class CmpRole { Assume, Branch, Value };
+llvm::StringRef stringifyCmpRole(CmpRole r);
+
+/// One comparison of the program, a sea.icmp or sea.addr.cmp
+/// (FuzzOptions::cmpCoverage; sea.ptr.cmp of abstract pointers is not
+/// one); its id is its position among the program's comparisons in
+/// program order.
+struct FuzzCmpStats {
+  mlir::Operation *op = nullptr;
+  CmpRole role = CmpRole::Value;
+  /// evaluations per bucket (kCmpBuckets)
+  uint64_t counts[kCmpBuckets] = {};
+  /// Which of true / false the evaluations gave (derived from the buckets).
+  bool sawTrue = false, sawFalse = false;
+};
+
+/// One op that can block a run (blockingOpsOf order: its id).
+struct FuzzGateStats {
+  mlir::Operation *op = nullptr;
+  /// Trials that passed it (a sea.assume whose condition held; once per
+  /// trial), and trials it blocked.
+  uint64_t passed = 0, blocked = 0;
+  /// The comparison its condition is (an id of FuzzReport::cmps), through
+  /// `sea.xor` with true (negated: an odd number of them); none: the
+  /// condition is not a comparison (or a sea.unreachable).
+  std::optional<unsigned> cmp;
+  bool negated = false;
+  /// isAssumeBeforeAssertFalse: in SeaHorn's export form, the assume of a
+  /// check's failure (passing it reaches the failure).
+  bool beforeAssertFalse = false;
+  /// FuzzOptions::cmpCoverage: the least branch distance of a blocked
+  /// trial (how far one operand had to move for the condition to hold:
+  /// eq: |lhs - rhs| modulo 2^w the short way; ne: 1; ult: lhs - rhs + 1;
+  /// ule: lhs - rhs; ugt: rhs - lhs + 1; uge: rhs - lhs; signed alike; at
+  /// most 2^64 - 1), and the blocked trials it was measured on.
+  std::optional<uint64_t> bestDistance;
+  uint64_t distanceRuns = 0;
 };
 
 /// The first trial that reached a reach target (FuzzOptions::reachTargets):
@@ -191,6 +315,7 @@ struct FuzzFailure {
   std::vector<Assignment> input;
   std::string file;   // in FuzzOptions::outDir, if set
   uint64_t count = 0; // trials that stopped the same way
+  double seconds = 0; // wall clock of the run at the first
 };
 
 /// The number of RunStatus values.
@@ -201,12 +326,34 @@ struct FuzzReport {
   uint64_t trials = 0;
   uint64_t seedTrials = 0; // of which the corpus seeds' runs
   double seconds = 0;
+  /// Interpreter steps (ops executed, RunResult::steps) over all trials:
+  /// the cost unit (a trial an early assume blocks is cheap).
+  uint64_t steps = 0;
+  /// Distinct paths: 64-bit hashes of the trials' block sequences (each
+  /// block entered, by id, whatever ended the trial; collisions possible,
+  /// so a lower bound). In a loop-free program finite; capped at
+  /// kFuzzPathCap (pathsCapped: the cap was hit, later paths not counted).
+  /// Not corpus feedback: a trial that reaches only a new path is not kept.
+  uint64_t paths = 0;
+  bool pathsCapped = false;
   /// Runs per status (RunStatus order).
   uint64_t statusCount[kRunStatusCount] = {};
   unsigned blocksHit = 0, blocksTotal = 0;
   unsigned edgesHit = 0;
   unsigned assumesPassed = 0, assumesTotal = 0;
   uint64_t corpusSize = 0; // entries in the corpus at the end
+  /// Entries kept per reason (kKeepNames order; an entry with several
+  /// reasons counts under its first), and the kept trials not added
+  /// because the corpus was full (FuzzOptions::corpusMax).
+  uint64_t keptBy[kKeepReasons] = {};
+  uint64_t corpusDropped = 0;
+  /// Corpus sync (FuzzOptions::syncDirs): the polls, the files run as
+  /// trials (also counted in trials), of those the ones that joined the
+  /// corpus, the files skipped (unreadable, not a corpus file, or a value
+  /// that does not fit its site), and the directories that did not exist
+  /// at the last poll.
+  uint64_t syncPolls = 0, syncImported = 0, syncKept = 0, syncSkipped = 0;
+  unsigned syncDirsMissing = 0;
   /// Range draws (FuzzOptions::ranges): value sites, sites with a range,
   /// the assumes the ranges came from, recognized range assumes not used
   /// (RangeStats), and the values drawn from a range.
@@ -254,12 +401,34 @@ struct FuzzReport {
   uint64_t memhavocNullNoopUses = 0, memhavocNullNoopRuns = 0;
   /// Parallel to FuzzOptions::reachTargets.
   std::vector<ReachHit> reachHits;
+  /// The covered blocks, by id (position in the program body), ascending.
+  std::vector<unsigned> coveredBlocks;
+  /// Per blocking op (blockingOpsOf order).
+  std::vector<FuzzGateStats> gates;
+  /// The assume frontier (approach level): the distinct sea.assume ops a
+  /// trial passed. The most of any trial, the first trial that passed that
+  /// many, how it ended (and its blocking op: an id of `gates`), and the
+  /// sum over the trials (mean = sum / trials).
+  unsigned frontierDeepest = 0;
+  uint64_t frontierTrial = 0;
+  RunStatus frontierStatus = RunStatus::Halted;
+  std::optional<unsigned> frontierGate;
+  uint64_t frontierSum = 0;
+  /// Every comparison of the program, by id (counts: with
+  /// FuzzOptions::cmpCoverage); the buckets covered (of kCmpBuckets per
+  /// comparison), the comparisons evaluated, the outcomes covered (of 2
+  /// per comparison).
+  std::vector<FuzzCmpStats> cmps;
+  unsigned cmpBucketsHit = 0, cmpsReached = 0, cmpOutcomesHit = 0;
 };
 
 /// Fuzzes `program`: first the seeds, in order, then mutated entries.
 /// Writes failure-<trial>.txt (the first of each failure),
 /// memory-check-<trial>.txt / limit-<trial>.txt (the first of each error)
-/// and cov-<trial>.txt (new coverage) to FuzzOptions::outDir. Warns
+/// and cov-<trial>.txt (kept for new blocks), cov-cmp-<trial>.txt,
+/// cov-frontier-<trial>.txt (kept for the other reasons, FuzzKeep) to
+/// FuzzOptions::outDir, each whole (a temporary file renamed), and the
+/// covered ids to FuzzOptions::coverageOut. Warns
 /// fuzz.limit (once, then counted) when trials stop at a limit.
 /// Fails (with `error`) on a seed value that does not fit its site, or an
 /// output file that cannot be written.
@@ -273,8 +442,9 @@ mlir::FailureOr<FuzzReport> fuzz(ProgramOp program,
 std::string formatAssignment(const Assignment &a);
 
 /// Writes a corpus file: `header` (its lines are written as `# ` comments),
-/// then one assignment per line. Fails (with `error`) when the file cannot
-/// be written.
+/// then one assignment per line, whole (a temporary file in the same
+/// directory, renamed). Fails (with `error`) when the file cannot be
+/// written.
 mlir::LogicalResult writeCorpusFile(llvm::StringRef path,
                                     llvm::ArrayRef<std::string> header,
                                     llvm::ArrayRef<Assignment> input,

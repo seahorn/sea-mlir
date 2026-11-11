@@ -22,7 +22,7 @@
 // CHECK-NEXT: fuzz.blocked: 1 op=sea.assume at={{.*}}cond.mlir:[[@LINE+29]]:3 sites=- cond=?
 // a load straight from a sea.mem.nondet (its cells are site 2's inputs)
 // CHECK-NEXT: fuzz.blocked: 1 op=sea.assume at={{.*}}cond.mlir:[[@LINE+33]]:3 sites=2 cond=(eq (load:8 s2@(addr.from_int 16)) 0)
-// CHECK-NOT: fuzz.
+// CHECK-NOT: fuzz.blocked
 // JSONL: {"kind":"stat","key":"fuzz.blocked","value":1,"op":"sea.assume","at":"{{.*}}","sites":"0,1","cond":"(ule s0 s1)","text":"fuzz.blocked: 1 {{.*}} sites=0,1 cond=(ule s0 s1)"}
 sea.program @main {
   %x = sea.nondet "nondet_u8" [0] : i8

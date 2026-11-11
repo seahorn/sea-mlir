@@ -1808,6 +1808,12 @@ RunResult Interpreter::run() {
         continue;
       }
       SmallVector<APInt> operands = valuesOf(op.getOperands());
+      if (options.onCmp) {
+        if (auto cmp = dyn_cast<ICmpOp>(op))
+          options.onCmp(op, cmp.getPredicate(), operands[0], operands[1]);
+        else if (auto cmp = dyn_cast<AddrCmpOp>(op))
+          options.onCmp(op, cmp.getPredicate(), operands[0], operands[1]);
+      }
       std::optional<APInt> v = evalPureOp(&op, operands);
       if (std::optional<StringRef> broken = brokenWrapPromise(&op, operands))
         diag::warn("interp.wrap-promise",

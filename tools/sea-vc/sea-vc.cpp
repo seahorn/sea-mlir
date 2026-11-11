@@ -1436,6 +1436,17 @@ TYPICAL:
                                  #   any global z3 parameter. Prints
                                  #   solver.z3-tactic: <t>. A sat is still
                                  #   replayed through the interpreter
+  sea-vc p.mlir --lower --widen-memory=8 --seam --z3-tactic=sls-smt --timeout=60
+                                 #   z3's stochastic local search (sat or
+                                 #   unknown, never unsat: an unknown ends at
+                                 #   the timeout, exit 3; always give
+                                 #   --timeout). Try it when the default
+                                 #   solve times out on a query that looks
+                                 #   sat, or as a cross-check; on small bugs
+                                 #   that CDCL finds in seconds it found
+                                 #   none. A seed:
+                                 #   --z3-tactic='(using-params sls-smt
+                                 #   :random_seed 3)'
   sea-vc p.mlir --lower --mem=lambda   # SeaHorn's lambda memory encoding
                                  #   (docs/design/Lambda.md): memories are
                                  #   unary functions, loads fapp, stores /
