@@ -367,7 +367,8 @@ it an alias question. A split pointer load whose bytes then share one ite
 spine of split-address conditions is the ite of the stored pointers
 (`ptr.load-resolve-leaves`, all leaves or nothing; other shared
 conditions, a join's, stay `--seam-pull-concat`'s). The general split
-over an ite index (SeaM-memops.md) stays dropped: no split while a leaf stays open. Counters `row.leaf-split`,
+over an ite index (SeaM-memops.md) stays dropped: no split while a leaf stays open (unless
+`--seam-leaf-split-partial`, below). Counters `row.leaf-split`,
 `row.leaf-split-leaves`, `row.leaf-split-refused` (a leaf reaches the
 memory without writes; Open item 6; it counts refused attempts, one per
 byte read and memory level: a read refused at an ite memory can still
@@ -384,7 +385,7 @@ recombination follows: `ptr.load-resolve-leaves` memoizes the byte split
 per byte tuple (distinct leaves bounded), steps over a byte whose top is
 not a split condition (it goes to both sides), and resolves a whole
 (wide) load `from_bits(ite)` whose ite conditions are all split
-conditions over the DAG. Tests: test/VC/seam/row-leaf-split-dag.mlir.
+conditions over the DAG (counter `ptr.load-resolve-leaf-ite`). Tests: test/VC/seam/row-leaf-split-dag.mlir.
 
 R-LEAVES-PARTIAL (`--seam-leaf-split-partial`, off, untuned): when some
 leaf reads are Undecided and the others are given by a write, the decided

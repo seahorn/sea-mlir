@@ -595,7 +595,8 @@ static cl::opt<bool> seamLeafSplit(
              "pointer load whose bytes then share one ite spine; "
              "row.leaf-split-refused: a leaf reads the memory without "
              "writes). The address may be a node over an ite base; at most "
-             "8 distinct leaves (counter row.leaf-split-node). Default on"),
+             "maxDecideLeaves (8) distinct leaves (counter "
+             "row.leaf-split-node). Default on"),
     cl::init(true));
 
 static cl::opt<bool> seamLeafSplitPartial(

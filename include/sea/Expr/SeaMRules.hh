@@ -2757,6 +2757,8 @@ public:
     // per ite node: does it have an undecided / a decided leaf (post-order,
     // memoized)
     std::unordered_map<ENode *, std::pair<bool, bool>> has;
+    // recursion depth = ite nesting depth (the leaf cap bounds leaves, not
+    // depth: deep select chains could recurse deeply)
     std::function<std::pair<bool, bool>(const Expr &)> hasOf =
         [&](const Expr &e) -> std::pair<bool, bool> {
       if (!isIte(e)) {
@@ -2774,6 +2776,8 @@ public:
     hasOf(it);
     // the residual address: the ite pruned to its undecided leaves
     std::unordered_map<ENode *, Expr> prunedMemo;
+    // recursion depth = ite nesting depth (the leaf cap bounds leaves, not
+    // depth: deep select chains could recurse deeply)
     std::function<Expr(const Expr &)> pruned = [&](const Expr &e) -> Expr {
       if (!isIte(e))
         return e;
@@ -2795,6 +2799,8 @@ public:
       residual = readAt(leafAddr(pruned(it)));
     ExprVector conds;
     std::unordered_map<ENode *, Expr> valMemo;
+    // recursion depth = ite nesting depth (the leaf cap bounds leaves, not
+    // depth: deep select chains could recurse deeply)
     std::function<Expr(const Expr &)> val = [&](const Expr &e) -> Expr {
       if (!isIte(e))
         return undecided.find(e.get())->second ? residual : readAt(leafAddr(e));
@@ -3943,7 +3949,7 @@ public:
   /// stored pointer's to_bits (that leaf is the pointer). The loadResolve
   /// leaf bound (maxPullLeaves tree leaves) does not apply: the ite is the
   /// split address's shape. Address-exact, no assumption (counter
-  /// ptr.load-resolve-leaves).
+  /// ptr.load-resolve-leaf-ite).
   Expr loadResolveLeafIte(const Expr &exp) {
     const Expr x = exp->arg(0);
     const unsigned w = widthOf(x);
@@ -3970,6 +3976,8 @@ public:
     if (!resolved)
       return Expr();
     std::unordered_map<ENode *, Expr> memo;
+    // recursion depth = ite nesting depth (the leaf cap bounds leaves, not
+    // depth: deep select chains could recurse deeply)
     std::function<Expr(const Expr &)> map = [&](const Expr &e) -> Expr {
       if (ites.count(e.get())) {
         auto f = memo.find(e.get());
@@ -3984,7 +3992,7 @@ public:
       return mk<PTR_FROM_BITS>(e);
     };
     Expr res = map(x);
-    m_stats.count("ptr.load-resolve-leaves");
+    m_stats.count("ptr.load-resolve-leaf-ite");
     return res;
   }
 
