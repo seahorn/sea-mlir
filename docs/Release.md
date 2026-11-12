@@ -398,6 +398,7 @@ measurement and are not part of the supported configuration:
 | `--seam-congruence` | decide addresses apart by divisibility |
 | `--seam-wide-ite-open` | W-ITE also for undecided ite leaf pairs (open, untuned) |
 | `--seam-leaf-split=0` | keep a read at an ite address whole (R-LEAVES off) |
+| `--seam-offset-leaves=<N>` | boundary byte expansion: byte offsets into ite address leaves, at most N leaves (default 8, untuned; 0 off) |
 | `--ptr-companion=exact\|check\|assume` | the pointer companion memory (PtrSort S6) |
 | `--seam-stride` | R-STRIDE in Store-Map |
 | `--seam-check-inb-premise` | the partial A-INB premise check (above) |

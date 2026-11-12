@@ -193,6 +193,14 @@ struct SeaMOptions {
   /// (rowCompareEq) and of a memory-operation read (rowMemOp) are built over
   /// the same pairs, so every pair a decision looked at is resolved per leaf.
   unsigned maxDecideLeaves = 8;
+  /// The boundary's byte expansion of a width term at an ite address
+  /// (WideExpander) pushes the byte offset into the ite leaves, ite(c, x, y)
+  /// + k ~> ite(c, x + k, y + k) (op::ptr::byteAddress), when the ite has at
+  /// most this many distinct leaves (and ite nodes); 0: a + k over the ite.
+  /// The rewriter does the same for the addresses it sees by
+  /// ptrindex.pull-ite (maxPullLeaves); no rule runs after the boundary.
+  /// Untuned: the cap of the decisions (sea-vc --seam-offset-leaves).
+  unsigned maxOffsetLeaves = 8;
   /// BvRules.hh: the bit-vector and Boolean normalization rules
   /// (extract / concat, linear equality, AC order, Boolean ite), valid over
   /// plain bit-vectors, for every term the rewriter visits. The addends of a
@@ -5321,6 +5329,19 @@ class SeaMRewriter {
         stack.push_back(n->arg(i));
     }
   }
+  /// the boundary's byte addresses with the offset pushed into ite leaves
+  /// (op::ptr::byteAddress), totals over the three expanders
+  void noteWideOffsets() {
+    uint64_t pushed = 0, refused = 0;
+    for (const WideExpander *w : {&m_wide, &m_wideKeep, &m_wideRest}) {
+      pushed += w->offsetPushed();
+      refused += w->offsetRefused();
+    }
+    if (pushed)
+      m_stats.rules["wide.expanded-ite-offset"] = pushed;
+    if (refused)
+      m_stats.rules["wide.expanded-ite-offset-refused"] = refused;
+  }
   /// time spent in rewrite(): the pre-processing of the thesis' Table 8.4
   double m_rewriteSeconds = 0;
   /// time spent in simplify(): the final pass over the VC
@@ -5347,7 +5368,10 @@ public:
                SeaMOptions opts = SeaMOptions(),
                RewriteOptions ropts = RewriteOptions())
       : m_config(efac, bases, m_stats, opts),
-        m_rw(m_config, m_cache, m_stats, ropts) {}
+        m_rw(m_config, m_cache, m_stats, ropts) {
+    for (WideExpander *w : {&m_wide, &m_wideKeep, &m_wideRest})
+      w->maxOffsetLeaves(opts.maxOffsetLeaves);
+  }
   SeaMRewriter(const SeaMRewriter &) = delete;
   SeaMRewriter &operator=(const SeaMRewriter &) = delete;
 
@@ -5412,6 +5436,7 @@ public:
     if (m_wideMade) {
       res = m_wide.expand(res);
       m_stats.rules["wide.expanded"] = m_wide.expanded();
+      noteWideOffsets();
     }
     if (m_memOpsMade) {
       res = m_memops.translate(res, why);
@@ -5465,6 +5490,7 @@ public:
       res = m_wideRest.expand(res);
       m_stats.rules["wide.expanded"] =
           m_wideKeep.expanded() + m_wideRest.expanded();
+      noteWideOffsets();
       res = expandPtrIndex(res);
       if (m_wideRest.hasWide(res)) {
         why = "initial words: a width term is left in the query";

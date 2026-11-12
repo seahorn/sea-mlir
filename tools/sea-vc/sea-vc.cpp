@@ -574,6 +574,17 @@ static cl::opt<bool> seamWideIteOpen(
              "every pair is decided (an open question, untuned)"),
     cl::init(false));
 
+static cl::opt<unsigned> seamOffsetLeaves(
+    "seam-offset-leaves",
+    cl::desc("With --seam: the boundary's byte expansion of a width term "
+             "at an ite address pushes the byte offset into the ite leaves, "
+             "ite(c, x, y) + k -> ite(c, x + k, y + k), when the ite has at "
+             "most this many distinct leaves (counters "
+             "wide.expanded-ite-offset, wide.expanded-ite-offset-refused over "
+             "the cap). 0: off. Default 8 (untuned: the cap of the access "
+             "decisions)"),
+    cl::init(8));
+
 static cl::opt<bool> seamLeafSplit(
     "seam-leaf-split",
     cl::desc("With --seam: R-LEAVES, a read at an ite address is the ite "
@@ -1403,6 +1414,11 @@ TYPICAL:
                                  #   with undecided leaf pairs too (each a
                                  #   read at its leaf address; default:
                                  #   only when every pair is decided)
+  sea-vc p.mlir --lower --seam --seam-offset-leaves=0  # the boundary's
+                                 #   byte k of a width term at an ite
+                                 #   address as ite + k (default: k in the
+                                 #   ite leaves, <= 8 leaves; counter
+                                 #   wide.expanded-ite-offset)
   sea-vc p.mlir --lower --seam --seam-leaf-split=0  # keep reads at ite
                                  #   addresses whole (default: split when
                                  #   a write gives every leaf read)
@@ -2652,12 +2668,14 @@ int main(int argc, char **argv) {
   if ((!seamInb || !seamRowExpand || !seamRowGroup || seamCheckInbPremise ||
        !seamLayout || !seamArm || !seamPruneSize0 || seamWide ||
        seamWideIteOpen || !seamLeafSplit || seamPullIndex ||
-       seamResolveIteNodes || seamPullConcat || seamCongruence ||
-       ptrCompanion != CompanionMode::Off || !seamStoreMap || !seamSimplify) &&
+       seamOffsetLeaves.getNumOccurrences() || seamResolveIteNodes ||
+       seamPullConcat || seamCongruence || ptrCompanion != CompanionMode::Off ||
+       !seamStoreMap || !seamSimplify) &&
       !seam)
     return fail("--seam-inb, --seam-row-expand, --seam-row-group, "
                 "--seam-check-inb-premise, --seam-layout, --seam-prune-size0, "
                 "--seam-wide, --seam-wide-ite-open, --seam-leaf-split, "
+                "--seam-offset-leaves, "
                 "--seam-arm, --seam-pull-index, --seam-resolve-ite-nodes, "
                 "--seam-pull-concat, --seam-congruence, --ptr-companion, "
                 "--seam-store-map and "
@@ -3194,6 +3212,7 @@ int main(int argc, char **argv) {
     seamOpts.congruence = seamCongruence;
     seamOpts.wideIteOpenLeaves = seamWideIteOpen;
     seamOpts.leafSplit = seamLeafSplit;
+    seamOpts.maxOffsetLeaves = seamOffsetLeaves;
     seamOpts.storeMap = seamStoreMap;
     seamOpts.simplify = simplify;
     seamOpts.plantBug = plantBug;

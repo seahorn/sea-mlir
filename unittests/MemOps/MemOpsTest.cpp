@@ -1217,6 +1217,120 @@ void testPtrIndex() {
   CHECK(ex.expand(c0) == mk<BADD>(b, num(-6)), "b + (-8 + 2)");
 }
 
+/// op::ptr::byteAddress (N70): byte k of an access at an ite address with k
+/// pushed into the leaves, ite(c, A + 24, A) + k ~> ite(c, A + 24 + k, A + k),
+/// exact, shared subterms rebuilt once, refused over the leaf cap; the
+/// boundary's byte expansion (WideExpander) uses it when set.
+void testIteOffset() {
+  using namespace op;
+  ExprFactory efac;
+  const unsigned n = 64;
+  Expr A = ptr::ptrConst(mkTerm<std::string>("A", efac), n);
+  Expr B = ptr::ptrConst(mkTerm<std::string>("B", efac), n);
+  Expr c = bind::boolConst(mkTerm<std::string>("c", efac));
+  Expr c2 = bind::boolConst(mkTerm<std::string>("c2", efac));
+  auto num = [&](unsigned long v) { return bv::bvnum(mpz_class(v), n, efac); };
+  auto valid = [&](const Expr &a, const Expr &b) {
+    TypeChecker tc;
+    PtrIndexExpander px;
+    Expr ea = mk<ADDR>(a), eb = mk<ADDR>(b);
+    sea::solver::yices_solver_impl sv(efac);
+    sv.add(px.expand(mk<NEG>(mk<EQ>(ea, eb))));
+    return sv.check() == sea::solver::SolverResult::UNSAT;
+  };
+  // the leaves of the result are not ites, and no node has an ite base
+  std::function<bool(const Expr &)> pushedForm = [&](const Expr &e) {
+    if (isOpX<ITE>(e))
+      return pushedForm(e->arg(1)) && pushedForm(e->arg(2));
+    return !(ptr::isPtrIndex(e) && isOpX<ITE>(ptr::base(e)));
+  };
+  Expr A24 = ptr::addressPlus(A, num(24));
+  Expr q = mk<ITE>(c, A24, A);
+  ptr::OffsetPush how;
+  {
+    Expr r = ptr::byteAddress(q, num(3), 8, how);
+    CHECK(how == ptr::OffsetPush::Pushed && isOpX<ITE>(r) && r->arg(0) == c &&
+              r->arg(1) == ptr::addressPlus(A, num(27)) &&
+              r->arg(2) == ptr::addressPlus(A, num(3)),
+          "ite(c, A + 24, A) + 3 = ite(c, A + 27, A + 3): " << *r);
+    CHECK(valid(r, ptr::addressPlus(q, num(3))), "pushed: exact");
+    // the old form: a node over the ite
+    Expr old = ptr::byteAddress(q, num(3), 0, how);
+    CHECK(how == ptr::OffsetPush::None && old == ptr::addressPlus(q, num(3)) &&
+              !pushedForm(old),
+          "cap 0: a + k over the ite");
+  }
+  {
+    // wrap: k pushed mod 2^n into a leaf at the top of the space
+    Expr top = ptr::addressPlus(A, num(~0UL));
+    Expr r = ptr::byteAddress(mk<ITE>(c, top, B), num(2), 8, how);
+    CHECK(how == ptr::OffsetPush::Pushed && pushedForm(r) &&
+              valid(r, ptr::addressPlus(mk<ITE>(c, top, B), num(2))),
+          "wrap: exact mod 2^n");
+  }
+  {
+    // a shared subterm: ite(c, X, ite(c2, X, B)), X = ite(c2, A24, A): X is
+    // rebuilt once (hash-consed: the same node at both places)
+    Expr X = mk<ITE>(c2, A24, A);
+    Expr d = mk<ITE>(c, X, mk<ITE>(c2, X, B));
+    Expr r = ptr::byteAddress(d, num(5), 8, how);
+    CHECK(how == ptr::OffsetPush::Pushed && pushedForm(r) &&
+              r->arg(1) == r->arg(2)->arg(1) &&
+              valid(r, ptr::addressPlus(d, num(5))),
+          "shared subterm pushed once, exact");
+  }
+  {
+    // over the cap: 9 distinct leaves -> refused, a + k over the ite
+    Expr big = B;
+    for (unsigned long i = 0; i < 8; ++i)
+      big = mk<ITE>(
+          bind::boolConst(mkTerm<std::string>("b" + std::to_string(i), efac)),
+          ptr::addressPlus(A, num(8 * i)), big);
+    Expr r = ptr::byteAddress(big, num(1), 8, how);
+    CHECK(how == ptr::OffsetPush::Refused && r == ptr::addressPlus(big, num(1)),
+          "9 leaves over a cap of 8: refused");
+    ptr::byteAddress(big, num(1), 9, how);
+    CHECK(how == ptr::OffsetPush::Pushed, "9 leaves within a cap of 9");
+  }
+  {
+    // an ite of promised nodes: addressPlus's own push (K + k), not counted
+    Expr x = bv::bvConst(mkTerm<std::string>("x", efac), n);
+    Expr p1 = ptr::ptrIndex(PtrOpKind::PTR_INDEX_NUSW, A, {{x, mpz_class(8L)}},
+                            mpz_class(0L), mpz_class(0L));
+    Expr p2 = ptr::ptrIndex(PtrOpKind::PTR_INDEX_NUSW, B, {{x, mpz_class(8L)}},
+                            mpz_class(0L), mpz_class(0L));
+    Expr r = ptr::byteAddress(mk<ITE>(c, p1, p2), num(4), 8, how);
+    CHECK(how == ptr::OffsetPush::None &&
+              r == ptr::addressPlus(mk<ITE>(c, p1, p2), num(4)),
+          "promised leaves: addressPlus's K push");
+  }
+  {
+    // the boundary: a 4-byte read at ite(c, A + 24, A), bytes in the leaves
+    Expr byte = bv::bvsort(8, efac);
+    Expr M = bind::mkConst(mkTerm<std::string>("M", efac),
+                           sort::arrayTy(ptr::ptrsort(n, efac), byte));
+    Expr w = array::wselect(M, q, bv::bvsort(32, efac));
+    WideExpander on, off;
+    on.maxOffsetLeaves(8);
+    Expr ron = on.expand(w), roff = off.expand(w);
+    bool leaves = true;
+    std::function<void(const Expr &)> walk = [&](const Expr &e) {
+      if (isOpX<SELECT>(e))
+        leaves = leaves && pushedForm(e->arg(1));
+      for (size_t i = 0; i < e->arity(); ++i)
+        walk(Expr(e->arg(i)));
+    };
+    walk(ron);
+    CHECK(leaves && on.offsetPushed() == 3 && off.offsetPushed() == 0,
+          "boundary: bytes 1..3 at the leaves: " << *ron);
+    PtrIndexExpander px;
+    sea::solver::yices_solver_impl sv(efac);
+    sv.add(px.expand(mk<NEG>(mk<EQ>(ron, roff))));
+    CHECK(sv.check() == sea::solver::SolverResult::UNSAT,
+          "boundary: the same bytes as a + k");
+  }
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1235,7 +1349,8 @@ int main(int argc, char **argv) {
                {"wide-byte-in", testWideByteIn},
                {"store-map", testStoreMap},
                {"boundary", testBoundary},
-               {"ptr-index", testPtrIndex}};
+               {"ptr-index", testPtrIndex},
+               {"ite-offset", testIteOffset}};
   for (const Test &t : tests) {
     int before = failures;
     auto t0 = std::chrono::steady_clock::now();

@@ -304,6 +304,21 @@ leaf of the read, to the read at that leaf address (open, untuned: on
 string_eq_byte_cursor (vcc, A-INB off) it doubled the byte-store
 expansions, 42 -> 102). Tests: test/VC/seam/wide-ite-leaves.mlir.
 
+Boundary byte addresses at an ite (`op::ptr::byteAddress`, WideExpander,
+`--seam-offset-leaves=N`, default 8, untuned): a width term left to the
+boundary at an ite address is expanded with the byte offset in the ite
+leaves, `ite(c, A + 24, A) + k` -> `ite(c, A + 24 + k, A + k)` (exact mod
+2^n), when the ite has at most N distinct leaves and N distinct ite nodes
+(shared subterms rebuilt once). No rule runs after the boundary, so a bvadd
+over the ite went to the solver as it was; inside the rewriter the same push
+is ptrindex.pull-ite's. Measured on the W-ITE check obligation of
+wide-ite-leaves.mlir @mixed (z3 5.3.3, standalone): 23.6 s -> 0.17 s
+(the compare of a leaf with a byte address folds by rewriting; with the
+bvadd outside, z3 refutes it over bit-blasted adders). Counters
+`wide.expanded-ite-offset`, `wide.expanded-ite-offset-refused` (over the
+cap). Tests: test/VC/seam/ite-offset-leaves.mlir, sea-memops-test
+`ite-offset`.
+
 W-SPLICE (Super in `wideRelation`): a write of w bytes inside a read of r
 bytes (one base, numeral offsets, the write at byte k of the read, k + w <=
 r) is the read below with the written bytes in place, `concat(below[8r-1 :
