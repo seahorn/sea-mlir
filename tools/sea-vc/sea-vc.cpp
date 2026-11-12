@@ -4269,9 +4269,10 @@ int main(int argc, char **argv) {
       size_t m = (checkSample && checkSample < n) ? checkSample : n;
       uint64_t valid = 0, invalid = 0, unknown = 0, unexpr = 0;
       unsigned ms = seamCheckTimeout * 1000;
-      // a fresh solver per query. z3 decides its auto-configuration at the
-      // first push, before anything is asserted, and keeps relevancy 2 for
-      // every later query on that solver (leaf-split obligations: 11 s
+      // a fresh solver per query. Hypothesis (measured, not read in z3's
+      // source): z3 decides its auto-configuration at the first push, before
+      // anything is asserted, and keeps relevancy 2 for every later query on
+      // that solver (leaf-split obligations: 11 s
       // instead of 0.06 s). The non-incremental path (no push) runs the
       // qfaufbv preprocessing chain, which blows up on row.store
       // obligations (24.8 s against 0.33 s pushed). So z3 gets relevancy 0
@@ -4339,6 +4340,8 @@ int main(int argc, char **argv) {
         // a premise no assignment satisfies would make every firing valid
         if (!expr::isOpX<expr::TRUE>(prem)) {
           std::unique_ptr<sea::solver::Solver> cs = mkCheckSolver();
+          if (!cs)
+            return;
           sea::solver::SolverResult pr =
               cs->add(prem) ? cs->check() : sea::solver::SolverResult::UNKNOWN;
           if (pr == sea::solver::SolverResult::UNSAT) {
@@ -4368,6 +4371,8 @@ int main(int argc, char **argv) {
         }
         expr::Expr q = expr::mk<expr::AND>(prem, diff);
         std::unique_ptr<sea::solver::Solver> cs = mkCheckSolver();
+        if (!cs)
+          return;
         sea::solver::SolverResult res =
             cs->add(q) ? cs->check() : sea::solver::SolverResult::UNKNOWN;
         if (res == sea::solver::SolverResult::UNSAT) {
