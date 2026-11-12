@@ -1185,6 +1185,7 @@ COUNTERS = [
     # <name>@wide: the counter of the seam-wide variant (R-LEAVES decides a
     # wide read at an ite address before the per-pair rules below)
     "row.leaf-split@wide",
+    "row.leaf-split-refused@wide",
     "wide.splice",
     "wide.ite-leaf-splice",
     "wide.ite-split",

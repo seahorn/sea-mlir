@@ -339,18 +339,20 @@ leaves, `read(M, ite(c, a1, a2)) ~> ite(c, read(M, a1), read(M, a2))`
 memory (`leafWalk`: each write met is decided by the rule the leaf read
 meets there, down to a write that gives the read or to a memory without
 writes), a write gives every leaf (on every side of an ite memory), and
-some leaf is not decided apart from the top write. The read of W-ITE and of ROW keeps j below a write it
-partly decides: a read at `ite(e, S + 0, ite(e', S + 8, S + 24))` over
+some leaf is not decided apart from the top write. The read of W-ITE and
+of ROW keeps j below a write it partly decides: a read at `ite(e, S + 0, ite(e', S + 8, S + 24))` over
 stores at S + 0, S + 8 and S + 24 left a read of the initial memory at the
 whole ite, under guards that together cover every leaf, and a pointer
 loaded there was `from_bits(concat(byte ites))` with every access through
 it an alias question. A split pointer load whose bytes then share one ite
 spine of split-address conditions is the ite of the stored pointers
 (`ptr.load-resolve-leaves`, all leaves or nothing; other shared
-conditions, a join's, stay `--seam-pull-concat`'s). The general split over an ite index (SeaM-memops.md)
-stays dropped: no split while a leaf stays open. Counters `row.leaf-split`,
+conditions, a join's, stay `--seam-pull-concat`'s). The general split
+over an ite index (SeaM-memops.md) stays dropped: no split while a leaf stays open. Counters `row.leaf-split`,
 `row.leaf-split-leaves`, `row.leaf-split-refused` (a leaf reaches the
-memory without writes; Open item 6). Tests: test/VC/seam/row-leaf-split.mlir.
+memory without writes; Open item 6; it counts refused attempts, one per
+byte read and memory level: a read refused at an ite memory can still
+split lower down, at a side where a write gives every leaf). Tests: test/VC/seam/row-leaf-split.mlir.
 
 Alignment, two sources:
 1. Proved: the linear form of the address: a registered object base with

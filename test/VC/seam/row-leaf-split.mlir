@@ -42,7 +42,7 @@
 // SAT: result: sat
 // SAT: validate: {{.*}}mismatches=0
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
-// CHKZ: seam-check: {{.*}} invalid=0 unknown={{[0-9]+}} unexpressible=0
+// CHKZ: seam-check: {{.*}} valid={{[1-9][0-9]*}} invalid=0 unknown={{[0-9]+}} unexpressible=0
 // REF-NOT: seam.rule.row.leaf-split:
 // REF: seam.rule.row.leaf-split-refused: {{[1-9]}}
 // REF-NOT: seam.rule.row.leaf-split:

@@ -2625,16 +2625,16 @@ public:
   /// (otherwise ROW skips the whole read first and the split waits for the
   /// write that gives a leaf). A leaf that reaches the memory without
   /// writes refuses the split (counter row.leaf-split-refused, when some
-  /// leaf is given): the split pays by removing the read of that memory,
-  /// and a leaf read there is a new read next to the read at the whole
-  /// address that other reads keep (vcc hash_table_init_bounded: Ackermann
-  /// pairs 1596 -> 6328 with one such leaf of two; SeaM-mixed-width.md,
-  /// "R-LEAVES guard"). At most
-  /// maxDecideLeaves leaves; the address's own ites are the conditions. A
-  /// general split over an ite index was measured against keeping it
-  /// (SeaM-memops.md, "ite indices"): it grows the DAG when leaves stay
-  /// open; here none does. A pointer or word load then reads the stored
-  /// value per leaf. RW_FULL (new reads).
+  /// leaf is given; one per refused attempt, per byte read and memory
+  /// level: a read refused at an ite memory may still split lower down): the
+  /// split pays by removing the read of that memory, and a leaf read there is a
+  /// new read next to the read at the whole address that other reads keep (vcc
+  /// hash_table_init_bounded: Ackermann pairs 1596 -> 6328 with one such leaf
+  /// of two; SeaM-mixed-width.md, "R-LEAVES guard"). At most maxDecideLeaves
+  /// leaves; the address's own ites are the conditions. A general split over an
+  /// ite index was measured against keeping it (SeaM-memops.md, "ite indices"):
+  /// it grows the DAG when leaves stay open; here none does. A pointer or word
+  /// load then reads the stored value per leaf. RW_FULL (new reads).
   std::optional<RewriteResult> leafSplit(const Expr &exp) {
     if (!m_opts.leafSplit)
       return std::nullopt;
