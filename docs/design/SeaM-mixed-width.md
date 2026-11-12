@@ -338,8 +338,8 @@ leaves, `read(M, ite(c, a1, a2)) ~> ite(c, read(M, a1), read(M, a2))`
 (exact, no premise), only when every leaf read is decided down the whole
 memory (`leafWalk`: each write met is decided by the rule the leaf read
 meets there, down to a write that gives the read or to a memory without
-writes), a write gives some leaf, and some leaf is not decided apart from
-the top write. The read of W-ITE and of ROW keeps j below a write it
+writes), a write gives every leaf (on every side of an ite memory), and
+some leaf is not decided apart from the top write. The read of W-ITE and of ROW keeps j below a write it
 partly decides: a read at `ite(e, S + 0, ite(e', S + 8, S + 24))` over
 stores at S + 0, S + 8 and S + 24 left a read of the initial memory at the
 whole ite, under guards that together cover every leaf, and a pointer
@@ -349,7 +349,8 @@ spine of split-address conditions is the ite of the stored pointers
 (`ptr.load-resolve-leaves`, all leaves or nothing; other shared
 conditions, a join's, stay `--seam-pull-concat`'s). The general split over an ite index (SeaM-memops.md)
 stays dropped: no split while a leaf stays open. Counters `row.leaf-split`,
-`row.leaf-split-leaves`. Tests: test/VC/seam/row-leaf-split.mlir.
+`row.leaf-split-leaves`, `row.leaf-split-refused` (a leaf reaches the
+memory without writes; Open item 6). Tests: test/VC/seam/row-leaf-split.mlir.
 
 Alignment, two sources:
 1. Proved: the linear form of the address: a registered object base with
@@ -506,3 +507,23 @@ read only as aligned words; a separate design).
    159330 -> 6555. With `--seam-words=auto` the initial memory becomes
    words only after R-LEAVES (words.chosen 0 -> 1, Ackermann pairs 6555 ->
    210). Not measured: which surviving read the expansion was pinned for.
+6. R-LEAVES guard. The split pays when it removes the read of the memory
+   without writes; a leaf that still reaches it becomes a read of its own
+   next to the reads at the whole ite address that other reads (over
+   memories where no leaf is given) keep. The first guard asked a
+   write to give some leaf. On vcc (`--seam --widen-memory=8`, VC only,
+   compared with `--seam-leaf-split=0`) it fired in 18 jobs and made
+   Ackermann pairs grow in 13 (hash_table_init_bounded 1596 -> 6328,
+   hash_table_init_unbounded 1540 -> 6216, linked_list_swap_contents
+   148 -> 457), with alias.open unchanged. Allowing one such leaf per split
+   still grew 12 of them (hash_table_init_bounded: one leaf of two reaches
+   the initial memory, and the read at it is new). The guard now asks a
+   write to give every leaf (decided, no option): no vcc job is worse in
+   Ackermann pairs, alias.open or query size (3 jobs still split;
+   summed query 25,897,860 -> 25,897,553 bytes); stellar round0 (VC only,
+   byte / `--seam-wide --widen-memory=4`) keeps alias.open.all 53195 /
+   53427, Ackermann pairs 6441 -> 4753 / 6555 -> 4851, VC time 6.5 / 4.7 s
+   (6.4 / 4.8 s before).
+   Not done: a partial split that keeps the leaves reaching the initial
+   memory under one read at their sub-ite (it pays only when no other read
+   keeps the whole address).

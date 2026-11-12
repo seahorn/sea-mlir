@@ -2490,7 +2490,8 @@ public:
   /// inside a wide read: the other bytes below); Base: a memory without
   /// writes (an initial memory, a const array); Ite: an ite memory;
   /// Undecided: anything else (an mcopy hit included). No term is built.
-  enum class LeafStep { Undecided, Cover, Below, Base, Ite };
+  /// Mixed (leafWalk only): an ite memory with a side Cover and a side Base.
+  enum class LeafStep { Undecided, Cover, Below, Base, Ite, Mixed };
   LeafStep leafStep(const Expr &mem, const Expr &a, uint64_t r, Expr &next) {
     const bool shadow = shadowMemory(mem);
     if (isOpX<STORE>(mem) || isOpX<W_STORE>(mem)) {
@@ -2567,13 +2568,14 @@ public:
   }
 
   /// The walk of a read of \p r bytes at \p a (not an ite) down \p mem0 by
-  /// leafStep: Cover (some write gives it), Base (every write decided apart
-  /// down to a memory without writes), Undecided (a write on the way is
-  /// not decided). An ite memory: Undecided if a side is, else Cover if a
-  /// side is. A lookahead for leafSplit only: nothing is rewritten here, so
-  /// the premises of the decisions are not this firing's (each leaf read
-  /// is rewritten in its own firing, with its own). Memoized per (memory,
-  /// address, r).
+  /// leafStep: Cover (a write gives every byte), Base (it reaches a memory
+  /// without writes: every write on the way decided apart, or inside a
+  /// wide read), Undecided (a write on the way is not decided). An ite
+  /// memory: Undecided if a side is, else the sides' answer if they agree,
+  /// else Mixed (a side Cover, a side Base). A lookahead for leafSplit only:
+  /// nothing is rewritten here, so the premises of the decisions are not this
+  /// firing's (each leaf read is rewritten in its own firing, with its own).
+  /// Memoized per (memory, address, r).
   LeafStep leafWalk(const Expr &mem0, const Expr &a, uint64_t r) {
     std::vector<Expr> path;
     Expr mem = mem0;
@@ -2596,8 +2598,8 @@ public:
         LeafStep e = leafWalk(mem->arg(2), a, r);
         res = t == LeafStep::Undecided || e == LeafStep::Undecided
                   ? LeafStep::Undecided
-              : t == LeafStep::Cover || e == LeafStep::Cover ? LeafStep::Cover
-                                                             : LeafStep::Base;
+              : t == e ? t
+                       : LeafStep::Mixed;
       } else {
         res = s;
       }
@@ -2607,7 +2609,8 @@ public:
       m_leafMemo[std::make_tuple(m.get(), a.get(), r)] = res;
       m_leafPin.push_back(m);
     }
-    m_leafPin.push_back(a);
+    if (!path.empty())
+      m_leafPin.push_back(a);
     return res;
   }
 
@@ -2617,10 +2620,16 @@ public:
   ///   read(M, ite(c, a1, a2)) ~> ite(c, read(M, a1), read(M, a2))
   /// when every leaf read is decided down the whole memory (leafWalk: none
   /// Undecided, so the split leaves no read at an ite address and no
-  /// compare open), some leaf is given by a write (Cover: a read that only
-  /// reaches the initial memory stays one read), and some leaf is not
-  /// decided apart from the top write (otherwise ROW skips the whole read
-  /// first and the split waits for the write that gives a leaf). At most
+  /// compare open), every leaf is given by a write (Cover, on every side of
+  /// an ite memory), and some leaf is not decided apart from the top write
+  /// (otherwise ROW skips the whole read first and the split waits for the
+  /// write that gives a leaf). A leaf that reaches the memory without
+  /// writes refuses the split (counter row.leaf-split-refused, when some
+  /// leaf is given): the split pays by removing the read of that memory,
+  /// and a leaf read there is a new read next to the read at the whole
+  /// address that other reads keep (vcc hash_table_init_bounded: Ackermann
+  /// pairs 1596 -> 6328 with one such leaf of two; SeaM-mixed-width.md,
+  /// "R-LEAVES guard"). At most
   /// maxDecideLeaves leaves; the address's own ites are the conditions. A
   /// general split over an ite index was measured against keeping it
   /// (SeaM-memops.md, "ite indices"): it grows the DAG when leaves stay
@@ -2640,6 +2649,9 @@ public:
     unsigned leaves = 0;
     bool ok = true, cover = false, topOpen = false;
     ExprVector conds;
+    // a leaf read that reaches the memory without writes (Base, or Mixed:
+    // on a side of an ite memory)
+    bool below = false;
     std::function<Expr(const Expr &)> tree = [&](const Expr &e) -> Expr {
       if (!ok)
         return Expr();
@@ -2658,7 +2670,8 @@ public:
         ok = false;
         return Expr();
       }
-      cover = cover || s == LeafStep::Cover;
+      cover = cover || s != LeafStep::Base;
+      below = below || s != LeafStep::Cover;
       Expr next;
       topOpen = topOpen || leafStep(mem, a, r, next) != LeafStep::Below;
       return wideRead ? op::array::wselect(mem, e, exp->arg(2),
@@ -2668,6 +2681,10 @@ public:
     Expr res = tree(j);
     if (!ok || !res || !cover || !topOpen)
       return std::nullopt;
+    if (below) {
+      m_stats.count("row.leaf-split-refused");
+      return std::nullopt;
+    }
     m_stats.count("row.leaf-split");
     m_stats.rules["row.leaf-split-leaves"] += leaves;
     for (const Expr &c : conds)
@@ -3659,6 +3676,37 @@ public:
     return {res, levels(depth + 1)};
   }
 
+  /// The pointer p whose bits \p bytes (msb first) are: to_bits(p) whole,
+  /// or its contiguous extracts from the lsb up, of the loaded width \p w
+  /// (a to_bits of another width is not the loaded pointer). Null if none.
+  Expr storedPointer(llvm::ArrayRef<Expr> bytes, unsigned w) {
+    Expr p;
+    unsigned next = 0; // the next expected low bit, from the lsb
+    for (auto it = bytes.rbegin(); it != bytes.rend(); ++it) {
+      const Expr &b = *it;
+      Expr arg;
+      unsigned hi, lo;
+      if (isOpX<PTR_TO_BITS>(b)) {
+        arg = b;
+        lo = 0;
+        hi = w - 1;
+      } else if (isOpX<BEXTRACT>(b) && isOpX<PTR_TO_BITS>(op::bv::earg(b))) {
+        arg = op::bv::earg(b);
+        hi = op::bv::high(b);
+        lo = op::bv::low(b);
+      } else {
+        return Expr();
+      }
+      if (widthOf(arg) != w || lo != next || (p && arg != p))
+        return Expr();
+      p = arg;
+      next = hi + 1;
+    }
+    if (!p || next != w)
+      return Expr();
+    return p->arg(0);
+  }
+
   /// ptr.load-resolve through a split load whose bytes share one ite spine
   /// (R-LEAVES' result for the bytes of one load: each byte read at the
   /// leaves of the same address ite): concat(b_1, ..., b_n) (msb first,
@@ -3689,34 +3737,6 @@ public:
     if (llvm::none_of(bytes, [](const Expr &b) { return isOpX<ITE>(b); }))
       return Expr();
     const unsigned w = widthOf(x);
-    // the pointer whose bits the bytes are, if any
-    auto stored = [&](const Bytes &bs) -> Expr {
-      Expr p;
-      unsigned next = 0; // the next expected low bit, from the lsb
-      for (auto it = bs.rbegin(); it != bs.rend(); ++it) {
-        const Expr &b = *it;
-        Expr arg;
-        unsigned hi, lo;
-        if (isOpX<PTR_TO_BITS>(b)) {
-          arg = b;
-          lo = 0;
-          hi = w - 1;
-        } else if (isOpX<BEXTRACT>(b) && isOpX<PTR_TO_BITS>(op::bv::earg(b))) {
-          arg = op::bv::earg(b);
-          hi = op::bv::high(b);
-          lo = op::bv::low(b);
-        } else {
-          return Expr();
-        }
-        if (lo != next || (p && arg != p))
-          return Expr();
-        p = arg;
-        next = hi + 1;
-      }
-      if (!p || next != w)
-        return Expr();
-      return p->arg(0);
-    };
     unsigned leaves = 0, resolved = 0;
     bool ok = true;
     std::function<Expr(const Bytes &)> split = [&](const Bytes &bs) -> Expr {
@@ -3740,7 +3760,7 @@ public:
           ok = false;
           return Expr();
         }
-        if (Expr p = stored(bs)) {
+        if (Expr p = storedPointer(bs, w)) {
           ++resolved;
           return p;
         }
@@ -3792,37 +3812,9 @@ public:
     Bytes bytes;
     flat(x, bytes);
     const unsigned w = widthOf(x);
-    // the pointer whose bits the bytes are, if any
-    auto stored = [&](const Bytes &bs) -> Expr {
-      Expr p;
-      unsigned next = 0; // the next expected high bit + 1, from the lsb
-      for (auto it = bs.rbegin(); it != bs.rend(); ++it) {
-        const Expr &b = *it;
-        Expr arg;
-        unsigned hi, lo;
-        if (isOpX<PTR_TO_BITS>(b)) {
-          arg = b;
-          lo = 0;
-          hi = w - 1;
-        } else if (isOpX<BEXTRACT>(b) && isOpX<PTR_TO_BITS>(op::bv::earg(b))) {
-          arg = op::bv::earg(b);
-          hi = op::bv::high(b);
-          lo = op::bv::low(b);
-        } else {
-          return Expr();
-        }
-        if (lo != next || (p && arg != p))
-          return Expr();
-        p = arg;
-        next = hi + 1;
-      }
-      if (!p || next != w)
-        return Expr();
-      return p->arg(0);
-    };
     unsigned pulls = 0, resolved = 0;
     std::function<Expr(const Bytes &)> split = [&](const Bytes &bs) -> Expr {
-      if (Expr p = stored(bs)) {
+      if (Expr p = storedPointer(bs, w)) {
         ++resolved;
         return p;
       }

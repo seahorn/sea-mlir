@@ -9,9 +9,13 @@
 // ite(c, A + 4, B + 4): Sub(4) on both leaves, the high half of the value.
 // @cross: an 8-byte store at B, a read at ite(c, A + 8, A): Skip on both
 // leaves by A-INB (no `align`: neither W-ROW-ALIGNED nor congruence).
-// @mixed runs with --seam-leaf-split=0: R-LEAVES (row-leaf-split.mlir)
-// decides its read first, leaf by leaf down the memory.
+// @mixed runs with --seam-leaf-split=0 to pin W-ITE: by default R-LEAVES
+// (row-leaf-split.mlir) decides its read first (a store gives every leaf),
+// leaf by leaf down the memory (DEF).
 // RUN: sea-vc %s --lower --program=mixed --seam --seam-wide --seam-leaf-split=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,MIXED
+// RUN: sea-vc %s --lower --program=mixed --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefix=DEF
+// RUN: %if bitwuzla %{ sea-vc %s --lower --program=mixed --seam --seam-wide --seam-check --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=CHK %}
+// RUN: %if yices %{ sea-vc %s --lower --program=mixed --seam --seam-wide --seam-check --solver=yices 2>&1 | FileCheck %s --check-prefix=CHK %}
 // RUN: sea-vc %s --lower --program=sub --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,SUB
 // RUN: sea-vc %s --lower --program=cross --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,CROSS
 // (z3 runs out of the 10 s check limit on the mixed firing, a z3
@@ -30,6 +34,11 @@
 // CHECK: seam.rule.wide.ite-split: {{[1-9]}}
 // CHECK-NOT: seam.rule.wide.split-read
 // CHECK: result: unsat
+// DEF-NOT: seam.alias.open
+// DEF-NOT: seam.rule.row.leaf-split-refused
+// DEF: seam.rule.row.leaf-split: 1
+// DEF-NOT: seam.rule.wide.split-read
+// DEF: result: unsat
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @mixed {

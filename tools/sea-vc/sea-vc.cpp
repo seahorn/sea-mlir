@@ -578,10 +578,11 @@ static cl::opt<bool> seamLeafSplit(
     "seam-leaf-split",
     cl::desc("With --seam: R-LEAVES, a read at an ite address is the ite "
              "of the reads at its leaves when every leaf read is decided "
-             "down the whole memory and a write gives some leaf (exact; "
+             "down the whole memory and a write gives every leaf (exact; "
              "counters row.leaf-split, ptr.load-resolve-leaves for a split "
-             "pointer load whose bytes then share one ite spine). Default "
-             "on"),
+             "pointer load whose bytes then share one ite spine; "
+             "row.leaf-split-refused: a leaf reads the memory without "
+             "writes). Default on"),
     cl::init(true));
 
 enum class CompanionMode { Off, Exact, Check, Assume };
@@ -1404,7 +1405,7 @@ TYPICAL:
                                  #   only when every pair is decided)
   sea-vc p.mlir --lower --seam --seam-leaf-split=0  # keep reads at ite
                                  #   addresses whole (default: split when
-                                 #   every leaf read is decided)
+                                 #   a write gives every leaf read)
   sea-vc p.mlir --lower --seam --seam-congruence  # decide addresses
                                  #   apart by divisibility: 8i+1 vs 8j
                                  #   (exact; rule cmp.congruence)

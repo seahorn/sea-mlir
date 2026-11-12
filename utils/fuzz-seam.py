@@ -26,7 +26,13 @@ asserts a pointer compare. Not an oracle (test/README.md): a second check of
                     sums over ites of 5-8 pointers (more leaves than the
                     syntactic rules look at: the ARM case, and its access
                     check) with a numeral or nondet offset, used by most
-                    accesses. The same agreement as for any.
+                    accesses; and width-term shapes at numeral offsets of
+                    one object: narrow stores or store-map bytes read as
+                    i32 at an ite address (W-SPLICE, wide store-map
+                    reads), an mset / mcopy range read inside or outside
+                    it (wide memop reads), and i32 or pointer field stores
+                    read through an ite of the field addresses (R-LEAVES,
+                    ptr.load-resolve-leaves). The same agreement as for any.
   --accesses=cells  many stores and loads at numeral offsets of two to four
                     16 / 32-byte objects, every access inside its object
                     (a 4-byte cell at an offset in [0, size - 4]), with a few
@@ -340,8 +346,8 @@ def gen(rng, any_access, wide=False, cells=False, violate=False):
             # offsets of one object, read as i32 at an ite of an address in
             # it and another object: narrow stores inside the read
             # (W-SPLICE) or byte entries of a store-map (rowWideSmap), an
-            # mset / mcopy range (rowWideMemOp), or i32 field stores read
-            # through an ite of the field addresses (R-LEAVES)
+            # mset / mcopy range (rowWideMemOp), or i32 or pointer field
+            # stores read through an ite of the field addresses (R-LEAVES)
             b = rng.choice(bases[: len(sizes)])
             other = rng.choice([x for x in bases[: len(sizes)] if x != b] or [b])
 
@@ -397,12 +403,24 @@ def gen(rng, any_access, wide=False, cells=False, violate=False):
                 mem = m
                 ite_read(at(rng.choice([0, 4, 8, 12])), mem)
             else:
+                # i32 fields, or pointer fields loaded as a pointer through
+                # the ite (ptr.load-resolve-leaves); sometimes a field left
+                # unwritten (the leaf reads the memory below: a refused or
+                # a one-remainder split)
                 fields = []
+                ptr_fields = rng.random() < 0.4
+                ty = PT if ptr_fields else "i32"
                 for off in rng.sample([0, 4, 8, 12], rng.randint(2, 4)):
-                    fp, w, m = at(off), const(rng.randint(0, 255)), fresh()
-                    emit(f"{m} = sea.store {mem}[{fp}], {w} inplace align 1 : {M}, i32")
-                    mem = m
+                    fp = at(off)
                     fields.append(fp)
+                    if len(fields) > 1 and rng.random() < 0.15:
+                        continue
+                    w = rng.choice(ptrs) if ptr_fields else const(rng.randint(0, 255))
+                    m = fresh()
+                    emit(
+                        f"{m} = sea.store {mem}[{fp}], {w} inplace align 1 : {M}, {ty}"
+                    )
+                    mem = m
                 cur = fields[0]
                 for fp in fields[1:]:
                     c, q = fresh(), fresh()
@@ -411,8 +429,15 @@ def gen(rng, any_access, wide=False, cells=False, violate=False):
                     emit(f"{q} = sea.select {c}, {fp}, {cur} : {PT}")
                     cur = q
                 x = fresh()
-                emit(f"{x} = sea.load {mem}[{cur}] align 1 : {M} -> i32")
-                keep(x)
+                emit(f"{x} = sea.load {mem}[{cur}] align 1 : {M} -> {ty}")
+                if ptr_fields:
+                    # an assume keeps the load (an unused one is dropped)
+                    c = fresh()
+                    emit(f"{c} = sea.ptr.cmp ne, {x}, {other} : {PT}")
+                    emit(f"sea.assume {c}")
+                    ptrs.append(x)
+                else:
+                    keep(x)
         elif r < 0.45:
             m = fresh()
             if rng.random() < 0.3:
@@ -1155,6 +1180,7 @@ COUNTERS = [
     "row.smap-abort-stride",
     "premise.ptr-index",
     "row.leaf-split",
+    "row.leaf-split-refused",
     "ptr.load-resolve-leaves",
     # <name>@wide: the counter of the seam-wide variant (R-LEAVES decides a
     # wide read at an ite address before the per-pair rules below)
