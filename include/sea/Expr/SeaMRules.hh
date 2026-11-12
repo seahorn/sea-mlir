@@ -35,7 +35,8 @@
 // Used only by `cmp.diff-base`, `cmp.size0-vacuous` and by `arm.skip` across
 // two bases (or dropping a size-0 provenance), and only on
 // the compares ROW makes between a store address and a read address
-// (`diffBase` of decideEq / decidePair, set by row() alone): a compare is not
+// (`diffBase` of decideEq / decidePair, set by row() and by overlap(), the
+// alias questions IS_OVERLAP those compares leave open): a compare is not
 // an access, so the equalities of the program (a one-past-the-end pointer
 // against the next object's base is legal C) never use it, whether they stand
 // in an address, a stored value or a condition.
@@ -107,6 +108,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -184,10 +186,22 @@ struct SeaMOptions {
   /// A bvadd is pulled through ites only if the product of their leaf counts
   /// is at most this (the pull is exponential).
   unsigned maxPullLeaves = 4;
-  /// An equality is pushed through ites only for at most this many leaf pairs.
+  /// A program compare (eq(), ITE-EQ) is pushed through ites only for at
+  /// most this many leaf pairs.
   unsigned maxEqLeaves = 4;
-  /// decideEq looks at most at this many leaf pairs (no term is built).
+  /// The decisions of the accesses look at most at this many leaf pairs:
+  /// decideEq / decideIn (no term is built), and the compare trees of ROW
+  /// (rowCompareEq) and of a memory-operation read (rowMemOp) are built over
+  /// the same pairs, so every pair a decision looked at is resolved per leaf.
   unsigned maxDecideLeaves = 8;
+  /// The boundary's byte expansion of a width term at an ite address
+  /// (WideExpander) pushes the byte offset into the ite leaves, ite(c, x, y)
+  /// + k ~> ite(c, x + k, y + k) (op::ptr::byteAddress), when the ite has at
+  /// most this many distinct leaves (and ite nodes); 0: a + k over the ite.
+  /// The rewriter does the same for the addresses it sees by
+  /// ptrindex.pull-ite (maxPullLeaves); no rule runs after the boundary.
+  /// Untuned: the cap of the decisions (sea-vc --seam-offset-leaves).
+  unsigned maxOffsetLeaves = 8;
   /// BvRules.hh: the bit-vector and Boolean normalization rules
   /// (extract / concat, linear equality, AC order, Boolean ite), valid over
   /// plain bit-vectors, for every term the rewriter visits. The addends of a
@@ -218,6 +232,26 @@ struct SeaMOptions {
   /// W-BYTE-IN: a byte read over an undecided wide write as one membership
   /// ite with a shift (off: expand the write into byte stores)
   bool wideByteIn = true;
+  /// W-ITE (rowWideLeaves) with an undecided leaf pair: the read at that
+  /// leaf address under its ite condition (on: a word value with one open
+  /// read per open leaf; off: no W-ITE unless every pair is decided, the
+  /// read goes to the byte fallback). Open question, untuned
+  /// (sea-vc --seam-wide-ite-open).
+  bool wideIteOpenLeaves = false;
+  /// R-LEAVES (Rules::leafSplit): a read (select, wselect) at an ite address
+  /// is split into the reads at its leaves when every leaf read is decided
+  /// down the whole memory and some leaf is given by a write.
+  /// Off: the read keeps its ite address (sea-vc --seam-leaf-split=0).
+  /// The address is an ite or a node over an ite base; the leaves are
+  /// counted distinct (the ite is a DAG), at most maxDecideLeaves.
+  bool leafSplit = true;
+  /// R-LEAVES-PARTIAL: R-LEAVES also when some leaf reads are undecided:
+  /// the decided leaves (each given by a write) split, the undecided ones
+  /// stay one read at the ite of them (the residual address). A tradeoff:
+  /// the residual read is a new address next to the reads at the whole
+  /// address other reads keep. Off by default, untuned
+  /// (sea-vc --seam-leaf-split-partial).
+  bool leafSplitPartial = false;
   /// R-STRIDE (PtrIndex.md section 0c; sea-vc --seam-stride): in R-ABORT, an
   /// entry b + o is skipped for a read whose every leaf is a promised node
   /// over b whose offsets never reach o. Uses the promises (PremPtrIndex)
@@ -823,6 +857,20 @@ public:
       e = ptr::ptrIndex(PtrOpKind::PTR_INDEX, ptr::base(in), idx,
                         modPow2(ptr::constant(in) + ptr::constant(e), n),
                         modPow2(ptr::byteOffset(in) + ptr::byteOffset(e), n));
+    }
+    // ptrindex.absorb-k: a numeral added to a promised node is that node
+    // with K + k (k signed), the form op::ptr::addressPlus builds (PtrIndex.md
+    // section 4); an unflagged constant-only node over it (the ite push of
+    // pullIteNode, the byte k of an address whose ite has an unflagged leaf)
+    // takes that form, so that byte k of one address is one term whatever
+    // built it. The same value; the promise is about b + O, without K.
+    if (m_opts.simplify && !ptr::isFlagged(e.get()) &&
+        ptr::numIndices(e) == 0 && ptr::isFlagged(ptr::base(e).get())) {
+      mpz_class k = modPow2(ptr::constant(e) + ptr::byteOffset(e), n);
+      if (k >= pow2(n - 1))
+        k = k - pow2(n);
+      m_stats.count("ptrindex.absorb-k");
+      return {ptr::withByteOffset(ptr::base(e), k), RWStatus::RW_DONE};
     }
     if (std::optional<RewriteResult> r = pullIteNode(e))
       return *r;
@@ -1768,6 +1816,18 @@ public:
       uint64_t bytes = std::max<uint64_t>(1, widthOf(cellValue) / 8);
       return std::min<uint64_t>(ctxUnits, bytes);
     };
+    // an alias question (overlap(): the access context): its two pointers,
+    // one unit each, when each lies in an access OpSem recorded (the same
+    // term or a byte of it: inbRecorded), so that their A-INB follows from
+    // the run's. A numeral cancellation can leave a pointer that is no
+    // access byte (ptr.overlap.cancel-num): not stated (unexpressible)
+    if (op::ptr::isUnitOverlap(lhs)) {
+      if (!inbRecorded(lhs->arg(0), 1) || !inbRecorded(lhs->arg(2), 1))
+        return false;
+      out.push_back({lhs->arg(0), 1});
+      out.push_back({lhs->arg(2), 1});
+      return true;
+    }
     if (isOpX<SELECT>(lhs))
       readUnits = cellSpan(lhs);
     else if (isOpX<STORE>(lhs))
@@ -1809,23 +1869,24 @@ public:
   // width terms (docs/design/SeaM-mixed-width.md rev 3)
   //===------------------------------------------------------------------===//
 
-  /// How a read of r bytes at j relates to a write of w bytes at i.
-  enum class WRel { Unknown, Hit, Sub, Skip };
+  /// How a read of r bytes at j relates to a write of w bytes at i. Super:
+  /// the write is inside the read (w < r), at byte k of the read.
+  enum class WRel { Unknown, Hit, Sub, Skip, Super };
 
   /// The relation of the read span [j, j + r) to the write span [i, i + w)
   /// (circular, modulo 2^n; widths within the domain 0 < r, w <= 2^n, as
   /// mathematical integers). \p k is the byte offset of the read in the
-  /// write (Sub / Hit). Exact for one base and numeral offsets (and for i ==
-  /// j); across objects (single pointer views, different registered bases)
-  /// Skip under A-INB (whole spans in their objects), not in a shadow
-  /// memory. Unknown otherwise (the term stays).
+  /// write (Sub / Hit), or of the write in the read (Super). Exact for one
+  /// base and numeral offsets (and for i == j); across objects (single pointer
+  /// views, different registered bases) Skip under A-INB (whole spans in their
+  /// objects), not in a shadow memory. Unknown otherwise (the term stays).
   WRel wideRelation(const Expr &i0, uint64_t w, const Expr &j0, uint64_t r,
                     uint64_t &k, Decision &d, bool shadow) const {
     const Expr i = op::ptr::stripObservation(i0),
                j = op::ptr::stripObservation(j0);
     if (sameAddr(i, j)) {
       k = 0;
-      return r == w ? WRel::Hit : (r < w ? WRel::Sub : WRel::Unknown);
+      return r == w ? WRel::Hit : (r < w ? WRel::Sub : WRel::Super);
     }
     std::optional<PtrView> vi = view(i), vj = view(j);
     if (!vi || !vj)
@@ -1835,7 +1896,7 @@ public:
       if (sameOff(vi->off, vj->off)) {
         k = 0;
         d.add("cmp.same-base");
-        return r == w ? WRel::Hit : (r < w ? WRel::Sub : WRel::Unknown);
+        return r == w ? WRel::Hit : (r < w ? WRel::Sub : WRel::Super);
       }
       if (!numerals(vi->off, vj->off, x, y))
         return WRel::Unknown;
@@ -1848,6 +1909,10 @@ public:
       }
       if (kk >= w && back >= r)
         return WRel::Skip;
+      if (back + w <= r) {
+        k = back.get_ui();
+        return WRel::Super;
+      }
       return WRel::Unknown;
     }
     if (shadow || !m_opts.assumeInBounds || !m_bases.isBase(vi->base) ||
@@ -2001,8 +2066,232 @@ public:
     return true;
   }
 
+  /// The relation of one leaf pair (li, lj) of a read over a write (as
+  /// rowWide: wideRelation, then for equal power-of-two widths whose spans
+  /// coincide or are disjoint, congruent starts or both `align` promises,
+  /// the compare of row(): decideEq with the access context). \p d gets the
+  /// reasons, \p prem the ALIGN premise when the promises were used.
+  WRel wideLeafRelation(const Expr &exp, const Expr &arr, const Expr &li,
+                        const Expr &lj, uint64_t &k, Decision &d,
+                        unsigned &prem, bool shadow) {
+    const bool wideRead = isOpX<W_SELECT>(exp);
+    const uint64_t r = wideRead ? op::bv::width(exp->arg(2)) / 8 : 1;
+    const uint64_t w = widthOf(arr->arg(2)) / 8;
+    Decision dl;
+    WRel rel = wideRelation(li, w, lj, r, k, dl, shadow);
+    if (rel != WRel::Unknown) {
+      d.add(dl);
+      return rel;
+    }
+    if (!wideRead || !isOpX<W_STORE>(arr) || r != w)
+      return WRel::Unknown;
+    const bool congruent = congruentStarts(li, lj, w);
+    if (!congruent && !alignedPair(exp, arr, w))
+      return WRel::Unknown;
+    Decision de;
+    Tri t = decideEq(li, lj, de, /*diffBase=*/!shadow, shadow);
+    if (t == Tri::Unknown)
+      return WRel::Unknown;
+    d.add(de);
+    if (!congruent)
+      prem |= PremAlign;
+    k = 0;
+    return t == Tri::Yes ? WRel::Hit : WRel::Skip;
+  }
+
+  /// Both accesses promise w-alignment (W-ROW-ALIGNED's condition): w a
+  /// power of two >= 2 dividing both `align` promises (trusted).
+  bool alignedPair(const Expr &exp, const Expr &arr, uint64_t w) const {
+    return m_opts.assumeAligned && (w & (w - 1)) == 0 && w >= 2 &&
+           // w divides both promises (not >= w: equal for the power-of-two
+           // `align` the dialect verifies, but the Expr layer does not
+           // re-check it here).
+           op::array::promisedAlign(exp) % w == 0 &&
+           op::array::promisedAlign(exp) != 0 &&
+           op::array::promisedAlign(arr) % w == 0 &&
+           op::array::promisedAlign(arr) != 0;
+  }
+
+  /// The ite tree of a wide read over the leaf pairs of a write address \p i
+  /// and a read address \p j (ITE-EQ's pairing, as eqPairs and buildEq: ites
+  /// with one condition branch by branch; at most maxDecideLeaves pairs).
+  /// \p leaf gives the value of the read on the paths that select the pair
+  /// (li, lj): there i = li and j = lj, so the tree is the read. Its
+  /// arguments: the leaves (observations stripped), lj as it is in j, and
+  /// whether j was split on the way (an ite of j above the pair). A null
+  /// value (an undecided pair) fails the whole tree: null. All leaves one
+  /// value: that value.
+  using LeafValue =
+      llvm::function_ref<Expr(const Expr &, const Expr &, const Expr &, bool)>;
+  Expr leafTree(const Expr &i, const Expr &j, LeafValue leaf) {
+    llvm::SmallVector<std::pair<Expr, Expr>, 8> pairs;
+    if (!eqPairs(i, j, pairs, m_opts.maxDecideLeaves))
+      return Expr();
+    bool failed = false;
+    llvm::SmallVector<Expr, 8> values;
+    std::function<Expr(const Expr &, const Expr &, bool)> tree =
+        [&](const Expr &l0, const Expr &r0, bool splitJ) -> Expr {
+      if (failed)
+        return Expr();
+      const Expr a = op::ptr::stripObservation(l0),
+                 b = op::ptr::stripObservation(r0);
+      if (isOpX<ITE>(a) && isOpX<ITE>(b) && a->arg(0) == b->arg(0)) {
+        Expr t = tree(a->arg(1), b->arg(1), true);
+        Expr e = tree(a->arg(2), b->arg(2), true);
+        return failed ? Expr() : mk<ITE>(a->arg(0), t, e);
+      }
+      if (isOpX<ITE>(a)) {
+        Expr t = tree(a->arg(1), r0, splitJ);
+        Expr e = tree(a->arg(2), r0, splitJ);
+        return failed ? Expr() : mk<ITE>(a->arg(0), t, e);
+      }
+      if (isOpX<ITE>(b)) {
+        Expr t = tree(l0, b->arg(1), true);
+        Expr e = tree(l0, b->arg(2), true);
+        return failed ? Expr() : mk<ITE>(b->arg(0), t, e);
+      }
+      Expr val = leaf(a, b, r0, splitJ);
+      if (!val)
+        failed = true;
+      else
+        values.push_back(val);
+      return val;
+    };
+    Expr res = tree(i, j, false);
+    if (failed || !res)
+      return Expr();
+    if (llvm::all_of(values, [&](const Expr &x) { return x == values[0]; }))
+      return values[0];
+    return res;
+  }
+
+  /// The w-byte value \p v written at byte \p k of an r-byte read whose
+  /// other bytes are those of \p below (W-SPLICE: a write inside the read,
+  /// little endian): concat(below[8r-1 : 8(k+w)], v, below[8k-1 : 0]), the
+  /// parts of below that are empty left out.
+  Expr splice(const Expr &below, const Expr &v, uint64_t k, uint64_t w,
+              uint64_t r) {
+    Expr res = v;
+    if (k > 0)
+      res = op::bv::concat(res, op::bv::extract(unsigned(8 * k - 1), 0, below));
+    if (k + w < r)
+      res = op::bv::concat(
+          op::bv::extract(unsigned(8 * r - 1), unsigned(8 * (k + w)), below),
+          res);
+    return res;
+  }
+
+  /// W-ITE (wide ROW over ite addresses): a read (select, wselect) at j over
+  /// a store / wstore at i, one of them an ite (at most maxDecideLeaves leaf
+  /// pairs, as decideEq): every leaf pair is decided on its own
+  /// (wideLeafRelation) and the read is the ite tree of the leaf values,
+  /// under the ite conditions (leafTree):
+  ///   Hit -> v, Sub(k) -> bytes [k, k + r) of v, Super(k) -> the read below
+  ///   at j with v at byte k (splice), Skip -> the read below at j, an
+  ///   undecided pair -> the read at the leaf address lj (only where j was
+  ///   split: on that path j = lj; it is rewritten as its own read). One
+  ///   open pair where j is not split: no rewrite here.
+  /// The value keeps its word shape: a read at ite(c, p, q) over writes at
+  /// p and q is ite(c, v_p, v_q), not the concat of its bytes. Uses the
+  /// premises of the leaf decisions (A-INB: cmp.diff-base, cmp.size0-
+  /// vacuous, arm.skip across bases; ALIGN), stated on the whole accesses
+  /// (Rules::inBounds and the alignment of an ite address hold leaf by
+  /// leaf). Nothing when no pair is decided. RW_FULL (new reads and
+  /// extracts below the ite tree).
+  std::optional<RewriteResult> rowWideLeaves(const Expr &exp, const Expr &arr,
+                                             bool shadow) {
+    const Expr i = arr->arg(1), j = exp->arg(1), v = arr->arg(2);
+    const bool wideRead = isOpX<W_SELECT>(exp);
+    const uint64_t r = wideRead ? op::bv::width(exp->arg(2)) / 8 : 1;
+    const uint64_t w = widthOf(v) / 8;
+    const uint64_t al = wideRead ? op::array::promisedAlign(exp) : 0;
+    auto readAt = [&](const Expr &mem, const Expr &a) -> Expr {
+      return wideRead ? op::array::wselect(mem, a, exp->arg(2), al)
+                      : op::array::select(mem, a);
+    };
+    const Expr below = readAt(arr->arg(0), j);
+    unsigned resolved = 0, prem = PremNone;
+    Decision all;
+    llvm::StringMap<uint64_t> leafCounts;
+    auto leaf = [&](const Expr &a, const Expr &b, const Expr &r0,
+                    bool splitJ) -> Expr {
+      uint64_t k = 0;
+      WRel rel = wideLeafRelation(exp, arr, a, b, k, all, prem, shadow);
+      switch (rel) {
+      case WRel::Hit:
+        ++resolved;
+        ++leafCounts["wide.ite-leaf-hit"];
+        return v;
+      case WRel::Sub:
+        ++resolved;
+        ++leafCounts["wide.ite-leaf-sub"];
+        return op::bv::extract(unsigned(8 * (k + r) - 1), unsigned(8 * k), v);
+      case WRel::Super:
+        ++resolved;
+        ++leafCounts["wide.ite-leaf-splice"];
+        return splice(below, v, k, w, r);
+      case WRel::Skip:
+        ++resolved;
+        ++leafCounts["wide.ite-leaf-skip"];
+        return below;
+      case WRel::Unknown:
+        break;
+      }
+      if (!splitJ || !m_opts.wideIteOpenLeaves)
+        return Expr();
+      ++leafCounts["wide.ite-leaf-open"];
+      return readAt(arr, r0);
+    };
+    Expr res = leafTree(i, j, leaf);
+    if (!res || resolved == 0)
+      return std::nullopt;
+    m_stats.count("wide.ite-split");
+    for (auto &kv : leafCounts)
+      m_stats.rules[kv.getKey()] += kv.getValue();
+    countReasons(all);
+    countPremises(prem | all.premises);
+    return RewriteResult{res, RWStatus::RW_FULL};
+  }
+
+  /// W-ROW-CONGRUENT / W-ROW-ALIGNED: a wselect at j over a wstore of the
+  /// same width at i whose spans coincide or are disjoint (\p prem: the
+  /// premise that says so, none for congruent starts, ALIGN for the `align`
+  /// promises). Then the spans overlap iff i = j, so the step is row()'s on
+  /// the compare i = j, decided by the same procedure with the access context
+  /// (decideEq, diffBase = !shadow; a shadow memory: object identity):
+  ///   Yes: v (wide.hit), RW_DONE; No: the read below (wide.skip), RW_1;
+  ///   Unknown: ite(<rowCompare(i, j)>, v, the read below), the compare tree
+  ///   over the leaves (leaves decided by A-INB, ARM already true / false,
+  ///   the rest alias questions). uses: \p prem, and A-INB through the
+  ///   compare (cmp.diff-base, cmp.size0-vacuous, arm.skip across bases).
+  ///   RW_FULL for the ite (the compare tree and the new wselect).
+  RewriteResult rowEqWidth(const Expr &exp, const Expr &arr, const char *rule,
+                           unsigned prem, bool shadow) {
+    const Expr i = arr->arg(1), j = exp->arg(1), v = arr->arg(2);
+    m_stats.count(rule);
+    Expr below = op::array::wselect(arr->arg(0), j, exp->arg(2),
+                                    op::array::promisedAlign(exp));
+    Decision d;
+    Tri t = decideEq(i, j, d, /*diffBase=*/!shadow, shadow);
+    if (t != Tri::Unknown) {
+      countReasons(d);
+      countPremises(prem | d.premises);
+      if (t == Tri::Yes) {
+        m_stats.count("wide.hit");
+        return {v, RWStatus::RW_DONE};
+      }
+      m_stats.count("wide.skip");
+      return {below, RWStatus::RW_1};
+    }
+    countPremises(prem);
+    unsigned depth, premises;
+    bool reduced;
+    Expr cmp = rowCompare(i, j, depth, reduced, premises, shadow);
+    return {mk<ITE>(cmp, v, below), RWStatus::RW_FULL};
+  }
+
   /// A read (select: \p r = 1, or wselect) at j over a store / wstore
-  /// \p arr: W-HIT, W-SUB, W-SKIP, else the byte fallback.
+  /// \p arr: W-HIT, W-SUB, W-SPLICE, W-SKIP, else the byte fallback.
   RewriteResult rowWide(const Expr &exp, const Expr &arr) {
     const bool wideRead = isOpX<W_SELECT>(exp);
     const Expr j = exp->arg(1);
@@ -2012,39 +2301,27 @@ public:
     if (w == 0)
       return {exp, RWStatus::RW_DONE};
     const bool shadow = shadowMemory(arr);
+    if (std::optional<RewriteResult> res = leafSplit(exp))
+      return *res;
+    if (isOpX<ITE>(op::ptr::stripObservation(i)) ||
+        isOpX<ITE>(op::ptr::stripObservation(j)))
+      if (std::optional<RewriteResult> res = rowWideLeaves(exp, arr, shadow))
+        return *res;
     Decision d;
     uint64_t k = 0;
     WRel rel = wideRelation(i, w, j, r, k, d, shadow);
     // W-ROW-CONGRUENT (rev 5): equal power-of-two widths whose starts are
     // congruent mod w: the spans coincide or are disjoint, exactly (no
-    // premise): ite(i = j, v, the read below); the compare goes to the
-    // compare rules
+    // premise). W-ROW-ALIGNED (rev 5): equal power-of-two widths, both
+    // accesses annotated w-aligned (trusted `align`, PremAlign): the same.
+    // Either way the read is a ROW step on the compare i = j, which row()'s
+    // decision procedure answers with the access context (rowEqWidth)
     if (rel == WRel::Unknown && wideRead && isOpX<W_STORE>(arr) && r == w &&
-        congruentStarts(i, j, w)) {
-      m_stats.count("wide.row-congruent");
-      return {mk<ITE>(op::ptr::overlap(i, 1, j, 1), v,
-                      op::array::wselect(arr->arg(0), j, exp->arg(2),
-                                         op::array::promisedAlign(exp))),
-              RWStatus::RW_FULL};
-    }
-    // W-ROW-ALIGNED (rev 5): equal power-of-two widths, both accesses
-    // annotated w-aligned (trusted `align`): ite(i = j, v, below)
+        congruentStarts(i, j, w))
+      return rowEqWidth(exp, arr, "wide.row-congruent", PremNone, shadow);
     if (rel == WRel::Unknown && wideRead && isOpX<W_STORE>(arr) && r == w &&
-        m_opts.assumeAligned && (w & (w - 1)) == 0 && w >= 2 &&
-        // w divides both promises (not >= w: equal for the power-of-two
-        // `align` the dialect verifies, but the Expr layer does not re-check
-        // it here).
-        op::array::promisedAlign(exp) % w == 0 &&
-        op::array::promisedAlign(exp) != 0 &&
-        op::array::promisedAlign(arr) % w == 0 &&
-        op::array::promisedAlign(arr) != 0) {
-      m_stats.count("wide.row-aligned");
-      countPremises(PremAlign);
-      return {mk<ITE>(op::ptr::overlap(i, 1, j, 1), v,
-                      op::array::wselect(arr->arg(0), j, exp->arg(2),
-                                         op::array::promisedAlign(exp))),
-              RWStatus::RW_FULL};
-    }
+        alignedPair(exp, arr, w))
+      return rowEqWidth(exp, arr, "wide.row-aligned", PremAlign, shadow);
     if (rel == WRel::Unknown) {
       // what the fallback pays for (census for an aligned word-level rule)
       if (wideRead && isOpX<W_STORE>(arr))
@@ -2064,6 +2341,15 @@ public:
       return {op::bv::extract(unsigned(8 * (k + r) - 1), unsigned(8 * k), v),
               RWStatus::RW_1};
     }
+    if (rel == WRel::Super) {
+      // W-SPLICE: the write inside the read, a word read below with v at
+      // byte k (exact; a narrower store under a wide read keeps the word)
+      m_stats.count("wide.splice");
+      return {splice(op::array::wselect(arr->arg(0), j, exp->arg(2),
+                                        op::array::promisedAlign(exp)),
+                     v, k, w, r),
+              RWStatus::RW_FULL};
+    }
     m_stats.count("wide.skip");
     const Expr below = arr->arg(0);
     return {wideRead ? op::array::wselect(below, j, exp->arg(2),
@@ -2073,72 +2359,503 @@ public:
   }
 
   /// A wselect of r bytes at j over a memory-operation term T (dst d, length
-  /// n): with one base and numeral offsets and length, inside [d, d + n) ->
-  /// the hit form (mcopy: a wselect of the source version at s + (j - d);
-  /// mset: the byte repeated; mhavoc: a wselect of its H), disjoint (or n =
-  /// 0) -> the read moves below T; across objects (single views, different
-  /// bases) -> below T under A-INB (the read span and the range in their
-  /// objects). A symbolic length, a partial overlap: unchanged here; rowW
-  /// then takes the byte fallback (rev 3's "the term stays" was replaced by
-  /// the fallback after measurement).
+  /// n, below M), per leaf pair of j and d (leafTree), each decided by the
+  /// in-test of the memop reads with the access context (decideInPair over
+  /// the read span [lj, lj + r): mem.in-exact, arm.range, cmp.diff-base,
+  /// arm.skip, cmp.size0-vacuous, as row.<op>):
+  ///   In (every byte in [ld, ld + n)): the hit form, mcopy -> a wselect of
+  ///     the source version at s + (lj - ld) (k a numeral when exact; a
+  ///     changed address: alignment unknown), mset -> the byte repeated,
+  ///     mhavoc -> a wselect of its H at j;
+  ///   Out (no byte in it, or n = 0): the read moves below T, wselect(M, j);
+  ///   else (a partial overlap, an open in-test): undecided.
+  /// One pair: wide.memop-hit / wide.memop-skip; an ite: the ite of the leaf
+  /// values (wide.memop-split, wide.memop-leaf-*), when every pair is
+  /// decided. uses: the premises of the decisions (A-INB across objects: the
+  /// read span and the range [d, d + n) in their objects). Undecided:
+  /// unchanged here; rowW then takes the byte fallback (rev 3's "the term
+  /// stays" was replaced by the fallback after measurement).
   RewriteResult rowWideMemOp(const Expr &exp, const Expr &arr) {
     const Expr j = exp->arg(1), sort = exp->arg(2);
     const uint64_t r = op::bv::width(sort) / 8;
+    const uint64_t al = op::array::promisedAlign(exp);
     const Expr d = memOpDst(arr), n = memOpLen(arr);
-    auto below = [&]() {
-      return RewriteResult{op::array::wselect(memOpBase(arr), j, sort,
-                                              op::array::promisedAlign(exp)),
-                           RWStatus::RW_1};
-    };
-    unsigned nw;
-    const bool nNum = op::bv::isBvNum(n, nw);
-    if (nNum && numVal(n) == 0) {
+    const Expr below = op::array::wselect(memOpBase(arr), j, sort, al);
+    mpz_class nlo, nhi;
+    const bool haveN = lenRange(n, nlo, nhi);
+    if (haveN && nhi == 0) {
       m_stats.count("wide.memop-empty");
-      return below();
+      Decision de;
+      de.add("mem.empty"); // as decideIn
+      countReasons(de);
+      return {below, RWStatus::RW_1};
     }
-    std::optional<PtrView> vj = view(j), vd = view(d);
-    if (!vj || !vd)
-      return {exp, RWStatus::RW_DONE};
-    if (vj->base != vd->base) {
-      if (shadowMemory(arr) || !m_opts.assumeInBounds ||
-          !m_bases.isBase(vj->base) || !m_bases.isBase(vd->base))
-        return {exp, RWStatus::RW_DONE};
-      m_stats.count("wide.memop-skip");
-      countReasons(Decision{{{"cmp.diff-base", PremAInb}}, PremAInb});
-      countPremises(PremAInb);
-      return below();
-    }
-    mpz_class x, y;
-    if (!nNum || !numerals(vd->off, vj->off, x, y))
-      return {exp, RWStatus::RW_DONE};
-    unsigned bits = widthOf(vd->off);
-    mpz_class k = modPow2(y - x, bits), back = modPow2(x - y, bits),
-              len = numVal(n);
-    m_stats.count("cmp.same-base");
-    if (k + r <= len) {
-      m_stats.count("wide.memop-hit");
-      Expr kk = num(k, bits);
-      if (isOpX<MEM_COPY>(arr))
-        // a changed address: the destination read's promise does not
-        // transfer (rev 5): alignment unknown
-        return {op::array::wselect(arr->arg(1), copySource(arr->arg(3), kk),
-                                   sort, 1),
-                RWStatus::RW_1};
+    const bool inb = !shadowMemory(arr);
+    Decision all;
+    unsigned hits = 0, skips = 0;
+    bool done = true; // every leaf value is normal (an mset hit)
+    auto leaf = [&](const Expr &ld, const Expr &lj, const Expr &,
+                    bool) -> Expr {
+      Decision dl;
+      mpz_class kv = -1;
+      Range rg = decideInPair(lj, ld, haveN, nlo, nhi, dl, &kv, inb, r);
+      if (rg == Range::Unknown)
+        return Expr();
+      if (dl.premises & PremAInb)
+        checkInbPremise(lj, r, ld, 1); // as wideRelation
+      all.add(dl);
+      if (rg == Range::Out) {
+        ++skips;
+        done = false;
+        return below;
+      }
+      ++hits;
       if (isOpX<MEM_SET>(arr)) {
         Expr v = arr->arg(3), res = v;
         for (uint64_t b = 1; b < r; ++b)
           res = op::bv::concat(v, res);
-        return {res, RWStatus::RW_DONE};
+        return res;
       }
-      return {op::array::wselect(arr->arg(1), j, sort,
-                                 op::array::promisedAlign(exp)),
-              RWStatus::RW_1};
+      done = false;
+      if (isOpX<MEM_COPY>(arr)) {
+        Expr k = kv >= mpz_class(0UL) ? num(kv, widthOf(ld))
+                                      : mk<PTR_DIFF>(lj, ld); // S1.5
+        return op::array::wselect(arr->arg(1), copySource(arr->arg(3), k), sort,
+                                  1);
+      }
+      return op::array::wselect(arr->arg(1), j, sort, al);
+    };
+    Expr res = leafTree(d, j, leaf);
+    if (!res)
+      return {exp, RWStatus::RW_DONE};
+    const bool split = hits + skips > 1;
+    if (split) {
+      m_stats.count("wide.memop-split");
+      if (hits)
+        m_stats.rules["wide.memop-leaf-hit"] += hits;
+      if (skips)
+        m_stats.rules["wide.memop-leaf-skip"] += skips;
+    } else {
+      m_stats.count(hits ? "wide.memop-hit" : "wide.memop-skip");
     }
-    if (k >= len && back >= r) {
-      m_stats.count("wide.memop-skip");
-      return below();
+    countReasons(all);
+    countPremises(all.premises);
+    if (!split && hits && done)
+      return {res, RWStatus::RW_DONE};
+    return {res, split ? RWStatus::RW_FULL : RWStatus::RW_1};
+  }
+
+  /// A wselect of r bytes at j over store-map(a0, b, ocl), per leaf of j
+  /// (leafTree; i = b, not an ite), with the access context:
+  ///   lj = b + o, o a numeral: the r bytes at o .. o + r - 1 (mod 2^n),
+  ///     each the entry at its offset or else that byte of wselect(a0, j)
+  ///     (no entry: the read moves below, wide.smap-miss; else
+  ///     wide.smap-hit). Exact, no premise (other numeral offsets are other
+  ///     addresses, as R-HIT / R-MISS).
+  ///   lj in another object than b (decideInPair without a length: cmp.diff-
+  ///     base, arm.skip, cmp.size0-vacuous): wselect(a0, j)
+  ///     (wide.smap-skip). uses: A-INB (the read span and the entries in
+  ///     their objects). Not in a shadow memory.
+  ///   else undecided: no rewrite (the byte fallback, R-ABORT per byte).
+  /// One leaf: its value; an ite j: the ite of the leaf values
+  /// (wide.smap-split, wide.smap-leaf-*), not the concat of byte reads of
+  /// the ite address. RW_FULL (new reads below).
+  std::optional<RewriteResult> rowWideSmap(const Expr &exp, const Expr &arr) {
+    const Expr a0 = arr->arg(0), b = arr->arg(1), ocl = arr->arg(2);
+    const Expr j = exp->arg(1), sort = exp->arg(2);
+    const uint64_t r = op::bv::width(sort) / 8;
+    const bool shadow = shadowMemory(arr);
+    const Expr below =
+        op::array::wselect(a0, j, sort, op::array::promisedAlign(exp));
+    Decision all;
+    unsigned hits = 0, misses = 0, skips = 0;
+    auto leaf = [&](const Expr &, const Expr &lj, const Expr &, bool) -> Expr {
+      std::optional<PtrView> vj = view(lj);
+      unsigned nw;
+      if (vj && vj->base == b && op::bv::isBvNum(vj->off, nw)) {
+        mpz_class o = numVal(vj->off);
+        Expr res;
+        bool any = false;
+        for (uint64_t k = 0; k < r; ++k) {
+          Expr e =
+              m_smaps.find(ocl, modPow2(o + mpz_class((unsigned long)k), nw));
+          any = any || e;
+          Expr byte =
+              e ? e
+                : op::bv::extract(unsigned(8 * k + 7), unsigned(8 * k), below);
+          res = k == 0 ? byte : op::bv::concat(byte, res);
+        }
+        if (!any) {
+          ++misses;
+          return below;
+        }
+        ++hits;
+        return res;
+      }
+      Decision d;
+      mpz_class none;
+      if (!shadow && decideInPair(lj, b, /*haveN=*/false, none, none, d,
+                                  nullptr, /*inb=*/true) == Range::Out) {
+        ++skips;
+        if ((d.premises & PremAInb) && m_opts.checkInbPremise)
+          for (const SMapEntry &e : StoreMapTable::entries(ocl))
+            checkInbPremise(lj, r, ptrAt(b, e.offset), 1); // as wideRelation
+        all.add(d);
+        return below;
+      }
+      return Expr();
+    };
+    Expr res = leafTree(b, j, leaf);
+    if (!res)
+      return std::nullopt;
+    const bool split = hits + misses + skips > 1;
+    if (split)
+      m_stats.count("wide.smap-split");
+    auto count = [&](const char *one, const char *many, unsigned c) {
+      if (c)
+        m_stats.rules[split ? many : one] += split ? c : 1;
+    };
+    count("wide.smap-hit", "wide.smap-leaf-hit", hits);
+    count("wide.smap-miss", "wide.smap-leaf-miss", misses);
+    count("wide.smap-skip", "wide.smap-leaf-skip", skips);
+    countReasons(all);
+    countPremises(all.premises);
+    return RewriteResult{res, RWStatus::RW_FULL};
+  }
+
+  /// One step of a read of \p r bytes (a select: 1) at the address \p a, not
+  /// an ite, at the top write of \p mem, decided as the rule the read meets
+  /// there decides it: decideEq (row), wideRelation and the congruent
+  /// decideEq (rowWide), a numeral offset of the map's object or another
+  /// object (rowStoreMap, rowWideSmap), decideInPair (rowMemOp,
+  /// rowWideMemOp). Cover: the write gives the read (ROW's hit, W-HIT,
+  /// W-SUB, a store-map entry, an mset / mhavoc range); Below: the read
+  /// goes on in \p next (decided apart, a store-map miss, a narrower write
+  /// inside a wide read: the other bytes below); Base: a memory without
+  /// writes (an initial memory, a const array); Ite: an ite memory;
+  /// Undecided: anything else (an mcopy hit included). No term is built.
+  /// Mixed (leafWalk only): an ite memory with a side Cover and a side Base.
+  enum class LeafStep { Undecided, Cover, Below, Base, Ite, Mixed };
+  LeafStep leafStep(const Expr &mem, const Expr &a, uint64_t r, Expr &next) {
+    const bool shadow = shadowMemory(mem);
+    if (isOpX<STORE>(mem) || isOpX<W_STORE>(mem)) {
+      const Expr i = mem->arg(1);
+      const uint64_t w = std::max<uint64_t>(1, widthOf(mem->arg(2)) / 8);
+      next = mem->arg(0);
+      Decision d;
+      if (r == 1 && isOpX<STORE>(mem)) {
+        Tri t = decideEq(i, a, d, /*diffBase=*/!shadow, shadow);
+        return t == Tri::Yes  ? LeafStep::Cover
+               : t == Tri::No ? LeafStep::Below
+                              : LeafStep::Undecided;
+      }
+      uint64_t k = 0;
+      WRel rel = wideRelation(i, w, a, r, k, d, shadow);
+      if (rel == WRel::Unknown && isOpX<W_STORE>(mem) && r == w &&
+          congruentStarts(i, a, w)) {
+        Tri t = decideEq(i, a, d, /*diffBase=*/!shadow, shadow);
+        rel = t == Tri::Yes  ? WRel::Hit
+              : t == Tri::No ? WRel::Skip
+                             : WRel::Unknown;
+      }
+      if (rel == WRel::Unknown)
+        return LeafStep::Undecided;
+      // Skip, or Super (the write inside the read: the other bytes below)
+      return rel == WRel::Hit || rel == WRel::Sub ? LeafStep::Cover
+                                                  : LeafStep::Below;
     }
-    return {exp, RWStatus::RW_DONE};
+    if (isOpX<STORE_MAP>(mem)) {
+      next = mem->arg(0);
+      std::optional<PtrView> v = view(a);
+      if (!v)
+        return LeafStep::Undecided;
+      if (v->base == mem->arg(1)) {
+        if (!op::bv::isBvNum(v->off))
+          return LeafStep::Undecided;
+        // a cell read of an entry: the entry; a miss, or a wide read (the
+        // entries and the word below): the memory below too
+        return r == 1 && m_smaps.find(mem->arg(2), numVal(v->off))
+                   ? LeafStep::Cover
+                   : LeafStep::Below;
+      }
+      return !shadow && distinctObjects(v->base, mem->arg(1))
+                 ? LeafStep::Below
+                 : LeafStep::Undecided;
+    }
+    if (isMemOpTerm(mem)) {
+      next = memOpBase(mem);
+      mpz_class nlo, nhi;
+      const bool haveN = lenRange(memOpLen(mem), nlo, nhi);
+      llvm::SmallVector<std::pair<Expr, Expr>, 8> pairs;
+      if (!eqPairs(a, memOpDst(mem), pairs, m_opts.maxDecideLeaves))
+        return LeafStep::Undecided;
+      bool allIn = true, allOut = true;
+      for (auto &p : pairs) {
+        Decision dp;
+        Range rg = decideInPair(p.first, p.second, haveN, nlo, nhi, dp, nullptr,
+                                !shadow, r);
+        allIn = allIn && rg == Range::In;
+        allOut = allOut && rg == Range::Out;
+      }
+      if (allOut)
+        return LeafStep::Below;
+      return allIn && !isOpX<MEM_COPY>(mem) ? LeafStep::Cover
+                                            : LeafStep::Undecided;
+    }
+    if (isOpX<ITE>(mem))
+      return LeafStep::Ite;
+    // no write: an initial memory (a constant), a const array; any other
+    // memory term is undecided
+    return mem->arity() == 0 || bind::isFapp(mem) || isOpX<CONST_ARRAY>(mem)
+               ? LeafStep::Base
+               : LeafStep::Undecided;
+  }
+
+  /// The walk of a read of \p r bytes at \p a (not an ite) down \p mem0 by
+  /// leafStep: Cover (a write gives every byte), Base (it reaches a memory
+  /// without writes: every write on the way decided apart, or inside a
+  /// wide read), Undecided (a write on the way is not decided). An ite
+  /// memory: Undecided if a side is, else the sides' answer if they agree,
+  /// else Mixed (a side Cover, a side Base). A lookahead for leafSplit only:
+  /// nothing is rewritten here, so the premises of the decisions are not this
+  /// firing's (each leaf read is rewritten in its own firing, with its own).
+  /// Memoized per (memory, address, r).
+  LeafStep leafWalk(const Expr &mem0, const Expr &a, uint64_t r) {
+    std::vector<Expr> path;
+    Expr mem = mem0;
+    LeafStep res = LeafStep::Undecided;
+    while (true) {
+      auto it = m_leafMemo.find(std::make_tuple(mem.get(), a.get(), r));
+      if (it != m_leafMemo.end()) {
+        res = it->second;
+        break;
+      }
+      path.push_back(mem);
+      Expr next;
+      LeafStep s = leafStep(mem, a, r, next);
+      if (s == LeafStep::Below) {
+        mem = next;
+        continue;
+      }
+      if (s == LeafStep::Ite) {
+        LeafStep t = leafWalk(mem->arg(1), a, r);
+        LeafStep e = leafWalk(mem->arg(2), a, r);
+        res = t == LeafStep::Undecided || e == LeafStep::Undecided
+                  ? LeafStep::Undecided
+              : t == e ? t
+                       : LeafStep::Mixed;
+      } else {
+        res = s;
+      }
+      break;
+    }
+    for (const Expr &m : path) {
+      m_leafMemo[std::make_tuple(m.get(), a.get(), r)] = res;
+      m_leafPin.push_back(m);
+    }
+    if (!path.empty())
+      m_leafPin.push_back(a);
+    return res;
+  }
+
+  /// R-LEAVES: a read at an ite address is the ite of the reads at its
+  /// leaves (exact, no premise: on the paths that select a leaf, the address
+  /// is that leaf):
+  ///   read(M, ite(c, a1, a2)) ~> ite(c, read(M, a1), read(M, a2))
+  /// when every leaf read is decided down the whole memory (leafWalk: none
+  /// Undecided, so the split leaves no read at an ite address and no
+  /// compare open), every leaf is given by a write (Cover, on every side of
+  /// an ite memory), and some leaf is not decided apart from the top write
+  /// (otherwise ROW skips the whole read first and the split waits for the
+  /// write that gives a leaf). A leaf that reaches the memory without
+  /// writes refuses the split (counter row.leaf-split-refused, when some
+  /// leaf is given; one per refused attempt, per byte read and memory
+  /// level: a read refused at an ite memory may still split lower down): the
+  /// split pays by removing the read of that memory, and a leaf read there is a
+  /// new read next to the read at the whole address that other reads keep (vcc
+  /// hash_table_init_bounded: Ackermann pairs 1596 -> 6328 with one such leaf
+  /// of two; SeaM-mixed-width.md, "R-LEAVES guard"). A general split over an
+  /// ite index was measured against keeping it (SeaM-memops.md, "ite
+  /// indices"): it grows the DAG when leaves stay open; here none does. A
+  /// pointer or word load then reads the stored value per leaf. RW_FULL (new
+  /// reads).
+  ///
+  /// The address is an ite, or a node N(ite(c, b1, b2), x...) over an ite
+  /// base (the node's leaves N(b_k, x...): ptr-index of an ite is the ite of
+  /// the ptr-index per leaf, as ptrindex.pull-ite, which stops at
+  /// maxPullLeaves; counter row.leaf-split-node). The ite is a DAG: it is
+  /// walked once per ite node, the bound is on its distinct leaves (at most
+  /// maxDecideLeaves), each distinct leaf is decided once and the result has
+  /// the ite's DAG shape. The address's own ites are the conditions.
+  ///
+  /// R-LEAVES-PARTIAL (leafSplitPartial): when some leaf reads are
+  /// Undecided, the others decided and given by a write (none reaching the
+  /// memory without writes), the decided leaves split and the undecided ones
+  /// stay together as one read at the residual address U, the ite pruned to
+  /// its undecided leaves (a sub-ite with no undecided leaf is dropped for
+  /// its sibling). Exact: on a path that selects an undecided leaf u, U
+  /// selects u too (the conditions are the same and only subtrees without
+  /// undecided leaves are dropped), so read(M, U) = read(M, u); a sub-ite
+  /// with only undecided leaves is read(M, U). Counters
+  /// row.leaf-split-partial, row.leaf-split-residual-leaves.
+  std::optional<RewriteResult> leafSplit(const Expr &exp) {
+    if (!m_opts.leafSplit)
+      return std::nullopt;
+    const Expr mem = exp->arg(0), j = exp->arg(1);
+    // the address's ite: j, or the base of a node over it
+    Expr it = j, node;
+    if (op::ptr::isPtrIndex(j) && isOpX<ITE>(op::ptr::base(j))) {
+      node = j;
+      it = op::ptr::base(j);
+    }
+    if (!isOpX<ITE>(it) || m_bases.lookup(it))
+      return std::nullopt;
+    if (!isOpX<STORE>(mem) && !isOpX<W_STORE>(mem) && !isOpX<STORE_MAP>(mem) &&
+        !isMemOpTerm(mem))
+      return std::nullopt;
+    const bool wideRead = isOpX<W_SELECT>(exp);
+    const uint64_t r = wideRead ? op::bv::width(exp->arg(2)) / 8 : 1;
+    auto isIte = [&](const Expr &e) {
+      return isOpX<ITE>(e) && !m_bases.lookup(e);
+    };
+    // the address of a leaf (the node over it, for a node)
+    auto leafAddr = [&](const Expr &l) -> Expr {
+      if (!node)
+        return l;
+      ExprVector kids(node->args_begin(), node->args_end());
+      kids[0] = l;
+      return node->efac().mkNary(node->op(), kids);
+    };
+    auto readAt = [&](const Expr &a) -> Expr {
+      return wideRead ? op::array::wselect(mem, a, exp->arg(2),
+                                           op::array::promisedAlign(exp))
+                      : op::array::select(mem, a);
+    };
+    // the distinct ite nodes and leaves (iterative: the DAG may be deep)
+    std::unordered_set<ENode *> ites;
+    ExprVector leafList;
+    {
+      std::unordered_set<ENode *> seenLeaf;
+      ExprVector stack{it};
+      while (!stack.empty()) {
+        Expr e = stack.back();
+        stack.pop_back();
+        if (isIte(e)) {
+          if (ites.insert(e.get()).second) {
+            stack.push_back(e->arg(2));
+            stack.push_back(e->arg(1));
+          }
+          continue;
+        }
+        if (seenLeaf.insert(e.get()).second) {
+          leafList.push_back(e);
+          if (leafList.size() > m_opts.maxDecideLeaves)
+            return std::nullopt;
+        }
+      }
+    }
+    // each distinct leaf decided once: Undecided leaves are the residual's
+    std::unordered_map<ENode *, bool> undecided;
+    bool cover = false, topOpen = false, below = false;
+    unsigned nUndecided = 0;
+    for (const Expr &l : leafList) {
+      const Expr a = op::ptr::stripObservation(leafAddr(l));
+      LeafStep s = leafWalk(mem, a, r);
+      Expr next;
+      topOpen = topOpen || leafStep(mem, a, r, next) != LeafStep::Below;
+      if (s == LeafStep::Undecided) {
+        if (!m_opts.leafSplitPartial)
+          return std::nullopt;
+        undecided[l.get()] = true;
+        ++nUndecided;
+        continue;
+      }
+      undecided[l.get()] = false;
+      cover = cover || s != LeafStep::Base;
+      below = below || s != LeafStep::Cover;
+    }
+    // nothing decided, or nothing given by a write: no split
+    if (nUndecided == leafList.size() || !cover || !topOpen)
+      return std::nullopt;
+    if (below) {
+      m_stats.count("row.leaf-split-refused");
+      return std::nullopt;
+    }
+    // per ite node: does it have an undecided / a decided leaf (post-order,
+    // memoized)
+    std::unordered_map<ENode *, std::pair<bool, bool>> has;
+    // recursion depth = ite nesting depth (the leaf cap bounds leaves, not
+    // depth: deep select chains could recurse deeply)
+    std::function<std::pair<bool, bool>(const Expr &)> hasOf =
+        [&](const Expr &e) -> std::pair<bool, bool> {
+      if (!isIte(e)) {
+        bool u = undecided.find(e.get())->second;
+        return {u, !u};
+      }
+      auto f = has.find(e.get());
+      if (f != has.end())
+        return f->second;
+      auto t = hasOf(e->arg(1)), el = hasOf(e->arg(2));
+      std::pair<bool, bool> res{t.first || el.first, t.second || el.second};
+      has.emplace(e.get(), res);
+      return res;
+    };
+    hasOf(it);
+    // the residual address: the ite pruned to its undecided leaves
+    std::unordered_map<ENode *, Expr> prunedMemo;
+    // recursion depth = ite nesting depth (the leaf cap bounds leaves, not
+    // depth: deep select chains could recurse deeply)
+    std::function<Expr(const Expr &)> pruned = [&](const Expr &e) -> Expr {
+      if (!isIte(e))
+        return e;
+      auto f = prunedMemo.find(e.get());
+      if (f != prunedMemo.end())
+        return f->second;
+      const bool inThen = hasOf(e->arg(1)).first,
+                 inElse = hasOf(e->arg(2)).first;
+      Expr res =
+          inThen && inElse
+              ? Expr(mk<ITE>(e->arg(0), pruned(e->arg(1)), pruned(e->arg(2))))
+          : inThen ? pruned(e->arg(1))
+                   : pruned(e->arg(2));
+      prunedMemo.emplace(e.get(), res);
+      return res;
+    };
+    Expr residual;
+    if (nUndecided)
+      residual = readAt(leafAddr(pruned(it)));
+    ExprVector conds;
+    std::unordered_map<ENode *, Expr> valMemo;
+    // recursion depth = ite nesting depth (the leaf cap bounds leaves, not
+    // depth: deep select chains could recurse deeply)
+    std::function<Expr(const Expr &)> val = [&](const Expr &e) -> Expr {
+      if (!isIte(e))
+        return undecided.find(e.get())->second ? residual : readAt(leafAddr(e));
+      auto f = valMemo.find(e.get());
+      if (f != valMemo.end())
+        return f->second;
+      Expr res;
+      if (!hasOf(e).second) {
+        res = residual;
+      } else {
+        conds.push_back(e->arg(0));
+        res = mk<ITE>(e->arg(0), val(e->arg(1)), val(e->arg(2)));
+      }
+      valMemo.emplace(e.get(), res);
+      return res;
+    };
+    Expr res = val(it);
+    m_stats.count("row.leaf-split");
+    m_stats.rules["row.leaf-split-leaves"] += leafList.size();
+    if (node)
+      m_stats.count("row.leaf-split-node");
+    if (nUndecided) {
+      m_stats.count("row.leaf-split-partial");
+      m_stats.rules["row.leaf-split-residual-leaves"] += nUndecided;
+    }
+    for (const Expr &c : conds)
+      m_leafConds.insert(c);
+    return RewriteResult{res, RWStatus::RW_FULL};
   }
 
   /// A wselect: over a store / wstore (rowWide), through an ite (exact),
@@ -2150,6 +2867,9 @@ public:
     const Expr arr = exp->arg(0), j = exp->arg(1), sort = exp->arg(2);
     if (isOpX<W_STORE>(arr) || isOpX<STORE>(arr))
       return rowWide(exp, arr);
+    if (isOpX<STORE_MAP>(arr) || isMemOpTerm(arr))
+      if (std::optional<RewriteResult> res = leafSplit(exp))
+        return *res;
     if (isMemOpTerm(arr)) {
       RewriteResult res = rowWideMemOp(exp, arr);
       return res.exp == exp ? byteFallback(exp) : res;
@@ -2161,18 +2881,9 @@ public:
                       op::array::wselect(arr->arg(2), j, sort, al)),
               RWStatus::RW_1};
     }
-    if (isOpX<STORE_MAP>(arr) && m_opts.assumeInBounds && !shadowMemory(arr)) {
-      std::optional<PtrView> vj = view(j);
-      const Expr b = arr->arg(1);
-      if (vj && vj->base != b && m_bases.isBase(vj->base) &&
-          m_bases.isBase(b)) {
-        m_stats.count("wide.smap-skip");
-        countReasons(Decision{{{"cmp.diff-base", PremAInb}}, PremAInb});
-        countPremises(PremAInb);
-        return {op::array::wselect(arr->arg(0), j, sort,
-                                   op::array::promisedAlign(exp)),
-                RWStatus::RW_1};
-      }
+    if (isOpX<STORE_MAP>(arr)) {
+      if (std::optional<RewriteResult> res = rowWideSmap(exp, arr))
+        return *res;
       return byteFallback(exp);
     }
     // an initial memory, a const array: the wselect stays (the boundary
@@ -2882,43 +3593,238 @@ public:
   /// bv.eq.order orders an EQ; symmetric, no assumption). The other
   /// bit-vector compare rules (bv.eq.*) do not apply: the sides are
   /// pointers, not bit-vectors.
-  /// IS_OVERLAP(p, 1, q, 1) (D13, S4): decided as PTR_EQ(p, q) (ptrEq's
-  /// rules); what stays open stays an alias question (markAlias). Wider
-  /// overlaps are left to the solver.
+  /// IS_OVERLAP(p, 1, q, 1) (D13, S4): an access question, decided in the
+  /// access context, never reduced to a PTR_EQ. Its pointers are bytes of
+  /// two accesses (a ROW step's store and read addresses: rowCompare,
+  /// R-ABORT, W-ROW-CONGRUENT / -ALIGNED), or their numeral cancellation
+  /// below. In order:
+  ///  - decideEq with diffBase (as row() decides the same pair): different
+  ///    objects do not overlap whatever the offsets (cmp.diff-base, ARM
+  ///    across bases, cmp.size0-vacuous: uses A-INB, counted); RW_DONE.
+  ///  - ITE-EQ over the address ites (buildEq with diffBase, as
+  ///    rowCompareEq), the open leaves alias questions again (markAlias).
+  ///  - one object, offsets undecided: the compare of the offsets
+  ///    (cmp.same-base, exact; the census records it as an open
+  ///    same-object question).
+  ///  - ptr.overlap.cancel-num: IS_OVERLAP(p + r1, 1, q + r2, 1) ~>
+  ///    IS_OVERLAP(p + (r1 - t), 1, q + (r2 - t), 1) (cancelNumerals: exact
+  ///    on addresses). p + r1 - t need not be an access address, so the
+  ///    access context must not read in-object ranges of it as facts. It
+  ///    does not: what the access context adds to a program compare is
+  ///    object identity only (cmp.diff-base and cmp.size0-vacuous read the
+  ///    bases of the two views; ARM across bases reads each leaf's
+  ///    provenance, its intervals are exact claims about the term, no
+  ///    A-INB in them: AddrRangeMap.hh). The cancellation keeps the base
+  ///    of every leaf (numeralPart: the K, c of a node, the same ite), so
+  ///    a decision of the cancelled question is one about the accesses.
+  ///  - the sides ordered by id (ptr.overlap.order; symmetric for unit
+  ///    widths).
+  /// Only n = m = 1 (the byte fallback and the ROW steps build no other);
+  /// wider overlaps are left to the solver, the cancellation included.
   RewriteResult overlap(const Expr &exp, bool order) {
     if (!op::ptr::isUnitOverlap(exp))
       return {exp, RWStatus::RW_DONE};
-    const Expr e = mk<PTR_EQ>(exp->arg(0), exp->arg(2));
-    RewriteResult r = ptrEq(e, order);
-    if (r.exp == e)
-      return {exp, RWStatus::RW_DONE};
-    Expr res = markAlias(r.exp);
-    // an undecided same-object question becomes a compare of the offsets
-    // (no pointer left to mark): recorded for the census
-    // (seam.alias.open.same-object), the query unchanged
-    if (!isOpX<TRUE>(res) && !isOpX<FALSE>(res) && !isOpX<IS_OVERLAP>(res)) {
-      auto va = view(exp->arg(0)), vb = view(exp->arg(2));
-      if (va && vb && va->base == vb->base)
-        m_aliasReduced.insert(res);
+    const Expr a = exp->arg(0), b = exp->arg(2);
+    Decision d;
+    Tri t = decideEq(a, b, d, /*diffBase=*/true); // uses: A-INB
+    if (t != Tri::Unknown) {
+      countReasons(d);
+      countPremises(d.premises);
+      m_stats.count("ptr.overlap.decided");
+      return {t == Tri::Yes ? mk<TRUE>(m_efac) : mk<FALSE>(m_efac),
+              RWStatus::RW_DONE};
     }
-    return {res, r.status};
+    const Expr as = op::ptr::stripObservation(a),
+               bs = op::ptr::stripObservation(b);
+    if (isOpX<ITE>(as) || isOpX<ITE>(bs)) {
+      llvm::SmallVector<std::pair<Expr, Expr>, 4> pairs;
+      if (m_opts.pushEqIte && eqPairs(as, bs, pairs, m_opts.maxEqLeaves)) {
+        unsigned depth = 0, resolved = 0, premises = PremNone;
+        bool reduced = false;
+        RewriteStats scratch;
+        std::swap(scratch, m_stats);
+        Expr built = buildEq(as, bs, depth, resolved, /*diffBase=*/true,
+                             reduced, premises, /*shadow=*/false,
+                             /*ptrLeaf=*/true);
+        std::swap(scratch, m_stats);
+        if (resolved) {
+          m_stats.merge(scratch);
+          m_stats.count("ptr.overlap.ite-push");
+          countPremises(premises);
+          return {markAlias(built), levels(depth + (reduced ? 1 : 0))};
+        }
+      }
+    } else {
+      std::optional<PtrView> pa = view(as), pb = view(bs);
+      if (pa && pb && pa->base == pb->base) {
+        m_stats.count("cmp.same-base");
+        // an undecided same-object question becomes a compare of the
+        // offsets: recorded for the census (seam.alias.open.same-object)
+        Expr res = mk<EQ>(offSum(pa->off), offSum(pb->off));
+        m_aliasReduced.insert(res);
+        return {res, RWStatus::RW_1};
+      }
+    }
+    Expr ca, cb;
+    if (cancelNumerals(a, b, ca, cb)) {
+      m_stats.count("ptr.overlap.cancel-num");
+      return {op::ptr::overlap(ca, 1, cb, 1), RWStatus::RW_2};
+    }
+    if (order && bvnorm::Rules::idLess(b, a)) {
+      m_stats.count("ptr.overlap.order");
+      return {op::ptr::overlap(b, 1, a, 1), RWStatus::RW_1};
+    }
+    return {exp, RWStatus::RW_DONE};
   }
 
   /// the offset compares same-object alias questions were reduced to
   /// (overlap() on one object, the W-BYTE-IN guard (j - i) <u w); the
   /// census counts their normal forms in the query (D13)
   const ExprSet &aliasReduced() const { return m_aliasReduced; }
+  const ExprSet &memOpOpen() const { return m_memOpOpen; }
 
   RewriteResult ptrEq(const Expr &exp, bool order) {
     const Expr e = mk<EQ>(exp->arg(0), exp->arg(1));
     RewriteResult r = eq(e, /*ptrLeaf=*/true);
     if (r.exp != e)
       return r;
+    if (std::optional<RewriteResult> k = ptrEqCancelNum(exp))
+      return *k;
     if (order && bvnorm::Rules::idLess(exp->arg(1), exp->arg(0))) {
       m_stats.count("ptr.eq.order");
       return {mk<PTR_EQ>(exp->arg(1), exp->arg(0)), RWStatus::RW_1};
     }
     return {exp, RWStatus::RW_DONE};
+  }
+
+  /// The numeral part of a pointer \p a: a = core + r (mod 2^n), r an
+  /// integer (PtrIndex.md section 2: a node's value is b + sum x_k*s_k + c +
+  /// K). A flagged node: r = K, core = the node with K = 0 (K is not part
+  /// of its promise); an unflagged node: r = c + K read signed, core = the
+  /// node with c = K = 0 (its base, recursively, if it has no index); an
+  /// ite whose leaves have one r: that r, core = the ite of their cores; any
+  /// other term: r = 0, core = a. \p core null: r only, no term built
+  /// (cancelNumerals builds the cores only when the rule fires). The core
+  /// has the base of \p a at every leaf (the same ites).
+  void numeralPart(const Expr &a, unsigned n, Expr *core, mpz_class &r) const {
+    using namespace op;
+    if (ptr::isFlagged(a.get())) {
+      r = ptr::byteOffset(a);
+      if (core) {
+        ExprVector kids(a->args_begin(), a->args_end());
+        kids.back() = mkTerm<mpz_class>(mpz_class(0L), m_efac);
+        *core = m_efac.mkNary(a->op(), kids);
+      }
+      return;
+    }
+    // an ite whose leaves have one numeral part: the ite of their cores
+    // (at most maxEqLeaves leaves)
+    if (isOpX<ITE>(a) &&
+        leafCount(a, m_opts.maxEqLeaves) <= m_opts.maxEqLeaves) {
+      mpz_class rt, re;
+      numeralPart(a->arg(1), n, nullptr, rt);
+      numeralPart(a->arg(2), n, nullptr, re);
+      if (rt == re) {
+        r = rt;
+        if (core) {
+          Expr ct, ce;
+          numeralPart(a->arg(1), n, &ct, rt);
+          numeralPart(a->arg(2), n, &ce, re);
+          *core = mk<ITE>(a->arg(0), ct, ce);
+        }
+        return;
+      }
+    }
+    if (!ptr::isPtrIndex(a)) {
+      if (core)
+        *core = a;
+      r = 0;
+      return;
+    }
+    mpz_class v = modPow2(ptr::constant(a) + ptr::byteOffset(a), n);
+    if (v >= pow2(n - 1))
+      v = v - pow2(n);
+    if (ptr::numIndices(a) == 0) {
+      numeralPart(ptr::base(a), n, core, r);
+      r = r + v;
+      return;
+    }
+    r = v;
+    if (core) {
+      std::vector<std::pair<Expr, mpz_class>> idx;
+      for (size_t k = 0; k < ptr::numIndices(a); ++k)
+        idx.push_back({ptr::index(a, k), ptr::stride(a, k)});
+      *core = ptr::ptrIndex(PtrOpKind::PTR_INDEX, ptr::base(a), idx,
+                            mpz_class(0L), mpz_class(0L));
+    }
+  }
+
+  /// core + r as a node: a flagged core takes r into its K (the form
+  /// op::ptr::addressPlus gives a numeral added to a promised node); an
+  /// unflagged node takes it into c (mod 2^n, K folded in); any other term
+  /// (an ite included) is the base of a new node PTR_INDEX(core, c = r);
+  /// r = 0: the core.
+  Expr withNumeral(const Expr &core, unsigned n, const mpz_class &r) const {
+    using namespace op;
+    if (r == 0)
+      return core;
+    if (ptr::isFlagged(core.get())) {
+      ExprVector kids(core->args_begin(), core->args_end());
+      kids.back() = mkTerm<mpz_class>(ptr::byteOffset(core) + r, m_efac);
+      return m_efac.mkNary(core->op(), kids);
+    }
+    if (ptr::isPtrIndex(core)) {
+      std::vector<std::pair<Expr, mpz_class>> idx;
+      for (size_t k = 0; k < ptr::numIndices(core); ++k)
+        idx.push_back({ptr::index(core, k), ptr::stride(core, k)});
+      return ptr::ptrIndex(
+          PtrOpKind::PTR_INDEX, ptr::base(core), idx,
+          modPow2(ptr::constant(core) + ptr::byteOffset(core) + r, n),
+          mpz_class(0L));
+    }
+    // any other term (an ite included): a node over it
+    return ptr::ptrIndex(PtrOpKind::PTR_INDEX, core, {}, modPow2(r, n),
+                         mpz_class(0L));
+  }
+
+  /// The common numeral of two pointers \p p = p' + r1 and \p q = q' + r2
+  /// (numeralPart), r1 and r2 nonzero of one sign, t the one nearer 0:
+  /// \p pc = p' + (r1 - t), \p qc = q' + (r2 - t); false if nothing
+  /// cancels. pc - qc = p - q (addition mod 2^n is cancellative: exact, no
+  /// assumption). A side whose numeral is 0 keeps its form: nothing is
+  /// moved onto it.
+  bool cancelNumerals(const Expr &p, const Expr &q, Expr &pc, Expr &qc) const {
+    const unsigned n = widthOf(p);
+    if (n == 0 || n != widthOf(q))
+      return false;
+    mpz_class ra, rb;
+    numeralPart(p, n, nullptr, ra);
+    if (mpz_sgn(ra.get_mpz_t()) == 0)
+      return false;
+    numeralPart(q, n, nullptr, rb);
+    if (mpz_sgn(ra.get_mpz_t()) != mpz_sgn(rb.get_mpz_t()))
+      return false;
+    const mpz_class t =
+        mpz_sgn(ra.get_mpz_t()) > 0 ? (ra < rb ? ra : rb) : (ra < rb ? rb : ra);
+    Expr ca, cb;
+    numeralPart(p, n, &ca, ra);
+    numeralPart(q, n, &cb, rb);
+    pc = withNumeral(ca, n, ra - t);
+    qc = withNumeral(cb, n, rb - t);
+    return pc != p || qc != q;
+  }
+
+  /// ptr.eq.cancel-num: PTR_EQ(p + r1, q + r2) ~> PTR_EQ(p + (r1 - t), q +
+  /// (r2 - t)) (cancelNumerals: exact, no assumption). A program compare:
+  /// address equality cancels exactly. The alias questions of two accesses
+  /// (IS_OVERLAP) cancel by their own rule (ptr.overlap.cancel-num in
+  /// overlap()). RW_2: the compare and its new nodes.
+  std::optional<RewriteResult> ptrEqCancelNum(const Expr &exp) {
+    Expr a, b;
+    if (!cancelNumerals(exp->arg(0), exp->arg(1), a, b))
+      return std::nullopt;
+    m_stats.count("ptr.eq.cancel-num");
+    return RewriteResult{mk<PTR_EQ>(a, b), RWStatus::RW_2};
   }
 
   //===------------------------------------------------------------------===//
@@ -3097,6 +4003,12 @@ public:
     // constructors by value, ARM reads them as the absolute point c)
     if (op::bv::isBvNum(x, w))
       return {exp, RWStatus::RW_DONE};
+    if (m_opts.leafSplit && isOpX<BCONCAT>(x))
+      if (auto r = loadResolveLeaves(exp))
+        return {r, RWStatus::RW_FULL};
+    if (m_opts.leafSplit && isOpX<ITE>(x) && !m_bases.lookup(x))
+      if (auto r = loadResolveLeafIte(exp))
+        return {r, RWStatus::RW_FULL};
     if (m_opts.pullConcatIte && isOpX<BCONCAT>(x))
       if (auto r = loadResolveConcat(exp))
         return {r, RWStatus::RW_FULL};
@@ -3125,6 +4037,184 @@ public:
       return {exp, RWStatus::RW_DONE};
     m_stats.count("ptr.load-resolve-ite");
     return {res, levels(depth + 1)};
+  }
+
+  /// The pointer p whose bits \p bytes (msb first) are: to_bits(p) whole,
+  /// or its contiguous extracts from the lsb up, of the loaded width \p w
+  /// (a to_bits of another width is not the loaded pointer). Null if none.
+  Expr storedPointer(llvm::ArrayRef<Expr> bytes, unsigned w) {
+    Expr p;
+    unsigned next = 0; // the next expected low bit, from the lsb
+    for (auto it = bytes.rbegin(); it != bytes.rend(); ++it) {
+      const Expr &b = *it;
+      Expr arg;
+      unsigned hi, lo;
+      if (isOpX<PTR_TO_BITS>(b)) {
+        arg = b;
+        lo = 0;
+        hi = w - 1;
+      } else if (isOpX<BEXTRACT>(b) && isOpX<PTR_TO_BITS>(op::bv::earg(b))) {
+        arg = op::bv::earg(b);
+        hi = op::bv::high(b);
+        lo = op::bv::low(b);
+      } else {
+        return Expr();
+      }
+      if (widthOf(arg) != w || lo != next || (p && arg != p))
+        return Expr();
+      p = arg;
+      next = hi + 1;
+    }
+    if (!p || next != w)
+      return Expr();
+    return p->arg(0);
+  }
+
+  /// ptr.load-resolve through a split load whose bytes share one ite spine
+  /// (R-LEAVES' result for the bytes of one load: each byte read at the
+  /// leaves of the same address ite): concat(b_1, ..., b_n) (msb first,
+  /// nested concats flattened) is split on c when every byte whose top is
+  /// an ite on a condition of an address leafSplit split is ite(c, ., .) (a
+  /// byte with another top goes to both sides: a value, or the residual read
+  /// of a partial split; other shared conditions, a join's, are
+  /// --seam-pull-concat's), until no byte has one at its top: the ite of
+  /// from_bits(concat(leaf bytes)), and
+  /// a leaf whose bytes are the contiguous extracts of one to_bits(p) is p.
+  /// All or nothing: at most maxDecideLeaves distinct leaves (the bytes are
+  /// ite DAGs: each byte tuple is split once, memoized), every split on a
+  /// condition all ite bytes share at their top, some leaf a stored
+  /// pointer. Address-exact, no assumption (counter
+  /// ptr.load-resolve-leaves).
+  Expr loadResolveLeaves(const Expr &exp) {
+    const Expr x = exp->arg(0);
+    using Bytes = llvm::SmallVector<Expr, 8>;
+    std::function<void(const Expr &, Bytes &)> flat = [&](const Expr &e,
+                                                          Bytes &out) {
+      if (isOpX<BCONCAT>(e)) {
+        for (size_t i = 0; i < e->arity(); ++i)
+          flat(e->arg(i), out);
+      } else {
+        out.push_back(e);
+      }
+    };
+    Bytes bytes;
+    flat(x, bytes);
+    if (llvm::none_of(bytes, [](const Expr &b) { return isOpX<ITE>(b); }))
+      return Expr();
+    const unsigned w = widthOf(x);
+    unsigned leaves = 0, resolved = 0;
+    bool ok = true;
+    std::map<std::vector<ENode *>, Expr> memo;
+    std::function<Expr(const Bytes &)> split = [&](const Bytes &bs) -> Expr {
+      if (!ok)
+        return Expr();
+      std::vector<ENode *> key;
+      for (const Expr &b : bs)
+        key.push_back(b.get());
+      auto f = memo.find(key);
+      if (f != memo.end())
+        return f->second;
+      // the split condition: the leaf condition at the top of the bytes
+      // that have one (a byte with another top, e.g. the residual read of a
+      // partial split, goes to both sides)
+      Expr c;
+      for (const Expr &b : bs)
+        if (isOpX<ITE>(b) && m_leafConds.count(b->arg(0))) {
+          if (c && b->arg(0) != c) {
+            ok = false; // the bytes do not share one spine
+            return Expr();
+          }
+          c = b->arg(0);
+        }
+      Expr res;
+      if (!c) {
+        if (++leaves > m_opts.maxDecideLeaves) {
+          ok = false;
+          return Expr();
+        }
+        if (Expr p = storedPointer(bs, w)) {
+          ++resolved;
+          res = p;
+        } else {
+          res = mk<PTR_FROM_BITS>(
+              bs.size() == 1 ? bs[0] : mknary<BCONCAT>(bs.begin(), bs.end()));
+        }
+      } else {
+        Bytes t, e;
+        for (const Expr &b : bs) {
+          const bool at = isOpX<ITE>(b) && b->arg(0) == c;
+          t.push_back(at ? b->arg(1) : b);
+          e.push_back(at ? b->arg(2) : b);
+        }
+        Expr l = split(t);
+        Expr r = split(e);
+        if (!ok)
+          return Expr();
+        res = mk<ITE>(c, l, r);
+      }
+      memo.emplace(std::move(key), res);
+      return res;
+    };
+    Expr res = split(bytes);
+    if (!ok || !res || !resolved)
+      return Expr();
+    m_stats.count("ptr.load-resolve-leaves");
+    return res;
+  }
+
+  /// ptr.load-resolve through a whole load at an address R-LEAVES split
+  /// (a wide read: the ite of the leaf values): from_bits(ite(c, x, y)) ~>
+  /// ite(c, from_bits(x), from_bits(y)) over the ite's DAG (memoized), when
+  /// every ite node's condition is a condition of an address leafSplit
+  /// split, it has at most maxDecideLeaves distinct leaves and some leaf is a
+  /// stored pointer's to_bits (that leaf is the pointer). The loadResolve
+  /// leaf bound (maxPullLeaves tree leaves) does not apply: the ite is the
+  /// split address's shape. Address-exact, no assumption (counter
+  /// ptr.load-resolve-leaf-ite).
+  Expr loadResolveLeafIte(const Expr &exp) {
+    const Expr x = exp->arg(0);
+    const unsigned w = widthOf(x);
+    std::unordered_set<ENode *> ites, leaves;
+    bool resolved = false;
+    ExprVector stack{x};
+    while (!stack.empty()) {
+      Expr e = stack.back();
+      stack.pop_back();
+      if (isOpX<ITE>(e) && !m_bases.lookup(e)) {
+        if (!ites.insert(e.get()).second)
+          continue;
+        if (!m_leafConds.count(e->arg(0)))
+          return Expr();
+        stack.push_back(e->arg(1));
+        stack.push_back(e->arg(2));
+        continue;
+      }
+      if (leaves.insert(e.get()).second &&
+          leaves.size() > m_opts.maxDecideLeaves)
+        return Expr();
+      resolved = resolved || (isOpX<PTR_TO_BITS>(e) && widthOf(e) == w);
+    }
+    if (!resolved)
+      return Expr();
+    std::unordered_map<ENode *, Expr> memo;
+    // recursion depth = ite nesting depth (the leaf cap bounds leaves, not
+    // depth: deep select chains could recurse deeply)
+    std::function<Expr(const Expr &)> map = [&](const Expr &e) -> Expr {
+      if (ites.count(e.get())) {
+        auto f = memo.find(e.get());
+        if (f != memo.end())
+          return f->second;
+        Expr r = mk<ITE>(e->arg(0), map(e->arg(1)), map(e->arg(2)));
+        memo.emplace(e.get(), r);
+        return r;
+      }
+      if (isOpX<PTR_TO_BITS>(e) && widthOf(e) == w)
+        return e->arg(0);
+      return mk<PTR_FROM_BITS>(e);
+    };
+    Expr res = map(x);
+    m_stats.count("ptr.load-resolve-leaf-ite");
+    return res;
   }
 
   /// ptr.load-resolve through a split load (pullConcatIte, S6 probe): the
@@ -3156,46 +4246,75 @@ public:
     Bytes bytes;
     flat(x, bytes);
     const unsigned w = widthOf(x);
-    // the pointer whose bits the bytes are, if any
-    auto stored = [&](const Bytes &bs) -> Expr {
-      Expr p;
-      unsigned next = 0; // the next expected high bit + 1, from the lsb
-      for (auto it = bs.rbegin(); it != bs.rend(); ++it) {
-        const Expr &b = *it;
-        Expr arg;
-        unsigned hi, lo;
-        if (isOpX<PTR_TO_BITS>(b)) {
-          arg = b;
-          lo = 0;
-          hi = w - 1;
-        } else if (isOpX<BEXTRACT>(b) && isOpX<PTR_TO_BITS>(op::bv::earg(b))) {
-          arg = op::bv::earg(b);
-          hi = op::bv::high(b);
-          lo = op::bv::low(b);
-        } else {
-          return Expr();
-        }
-        if (lo != next || (p && arg != p))
-          return Expr();
-        p = arg;
-        next = hi + 1;
+    // the conditions of the ites reachable from a byte through ites only,
+    // in DFS order (at most kCondNodes ite nodes visited: a partial set
+    // only misses a split)
+    constexpr unsigned kCondNodes = 64;
+    std::unordered_map<ENode *, std::vector<Expr>> condMemo;
+    auto condsOf = [&](const Expr &b) -> const std::vector<Expr> & {
+      auto it = condMemo.find(b.get());
+      if (it != condMemo.end())
+        return it->second;
+      std::vector<Expr> out;
+      std::unordered_set<ENode *> seen, seenCond;
+      std::vector<Expr> stack{b};
+      while (!stack.empty() && seen.size() < kCondNodes) {
+        Expr e = stack.back();
+        stack.pop_back();
+        if (!isOpX<ITE>(e) || !seen.insert(e.get()).second)
+          continue;
+        if (seenCond.insert(e->arg(0)).second)
+          out.push_back(e->arg(0));
+        stack.push_back(e->arg(2));
+        stack.push_back(e->arg(1));
       }
-      if (!p || next != w)
+      return condMemo.emplace(b.get(), std::move(out)).first->second;
+    };
+    // the split condition of a side: none if a byte that is not an ite is
+    // not bits of a pointer (no split can reassemble one: the side is a
+    // leaf), else the first condition of the first ite byte that every ite
+    // byte has, else (ptr.load-resolve-concat.unshared) the first condition
+    // of the first ite byte. A split on a condition every byte has can
+    // reassemble a pointer at once; one that only some bytes have
+    // reassembles one only after further splits, one per guard, within the
+    // pull budget (--seam-pull-concat)
+    auto sharedCond = [&](const Bytes &bs) -> Expr {
+      const Expr *first = nullptr;
+      for (const Expr &b : bs) {
+        if (isOpX<ITE>(b)) {
+          if (!first)
+            first = &b;
+          continue;
+        }
+        const Expr x = isOpX<BEXTRACT>(b) ? Expr(op::bv::earg(b)) : b;
+        if (!isOpX<PTR_TO_BITS>(x))
+          return Expr();
+      }
+      if (!first)
         return Expr();
-      return p->arg(0);
+      for (const Expr &c : condsOf(*first)) {
+        bool all = true;
+        for (const Expr &b : bs)
+          if (isOpX<ITE>(b) && &b != first) {
+            const std::vector<Expr> &cs = condsOf(b);
+            if (std::find(cs.begin(), cs.end(), c) == cs.end()) {
+              all = false;
+              break;
+            }
+          }
+        if (all)
+          return c;
+      }
+      m_stats.count("ptr.load-resolve-concat.unshared");
+      return condsOf(*first).empty() ? Expr() : condsOf(*first).front();
     };
     unsigned pulls = 0, resolved = 0;
     std::function<Expr(const Bytes &)> split = [&](const Bytes &bs) -> Expr {
-      if (Expr p = stored(bs)) {
+      if (Expr p = storedPointer(bs, w)) {
         ++resolved;
         return p;
       }
-      Expr c;
-      for (const Expr &b : bs)
-        if (isOpX<ITE>(b)) {
-          c = b->arg(0);
-          break;
-        }
+      Expr c = sharedCond(bs);
       if (!c || pulls >= m_opts.pullConcatIte) {
         Expr leaf =
             bs.size() == 1 ? bs[0] : mknary<BCONCAT>(bs.begin(), bs.end());
@@ -3659,10 +4778,14 @@ public:
   /// \p premises gets the premises of the leaves it resolved (and the
   /// premise counter is bumped for them). uses: A-INB, through buildEq.
   /// \p shadow: the step is in a shadow memory: no A-INB, the leaves are
-  /// decided by object identity (decidePair, shadow.distinct-base).
+  /// decided by object identity (decidePair, shadow.distinct-base), and the
+  /// open leaves stay PTR_EQ: a shadow cell is keyed by an object's base, not
+  /// an access, so it is no alias question (overlap() would decide it in the
+  /// access context).
   Expr rowCompare(const Expr &i, const Expr &idx, unsigned &depth,
                   bool &reduced, unsigned &premises, bool shadow = false) {
-    return markAlias(rowCompareEq(i, idx, depth, reduced, premises, shadow));
+    Expr cmp = rowCompareEq(i, idx, depth, reduced, premises, shadow);
+    return shadow ? cmp : markAlias(cmp);
   }
 
   /// The pointer compares of a ROW compare as alias questions (D13, S4):
@@ -3687,7 +4810,22 @@ public:
     return e;
   }
 
-  /// rowCompare's compare with PTR_EQ leaves.
+  /// The EQ leaves of a ROW compare tree (ite, Boolean constants and
+  /// PTR_EQ leaves aside) go to the census of same-object questions
+  /// (aliasReduced).
+  void noteReducedLeaves(const Expr &e) {
+    if (isOpX<ITE>(e)) {
+      noteReducedLeaves(e->arg(1));
+      noteReducedLeaves(e->arg(2));
+    } else if (isOpX<EQ>(e)) {
+      m_aliasReduced.insert(e);
+    }
+  }
+
+  /// rowCompare's compare with PTR_EQ leaves. The tree is built over as
+  /// many leaf pairs as decideEq looks at (maxDecideLeaves, not the
+  /// program compare's maxEqLeaves): a pair the access decision resolves is
+  /// resolved in the tree, not left in one compare of the whole ites.
   Expr rowCompareEq(const Expr &i, const Expr &idx, unsigned &depth,
                     bool &reduced, unsigned &premises, bool shadow) {
     Expr cmp = mk<PTR_EQ>(i, idx);
@@ -3695,8 +4833,8 @@ public:
     reduced = false;
     premises = PremNone;
     if (isOpX<ITE>(i) || isOpX<ITE>(idx)) {
-      llvm::SmallVector<std::pair<Expr, Expr>, 4> pairs;
-      if (eqPairs(i, idx, pairs, m_opts.maxEqLeaves)) {
+      llvm::SmallVector<std::pair<Expr, Expr>, 8> pairs;
+      if (eqPairs(i, idx, pairs, m_opts.maxDecideLeaves)) {
         unsigned resolved = 0;
         RewriteStats scratch;
         std::swap(scratch, m_stats);
@@ -3709,6 +4847,11 @@ public:
           cmp = built;
           premises = used;
           countPremises(used);
+          // a leaf reduced to a compare of offsets (cmp.same-base,
+          // cmp.cancel) has no pointer left to mark: an open alias question
+          // in its reduced form, for the census (as overlap() records)
+          if (reduced)
+            noteReducedLeaves(built);
         } else {
           depth = 0;
           reduced = false;
@@ -3993,10 +5136,12 @@ public:
 
   /// in(j, d, n) for one leaf pair (j, d not ites); the rule and its premises
   /// go to \p dec when decided. \p k gets the numeral k = j - d when exact.
-  /// \p inb: A-INB may be used (false in a shadow memory).
+  /// \p inb: A-INB may be used (false in a shadow memory). \p span: the
+  /// read is of span bytes [j, j + span): In when all are in the range, Out
+  /// when none is (the circular test of k .. k + span - 1).
   Range decideInPair(const Expr &j, const Expr &d, bool haveN,
                      const mpz_class &nlo, const mpz_class &nhi, Decision &dec,
-                     mpz_class *k, bool inb = true) const {
+                     mpz_class *k, bool inb = true, uint64_t span = 1) const {
     // different objects: no cell of [d, d + n) is j (uses: A-INB, for the
     // whole destination range and for j's access)
     std::optional<PtrView> vj = view(j), vd = view(d);
@@ -4048,7 +5193,10 @@ public:
     const char *rule = nullptr;
     if (!offsetDiff(j, d, lo, hi, rule))
       return Range::Unknown;
-    Range r = circularIn(lo, hi, nlo, nhi, widthOf(d));
+    Range r = circularIn(
+        lo,
+        span > 1 ? mpz_class(hi + mpz_class((unsigned long)(span - 1))) : hi,
+        nlo, nhi, widthOf(d));
     if (r != Range::Unknown)
       dec.add(rule,
               std::strcmp(rule, "mem.in-layout") == 0 ? PremLayout : PremNone);
@@ -4100,6 +5248,51 @@ public:
     return allIn ? Range::In : Range::Out;
   }
 
+  /// The in-test `(idx - d) <u n` of a read at \p idx of a memory-operation
+  /// term with destination \p d and length \p n, over the leaf pairs of the
+  /// ites of idx and d (as buildEq: ites with one condition paired branch by
+  /// branch): a pair decideInPair resolves is true (In) / false (Out), with
+  /// its reasons counted and its premises in \p premises; an open pair is
+  /// its own `PTR_DIFF(j, d') <u n` (collected in \p open; the caller records
+  /// them for the census, memOpOpen, when the tree is used).
+  /// \p resolved counts the resolved pairs. On
+  /// the path that selects a pair, idx and d are that pair, so the tree equals
+  /// the in-test of the whole terms. uses: the premises of the resolved pairs
+  /// (A-INB: cmp.diff-base, cmp.size0-vacuous, arm.skip; LAYOUT:
+  /// mem.in-layout).
+  Expr buildIn(const Expr &l, const Expr &r, const Expr &n, bool haveN,
+               const mpz_class &nlo, const mpz_class &nhi, bool inb,
+               unsigned &resolved, unsigned &premises,
+               llvm::SmallVectorImpl<Expr> &open) {
+    const Expr a = op::ptr::stripObservation(l),
+               b = op::ptr::stripObservation(r);
+    auto branches = [&](const Expr &c, const Expr &lt, const Expr &rt,
+                        const Expr &le, const Expr &re) {
+      Expr t =
+          buildIn(lt, rt, n, haveN, nlo, nhi, inb, resolved, premises, open);
+      Expr e =
+          buildIn(le, re, n, haveN, nlo, nhi, inb, resolved, premises, open);
+      return mk<ITE>(c, t, e);
+    };
+    if (isOpX<ITE>(a) && isOpX<ITE>(b) && a->arg(0) == b->arg(0))
+      return branches(a->arg(0), a->arg(1), b->arg(1), a->arg(2), b->arg(2));
+    if (isOpX<ITE>(a))
+      return branches(a->arg(0), a->arg(1), b, a->arg(2), b);
+    if (isOpX<ITE>(b))
+      return branches(b->arg(0), a, b->arg(1), a, b->arg(2));
+    Decision d;
+    Range rg = decideInPair(a, b, haveN, nlo, nhi, d, nullptr, inb);
+    if (rg != Range::Unknown) {
+      ++resolved;
+      countReasons(d);
+      premises |= d.premises;
+      return rg == Range::In ? mk<TRUE>(m_efac) : mk<FALSE>(m_efac);
+    }
+    Expr in = memOpIn(mk<PTR_DIFF>(a, b), n); // S1.5: a pointer difference
+    open.push_back(in);
+    return in;
+  }
+
   /// select(T, idx) over a memory-operation term T (MemOps.hh), decided once
   /// per (term, read), not per cell:
   ///   skip (row.<op>-skip): in(idx, d, n) false: select(M, idx). RW_1 (the
@@ -4115,6 +5308,9 @@ public:
   ///   undecided (row.<op>): ite(k <u n, <hit form>, select(M, idx)): one ite
   ///     with one compare (MemOps.hh memopRead); kept as it is when
   ///     expandUnknownRow is off (the boundary translates it). No assumption.
+  ///     When idx or d is an ite, the compare is the tree of buildIn over
+  ///     their leaf pairs (mem.in-push, at least one pair resolved): uses
+  ///     the premises of the resolved pairs (A-INB across objects).
   ///   RW_FULL for the source read of mcopy and for the ite: the new selects
   ///   start their own chains below new sums (s + k, idx - d).
   RewriteResult rowMemOp(const Expr &exp, const Expr &t, const Expr &idx) {
@@ -4152,8 +5348,36 @@ public:
     if (!m_opts.expandUnknownRow)
       return {exp, RWStatus::RW_DONE};
     counter("");
-    return {mk<ITE>(memOpIn(k, memOpLen(t)), hit,
-                    op::array::select(memOpBase(t), idx)),
+    // the in-test over the leaf pairs (as ROW's compare tree): the pairs
+    // decided In / Out are true / false, the rest stay open
+    Expr in = memOpIn(k, memOpLen(t));
+    const Expr d = memOpDst(t);
+    llvm::SmallVector<std::pair<Expr, Expr>, 8> pairs;
+    if ((isOpX<ITE>(op::ptr::stripObservation(idx)) ||
+         isOpX<ITE>(op::ptr::stripObservation(d))) &&
+        eqPairs(idx, d, pairs, m_opts.maxDecideLeaves)) {
+      mpz_class nlo, nhi;
+      const bool haveN = lenRange(memOpLen(t), nlo, nhi);
+      unsigned resolved = 0, premises = PremNone;
+      llvm::SmallVector<Expr, 4> openIn;
+      RewriteStats scratch;
+      std::swap(scratch, m_stats);
+      Expr built =
+          buildIn(idx, d, memOpLen(t), haveN, nlo, nhi,
+                  /*inb=*/!shadowMemory(t), resolved, premises, openIn);
+      std::swap(scratch, m_stats);
+      if (resolved) {
+        m_stats.merge(scratch);
+        m_stats.count("mem.in-push");
+        countPremises(premises);
+        in = built;
+        for (const Expr &o : openIn)
+          m_memOpOpen.insert(o);
+      }
+    }
+    if (in == memOpIn(k, memOpLen(t)))
+      m_memOpOpen.insert(in);
+    return {mk<ITE>(in, hit, op::array::select(memOpBase(t), idx)),
             RWStatus::RW_FULL};
   }
 
@@ -4294,6 +5518,8 @@ public:
         countPremises(d.premises);
         return {op::array::select(arr->arg(0), idx), RWStatus::RW_1};
       }
+      if (std::optional<RewriteResult> res = leafSplit(exp))
+        return *res;
       if (!m_opts.expandUnknownRow)
         return {exp, RWStatus::RW_DONE};
       m_stats.count("row.store");
@@ -4358,6 +5584,9 @@ public:
       return {mk<ITE>(cmp, arr->arg(2), op::array::select(arr->arg(0), idx)),
               levels(depth + 1 + (reduced ? 1 : 0))};
     }
+    if (isOpX<STORE_MAP>(arr) || isMemOpTerm(arr))
+      if (std::optional<RewriteResult> res = leafSplit(exp))
+        return *res;
     if (isOpX<STORE_MAP>(arr))
       return rowStoreMap(arr, idx);
     if (isMemOpTerm(arr))
@@ -4402,6 +5631,9 @@ private:
   /// canon (sameAddr), memoized per term; the pins keep the keys alive
   mutable std::unordered_map<ENode *, Expr> m_canonMemo;
   mutable ExprSet m_aliasReduced;
+  /// the open in-tests of memory-operation reads (rowMemOp, buildIn), for
+  /// the census (seam.alias.open-memop.<kind>)
+  ExprSet m_memOpOpen;
   /// checkInbPremise: the recorded accesses (normal-form address, units),
   /// by node and by object base
   struct InbRec {
@@ -4413,6 +5645,13 @@ private:
   mutable std::vector<std::string> m_inbUnrecorded;
   /// split loads loadResolveConcat looked at (not split again)
   std::unordered_map<ENode *, Expr> m_concatTried;
+  /// leafWalk's memo: (memory, leaf address, read bytes) -> its answer; the
+  /// keys pinned
+  std::map<std::tuple<ENode *, ENode *, uint64_t>, LeafStep> m_leafMemo;
+  std::vector<Expr> m_leafPin;
+  /// the ite conditions of the addresses leafSplit split (the conditions
+  /// loadResolveLeaves splits a load on)
+  ExprSet m_leafConds;
   mutable std::vector<Expr> m_canonPin;
   /// decidePair's memo: (a, b, diffBase, shadow) -> answer and reasons;
   /// the keys pinned
@@ -4577,6 +5816,19 @@ class SeaMRewriter {
         stack.push_back(n->arg(i));
     }
   }
+  /// the boundary's byte addresses with the offset pushed into ite leaves
+  /// (op::ptr::byteAddress), totals over the three expanders
+  void noteWideOffsets() {
+    uint64_t pushed = 0, refused = 0;
+    for (const WideExpander *w : {&m_wide, &m_wideKeep, &m_wideRest}) {
+      pushed += w->offsetPushed();
+      refused += w->offsetRefused();
+    }
+    if (pushed)
+      m_stats.rules["wide.expanded-ite-offset"] = pushed;
+    if (refused)
+      m_stats.rules["wide.expanded-ite-offset-refused"] = refused;
+  }
   /// time spent in rewrite(): the pre-processing of the thesis' Table 8.4
   double m_rewriteSeconds = 0;
   /// time spent in simplify(): the final pass over the VC
@@ -4603,7 +5855,10 @@ public:
                SeaMOptions opts = SeaMOptions(),
                RewriteOptions ropts = RewriteOptions())
       : m_config(efac, bases, m_stats, opts),
-        m_rw(m_config, m_cache, m_stats, ropts) {}
+        m_rw(m_config, m_cache, m_stats, ropts) {
+    for (WideExpander *w : {&m_wide, &m_wideKeep, &m_wideRest})
+      w->maxOffsetLeaves(opts.maxOffsetLeaves);
+  }
   SeaMRewriter(const SeaMRewriter &) = delete;
   SeaMRewriter &operator=(const SeaMRewriter &) = delete;
 
@@ -4668,6 +5923,7 @@ public:
     if (m_wideMade) {
       res = m_wide.expand(res);
       m_stats.rules["wide.expanded"] = m_wide.expanded();
+      noteWideOffsets();
     }
     if (m_memOpsMade) {
       res = m_memops.translate(res, why);
@@ -4721,6 +5977,7 @@ public:
       res = m_wideRest.expand(res);
       m_stats.rules["wide.expanded"] =
           m_wideKeep.expanded() + m_wideRest.expanded();
+      noteWideOffsets();
       res = expandPtrIndex(res);
       if (m_wideRest.hasWide(res)) {
         why = "initial words: a width term is left in the query";

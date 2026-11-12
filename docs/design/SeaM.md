@@ -519,7 +519,8 @@ address of the write below it, or every entry of the store-map below it), at
 the access size of the context. This checks that the rule is a correct
 consequence of its stated premise; it does not discharge A-INB (that is the
 bounds-check job). A premise that cannot be stated (an A-INB firing in an
-`addr` context, a term that is not a select / store, a statically violated
+`addr` context, a term that is not a select / store / wselect or a unit
+overlap of two recorded access bytes, a statically violated
 access, or a premise the solver finds unsatisfiable: checked first, so a vacuous premise never makes a firing valid) is `unexpressible` (warning `seam.check-unexpressible`), never valid.
 Output `seam-check: firings= checked= valid= invalid= unknown=
 unexpressible=` after the verdict, `seam-check-invalid:` (rule, op, location,

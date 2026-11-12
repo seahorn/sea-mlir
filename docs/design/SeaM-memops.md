@@ -92,7 +92,13 @@ per cell:
   premise carries the guard); MSET -> v;
   MHAVOC -> `select(H, j)`; MFILL -> the byte at a numeral `j - d`.
 - **undecided**: `ite((j - d) <u n, <hit form>, select(M, j))`: one ite
-  with one compare, not one per cell. MFILL with a symbolic `j - d`:
+  with one compare, not one per cell. When j or d is an ite, the compare
+  is built over their leaf pairs (`Rules::buildIn`, as ROW's compare tree;
+  `mem.in-push`): a pair decided in / out (A-INB across objects included)
+  is true / false, only the other pairs stay `(j' - d') <u n`. An earlier
+  version kept the whole compare when any pair was open, and the program
+  rules then lost the pairs only A-INB decides
+  (test/VC/seam/memop-in-leaves.mlir). MFILL with a symbolic `j - d`:
   decided later (an ite over the bytes or a lookup term); MFILL is step 2.
 
 The hit / skip decisions reuse `decideEq`'s machinery (bases, ARM,
@@ -223,7 +229,9 @@ lines where the --seam verdict differs: the n > K programs).
   objects than d's (`arm.skip`, A-INB; d needs a view, so that its range
   premise can be stated). A split of the read over an ite index whose
   branches decide was tried and dropped (hash_iter_begin: DAG 15.7k ->
-  21.6k, z3 29 -> 41 s).
+  21.6k, z3 29 -> 41 s). R-LEAVES (SeaM-mixed-width.md) splits only when
+  a write gives every leaf read, decided down the whole memory
+  (hash_iter_begin: no firing, the query is unchanged).
 - Boundary: `MemOpTranslator` as specified (memo by node and by (memory,
   index); store-maps expanded first); counted `memop.translated`. The
   query fails with `vc.memop-term-at-boundary` on a refusal; replay treats

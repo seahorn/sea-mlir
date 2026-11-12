@@ -396,6 +396,10 @@ measurement and are not part of the supported configuration:
 | `--seam-resolve-ite-nodes=<N>` | resolve a loaded pointer through an ite of loaded values |
 | `--seam-pull-concat=<N>` | resolve a split pointer load through a shared ite |
 | `--seam-congruence` | decide addresses apart by divisibility |
+| `--seam-wide-ite-open` | W-ITE also for undecided ite leaf pairs (open, untuned) |
+| `--seam-leaf-split=0` | keep a read at an ite address whole (R-LEAVES off) |
+| `--seam-offset-leaves=0` | boundary byte expansion of a width term (--seam-wide) keeps a + k over an ite address (default 8 leaves, untuned) |
+| `--seam-leaf-split-partial` | R-LEAVES with undecided leaves: they stay one read at the ite of them (untuned) |
 | `--ptr-companion=exact\|check\|assume` | the pointer companion memory (PtrSort S6) |
 | `--seam-stride` | R-STRIDE in Store-Map |
 | `--seam-check-inb-premise` | the partial A-INB premise check (above) |

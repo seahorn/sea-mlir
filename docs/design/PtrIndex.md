@@ -77,9 +77,11 @@ the node has sort bv(n), but it hides the pointer arithmetic. Therefore:
   xrt, accessSpans / accessAligns, inBounds / rangeInBounds, the store-map
   and ARM paths). The gate of 3b-ii stays: verdicts, Ackermann reads and
   constraints identical on every corpus, with the stride rule off.
-- **Section 4 (who writes K) simplifies.** K is still written only by the
-  expanders, but `bvadd(node, k)` no longer has to be classified: nothing
-  builds it.
+- **Section 4 (who writes K) simplifies.** `bvadd(node, k)` no longer has
+  to be classified: nothing builds it. K is written by the expanders, by
+  `op::ptr::addressPlus` (a numeral added to a flagged node) and by
+  `ptrindex.absorb-k` (section 4); the last two write a signed, unbounded
+  K.
 
 ## 0a. Stage 3b-ii step (a), as implemented
 
@@ -189,7 +191,8 @@ tests (numeral, offset, residue, leaf), so `stride-pairs` counts
 constraints removed.
 
 **K writers (section 4).** With the flag (and A-INB), byte k of a wide
-access at a promised node is that node with K = k:
+access at a promised node `PTR_INDEX_NUSW(b, x_1, s_1, ..., c, K = 0)` is
+the K-node `PTR_INDEX_NUSW(b, x_1, s_1, ..., c, K = k)`:
 - `splitRead`;
 - the boundary's WideExpander;
 - `op::ptr::withByteOffset`, which pushes k into ite leaves.
@@ -426,9 +429,11 @@ Arguments, all operators:
   - PTR_INDEX: reduced mod 2^n.
   ptrindex.fold keeps a flag only if the folded c is in its range (S5).
 
-`K` is the byte offset of an access inside the expansion of a wider
-access (section 4). OpSem always writes K = 0. Only the expanders write
-K != 0.
+`K` is a numeral added to the node after its promise: the byte offset of
+an access inside the expansion of a wider access, or a numeral the
+program adds to a flagged node (section 4). OpSem writes K = 0 at the
+node it builds for a GEP; the expanders, `op::ptr::addressPlus` and
+`ptrindex.absorb-k` write K != 0 (signed, unbounded for the last two).
 
 Value of a node: `b + sum x_k*s_k + c + K (mod 2^n)`. The promise of a
 flagged node is about `b + O`, with O excluding K. K is a property of how
@@ -452,20 +457,31 @@ by terms.
   `PTR_INDEX`, counted `ptrindex.fold-dropped-flags` (Q12). On an
   unflagged node the fold has no range check (c is reduced mod 2^n). A node
   with no index left stays a node `PTR_INDEX*(b, c', K)`.
+- `ptrindex.absorb-k`: an unflagged node with no index over a flagged
+  node, `PTR_INDEX(F, c, K)`, is F with K + c + K' (read signed), the form
+  `op::ptr::addressPlus` builds for a numeral added to a flagged node
+  (section 4). The ite push of a node whose ite has an unflagged leaf
+  (pullIteNode) made the other form, so byte k of one address had two
+  terms. Same value; F's promise is about b + O, without K.
 
 **Eligibility: when a term carries a promise (S2).** A promise is
 read only from a term whose operator is PTR_INDEX_NUSW or PTR_INDEX_NUW
-and that is itself the address of an access, or a K-node an expander made
-from one (section 4).
+and that is itself the address of an access, or a K-node made from one
+(section 4: an expander, addressPlus, absorb-k).
 - No pointer view of `b` is required: the lemma needs only the same base
   term on both sides. WideExpander, where K is written, has no registry,
   and a loaded-pointer base has no view.
 - A flagged node nested in another term carries nothing usable. Since the
   VC and the rules build pointer additions as nodes (section 0), a flagged
-  node is never under a VC-made bvadd. A program `ptr.add` on a flagged
-  node is a new unflagged node over it (the merge rule never absorbs the
-  flagged one): its promise is the inner node's, at the inner address, not
-  at `+ 8` (Q9).
+  node is never under a VC-made bvadd. A program `ptr.add` of a numeral k
+  on a flagged node is that node with K + k (`op::ptr::addressPlus`; an
+  unflagged constant-only node over it becomes that form by
+  `ptrindex.absorb-k`); a symbolic `ptr.add` stays a new unflagged node over
+  it (the merge rule never absorbs the flagged one). Either way the promise
+  is the inner node's, about b + O at the inner address, not at `+ k`
+  (Q9). Such a K is signed and unbounded: it is not the offset of a byte
+  inside an access, and no rule may read it as one (the K range of the
+  expanders, 0 <= K < units, does not hold for it).
 - Chains (A6): the chain of an access is the maximal run of flagged nodes
   reached from the access address through base arguments. Each node's P3
   is a fact at the access: in LLVM, poison through a GEP base is poison,
@@ -566,8 +582,15 @@ is the record.
 
 ## 4. Who writes K
 
-K != 0 is written only where the expanded byte or word is part of an
-access at the node, whose A-INB was stated for the whole span:
+K != 0 is written where the expanded byte or word is part of an access at
+the node, whose A-INB was stated for the whole span, and by two rules that
+add a program numeral (signed, unbounded; no span):
+- `op::ptr::addressPlus(a, k)` (OpSem's addr.add / ptr.add of a numeral,
+  and splitRead / expandWrite): a flagged node, or an ite of them, gets
+  K + k (withByteOffset), k read signed.
+- `ptrindex.absorb-k`: an unflagged node with no index over a flagged
+  node, `PTR_INDEX(F, c, K)`, is F with K' + c + K (read signed).
+The expanders:
 - `WideExpander::at(a, k)`: if `a` is an eligible node with K = K0 (K0 =
   0 at a wselect / wstore), the result is the same operator with K = K0 +
   k, for 0 <= k < units of the access.

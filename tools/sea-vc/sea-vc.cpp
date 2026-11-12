@@ -551,10 +551,11 @@ static cl::opt<unsigned> seamResolveIteNodes(
 static cl::opt<unsigned> seamPullConcat(
     "seam-pull-concat",
     cl::desc("With --seam: resolve a split pointer load (a concat of bytes) "
-             "by pulling an ite condition its bytes share out of the "
-             "concat, at most N pulls per load, kept only when a side "
-             "reassembles a stored pointer (PtrSort S6 probe, counter "
-             "ptr.load-resolve-concat). 0 (default): off"),
+             "by pulling an ite condition out of the concat: one its ite "
+             "bytes share, else the first of its first ite byte (counter "
+             "ptr.load-resolve-concat.unshared); at most N pulls per load, "
+             "kept only when a side reassembles a stored pointer (PtrSort "
+             "S6 probe, counter ptr.load-resolve-concat). 0 (default): off"),
     cl::init(0));
 
 static cl::opt<bool> seamCongruence(
@@ -563,6 +564,49 @@ static cl::opt<bool> seamCongruence(
              "difference is sum c_k x_k + d with 2^t dividing every c_k "
              "and not d (exact, no premise; rule cmp.congruence; e.g. "
              "T + 8i + 1 vs T + 8j). Default off"),
+    cl::init(false));
+
+static cl::opt<bool> seamWideIteOpen(
+    "seam-wide-ite-open",
+    cl::desc("With --seam --seam-wide: W-ITE (a wide read over a write, an "
+             "ite address split into leaf pairs) also when a pair is "
+             "undecided: that leaf becomes the read at its own address "
+             "(counter wide.ite-leaf-open). Default off: W-ITE only when "
+             "every pair is decided (an open question, untuned)"),
+    cl::init(false));
+
+static cl::opt<unsigned> seamOffsetLeaves(
+    "seam-offset-leaves",
+    cl::desc("With --seam: the boundary's byte expansion of a width term "
+             "at an ite address pushes the byte offset into the ite leaves, "
+             "ite(c, x, y) + k -> ite(c, x + k, y + k), when the ite has at "
+             "most this many distinct leaves (counters "
+             "wide.expanded-ite-offset, wide.expanded-ite-offset-refused over "
+             "the cap). 0: off. Default 8 (untuned: the cap of the access "
+             "decisions). Only with --seam-wide (without it no width term "
+             "reaches the boundary)."),
+    cl::init(8));
+
+static cl::opt<bool> seamLeafSplit(
+    "seam-leaf-split",
+    cl::desc("With --seam: R-LEAVES, a read at an ite address is the ite "
+             "of the reads at its leaves when every leaf read is decided "
+             "down the whole memory and a write gives every leaf (exact; "
+             "counters row.leaf-split, ptr.load-resolve-leaves for a split "
+             "pointer load whose bytes then share one ite spine; "
+             "row.leaf-split-refused: a leaf reads the memory without "
+             "writes). The address may be a node over an ite base; at most "
+             "maxDecideLeaves (8) distinct leaves (counter "
+             "row.leaf-split-node). Default on"),
+    cl::init(true));
+
+static cl::opt<bool> seamLeafSplitPartial(
+    "seam-leaf-split-partial",
+    cl::desc("With --seam: R-LEAVES also when some leaf reads are "
+             "undecided: the decided leaves split, the undecided ones stay "
+             "one read at the ite of them (exact; counters "
+             "row.leaf-split-partial, row.leaf-split-residual-leaves). "
+             "Default off (a tradeoff, untuned)"),
     cl::init(false));
 
 enum class CompanionMode { Off, Exact, Check, Assume };
@@ -1370,15 +1414,32 @@ TYPICAL:
                                  #   nodes (default 0: <= 4 tree leaves;
                                  #   counter ptr.load-resolve-ite-dag)
   sea-vc p.mlir --lower --seam --seam-pull-concat=N  # resolve a split
-                                 #   pointer load by pulling an ite its
-                                 #   bytes share out of the concat (<= N
-                                 #   pulls; counter ptr.load-resolve-concat)
+                                 #   pointer load by pulling ite conditions
+                                 #   out of the concat, shared by its bytes
+                                 #   first (<= N pulls; counters
+                                 #   ptr.load-resolve-concat[.unshared])
   sea-vc p.mlir --lower --seam --ptr-companion=exact  # split pointer
                                  #   loads read a companion memory of the
                                  #   stored pointers, guarded (opaque mode;
                                  #   counters vc.ptr-companion*); =assume:
                                  #   unguarded under A-PTRINT
                                  #   (seam.ptrint), a sat answer rerun exact
+  sea-vc p.mlir --lower --seam --seam-wide --seam-wide-ite-open  # W-ITE
+                                 #   with undecided leaf pairs too (each a
+                                 #   read at its leaf address; default:
+                                 #   only when every pair is decided)
+  sea-vc p.mlir --lower --seam --seam-wide --seam-offset-leaves=0  # the boundary's
+                                 #   byte k of a width term at an ite
+                                 #   address as ite + k (default: k in the
+                                 #   ite leaves, <= 8 leaves; counter
+                                 #   wide.expanded-ite-offset; only with
+                                 #   --seam-wide)
+  sea-vc p.mlir --lower --seam --seam-leaf-split=0  # keep reads at ite
+                                 #   addresses whole (default: split when
+                                 #   a write gives every leaf read)
+  sea-vc p.mlir --lower --seam --seam-leaf-split-partial  # R-LEAVES with
+                                 #   undecided leaves too: they stay one
+                                 #   read at the ite of them (untuned)
   sea-vc p.mlir --lower --seam --seam-congruence  # decide addresses
                                  #   apart by divisibility: 8i+1 vs 8j
                                  #   (exact; rule cmp.congruence)
@@ -1886,8 +1947,19 @@ OUTPUT (stdout, `key: value` lines):
                                   terms of the query; kind all,
                                   same-object, diff-object, one-unknown,
                                   both-unknown: what the views of the two
-                                  pointers say; same-object: the offset
-                                  compares one-object questions reduce to)
+                                  pointers say, per leaf pair of an ite
+                                  pointer, the least decided pair (in that
+                                  order, diff-object first); many-leaves:
+                                  more pairs than the decisions look at;
+                                  same-object: also the offset compares
+                                  one-object questions reduce to)
+  seam.alias.open-pairs.<kind>: <n>  (--seam-stats: the leaf pairs of the
+                                  IS_OVERLAP questions, by kind)
+  seam.alias.open-memop.<kind>: <n>  (--seam-stats: the open in-tests
+                                  (idx - d) <u n of reads over memset /
+                                  memmove / memhavoc terms, one per leaf
+                                  pair left open; kinds as above, of the
+                                  read and destination pointers)
   seam.alias.same-object-reduced: <n>  (--seam-stats: one-object alias
                                   questions asked, decided or not)
   seam.ptr.from-bits-left.<kind>: <n>  (--seam-stats: loaded pointers no
@@ -2613,13 +2685,15 @@ int main(int argc, char **argv) {
   }
   if ((!seamInb || !seamRowExpand || !seamRowGroup || seamCheckInbPremise ||
        !seamLayout || !seamArm || !seamPruneSize0 || seamWide ||
-       seamPullIndex || seamResolveIteNodes || seamPullConcat ||
-       seamCongruence || ptrCompanion != CompanionMode::Off || !seamStoreMap ||
-       !seamSimplify) &&
+       seamWideIteOpen || !seamLeafSplit || seamLeafSplitPartial ||
+       seamPullIndex || seamOffsetLeaves.getNumOccurrences() ||
+       seamResolveIteNodes || seamPullConcat || seamCongruence ||
+       ptrCompanion != CompanionMode::Off || !seamStoreMap || !seamSimplify) &&
       !seam)
     return fail("--seam-inb, --seam-row-expand, --seam-row-group, "
                 "--seam-check-inb-premise, --seam-layout, --seam-prune-size0, "
-                "--seam-wide, "
+                "--seam-wide, --seam-wide-ite-open, --seam-leaf-split, "
+                "--seam-leaf-split-partial, --seam-offset-leaves, "
                 "--seam-arm, --seam-pull-index, --seam-resolve-ite-nodes, "
                 "--seam-pull-concat, --seam-congruence, --ptr-companion, "
                 "--seam-store-map and "
@@ -3154,6 +3228,10 @@ int main(int argc, char **argv) {
     seamOpts.resolveIteNodes = seamResolveIteNodes;
     seamOpts.pullConcatIte = seamPullConcat;
     seamOpts.congruence = seamCongruence;
+    seamOpts.wideIteOpenLeaves = seamWideIteOpen;
+    seamOpts.leafSplit = seamLeafSplit;
+    seamOpts.leafSplitPartial = seamLeafSplitPartial;
+    seamOpts.maxOffsetLeaves = seamOffsetLeaves;
     seamOpts.storeMap = seamStoreMap;
     seamOpts.simplify = simplify;
     seamOpts.plantBug = plantBug;
@@ -3322,6 +3400,38 @@ int main(int argc, char **argv) {
     std::unordered_set<expr::ENode *> sameObjectOpen;
     std::vector<expr::Expr> sameObjectKeep;
     uint64_t sameObjectReduced = 0;
+    // the kind of an alias question by its leaf pairs (Rules::eqPairs: an
+    // ite pointer is its leaves, not one pointer without a view): every pair
+    // by what the views of its two pointers say; the question is the least
+    // decided kind among its pairs (diff-object first: A-INB decides such a
+    // pair at an access, so one left open is the census's alarm), and
+    // `many-leaves` when it has more pairs than the decisions look at
+    std::map<std::string, uint64_t> aliasOpenPairs, memOpOpen;
+    auto aliasKind = [&](const expr::Expr &p, const expr::Expr &q,
+                         std::map<std::string, uint64_t> &pairs) {
+      const auto &R = sem.seamRewriter()->rules();
+      llvm::SmallVector<std::pair<expr::Expr, expr::Expr>, 8> lp;
+      if (!R.eqPairs(p, q, lp, R.options().maxDecideLeaves))
+        return "many-leaves";
+      static const char *order[] = {"diff-object", "one-unknown",
+                                    "both-unknown", "same-object"};
+      unsigned worst = 3;
+      for (const auto &[a, b] : lp) {
+        auto va = R.view(a), vb = R.view(b);
+        unsigned k = va && vb   ? (va->base == vb->base ? 3 : 0)
+                     : va || vb ? 1
+                                : 2;
+        ++pairs[order[k]];
+        ++pairs["all"];
+        worst = std::min(worst, k);
+      }
+      return order[worst];
+    };
+    // the open in-tests of memory-operation reads (Rules::memOpOpen: one per
+    // leaf pair, or one over whole ites), by their normal forms, each with
+    // the kind of its read / destination pair
+    std::unordered_map<expr::ENode *, expr::Expr> memOpOpenAt;
+    std::vector<expr::Expr> memOpKeep;
     if (seamStats && sem.seamRewriter()) {
       auto &rw = *sem.seamRewriter();
       const expr::ExprSet red = rw.rules().aliasReduced();
@@ -3333,6 +3443,13 @@ int main(int argc, char **argv) {
         if (!expr::isOpX<expr::TRUE>(f) && !expr::isOpX<expr::FALSE>(f)) {
           sameObjectKeep.push_back(f);
           sameObjectOpen.insert(f.get());
+        }
+      }
+      for (const expr::Expr &t : rw.rules().memOpOpen()) {
+        expr::Expr f = rw.simplify(t);
+        if (!expr::isOpX<expr::TRUE>(f) && !expr::isOpX<expr::FALSE>(f)) {
+          memOpKeep.push_back(f);
+          memOpOpenAt.emplace(f.get(), t);
         }
       }
       rw.stats() = saved;
@@ -3386,15 +3503,21 @@ int main(int argc, char **argv) {
           ++aliasOpen["all"];
         }
         if (expr::isOpX<expr::IS_OVERLAP>(n) && sem.seamRewriter()) {
-          const auto &R = sem.seamRewriter()->rules();
-          auto va = R.view(expr::Expr(n->arg(0))),
-               vb = R.view(expr::Expr(n->arg(2)));
-          const char *k =
-              va && vb ? (va->base == vb->base ? "same-object" : "diff-object")
-              : va || vb ? "one-unknown"
-                         : "both-unknown";
-          ++aliasOpen[k];
+          ++aliasOpen[aliasKind(expr::Expr(n->arg(0)), expr::Expr(n->arg(2)),
+                                aliasOpenPairs)];
           ++aliasOpen["all"];
+        }
+        if (auto it = memOpOpenAt.find(n); it != memOpOpenAt.end()) {
+          // the recorded (idx - d) <u n: its pointer difference
+          const expr::Expr diff = it->second->arg(0);
+          if (!expr::isOpX<expr::PTR_DIFF>(diff)) {
+            // an exact numeral difference has one base
+            ++memOpOpen["same-object"];
+          } else {
+            std::map<std::string, uint64_t> ignored;
+            ++memOpOpen[aliasKind(diff->arg(0), diff->arg(1), ignored)];
+          }
+          ++memOpOpen["all"];
         }
         if (expr::isOpX<expr::PTR_FROM_BITS>(n)) {
           auto kind = [](expr::ENode *a) -> const char * {
@@ -3978,6 +4101,10 @@ int main(int argc, char **argv) {
         os << "seam.ptr.from-bits-left." << k << ": " << v << "\n";
       for (const auto &[k, v] : aliasOpen)
         os << "seam.alias.open." << k << ": " << v << "\n";
+      for (const auto &[k, v] : aliasOpenPairs)
+        os << "seam.alias.open-pairs." << k << ": " << v << "\n";
+      for (const auto &[k, v] : memOpOpen)
+        os << "seam.alias.open-memop." << k << ": " << v << "\n";
       if (sameObjectReduced)
         os << "seam.alias.same-object-reduced: " << sameObjectReduced << "\n";
       if (seamStats && sem.seamStats()) {
@@ -4141,32 +4268,44 @@ int main(int argc, char **argv) {
       size_t n = fs.size();
       size_t m = (checkSample && checkSample < n) ? checkSample : n;
       uint64_t valid = 0, invalid = 0, unknown = 0, unexpr = 0;
-      std::unique_ptr<sea::solver::Solver> cs;
       unsigned ms = seamCheckTimeout * 1000;
-      if (backend == Backend::Z3) {
-        auto z = std::make_unique<sea::solver::z3_solver_impl>(efac);
-        if (ms) {
+      // a fresh solver per query. Hypothesis (measured, not read in z3's
+      // source): z3 decides its auto-configuration at the first push, before
+      // anything is asserted, and keeps relevancy 2 for every later query on
+      // that solver (leaf-split obligations: 11 s
+      // instead of 0.06 s). The non-incremental path (no push) runs the
+      // qfaufbv preprocessing chain, which blows up on row.store
+      // obligations (24.8 s against 0.33 s pushed). So z3 gets relevancy 0
+      // and one push, never popped: the solver is dropped after the query.
+      auto mkCheckSolver = [&]() -> std::unique_ptr<sea::solver::Solver> {
+        if (backend == Backend::Z3) {
+          auto z = std::make_unique<sea::solver::z3_solver_impl>(efac);
           sea::ZParams<sea::EZ3> params(z->get_context());
-          params.set("timeout", ms);
+          if (ms)
+            params.set("timeout", ms);
+          params.set("relevancy", 0u);
           z->get_solver().set(params);
+          z->push();
+          return z;
         }
-        cs = std::move(z);
-      } else if (backend == Backend::Bitwuzla) {
+        if (backend == Backend::Bitwuzla) {
 #ifdef WITH_BITWUZLA
-        sea::solver::bitwuzla_solver_impl::solver_options o;
-        if (ms)
-          o["time-limit-per"] = std::to_string(ms);
-        cs = std::make_unique<sea::solver::bitwuzla_solver_impl>(efac, nullptr,
-                                                                 o);
+          sea::solver::bitwuzla_solver_impl::solver_options o;
+          if (ms)
+            o["time-limit-per"] = std::to_string(ms);
+          return std::make_unique<sea::solver::bitwuzla_solver_impl>(
+              efac, nullptr, o);
+#else
+          return nullptr;
 #endif
-      } else {
-        if (ms)
-          sea::diag::warn("seam.check-no-timeout",
-                          "--seam-check-timeout is not supported for Yices: "
-                          "its checks run without a time limit");
-        cs = makeSolver();
-      }
-      if (!cs)
+        }
+        return makeSolver();
+      };
+      if (backend != Backend::Z3 && backend != Backend::Bitwuzla && ms)
+        sea::diag::warn("seam.check-no-timeout",
+                        "--seam-check-timeout is not supported for Yices: "
+                        "its checks run without a time limit");
+      if (!mkCheckSolver())
         return;
       for (size_t k = 0; k < m; ++k) {
         const expr::RewriteTrail::Firing &f = fs[m == n ? k : k * n / m];
@@ -4200,10 +4339,11 @@ int main(int argc, char **argv) {
         }
         // a premise no assignment satisfies would make every firing valid
         if (!expr::isOpX<expr::TRUE>(prem)) {
-          cs->push();
+          std::unique_ptr<sea::solver::Solver> cs = mkCheckSolver();
+          if (!cs)
+            return;
           sea::solver::SolverResult pr =
               cs->add(prem) ? cs->check() : sea::solver::SolverResult::UNKNOWN;
-          cs->pop();
           if (pr == sea::solver::SolverResult::UNSAT) {
             ++unexpr;
             sea::diag::warn("seam.check-unexpressible",
@@ -4230,10 +4370,11 @@ int main(int argc, char **argv) {
           continue;
         }
         expr::Expr q = expr::mk<expr::AND>(prem, diff);
-        cs->push();
+        std::unique_ptr<sea::solver::Solver> cs = mkCheckSolver();
+        if (!cs)
+          return;
         sea::solver::SolverResult res =
             cs->add(q) ? cs->check() : sea::solver::SolverResult::UNKNOWN;
-        cs->pop();
         if (res == sea::solver::SolverResult::UNSAT) {
           ++valid;
           continue;
