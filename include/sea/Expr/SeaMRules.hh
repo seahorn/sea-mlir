@@ -241,7 +241,16 @@ struct SeaMOptions {
   /// is split into the reads at its leaves when every leaf read is decided
   /// down the whole memory and some leaf is given by a write.
   /// Off: the read keeps its ite address (sea-vc --seam-leaf-split=0).
+  /// The address is an ite or a node over an ite base; the leaves are
+  /// counted distinct (the ite is a DAG), at most maxDecideLeaves.
   bool leafSplit = true;
+  /// R-LEAVES-PARTIAL: R-LEAVES also when some leaf reads are undecided:
+  /// the decided leaves (each given by a write) split, the undecided ones
+  /// stay one read at the ite of them (the residual address). A tradeoff:
+  /// the residual read is a new address next to the reads at the whole
+  /// address other reads keep. Off by default, untuned
+  /// (sea-vc --seam-leaf-split-partial).
+  bool leafSplitPartial = false;
   /// R-STRIDE (PtrIndex.md section 0c; sea-vc --seam-stride): in R-ABORT, an
   /// entry b + o is skipped for a read whose every leaf is a promised node
   /// over b whose offsets never reach o. Uses the promises (PremPtrIndex)
@@ -2638,63 +2647,179 @@ public:
   /// split pays by removing the read of that memory, and a leaf read there is a
   /// new read next to the read at the whole address that other reads keep (vcc
   /// hash_table_init_bounded: Ackermann pairs 1596 -> 6328 with one such leaf
-  /// of two; SeaM-mixed-width.md, "R-LEAVES guard"). At most maxDecideLeaves
-  /// leaves; the address's own ites are the conditions. A general split over an
-  /// ite index was measured against keeping it (SeaM-memops.md, "ite indices"):
-  /// it grows the DAG when leaves stay open; here none does. A pointer or word
-  /// load then reads the stored value per leaf. RW_FULL (new reads).
+  /// of two; SeaM-mixed-width.md, "R-LEAVES guard"). A general split over an
+  /// ite index was measured against keeping it (SeaM-memops.md, "ite
+  /// indices"): it grows the DAG when leaves stay open; here none does. A
+  /// pointer or word load then reads the stored value per leaf. RW_FULL (new
+  /// reads).
+  ///
+  /// The address is an ite, or a node N(ite(c, b1, b2), x...) over an ite
+  /// base (the node's leaves N(b_k, x...): ptr-index of an ite is the ite of
+  /// the ptr-index per leaf, as ptrindex.pull-ite, which stops at
+  /// maxPullLeaves; counter row.leaf-split-node). The ite is a DAG: it is
+  /// walked once per ite node, the bound is on its distinct leaves (at most
+  /// maxDecideLeaves), each distinct leaf is decided once and the result has
+  /// the ite's DAG shape. The address's own ites are the conditions.
+  ///
+  /// R-LEAVES-PARTIAL (leafSplitPartial): when some leaf reads are
+  /// Undecided, the others decided and given by a write (none reaching the
+  /// memory without writes), the decided leaves split and the undecided ones
+  /// stay together as one read at the residual address U, the ite pruned to
+  /// its undecided leaves (a sub-ite with no undecided leaf is dropped for
+  /// its sibling). Exact: on a path that selects an undecided leaf u, U
+  /// selects u too (the conditions are the same and only subtrees without
+  /// undecided leaves are dropped), so read(M, U) = read(M, u); a sub-ite
+  /// with only undecided leaves is read(M, U). Counters
+  /// row.leaf-split-partial, row.leaf-split-residual-leaves.
   std::optional<RewriteResult> leafSplit(const Expr &exp) {
     if (!m_opts.leafSplit)
       return std::nullopt;
     const Expr mem = exp->arg(0), j = exp->arg(1);
-    if (!isOpX<ITE>(j) || m_bases.lookup(j))
+    // the address's ite: j, or the base of a node over it
+    Expr it = j, node;
+    if (op::ptr::isPtrIndex(j) && isOpX<ITE>(op::ptr::base(j))) {
+      node = j;
+      it = op::ptr::base(j);
+    }
+    if (!isOpX<ITE>(it) || m_bases.lookup(it))
       return std::nullopt;
     if (!isOpX<STORE>(mem) && !isOpX<W_STORE>(mem) && !isOpX<STORE_MAP>(mem) &&
         !isMemOpTerm(mem))
       return std::nullopt;
     const bool wideRead = isOpX<W_SELECT>(exp);
     const uint64_t r = wideRead ? op::bv::width(exp->arg(2)) / 8 : 1;
-    unsigned leaves = 0;
-    bool ok = true, cover = false, topOpen = false;
-    ExprVector conds;
-    // a leaf read that reaches the memory without writes (Base, or Mixed:
-    // on a side of an ite memory)
-    bool below = false;
-    std::function<Expr(const Expr &)> tree = [&](const Expr &e) -> Expr {
-      if (!ok)
-        return Expr();
-      if (isOpX<ITE>(e) && !m_bases.lookup(e)) {
-        Expr t = tree(e->arg(1));
-        Expr f = tree(e->arg(2));
-        if (ok)
-          conds.push_back(e->arg(0));
-        return ok ? mk<ITE>(e->arg(0), t, f) : Expr();
+    auto isIte = [&](const Expr &e) {
+      return isOpX<ITE>(e) && !m_bases.lookup(e);
+    };
+    // the address of a leaf (the node over it, for a node)
+    auto leafAddr = [&](const Expr &l) -> Expr {
+      if (!node)
+        return l;
+      ExprVector kids(node->args_begin(), node->args_end());
+      kids[0] = l;
+      return node->efac().mkNary(node->op(), kids);
+    };
+    auto readAt = [&](const Expr &a) -> Expr {
+      return wideRead ? op::array::wselect(mem, a, exp->arg(2),
+                                           op::array::promisedAlign(exp))
+                      : op::array::select(mem, a);
+    };
+    // the distinct ite nodes and leaves (iterative: the DAG may be deep)
+    std::unordered_set<ENode *> ites;
+    ExprVector leafList;
+    {
+      std::unordered_set<ENode *> seenLeaf;
+      ExprVector stack{it};
+      while (!stack.empty()) {
+        Expr e = stack.back();
+        stack.pop_back();
+        if (isIte(e)) {
+          if (ites.insert(e.get()).second) {
+            stack.push_back(e->arg(2));
+            stack.push_back(e->arg(1));
+          }
+          continue;
+        }
+        if (seenLeaf.insert(e.get()).second) {
+          leafList.push_back(e);
+          if (leafList.size() > m_opts.maxDecideLeaves)
+            return std::nullopt;
+        }
       }
-      const Expr a = op::ptr::stripObservation(e);
-      LeafStep s = LeafStep::Undecided;
-      if (++leaves <= m_opts.maxDecideLeaves)
-        s = leafWalk(mem, a, r);
-      if (s == LeafStep::Undecided) {
-        ok = false;
-        return Expr();
-      }
-      cover = cover || s != LeafStep::Base;
-      below = below || s != LeafStep::Cover;
+    }
+    // each distinct leaf decided once: Undecided leaves are the residual's
+    std::unordered_map<ENode *, bool> undecided;
+    bool cover = false, topOpen = false, below = false;
+    unsigned nUndecided = 0;
+    for (const Expr &l : leafList) {
+      const Expr a = op::ptr::stripObservation(leafAddr(l));
+      LeafStep s = leafWalk(mem, a, r);
       Expr next;
       topOpen = topOpen || leafStep(mem, a, r, next) != LeafStep::Below;
-      return wideRead ? op::array::wselect(mem, e, exp->arg(2),
-                                           op::array::promisedAlign(exp))
-                      : op::array::select(mem, e);
-    };
-    Expr res = tree(j);
-    if (!ok || !res || !cover || !topOpen)
+      if (s == LeafStep::Undecided) {
+        if (!m_opts.leafSplitPartial)
+          return std::nullopt;
+        undecided[l.get()] = true;
+        ++nUndecided;
+        continue;
+      }
+      undecided[l.get()] = false;
+      cover = cover || s != LeafStep::Base;
+      below = below || s != LeafStep::Cover;
+    }
+    // nothing decided, or nothing given by a write: no split
+    if (nUndecided == leafList.size() || !cover || !topOpen)
       return std::nullopt;
     if (below) {
       m_stats.count("row.leaf-split-refused");
       return std::nullopt;
     }
+    // per ite node: does it have an undecided / a decided leaf (post-order,
+    // memoized)
+    std::unordered_map<ENode *, std::pair<bool, bool>> has;
+    std::function<std::pair<bool, bool>(const Expr &)> hasOf =
+        [&](const Expr &e) -> std::pair<bool, bool> {
+      if (!isIte(e)) {
+        bool u = undecided.find(e.get())->second;
+        return {u, !u};
+      }
+      auto f = has.find(e.get());
+      if (f != has.end())
+        return f->second;
+      auto t = hasOf(e->arg(1)), el = hasOf(e->arg(2));
+      std::pair<bool, bool> res{t.first || el.first, t.second || el.second};
+      has.emplace(e.get(), res);
+      return res;
+    };
+    hasOf(it);
+    // the residual address: the ite pruned to its undecided leaves
+    std::unordered_map<ENode *, Expr> prunedMemo;
+    std::function<Expr(const Expr &)> pruned = [&](const Expr &e) -> Expr {
+      if (!isIte(e))
+        return e;
+      auto f = prunedMemo.find(e.get());
+      if (f != prunedMemo.end())
+        return f->second;
+      const bool inThen = hasOf(e->arg(1)).first,
+                 inElse = hasOf(e->arg(2)).first;
+      Expr res =
+          inThen && inElse
+              ? Expr(mk<ITE>(e->arg(0), pruned(e->arg(1)), pruned(e->arg(2))))
+          : inThen ? pruned(e->arg(1))
+                   : pruned(e->arg(2));
+      prunedMemo.emplace(e.get(), res);
+      return res;
+    };
+    Expr residual;
+    if (nUndecided)
+      residual = readAt(leafAddr(pruned(it)));
+    ExprVector conds;
+    std::unordered_map<ENode *, Expr> valMemo;
+    std::function<Expr(const Expr &)> val = [&](const Expr &e) -> Expr {
+      if (!isIte(e))
+        return undecided.find(e.get())->second ? residual : readAt(leafAddr(e));
+      auto f = valMemo.find(e.get());
+      if (f != valMemo.end())
+        return f->second;
+      Expr res;
+      if (!hasOf(e).second) {
+        res = residual;
+      } else {
+        conds.push_back(e->arg(0));
+        res = mk<ITE>(e->arg(0), val(e->arg(1)), val(e->arg(2)));
+      }
+      valMemo.emplace(e.get(), res);
+      return res;
+    };
+    Expr res = val(it);
     m_stats.count("row.leaf-split");
-    m_stats.rules["row.leaf-split-leaves"] += leaves;
+    m_stats.rules["row.leaf-split-leaves"] += leafList.size();
+    if (node)
+      m_stats.count("row.leaf-split-node");
+    if (nUndecided) {
+      m_stats.count("row.leaf-split-partial");
+      m_stats.rules["row.leaf-split-residual-leaves"] += nUndecided;
+    }
     for (const Expr &c : conds)
       m_leafConds.insert(c);
     return RewriteResult{res, RWStatus::RW_FULL};
@@ -3654,6 +3779,9 @@ public:
     if (m_opts.leafSplit && isOpX<BCONCAT>(x))
       if (auto r = loadResolveLeaves(exp))
         return {r, RWStatus::RW_FULL};
+    if (m_opts.leafSplit && isOpX<ITE>(x) && !m_bases.lookup(x))
+      if (auto r = loadResolveLeafIte(exp))
+        return {r, RWStatus::RW_FULL};
     if (m_opts.pullConcatIte && isOpX<BCONCAT>(x))
       if (auto r = loadResolveConcat(exp))
         return {r, RWStatus::RW_FULL};
@@ -3718,13 +3846,15 @@ public:
   /// ptr.load-resolve through a split load whose bytes share one ite spine
   /// (R-LEAVES' result for the bytes of one load: each byte read at the
   /// leaves of the same address ite): concat(b_1, ..., b_n) (msb first,
-  /// nested concats flattened) is split on c when every byte that is an ite
-  /// is ite(c, ., .) and c is a condition of an address leafSplit split (a
-  /// byte that is not an ite goes to both sides; other shared conditions,
-  /// a join's, are --seam-pull-concat's), until
-  /// no byte is an ite: the ite tree of from_bits(concat(leaf bytes)), and
+  /// nested concats flattened) is split on c when every byte whose top is
+  /// an ite on a condition of an address leafSplit split is ite(c, ., .) (a
+  /// byte with another top goes to both sides: a value, or the residual read
+  /// of a partial split; other shared conditions, a join's, are
+  /// --seam-pull-concat's), until no byte has one at its top: the ite of
+  /// from_bits(concat(leaf bytes)), and
   /// a leaf whose bytes are the contiguous extracts of one to_bits(p) is p.
-  /// All or nothing: at most maxDecideLeaves leaves, every split on a
+  /// All or nothing: at most maxDecideLeaves distinct leaves (the bytes are
+  /// ite DAGs: each byte tuple is split once, memoized), every split on a
   /// condition all ite bytes share at their top, some leaf a stored
   /// pointer. Address-exact, no assumption (counter
   /// ptr.load-resolve-leaves).
@@ -3747,22 +3877,29 @@ public:
     const unsigned w = widthOf(x);
     unsigned leaves = 0, resolved = 0;
     bool ok = true;
+    std::map<std::vector<ENode *>, Expr> memo;
     std::function<Expr(const Bytes &)> split = [&](const Bytes &bs) -> Expr {
       if (!ok)
         return Expr();
+      std::vector<ENode *> key;
+      for (const Expr &b : bs)
+        key.push_back(b.get());
+      auto f = memo.find(key);
+      if (f != memo.end())
+        return f->second;
+      // the split condition: the leaf condition at the top of the bytes
+      // that have one (a byte with another top, e.g. the residual read of a
+      // partial split, goes to both sides)
       Expr c;
       for (const Expr &b : bs)
-        if (isOpX<ITE>(b)) {
+        if (isOpX<ITE>(b) && m_leafConds.count(b->arg(0))) {
           if (c && b->arg(0) != c) {
             ok = false; // the bytes do not share one spine
             return Expr();
           }
           c = b->arg(0);
         }
-      if (c && !m_leafConds.count(c)) {
-        ok = false; // not a condition of a split address
-        return Expr();
-      }
+      Expr res;
       if (!c) {
         if (++leaves > m_opts.maxDecideLeaves) {
           ok = false;
@@ -3770,23 +3907,83 @@ public:
         }
         if (Expr p = storedPointer(bs, w)) {
           ++resolved;
-          return p;
+          res = p;
+        } else {
+          res = mk<PTR_FROM_BITS>(
+              bs.size() == 1 ? bs[0] : mknary<BCONCAT>(bs.begin(), bs.end()));
         }
-        return mk<PTR_FROM_BITS>(
-            bs.size() == 1 ? bs[0] : mknary<BCONCAT>(bs.begin(), bs.end()));
+      } else {
+        Bytes t, e;
+        for (const Expr &b : bs) {
+          const bool at = isOpX<ITE>(b) && b->arg(0) == c;
+          t.push_back(at ? b->arg(1) : b);
+          e.push_back(at ? b->arg(2) : b);
+        }
+        Expr l = split(t);
+        Expr r = split(e);
+        if (!ok)
+          return Expr();
+        res = mk<ITE>(c, l, r);
       }
-      Bytes t, e;
-      for (const Expr &b : bs) {
-        t.push_back(isOpX<ITE>(b) ? b->arg(1) : b);
-        e.push_back(isOpX<ITE>(b) ? b->arg(2) : b);
-      }
-      Expr l = split(t);
-      Expr r = split(e);
-      return ok ? mk<ITE>(c, l, r) : Expr();
+      memo.emplace(std::move(key), res);
+      return res;
     };
     Expr res = split(bytes);
     if (!ok || !res || !resolved)
       return Expr();
+    m_stats.count("ptr.load-resolve-leaves");
+    return res;
+  }
+
+  /// ptr.load-resolve through a whole load at an address R-LEAVES split
+  /// (a wide read: the ite of the leaf values): from_bits(ite(c, x, y)) ~>
+  /// ite(c, from_bits(x), from_bits(y)) over the ite's DAG (memoized), when
+  /// every ite node's condition is a condition of an address leafSplit
+  /// split, it has at most maxDecideLeaves distinct leaves and some leaf is a
+  /// stored pointer's to_bits (that leaf is the pointer). The loadResolve
+  /// leaf bound (maxPullLeaves tree leaves) does not apply: the ite is the
+  /// split address's shape. Address-exact, no assumption (counter
+  /// ptr.load-resolve-leaves).
+  Expr loadResolveLeafIte(const Expr &exp) {
+    const Expr x = exp->arg(0);
+    const unsigned w = widthOf(x);
+    std::unordered_set<ENode *> ites, leaves;
+    bool resolved = false;
+    ExprVector stack{x};
+    while (!stack.empty()) {
+      Expr e = stack.back();
+      stack.pop_back();
+      if (isOpX<ITE>(e) && !m_bases.lookup(e)) {
+        if (!ites.insert(e.get()).second)
+          continue;
+        if (!m_leafConds.count(e->arg(0)))
+          return Expr();
+        stack.push_back(e->arg(1));
+        stack.push_back(e->arg(2));
+        continue;
+      }
+      if (leaves.insert(e.get()).second &&
+          leaves.size() > m_opts.maxDecideLeaves)
+        return Expr();
+      resolved = resolved || (isOpX<PTR_TO_BITS>(e) && widthOf(e) == w);
+    }
+    if (!resolved)
+      return Expr();
+    std::unordered_map<ENode *, Expr> memo;
+    std::function<Expr(const Expr &)> map = [&](const Expr &e) -> Expr {
+      if (ites.count(e.get())) {
+        auto f = memo.find(e.get());
+        if (f != memo.end())
+          return f->second;
+        Expr r = mk<ITE>(e->arg(0), map(e->arg(1)), map(e->arg(2)));
+        memo.emplace(e.get(), r);
+        return r;
+      }
+      if (isOpX<PTR_TO_BITS>(e) && widthOf(e) == w)
+        return e->arg(0);
+      return mk<PTR_FROM_BITS>(e);
+    };
+    Expr res = map(x);
     m_stats.count("ptr.load-resolve-leaves");
     return res;
   }

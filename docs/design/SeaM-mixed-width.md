@@ -373,6 +373,47 @@ memory without writes; Open item 6; it counts refused attempts, one per
 byte read and memory level: a read refused at an ite memory can still
 split lower down, at a side where a write gives every leaf). Tests: test/VC/seam/row-leaf-split.mlir.
 
+The address of R-LEAVES is an ite or a node over an ite base
+(`N(ite(c, b1, b2), x...)`, whose leaves are `N(b_k, x...)`: the pull of
+ptrindex.pull-ite, which stops at `maxPullLeaves` = 4 tree leaves; counter
+`row.leaf-split-node`). The ite is a DAG (joins of joins share their
+arms): R-LEAVES walks it once per ite node, bounds its distinct leaves by
+`maxDecideLeaves` (before: its tree leaves), decides each distinct leaf
+once, and builds the result in the shape of the DAG. The pointer
+recombination follows: `ptr.load-resolve-leaves` memoizes the byte split
+per byte tuple (distinct leaves bounded), steps over a byte whose top is
+not a split condition (it goes to both sides), and resolves a whole
+(wide) load `from_bits(ite)` whose ite conditions are all split
+conditions over the DAG. Tests: test/VC/seam/row-leaf-split-dag.mlir.
+
+R-LEAVES-PARTIAL (`--seam-leaf-split-partial`, off, untuned): when some
+leaf reads are Undecided and the others are given by a write, the decided
+leaves split and the undecided ones stay one read at the residual address
+U, the ite pruned to its undecided leaves (a sub-ite with none is replaced
+by its sibling). Exact: on a path that selects an undecided leaf u, U
+selects u too. Counters `row.leaf-split-partial`,
+`row.leaf-split-residual-leaves`. A leaf that reaches the memory without
+writes still refuses the split (item 6).
+[OBS] Default (DAG, node): stellar txqueue round0, VC only, byte /
+`--seam-wide --widen-memory=4`: row.leaf-split 373 -> 381 / 148 -> 156,
+Ackermann pairs 4753 -> 4371 / 4851 -> 4465, alias.open.all 53195 -> 53187 /
+53427 -> 53419.
+[OBS] Partial: the stellar txqueue placed harness (one leaf of its source
+split, `--seam-wide --widen-memory=4`): the loaded pointer U =
+`from_bits(ite(...))` (33 tree leaves, 6 distinct: three frame storages,
+three nondet words) resolves with `--seam-resolve-ite-nodes=64` (the
+existing DAG mode of ptr.load-resolve), and the reads at U + k split
+partially (8 firings, 3 residual leaves each). alias.open.all stays 15469:
+every open question was already a one-unknown pair against a nondet leaf
+(`alias.open-pairs.one-unknown` 15467), which no exact rewrite decides. The
+query without the partial split (default, or with only the DAG mode) is
+byte-identical to the base; with it, 6.39 -> 6.40 MB, and z3 (5.3.3, 300 s) is slower on every seed: default
+seed 55 s -> unknown, seed 1 47 -> 165 s, seed 2 23 -> 168 s (all unsat).
+[HYP] the residual read is a second address term next to U + k, which the
+other reads keep. Not examined further: the partial split stays off. The
+lever for this query is the harness (a root site for the never-written
+payload), not SeaM.
+
 Alignment, two sources:
 1. Proved: the linear form of the address: a registered object base with
    alignment >= w (the registry has `align`), plus a numeral multiple of

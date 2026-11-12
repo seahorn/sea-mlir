@@ -594,8 +594,18 @@ static cl::opt<bool> seamLeafSplit(
              "counters row.leaf-split, ptr.load-resolve-leaves for a split "
              "pointer load whose bytes then share one ite spine; "
              "row.leaf-split-refused: a leaf reads the memory without "
-             "writes). Default on"),
+             "writes). The address may be a node over an ite base; at most "
+             "8 distinct leaves (counter row.leaf-split-node). Default on"),
     cl::init(true));
+
+static cl::opt<bool> seamLeafSplitPartial(
+    "seam-leaf-split-partial",
+    cl::desc("With --seam: R-LEAVES also when some leaf reads are "
+             "undecided: the decided leaves split, the undecided ones stay "
+             "one read at the ite of them (exact; counters "
+             "row.leaf-split-partial, row.leaf-split-residual-leaves). "
+             "Default off (a tradeoff, untuned)"),
+    cl::init(false));
 
 enum class CompanionMode { Off, Exact, Check, Assume };
 static cl::opt<CompanionMode> ptrCompanion(
@@ -1424,6 +1434,9 @@ TYPICAL:
   sea-vc p.mlir --lower --seam --seam-leaf-split=0  # keep reads at ite
                                  #   addresses whole (default: split when
                                  #   a write gives every leaf read)
+  sea-vc p.mlir --lower --seam --seam-leaf-split-partial  # R-LEAVES with
+                                 #   undecided leaves too: they stay one
+                                 #   read at the ite of them (untuned)
   sea-vc p.mlir --lower --seam --seam-congruence  # decide addresses
                                  #   apart by divisibility: 8i+1 vs 8j
                                  #   (exact; rule cmp.congruence)
@@ -2669,15 +2682,15 @@ int main(int argc, char **argv) {
   }
   if ((!seamInb || !seamRowExpand || !seamRowGroup || seamCheckInbPremise ||
        !seamLayout || !seamArm || !seamPruneSize0 || seamWide ||
-       seamWideIteOpen || !seamLeafSplit || seamPullIndex ||
-       seamOffsetLeaves.getNumOccurrences() || seamResolveIteNodes ||
-       seamPullConcat || seamCongruence || ptrCompanion != CompanionMode::Off ||
-       !seamStoreMap || !seamSimplify) &&
+       seamWideIteOpen || !seamLeafSplit || seamLeafSplitPartial ||
+       seamPullIndex || seamOffsetLeaves.getNumOccurrences() ||
+       seamResolveIteNodes || seamPullConcat || seamCongruence ||
+       ptrCompanion != CompanionMode::Off || !seamStoreMap || !seamSimplify) &&
       !seam)
     return fail("--seam-inb, --seam-row-expand, --seam-row-group, "
                 "--seam-check-inb-premise, --seam-layout, --seam-prune-size0, "
                 "--seam-wide, --seam-wide-ite-open, --seam-leaf-split, "
-                "--seam-offset-leaves, "
+                "--seam-leaf-split-partial, --seam-offset-leaves, "
                 "--seam-arm, --seam-pull-index, --seam-resolve-ite-nodes, "
                 "--seam-pull-concat, --seam-congruence, --ptr-companion, "
                 "--seam-store-map and "
@@ -3214,6 +3227,7 @@ int main(int argc, char **argv) {
     seamOpts.congruence = seamCongruence;
     seamOpts.wideIteOpenLeaves = seamWideIteOpen;
     seamOpts.leafSplit = seamLeafSplit;
+    seamOpts.leafSplitPartial = seamLeafSplitPartial;
     seamOpts.maxOffsetLeaves = seamOffsetLeaves;
     seamOpts.storeMap = seamStoreMap;
     seamOpts.simplify = simplify;

@@ -1181,11 +1181,16 @@ COUNTERS = [
     "premise.ptr-index",
     "row.leaf-split",
     "row.leaf-split-refused",
+    "row.leaf-split-node",
+    # with --extra-args=--seam-leaf-split-partial
+    "row.leaf-split-partial",
     "ptr.load-resolve-leaves",
     # <name>@wide: the counter of the seam-wide variant (R-LEAVES decides a
     # wide read at an ite address before the per-pair rules below)
     "row.leaf-split@wide",
     "row.leaf-split-refused@wide",
+    "row.leaf-split-node@wide",
+    "row.leaf-split-partial@wide",
     "wide.splice",
     "wide.ite-leaf-splice",
     "wide.ite-split",
