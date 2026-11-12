@@ -396,6 +396,7 @@ measurement and are not part of the supported configuration:
 | `--seam-resolve-ite-nodes=<N>` | resolve a loaded pointer through an ite of loaded values |
 | `--seam-pull-concat=<N>` | resolve a split pointer load through a shared ite |
 | `--seam-congruence` | decide addresses apart by divisibility |
+| `--seam-wide-ite-open` | W-ITE also for undecided ite leaf pairs (open, untuned) |
 | `--ptr-companion=exact\|check\|assume` | the pointer companion memory (PtrSort S6) |
 | `--seam-stride` | R-STRIDE in Store-Map |
 | `--seam-check-inb-premise` | the partial A-INB premise check (above) |

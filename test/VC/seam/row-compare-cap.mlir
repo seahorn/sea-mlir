@@ -5,7 +5,8 @@
 // maxEqLeaves = 4 the whole ite stayed one IS_OVERLAP (one-unknown).
 // RUN: sea-vc %s --lower --seam --seam-stats 2>&1 | FileCheck %s
 // RUN: sea-vc %s --lower --seam --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
-// CHECK-NOT: seam.alias.open.one-unknown
+// CHECK-NOT: seam.alias.open.diff-object
+// CHECK: seam.alias.open.same-object: 1
 // CHECK: seam.rule.premise.a-inb: {{[1-9]}}
 // CHECK: result: sat
 // CHECK: validate: checked={{[0-9]+}} mismatches=0

@@ -12,9 +12,10 @@
 // RUN: sea-vc %s --lower --program=mixed --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,MIXED
 // RUN: sea-vc %s --lower --program=sub --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,SUB
 // RUN: sea-vc %s --lower --program=cross --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,CROSS
-// (z3 runs out of the 10 s check limit on the mixed firing; Bitwuzla and
-// Yices prove it at once)
+// (z3 runs out of the 10 s check limit on the mixed firing, a z3
+// performance case, not soundness; Bitwuzla and Yices also run it)
 // RUN: %if bitwuzla %{ sea-vc %s --lower --program=mixed --seam --seam-wide --seam-check --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=CHK %}
+// RUN: %if yices %{ sea-vc %s --lower --program=mixed --seam --seam-wide --seam-check --solver=yices 2>&1 | FileCheck %s --check-prefix=CHK %}
 // RUN: sea-vc %s --lower --program=sub --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --program=cross --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // CHECK-NOT: seam.alias.open

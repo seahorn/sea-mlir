@@ -4309,7 +4309,8 @@ public:
   /// ites of idx and d (as buildEq: ites with one condition paired branch by
   /// branch): a pair decideInPair resolves is true (In) / false (Out), with
   /// its reasons counted and its premises in \p premises; an open pair is
-  /// its own `PTR_DIFF(j, d') <u n` (recorded for the census, memOpOpen).
+  /// its own `PTR_DIFF(j, d') <u n` (collected in \p open; the caller records
+  /// them for the census, memOpOpen, when the tree is used).
   /// \p resolved counts the resolved pairs. On
   /// the path that selects a pair, idx and d are that pair, so the tree equals
   /// the in-test of the whole terms. uses: the premises of the resolved pairs
@@ -4317,13 +4318,16 @@ public:
   /// mem.in-layout).
   Expr buildIn(const Expr &l, const Expr &r, const Expr &n, bool haveN,
                const mpz_class &nlo, const mpz_class &nhi, bool inb,
-               unsigned &resolved, unsigned &premises) {
+               unsigned &resolved, unsigned &premises,
+               llvm::SmallVectorImpl<Expr> &open) {
     const Expr a = op::ptr::stripObservation(l),
                b = op::ptr::stripObservation(r);
     auto branches = [&](const Expr &c, const Expr &lt, const Expr &rt,
                         const Expr &le, const Expr &re) {
-      Expr t = buildIn(lt, rt, n, haveN, nlo, nhi, inb, resolved, premises);
-      Expr e = buildIn(le, re, n, haveN, nlo, nhi, inb, resolved, premises);
+      Expr t =
+          buildIn(lt, rt, n, haveN, nlo, nhi, inb, resolved, premises, open);
+      Expr e =
+          buildIn(le, re, n, haveN, nlo, nhi, inb, resolved, premises, open);
       return mk<ITE>(c, t, e);
     };
     if (isOpX<ITE>(a) && isOpX<ITE>(b) && a->arg(0) == b->arg(0))
@@ -4341,7 +4345,7 @@ public:
       return rg == Range::In ? mk<TRUE>(m_efac) : mk<FALSE>(m_efac);
     }
     Expr in = memOpIn(mk<PTR_DIFF>(a, b), n); // S1.5: a pointer difference
-    m_memOpOpen.insert(in);
+    open.push_back(in);
     return in;
   }
 
@@ -4411,16 +4415,20 @@ public:
       mpz_class nlo, nhi;
       const bool haveN = lenRange(memOpLen(t), nlo, nhi);
       unsigned resolved = 0, premises = PremNone;
+      llvm::SmallVector<Expr, 4> openIn;
       RewriteStats scratch;
       std::swap(scratch, m_stats);
-      Expr built = buildIn(idx, d, memOpLen(t), haveN, nlo, nhi,
-                           /*inb=*/!shadowMemory(t), resolved, premises);
+      Expr built =
+          buildIn(idx, d, memOpLen(t), haveN, nlo, nhi,
+                  /*inb=*/!shadowMemory(t), resolved, premises, openIn);
       std::swap(scratch, m_stats);
       if (resolved) {
         m_stats.merge(scratch);
         m_stats.count("mem.in-push");
         countPremises(premises);
         in = built;
+        for (const Expr &o : openIn)
+          m_memOpOpen.insert(o);
       }
     }
     if (in == memOpIn(k, memOpLen(t)))

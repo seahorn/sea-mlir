@@ -3457,8 +3457,13 @@ int main(int argc, char **argv) {
         if (auto it = memOpOpenAt.find(n); it != memOpOpenAt.end()) {
           // the recorded (idx - d) <u n: its pointer difference
           const expr::Expr diff = it->second->arg(0);
-          std::map<std::string, uint64_t> ignored;
-          ++memOpOpen[aliasKind(diff->arg(0), diff->arg(1), ignored)];
+          if (!expr::isOpX<expr::PTR_DIFF>(diff)) {
+            // an exact numeral difference has one base
+            ++memOpOpen["same-object"];
+          } else {
+            std::map<std::string, uint64_t> ignored;
+            ++memOpOpen[aliasKind(diff->arg(0), diff->arg(1), ignored)];
+          }
           ++memOpOpen["all"];
         }
         if (expr::isOpX<expr::PTR_FROM_BITS>(n)) {

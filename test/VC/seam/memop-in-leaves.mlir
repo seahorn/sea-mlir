@@ -10,7 +10,7 @@
 // RUN: sea-vc %s --lower --seam --program=mset --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --seam --program=mcopy --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --seam --program=mhavoc --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
-// CHECK-NOT: seam.alias.open-memop.one-unknown
+// CHECK-NOT: seam.alias.open-memop.diff-object
 // CHECK: seam.alias.open-memop.all: 1
 // CHECK-NEXT: seam.alias.open-memop.same-object: 1
 // CHECK: seam.rule.cmp.diff-base: {{[1-9]}}

@@ -445,3 +445,6 @@ read only as aligned words; a separate design).
 2. An optimized ite for undecided pairs (guards + partial arm) vs keeping
    the term.
 3. Canonical non-overlapping store-map fragments (later).
+4. W-ITE with undecided leaf pairs (`--seam-wide-ite-open`, off): the read at
+   the leaf address vs the byte fallback; untuned (string_eq_byte_cursor:
+   byte-store expansions 42 -> 102).
