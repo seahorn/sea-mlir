@@ -4,13 +4,17 @@
 // B + 8y) and a load at j = C + 8z. The leaves are in other objects than C,
 // so under A-INB neither overlaps j: the question is false (premise.a-inb).
 // Decided as the program compare PTR_EQ(i, j) it stayed open (a one-past-
-// the-end pointer may equal the next object's base).
+// the-end pointer may equal the next object's base). With W-ITE (wide ROW
+// per ite leaf pair, decided in the access context) the read is decided per
+// leaf before W-ROW-ALIGNED builds the question: both leaves skip, so
+// overlap() is not reached here; the property pinned is the same (no open
+// alias question, A-INB used, seam-check valid).
 // RUN: sea-vc %s --lower --seam --seam-wide --seam-stats 2>&1 | FileCheck %s
 // RUN: sea-vc %s --lower --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // CHECK-NOT: seam.alias.open
 // CHECK: seam.rule.premise.a-inb: {{[1-9]}}
-// CHECK: seam.rule.ptr.overlap.decided: 1
-// CHECK: seam.rule.wide.row-aligned: 1
+// CHECK: seam.rule.wide.ite-leaf-skip: 2
+// CHECK: seam.rule.wide.ite-split: 1
 // CHECK: result: unsat
 // CHK: result: unsat
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
