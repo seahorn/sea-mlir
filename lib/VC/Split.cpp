@@ -14,6 +14,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <map>
+#include <set>
 #include <sstream>
 
 using namespace mlir;
@@ -197,12 +198,43 @@ bool SplitRun::leafCases(Expr t, SeaOpSem &sem, unsigned maxPaths,
   return true;
 }
 
+/// `v` is a leaf of the ite tree of `t` (under at most one
+/// PTR_FROM_BITS), or the rewriter's normal form of ptr-from-bits of one.
+static bool isLeafValue(Expr t, Expr v, SeaOpSem &sem) {
+  const bool fromBits = isOpX<PTR_FROM_BITS>(t);
+  Expr tree = fromBits ? Expr(t->arg(0)) : t;
+  expr::SeaMRewriter *rw = sem.seamRewriter();
+  std::set<ENode *> seen;
+  std::vector<Expr> stack{tree};
+  while (!stack.empty()) {
+    Expr e = stack.back();
+    stack.pop_back();
+    if (!seen.insert(e.get()).second)
+      continue;
+    if (isOpX<ITE>(e)) {
+      stack.push_back(Expr(e->arg(1)));
+      stack.push_back(Expr(e->arg(2)));
+      continue;
+    }
+    if (e == v)
+      return true;
+    if (fromBits) {
+      Expr w = Expr(mk<PTR_FROM_BITS>(e));
+      if (w == v || (rw && rw->rewrite(w) == v))
+        return true;
+    }
+  }
+  return false;
+}
+
 unsigned SplitRun::choose(unsigned level, unsigned n) {
   unsigned c = level < prefix.size() ? prefix[level] : 0;
-  if (c >= n && why.empty())
+  if (c >= n && why.empty()) {
+    isUnstable = true;
     why = "level " + std::to_string(level) + " has " + std::to_string(n) +
           " case(s) in this run but case " + std::to_string(c) +
           " was planned (the encoding is not deterministic)";
+  }
   return c < n ? c : 0;
 }
 
@@ -236,6 +268,18 @@ void SplitRun::onValue(Value v, SeaOpSem &sem, OpSemContext &ctx) {
   if (plant == Plant::WrongValue && lvl.cases.size() > 1)
     lvl.cases[lvl.chosen].value =
         lvl.cases[(lvl.chosen + 1) % lvl.cases.size()].value;
+  if (t.kind == SplitTarget::Kind::Leaves) {
+    // (X) at the pointer level, by construction: the value is a leaf of the
+    // term's ite tree, or the rewriter's normal form of ptr-from-bits of one
+    if (!isLeafValue(term, lvl.cases[lvl.chosen].value, sem)) {
+      if (why.empty())
+        why = t.name + " (" + t.selector +
+              "): the chosen value is not a leaf of the term's ite tree "
+              "(a bug in the case split construction)";
+      return;
+    }
+    ++nStructural;
+  }
   ctx.values().write(reg, lvl.cases[lvl.chosen].value);
   lvls.push_back(std::move(lvl));
 }

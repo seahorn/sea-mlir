@@ -37,6 +37,10 @@
 // RUN: not sea-vc %s --program=bug --split=nd.0 2>&1 | FileCheck %s --check-prefix=KIND
 // RUN: not sea-vc %s --program=bug --split-max-parts=3 2>&1 | FileCheck %s --check-prefix=NEED
 // RUN: not sea-vc %s --program=bug --split=^bb1 --smt2 2>&1 | FileCheck %s --check-prefix=SMT2
+// RUN: not sea-vc %s --program=bug --split=^bb1 --reach 2>&1 | FileCheck %s --check-prefix=NOREACH
+// RUN: not sea-vc %s --program=bug --split=^bb1 --mem=lambda 2>&1 | FileCheck %s --check-prefix=NOLAMBDA
+// NOREACH: not with --smt2 (use --split-smt2), --reach or --mem=lambda
+// NOLAMBDA: not with --smt2 (use --split-smt2), --reach or --mem=lambda
 // NOPE: [vc.split-target]
 // ENTRY: entry block
 // KIND: not i1

@@ -123,6 +123,12 @@ public:
   /// Empty, or why the encoding could not split (a target whose term has no
   /// cases of its kind; the run must stop).
   const std::string &failure() const { return why; }
+  /// The failure is a plan the run could not follow (vc.split-unstable).
+  bool unstable() const { return isUnstable; }
+  /// Leaves levels whose chosen value passed the structural check (a leaf
+  /// of the term's ite tree, or the rewriter's normal form of
+  /// ptr-from-bits of one).
+  unsigned leafStructural() const { return nStructural; }
 
   /// The cases of a Leaves target's term `t`: the ite tree under at most one
   /// PTR_FROM_BITS, by distinct leaf (first occurrence order). False (with
@@ -143,6 +149,8 @@ private:
   llvm::DenseMap<mlir::Block *, unsigned> byBlock;
   std::vector<SplitLevel> lvls;
   std::string why;
+  bool isUnstable = false;
+  unsigned nStructural = 0;
 };
 
 } // namespace sea

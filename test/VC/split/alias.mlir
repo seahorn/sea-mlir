@@ -67,6 +67,34 @@
 // WRONG: [vc.split-check-failed]
 // WRONG: exact=failed
 
+// A nested split: a Boolean parent, then the leaves of %q. The ite tree of
+// %q is not simplified under the parent's case, so (c = 1, %q = p) is a
+// vacuous part (the condition is false under the parent): it is unsat.
+// The parts count toward --split-max-parts.
+// RUN: sea-vc %s --lower --program=alias --seam --split=nd.5 --split-leaves=%%q | FileCheck %s --check-prefix=NESTED
+// NESTED: split.part: 0 choice=nd.5=1#0/2,%q=leaf:obj.heap.1/paths=1#0/2 result=unsat
+// NESTED: split.part: 1 choice=nd.5=1#0/2,%q=leaf:unknown(ptr-from-bits)/paths=1#1/2 result=unsat {{.*}} dag=1 {{.*}} check=ok
+// NESTED: split.part: 2 choice=nd.5=0#1/2,%q=leaf:obj.heap.1/paths=1#0/2 result=unsat
+// NESTED: split.part: 3 choice=nd.5=0#1/2,%q=leaf:unknown(ptr-from-bits)/paths=1#1/2 result=unsat
+// NESTED: split.verdict: unsat parts=4 unsat=4 sat=0 unknown=0 {{.*}} check-unknown=0 check=on leaf-structural=4
+// RUN: not sea-vc %s --lower --program=alias --seam --split=nd.5 --split-leaves=%%q --split-max-parts=3 2>&1 | FileCheck %s --check-prefix=NCAP
+// NCAP: [vc.split-max-parts]
+
+// --split-max-paths: an ite tree with more root-to-leaf paths is refused.
+// RUN: not sea-vc %s --lower --program=alias --seam --split-leaves=%%q --split-max-paths=1 2>&1 | FileCheck %s --check-prefix=PATHS
+// PATHS: more than 1 paths (--split-max-paths) [vc.split-target]
+
+// The verdict says how far the self-check went: check-unknown counts the
+// levels whose (E) or (X) check was unknown (here: rlimit 1), check=off
+// is --split-check=false.
+// RUN: sea-vc %s --lower --program=alias --seam --split-leaves=%%q --split-check-rlimit=1 2>&1 | FileCheck %s --check-prefix=UNK
+// RUN: sea-vc %s --lower --program=alias --seam --split-leaves=%%q --split-check=false 2>&1 | FileCheck %s --check-prefix=OFF
+// UNK: [vc.split-check-unknown]
+// UNK: split.verdict: unsat {{.*}} check-unknown={{[1-9][0-9]*}} check=on
+// OFF-NOT: split.check:
+// OFF: split.part: 0 {{.*}} check=off
+// OFF: split.verdict: unsat {{.*}} check-unknown=0 check=off
+
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @alias {
   %c8 = sea.const 8 : i64

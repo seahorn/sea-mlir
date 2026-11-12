@@ -419,7 +419,7 @@ The record kinds of `sea-vc`:
 | `smt2` | the query (with `--smt2`) |
 | `split-part-start` | `part` (`--split*`: the part's own records follow) |
 | `split-part` | `part`, `choice`, `result`, `vc_time`, `solve_time`, `dag`, `alias_open`, `alias_open_pairs`, `alias_open_memop`, `rows`, `ack_reads`, `ack_pairs`, `ack_constraints`, `check` |
-| `split-verdict` | `result`, `parts`, `unsat`, `sat`, `unknown`, `none`, `hardest_part`, `hardest_solve_time`, [`stopped`] |
+| `split-verdict` | `result`, `parts`, `unsat`, `sat`, `unknown`, `none`, `hardest_part`, `hardest_solve_time`, `check_unknown`, `check` (`on`\|`off`), `leaf_structural`, [`stopped`] |
 | `split-candidate` | `name`, `loc`, `leaves`, `open_aliases` (`--split-auto`) |
 | `print`, `print.mem`, `print.mem.row`, `print.scope`, `print.object`, `print.note`, `print.truncated` | see [Counterexample notation](print.md) and `sea-vc --agent` |
 

@@ -2378,7 +2378,8 @@ leaves of the first with >= 2 leaves (none: warning vc.split-auto-none,
 one unsplit part). --split-check (default on): per level, z3 (rlimit
 --split-check-rlimit) proves the case conditions exhaustive and the chosen
 case exact (condition => term = value, on the solver's terms: pointers by
-address); failed: exit 5, vc.split-check-failed; unknown: warning
+address (pointer identity holds by construction and is checked
+structurally)); failed: exit 5, vc.split-check-failed; unknown: warning
 vc.split-check-unknown. --split-max-parts (64): more parts is an error
 (vc.split-max-parts), no verdict. --split-max-paths (1024): paths of an ite
 tree. --split-stop-on-sat. --split-smt2=<prefix>: <prefix>.part<N>.smt2
@@ -2399,7 +2400,12 @@ Lines: every part prints its usual output between
   sum)
 then
   split.verdict: <v> parts= unsat= sat= unknown= none= hardest-part=
-    hardest-solve-time= [stopped=first-sat]
+    hardest-solve-time= check-unknown= check=on|off leaf-structural=
+    [stopped=first-sat]
+    (check-unknown: levels whose exhaustive or exact check was unknown or
+    unexpressible, summed over the parts: > 0 means the construction is not
+    fully checked; check=off: --split-check=false; leaf-structural: --split-leaves
+    levels whose chosen value was checked structurally)
   split.unknown-part: <N>:<choice>   (each unknown part)
   result: <v>     sat if a part is sat (replayed), unsat if every part is,
                   none under --vcgen-only, else unknown
@@ -2434,7 +2440,8 @@ Kinds and fields:
                 alias_open_pairs, alias_open_memop, rows, ack_reads,
                 ack_pairs, ack_constraints, check
   split-verdict result, parts, unsat, sat, unknown, none, hardest_part,
-                hardest_solve_time, [stopped]
+                hardest_solve_time, check_unknown, check (on|off),
+                leaf_structural, [stopped]
   split-candidate name, loc, leaves, open_aliases
   nondet        site, callee, width, value
   memread       site, addr, width, value, [obj + off] (the object id and
@@ -3184,6 +3191,10 @@ int main(int argc, char **argv) {
              rows = 0, ackReads = 0, ackPairs = 0, ackConstraints = 0;
     bool ackOn = false;
     std::string check = "off";
+    // levels whose (E) or (X) check was unknown or unexpressible
+    unsigned checkUnknown = 0;
+    // Leaves levels whose chosen value was checked structurally
+    unsigned leafStructural = 0;
   } splitPart;
   // --split-auto: the pick run (no solver) and its ranking
   bool splitPickRun = false;
@@ -3539,7 +3550,8 @@ int main(int argc, char **argv) {
     lap("encode");
     if (splitRun) {
       if (!splitRun->failure().empty()) {
-        sea::diag::error("vc.split-target",
+        sea::diag::error(splitRun->unstable() ? "vc.split-unstable"
+                                              : "vc.split-target",
                          "cannot split: " + splitRun->failure());
         return 1;
       }
@@ -3553,6 +3565,7 @@ int main(int argc, char **argv) {
                               "distinct leaf); no split at this level");
       }
       splitPart.choice = splitRun->choiceText();
+      splitPart.leafStructural = splitRun->leafStructural();
       if (splitRun->levels().empty())
         sea::diag::warn("vc.split-unmet",
                         "no split target was met by the encoding (each is "
@@ -4273,6 +4286,7 @@ int main(int argc, char **argv) {
         return r == SR::UNSAT ? "ok" : r == SR::SAT ? "failed" : "unknown";
       };
       bool failedAny = false, unknownAny = false;
+      unsigned nUnknownChecks = 0;
       const auto &lv = splitRun->levels();
       for (size_t i = 0; i < lv.size(); ++i) {
         const sea::SplitLevel &l = lv[i];
@@ -4298,7 +4312,10 @@ int main(int argc, char **argv) {
                               why2);
         failedAny |= ex == SR::SAT || exact == SR::SAT;
         unknownAny |= ex == SR::UNKNOWN || exact == SR::UNKNOWN;
+        if (ex == SR::UNKNOWN || exact == SR::UNKNOWN)
+          ++nUnknownChecks;
       }
+      splitPart.checkUnknown = nUnknownChecks;
       splitPart.check = failedAny ? "failed" : unknownAny ? "unknown" : "ok";
       if (failedAny) {
         sea::diag::error("vc.split-check-failed",
@@ -5841,6 +5858,7 @@ int main(int argc, char **argv) {
       // takes case 0 below it; its levels give the siblings to run later
       std::vector<std::vector<unsigned>> todo{{}};
       unsigned nUnsat = 0, nSat = 0, nUnknown = 0, nNone = 0;
+      unsigned nCheckUnknown = 0, nLeafStructural = 0;
       double hardest = -1;
       unsigned hardestId = 0;
       std::vector<std::string> unknownParts;
@@ -5856,7 +5874,12 @@ int main(int argc, char **argv) {
           gOut->emit(rec);
           gOut->flush();
         }
+        // a fallback in one part (stride, companion) does not carry over
+        const bool strideSaved = strideOn;
+        const CompanionMode companionSaved = companionMode;
         int prc = runOnce();
+        strideOn = strideSaved;
+        companionMode = companionSaved;
         if (prc != 0 && prc != 3)
           return prc; // an error or a bug: stop
         const auto &lv = splitPart.levels;
@@ -5924,6 +5947,8 @@ int main(int argc, char **argv) {
             hardestId = splitPartId;
           }
         }
+        nCheckUnknown += splitPart.checkUnknown;
+        nLeafStructural += splitPart.leafStructural;
         ++splitPartId;
         if (nSat && splitStopOnSat) {
           stopped = !todo.empty();
@@ -5953,7 +5978,10 @@ int main(int argc, char **argv) {
             .num("none", nNone)
             .num("hardest_part", hardestId)
             .set("hardest_solve_time",
-                 llvm::formatv("{0:f3}", std::max(hardest, 0.0)).str());
+                 llvm::formatv("{0:f3}", std::max(hardest, 0.0)).str())
+            .num("check_unknown", nCheckUnknown)
+            .str("check", splitCheck ? "on" : "off")
+            .num("leaf_structural", nLeafStructural);
         if (stopped)
           rec.str("stopped", "first-sat");
         rec.text = std::string("split.verdict: ") + verdict +
@@ -5965,6 +5993,9 @@ int main(int argc, char **argv) {
                    " hardest-part=" + std::to_string(hardestId) +
                    " hardest-solve-time=" +
                    llvm::formatv("{0:f3}", std::max(hardest, 0.0)).str() +
+                   " check-unknown=" + std::to_string(nCheckUnknown) +
+                   " check=" + (splitCheck ? "on" : "off") +
+                   " leaf-structural=" + std::to_string(nLeafStructural) +
                    (stopped ? " stopped=first-sat" : "");
         gOut->emit(rec);
         for (const std::string &u : unknownParts)

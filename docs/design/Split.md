@@ -46,10 +46,9 @@ Targets:
 
 ## Where: during the encoding
 
-The task was to split "after VC generation, before SeaM". In sea-vc SeaM
-rewrites each load and store as the op is encoded (`SeaOpSem` calls the
-rewriter), so there is no unrewritten VC to substitute into. The split
-happens at the definition instead: `OpSemContext::defHook` (after each op
+SeaM rewrites each load and store as the op is encoded (`SeaOpSem` calls
+the rewriter), so there is no unrewritten VC to substitute into. The split
+happens at the definition: `OpSemContext::defHook` (after each op
 of a block, and after the block arguments of a join) and
 `OpSemContext::guardHook` (when VCGen creates a block guard). The hook
 replaces the target's value in the symbolic store; every later use reads
@@ -59,8 +58,10 @@ conjoined to the query before its normalization. With no split option the
 hooks are null: no term changes (query byte-identical).
 
 Nested targets: one level per target the encoding meets, in encoding
-order, each under the cases chosen before it (the ite tree of a later
-target may lose leaves under an earlier case). A run takes the choices of
+order, each under the cases chosen before it (the tree is not simplified under
+the parent's case, so a nested level may yield vacuous parts, whose
+condition is false under the parent's; they count toward
+`--split-max-parts`). A run takes the choices of
 its first levels (the prefix) and case 0 below; its levels give the
 siblings. Parts are enumerated depth first, one encoding per part. A
 level whose case count does not cover its planned choice stops the split
@@ -70,12 +71,18 @@ where that assumption would show.
 ## Checks
 
 `--split-check` (default on) states (E) for every level of a run and (X)
-for its chosen case, on the solver's terms (the boundary erases pointers:
-(X) compares addresses, which is what the solver's query depends on), and
-asks z3 under an rlimit. Every case of every level is the chosen case of
+for its chosen case, on the solver's terms, and asks z3 under an rlimit. For
+`--split-leaves`, (X) holds at the pointer level by construction (the value
+is a leaf of the term's ite tree, or the rewriter's normal form of
+ptr-from-bits of one; checked structurally, counted as `leaf-structural`,
+an error `vc.split-target` if it fails); the z3 check compares addresses
+only. Every case of every level is the chosen case of
 some part, so a complete split checks (X) for all of them. A failed check
 is exit 5 (`vc.split-check-failed`); an unknown is a warning
 (`vc.split-check-unknown`) and the construction is not checked. The
+`split.verdict` record carries `check-unknown=<n>` (levels whose check was
+unknown or unexpressible) and `check=on|off`, so an incomplete check is
+visible in the verdict. The
 hidden `--x-split-plant=drop-case|wrong-value` plants the two bugs; the
 tests check that the check catches them.
 
