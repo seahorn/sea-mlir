@@ -18,8 +18,8 @@ We built regression checks around the unchanged C++ bodies that perform
 these updates across the queue, limiter and surge-pricing components. We
 started with bounded admission and replacement checks, then used an invariant
 to verify applied batches of arbitrary finite length in one source/payer
-profile. That batch gate passes 17 proofs and nine validated completion
-checks, and detects six deliberate regressions. The original loop runs in an
+profile. That batch gate passes 18 proofs and ten validated completion
+checks, and detects seven deliberate regressions. The original loop runs in an
 environment that summarizes background transactions without storing or
 ordering them.
 
@@ -175,8 +175,9 @@ gap in our specification; the production comparison was already correct.
 
 The strengthened gate detects four comparison mistakes: exact sequence
 matching, a strict comparison, hash-only matching, and removing a newer
-transaction. It also detects clearing a payer's entire reservation and
-omitting a refund. Each counterexample must replay at the intended functional
+transaction. It also detects clearing a payer's entire reservation, omitting
+a refund, or leaving a retained source account with a stale age.
+Each counterexample must replay at the intended functional
 assertion. A failure in a mock's interface guard does not count as detecting
 the regression.
 
@@ -214,8 +215,8 @@ the selected accounts. These cases cover the original domain.
 We also proved retirement and accounting as independent postconditions from
 the same invariant. Neither proof assumes the other's result. Their
 conjunction gives the required guarantee, while the separate retirement
-queries take only 3.5–9.5 seconds. The full batch run takes about 6.2 minutes
-with two jobs. Its slowest accounting query still takes 107 seconds of a
+queries take about 8.4–9.9 seconds. The full batch run takes about 7.1 minutes
+with two jobs. Its slowest accounting query takes 90 seconds of a
 120-second budget, so runtime margin remains work for a dependable CI gate.
 
 ## Build a gate that can notice a regression
@@ -260,6 +261,28 @@ encoding, starting with the initial bounded suite and then the
 `a1f4383b588f56c01c72fe3318eb9d87fe09053e`. The snippets above are production
 code; the specifications below describe the harness contracts rather than
 another implementation of admission or removal.
+
+### Tools and source inputs
+
+An equivalent harness needs Python 3.11 or later, GNU `patch` and `sed`, Linux `ldd`,
+Clang 18 with C++20 standard-library headers, a SeaHorn installation with the
+Sea-MLIR export profile, and `sea-vc`. The C++ extraction reads stellar-core
+at the revision above; its specialized declarations replace dependencies
+that would otherwise require a native Stellar build.
+
+The harness configuration uses `SEA` for the SeaHorn installation prefix,
+`SEA_MLIR` for the directory containing `sea-vc`, `CLANG`/`CLANGXX` for the
+compiler executables, and `STELLAR_ROOT` for the source checkout. Those
+locations must be configured for the machine running it. The tutorial does
+not bundle the harness distribution.
+
+The recorded `sea-vc` identifies its linked solver as Z3 5.3.3.0; the separate
+SeaHorn Z3 executable reports 4.12.0. The latter is not the solver-library
+version used by this gate. Record the full `sea-vc --version` output and
+compiler/frontend versions when comparing runs. The revised runner also
+hashes tracked source files, export profiles, patches, mutation scripts,
+compiler/frontend binaries and verifier shared libraries before and after
+execution, rejecting a changed input set.
 
 ### Claims and independent observations
 
@@ -514,6 +537,13 @@ interface contracts remain as described above. A-INB stays assumed throughout
 this batch proof; ownership, universal memory safety, concurrent execution and
 generic floating-point reasoning remain outside its scope.
 
+The frontend also warned that TBAA moved shadow-memory uses past stores.
+The batch exports report 49 such uses, or 41 in the no-removal
+retirement/completion queries. The reported results use that transformation;
+the study has not cross-checked the suite with
+`--horn-shadow-mem-use-tbaa=false`. This remains an unvalidated frontend
+transformation, separately from the A-INB premise.
+
 ### Specify the required transition independently
 
 For each observed transaction, the harness snapshots the expected liveness
@@ -564,6 +594,21 @@ anonymous removal are disjoint by source identity. The no-removal case is the
 complement of those two removal predicates; entering or exiting the loop
 covers the remaining choice.
 
+The revised harness checks this cover mechanically. Each source case assumes
+its predicate from a shared `batchCase` function. A separate obligation counts
+the eight leaf predicates at an arbitrary loop head and asserts that exactly
+one holds. A completion witness checks that this obligation's premises are
+feasible. The cover therefore checks the same predicates that select the
+proofs, rather than a second handwritten description of them.
+
+The initialization, cover and induction-step queries deliberately end with
+`assume(false)` after their checkpoint. Those cuts isolate the obligations.
+Dedicated completion assertions occur before the cuts, with the original
+checks enabled. A validated witness at each intended marker rules out an
+infeasible case being accepted as a useful proof. The revised runner requires
+all of these completions for whole-gate success; `--proof-only` is diagnostic
+and cannot report the complete gate proved.
+
 Initialization is proved first and reused as a lemma. Every preservation
 query still starts from the full original head invariant. In the last case,
 the invariant postcondition is itself split into P's actual reservation
@@ -574,7 +619,7 @@ as passes.
 
 Combining retirement and accounting left the last remainder unknown at 120
 seconds. The independent retirement query for that case proves in about eight
-seconds in the final run. The accounting remainder still takes about 107
+seconds in the final run. The accounting remainder takes about 90
 seconds. Splitting proof obligations retained the complete modeled input
 domain and numeric ranges.
 
@@ -606,39 +651,50 @@ changes.
 
 ### Batch results and regression controls
 
-The recorded batch family passes all 26 checks, plus six deliberate
+The recorded batch family passes all 28 checks, plus seven deliberate
 regression controls:
 
 | Obligation or control | Count | Required result |
 |---|---:|---|
 | Initialization | 1 | UNSAT |
+| Disjoint and exhaustive case cover | 1 | UNSAT |
 | Invariant preservation and zero-iteration exit | 9 | UNSAT |
 | Retirement for each entered source case | 7 | UNSAT |
-| Initialization and case completion | 9 | SAT at the intended marker, validated with zero mismatches |
-| Deliberate comparison and fee regressions | 6 | SAT at the intended functional assertion, validated with zero mismatches |
+| Initialization, cover and case completion | 10 | SAT at the intended marker, validated with zero mismatches |
+| Deliberate comparison, fee and retained-account regressions | 7 | SAT at the intended functional assertion, validated with zero mismatches |
 
 The batch controls are distinct from the initial admission suite's controls:
 
-| Deliberate production edit | Behavior detected | Solver seconds |
-|---|---|---:|
-| Replace `<=` with `==` | An obsolete transaction survives a later applied sequence. | 9.841 |
-| Replace `<=` with `<` | The transaction survives an equal applied sequence. | 9.232 |
-| Match full hashes instead of sequence ordering | An obsolete transaction survives when hashes differ. | 6.372 |
-| Replace `<=` with `>=` | An earlier applied sequence removes a newer transaction. | 11.135 |
-| Clear the payer's entire reservation during refund | Reservations for other transactions are lost. | 8.654 |
-| Omit a refund | The retired transaction's reservation remains. | 8.476 |
+| Deliberate production edit | Case / postcondition | Behavior detected | Solver seconds |
+|---|---|---|---:|
+| Replace `<=` with `==` | Selected / full | An obsolete transaction survives a later applied sequence. | 24.813 |
+| Replace `<=` with `<` | Selected / full | The transaction survives an equal applied sequence. | 30.254 |
+| Match full hashes instead of sequence ordering | Selected / full | An obsolete transaction survives when hashes differ. | 8.491 |
+| Replace `<=` with `>=` | No removal / full | An earlier applied sequence removes a newer transaction. | 8.742 |
+| Clear the payer's entire reservation during refund | P shared, T live / P fee equality | Reservations for other transactions are lost. | 7.737 |
+| Omit a refund | Selected / full | The retired transaction's reservation remains. | 8.374 |
+| Retain a nonzero source age after retirement | Selected / remaining invariant | A source retained for sponsorship keeps a stale queue age. | 7.902 |
 
 The `>=` control's trace removes the current anonymous transaction while T is
 already absent. Its expected liveness is true and its observed liveness
 becomes false. The controls therefore exercise both selected singleton and
-weak individual observations. A control must change its copied production
+weak individual observations. The age control specifically exercises the
+remaining-invariant query, while retirement and P's reservation equality stay
+correct. These controls do not constitute mutation coverage of every
+source/self/other-payer or T-gone branch. A control must change its copied production
 statement and fail at the intended functional assertion; an earlier model
 guard, export error, timeout or unvalidated replay is rejected.
 
+Two additional controls corrupt the harness's case predicates rather than
+Stellar code: one deletes a leaf and one makes two leaves overlap. Both fail
+at the cover assertion with validated replays, in 0.106 and 0.146 seconds.
+They test the cover checker and are separate from the seven application
+regression controls.
+
 The snapshot used Clang 18 and sea-vc `v0.1.0-84-g0d842ebcd891`. With two jobs,
-the positive family took approximately 372 seconds, including compilation,
-export and replay. The seven added retirement proofs took 3.542–9.486 seconds
-each. The slowest accounting proof took 107.310 seconds under a 120-second
+the positive family took approximately 427 seconds, including compilation,
+export and replay. The seven added retirement proofs took 8.366–9.860 seconds
+each. The slowest accounting proof took 90.019 seconds under a 120-second
 solver budget; each query had an 8 GB memory cap. Mutation queries used
 60-second budgets. These are development-machine observations, not CI runtime
 guarantees. The accounting bottleneck still needs more margin.

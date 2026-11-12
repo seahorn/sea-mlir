@@ -54,10 +54,10 @@ regressions.
 
 We then extended the removal check to arbitrary finite batches. An invariant
 summarizes the other queued transactions while the original C++ loop processes
-an applied request. In the selected source/payer profile, 17 proof obligations
+an applied request. In the selected source/payer profile, 18 proof obligations
 establish both correct retirement and preservation of fee reservations,
-resources and membership. Nine completion witnesses validate the case premises;
-six deliberate regressions test the gate's sensitivity.
+resources and membership. Ten completion witnesses validate the case premises;
+seven deliberate regressions test the gate's sensitivity.
 
 **The batch proof covers a production C++ loop for any finite number of
 applied requests in the selected profile.** Each run extracts the selected
