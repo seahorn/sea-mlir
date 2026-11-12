@@ -226,11 +226,12 @@ most wide accesses first.
   / store's cell bytes at most the context's units; a byte read made by the
   fallback inside a wide load's context is one byte: found by fuzz-seam's
   --seam-check, 4 unexpressible firings before the fix).
-- Rules: W-HIT, W-SUB, W-SKIP (`wideRelation`: circular numerals of one
-  base; across objects under A-INB with single pointer views), a wide read
-  through an ite, across a store-map of another object, over a memop term
-  (numeral length: inside -> the hit form of the source version / the
-  repeated byte / H; disjoint or n = 0 -> below; across objects -> below).
+- Rules: W-HIT, W-SUB, W-SKIP, W-SPLICE (`wideRelation`: circular
+  numerals of one base; across objects under A-INB with single pointer
+  views), a wide read through an ite, over a store-map, over a memop term
+  (inside -> the hit form of the source version / the repeated byte / H;
+  disjoint or n = 0 -> below; across objects -> below), per leaf pair of
+  an ite address (W-ITE, below).
 - Deviation from rev 3 ("undecided keeps the term"), measured: a width term
   left to the boundary is expanded there over the whole remaining chain,
   with no SeaM rule on the bytes (vcc: hash_iter_* 0.7 -> 27 s with Yices,
@@ -302,6 +303,29 @@ is decided; `--seam-wide-ite-open` also rewrites an undecided pair, at a
 leaf of the read, to the read at that leaf address (open, untuned: on
 string_eq_byte_cursor (vcc, A-INB off) it doubled the byte-store
 expansions, 42 -> 102). Tests: test/VC/seam/wide-ite-leaves.mlir.
+
+W-SPLICE (Super in `wideRelation`): a write of w bytes inside a read of r
+bytes (one base, numeral offsets, the write at byte k of the read, k + w <=
+r) is the read below with the written bytes in place, `concat(below[8r-1 :
+8(k+w)], v, below[8k-1 : 0])`, exact: a byte store under an 8-byte load
+keeps the word. Also a leaf value of W-ITE (`wide.ite-leaf-splice`). Tests:
+test/VC/seam/wide-splice.mlir.
+
+The other wide reads are decided per leaf the same way (`Rules::leafTree`:
+the ite tree over the leaf pairs, at most maxDecideLeaves, every pair
+decided or no rewrite):
+- over a store-map of b (`rowWideSmap`): a leaf at a numeral offset of b
+  reads the entries it covers and the word below for the rest (no entry:
+  the word below), exact; a leaf in another object is Out by the access
+  context (decideInPair without a length: cmp.diff-base, arm.skip,
+  cmp.size0-vacuous; A-INB), the word below. Before, only a single view
+  into another object was decided, every other read split into bytes, a
+  numeral offset of b included. Tests: test/VC/seam/wide-smap-leaves.mlir.
+- over a memop term (`rowWideMemOp`): the in-test of the read span (the
+  memops' decideInPair with span r: In when every byte is in [d, d + n),
+  Out when none is), per leaf pair of j and d: In the hit form, Out the read
+  below. Before: single views, numeral lengths only. Tests:
+  test/VC/seam/wide-memop-leaves.mlir.
 
 Alignment, two sources:
 1. Proved: the linear form of the address: a registered object base with
