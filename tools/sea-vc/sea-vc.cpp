@@ -4268,32 +4268,43 @@ int main(int argc, char **argv) {
       size_t n = fs.size();
       size_t m = (checkSample && checkSample < n) ? checkSample : n;
       uint64_t valid = 0, invalid = 0, unknown = 0, unexpr = 0;
-      std::unique_ptr<sea::solver::Solver> cs;
       unsigned ms = seamCheckTimeout * 1000;
-      if (backend == Backend::Z3) {
-        auto z = std::make_unique<sea::solver::z3_solver_impl>(efac);
-        if (ms) {
+      // a fresh solver per query. z3 decides its auto-configuration at the
+      // first push, before anything is asserted, and keeps relevancy 2 for
+      // every later query on that solver (leaf-split obligations: 11 s
+      // instead of 0.06 s). The non-incremental path (no push) runs the
+      // qfaufbv preprocessing chain, which blows up on row.store
+      // obligations (24.8 s against 0.33 s pushed). So z3 gets relevancy 0
+      // and one push, never popped: the solver is dropped after the query.
+      auto mkCheckSolver = [&]() -> std::unique_ptr<sea::solver::Solver> {
+        if (backend == Backend::Z3) {
+          auto z = std::make_unique<sea::solver::z3_solver_impl>(efac);
           sea::ZParams<sea::EZ3> params(z->get_context());
-          params.set("timeout", ms);
+          if (ms)
+            params.set("timeout", ms);
+          params.set("relevancy", 0u);
           z->get_solver().set(params);
+          z->push();
+          return z;
         }
-        cs = std::move(z);
-      } else if (backend == Backend::Bitwuzla) {
+        if (backend == Backend::Bitwuzla) {
 #ifdef WITH_BITWUZLA
-        sea::solver::bitwuzla_solver_impl::solver_options o;
-        if (ms)
-          o["time-limit-per"] = std::to_string(ms);
-        cs = std::make_unique<sea::solver::bitwuzla_solver_impl>(efac, nullptr,
-                                                                 o);
+          sea::solver::bitwuzla_solver_impl::solver_options o;
+          if (ms)
+            o["time-limit-per"] = std::to_string(ms);
+          return std::make_unique<sea::solver::bitwuzla_solver_impl>(
+              efac, nullptr, o);
+#else
+          return nullptr;
 #endif
-      } else {
-        if (ms)
-          sea::diag::warn("seam.check-no-timeout",
-                          "--seam-check-timeout is not supported for Yices: "
-                          "its checks run without a time limit");
-        cs = makeSolver();
-      }
-      if (!cs)
+        }
+        return makeSolver();
+      };
+      if (backend != Backend::Z3 && backend != Backend::Bitwuzla && ms)
+        sea::diag::warn("seam.check-no-timeout",
+                        "--seam-check-timeout is not supported for Yices: "
+                        "its checks run without a time limit");
+      if (!mkCheckSolver())
         return;
       for (size_t k = 0; k < m; ++k) {
         const expr::RewriteTrail::Firing &f = fs[m == n ? k : k * n / m];
@@ -4327,10 +4338,9 @@ int main(int argc, char **argv) {
         }
         // a premise no assignment satisfies would make every firing valid
         if (!expr::isOpX<expr::TRUE>(prem)) {
-          cs->push();
+          std::unique_ptr<sea::solver::Solver> cs = mkCheckSolver();
           sea::solver::SolverResult pr =
               cs->add(prem) ? cs->check() : sea::solver::SolverResult::UNKNOWN;
-          cs->pop();
           if (pr == sea::solver::SolverResult::UNSAT) {
             ++unexpr;
             sea::diag::warn("seam.check-unexpressible",
@@ -4357,10 +4367,9 @@ int main(int argc, char **argv) {
           continue;
         }
         expr::Expr q = expr::mk<expr::AND>(prem, diff);
-        cs->push();
+        std::unique_ptr<sea::solver::Solver> cs = mkCheckSolver();
         sea::solver::SolverResult res =
             cs->add(q) ? cs->check() : sea::solver::SolverResult::UNKNOWN;
-        cs->pop();
         if (res == sea::solver::SolverResult::UNSAT) {
           ++valid;
           continue;
