@@ -1,8 +1,8 @@
 # Case splitting of the VC
 
 `include/sea/VC/Split.h`, `lib/VC/Split.cpp`; `sea-vc --split`,
-`--split-leaves`, `--split-auto` (`sea-vc --agent`, section SPLIT); tests
-`test/VC/split/`.
+`--split-leaves`, `--split-auto`, `--split-candidates` (`sea-vc --agent`,
+section SPLIT); tests `test/VC/split/`.
 
 ## Why
 
@@ -98,8 +98,50 @@ with two or more leaves and at least one question is split on its leaves.
 The attribution over-counts (an unknown leaf behind several ites counts
 for each of them): it is a ranking for experiments, not a strategy.
 
+## Finding targets (`--split-candidates`)
+
+The names of the lowered program are not the source's, so a user who
+wants to split by hand first needs a list. `--split-candidates` runs the
+pick run of `--split-auto` (the same census, `SplitCensus`), lists, and
+stops: no split, no solver, `result: none`. It is refused with a split
+(`--split`, `--split-leaves`, `--split-auto`): listing and splitting are
+separate runs, so the list never depends on a split.
+
+- `split.leaves-candidate`: every ite-valued address, in `--split-auto`'s
+  order (that ranking and its pick rule are unchanged). Besides
+  `open-aliases` it gives `unknown-leaves` (leaves without an object),
+  `direct` (questions whose pointers hold the term itself, not only an
+  unknown leaf of it) and `own` (questions no other candidate is behind).
+  When one unknown leaf sits behind several ites, they tie on
+  `open-aliases`; `own` below `open-aliases` says the count is shared, and
+  `direct` tells the ites in the question apart from those that only share
+  the leaf.
+- `split.bool-candidate`: i1 values and block guards (the `--split`
+  targets) that occur in an ite condition of an open question's pointers,
+  or of the term of an address candidate attributed to the question. The
+  key of a value is its bv1 term and that term `= 1` (normalized); of a
+  guard, its constant. Ranked by those questions (`open-aliases`), then by
+  `addrs` (address candidates with it in an ite condition), then encoding
+  order. Only candidates behind a question are listed, at most
+  `--split-candidates-max` (default 20, 0: all); the `split.candidates`
+  line counts the recorded values, the candidates, and the dropped ones.
+  Ites that come from joins have the guards of the blocks before the join
+  in their conditions; a branch's two successor guards usually rank
+  together, and splitting on either gives the same two cases.
+
+Both rankings are heuristics: cheap syntactic counts over the normalized
+query, not a measure of how hard a part will be.
+
+A `--seam` run (not a split) whose verdict is `unknown` prints one line,
+`hint: split: rerun with --split-candidates to list split targets (no
+solver)` (jsonl kind `hint`), after the result and its reason lines. It
+changes no query and no other line; `utils/bench.py` reads only
+`BRUNCH_STAT` lines and `utils/query-diff.py` compares `--smt2` output, so
+neither sees it.
+
 ## Open questions
 
+- The cap of the Boolean list (20) and the order of ties are untuned.
 - Default of `--split-check`: on; cheap on the measured queries. A target
   whose term is large could make it costly.
 - Splitting a leaf that is itself an ite of pointers under `to-bits`

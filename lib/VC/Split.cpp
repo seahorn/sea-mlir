@@ -13,9 +13,11 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <functional>
 #include <map>
 #include <set>
 #include <sstream>
+#include <unordered_map>
 
 using namespace mlir;
 using namespace expr;
@@ -324,6 +326,178 @@ std::string SplitRun::choiceText() const {
          std::to_string(l.chosen) + "/" + std::to_string(l.cases.size());
   }
   return s.empty() ? "-" : s;
+}
+
+void SplitCensus::install(SeaOpSem &sem, OpSemContext &ctx) {
+  ctx.defHook = [this, &sem, &ctx](Value v) {
+    if (isa<AddrType>(v.getType())) {
+      Expr t = ctx.read(sem.mkSymbReg(v));
+      Expr tree = isOpX<PTR_FROM_BITS>(t) ? Expr(t->arg(0)) : t;
+      if (isOpX<ITE>(tree)) {
+        SplitAddrCandidate c;
+        c.value = v;
+        c.term = t;
+        addrs.push_back(std::move(c));
+      }
+      return;
+    }
+    if (!bools || !v.getType().isInteger(1))
+      return;
+    Expr t = ctx.read(sem.mkSymbReg(v));
+    // a constant has nothing to split
+    if (op::bv::isBvNum(t) || isOpX<TRUE>(t) || isOpX<FALSE>(t))
+      return;
+    SplitBoolCandidate c;
+    c.value = v;
+    c.keys = {t, sem.toBool(t)};
+    boolCands.push_back(std::move(c));
+  };
+  if (bools)
+    ctx.guardHook = [this](Block *b, Expr g) {
+      SplitBoolCandidate c;
+      c.block = b;
+      c.keys = {g};
+      boolCands.push_back(std::move(c));
+      return g;
+    };
+}
+
+namespace {
+/// Per DAG node, the sorted ids collected from the node and its DAG
+/// (iterative post-order, memoized): `own` adds the node's own ids.
+class DagIds {
+public:
+  using Own = std::function<void(ENode *, std::vector<unsigned> &)>;
+  explicit DagIds(Own own) : own(std::move(own)) {}
+  const std::vector<unsigned> &of(ENode *root) {
+    std::vector<std::pair<ENode *, bool>> st{{root, false}};
+    while (!st.empty()) {
+      auto [n, done] = st.back();
+      st.pop_back();
+      if (memo.count(n))
+        continue;
+      if (!done) {
+        st.push_back({n, true});
+        for (size_t i = 0; i < n->arity(); ++i)
+          if (!memo.count(n->arg(i)))
+            st.push_back({n->arg(i), false});
+        continue;
+      }
+      std::vector<unsigned> ids;
+      own(n, ids);
+      for (size_t i = 0; i < n->arity(); ++i) {
+        const std::vector<unsigned> &a = memo[n->arg(i)];
+        ids.insert(ids.end(), a.begin(), a.end());
+      }
+      llvm::sort(ids);
+      ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+      memo[n] = std::move(ids);
+    }
+    return memo[root];
+  }
+
+private:
+  Own own;
+  // node-based: references stay valid as it grows
+  std::unordered_map<ENode *, std::vector<unsigned>> memo;
+};
+
+void unite(std::vector<unsigned> &into, const std::vector<unsigned> &b) {
+  into.insert(into.end(), b.begin(), b.end());
+  llvm::sort(into);
+  into.erase(std::unique(into.begin(), into.end()), into.end());
+}
+} // namespace
+
+void SplitCensus::attribute(SeaOpSem &sem, ArrayRef<ENode *> openOverlaps,
+                            unsigned maxPaths) {
+  // an address candidate is behind a question whose pointers contain its
+  // term or one of its leaves without an object (SeaM's leaf pairs split
+  // an ite pointer: the open pair holds the unknown leaf, not the ite)
+  // (by their normal forms: the query was normalized after them)
+  std::unordered_multimap<ENode *, unsigned> candOf;
+  ExprVector keep;
+  std::vector<Expr> normTerm(addrs.size());
+  auto addCand = [&](const Expr &e, unsigned i) {
+    keep.push_back(sem.simplify(e));
+    candOf.emplace(keep.back().get(), i);
+  };
+  for (unsigned i = 0; i < addrs.size(); ++i) {
+    SplitAddrCandidate &c = addrs[i];
+    addCand(c.term, i);
+    normTerm[i] = keep.back();
+    std::string why;
+    if (!SplitRun::leafCases(c.term, sem, maxPaths, c.cases, why))
+      c.cases.clear();
+    for (const SplitCase &k : c.cases)
+      if (!sem.seamRewriter()->rules().view(k.value)) {
+        addCand(k.value, i);
+        ++c.unknownLeaves;
+      }
+  }
+  DagIds addrIds([&](ENode *n, std::vector<unsigned> &ids) {
+    auto [lo, hi] = candOf.equal_range(n);
+    for (auto it = lo; it != hi; ++it)
+      ids.push_back(it->second);
+  });
+  // the term alone (not its leaves): the question holds the ite itself
+  std::unordered_multimap<ENode *, unsigned> termOf;
+  for (unsigned i = 0; i < addrs.size(); ++i)
+    termOf.emplace(normTerm[i].get(), i);
+  DagIds termIds([&](ENode *n, std::vector<unsigned> &ids) {
+    auto [lo, hi] = termOf.equal_range(n);
+    for (auto it = lo; it != hi; ++it)
+      ids.push_back(it->second);
+  });
+  // the Boolean candidates in each node's DAG, and in the ite conditions
+  // of each node's DAG
+  std::unordered_multimap<ENode *, unsigned> boolOf;
+  for (unsigned j = 0; j < boolCands.size(); ++j)
+    for (const Expr &k : boolCands[j].keys) {
+      keep.push_back(sem.simplify(k));
+      boolOf.emplace(keep.back().get(), j);
+    }
+  DagIds boolIds([&](ENode *n, std::vector<unsigned> &ids) {
+    auto [lo, hi] = boolOf.equal_range(n);
+    for (auto it = lo; it != hi; ++it)
+      ids.push_back(it->second);
+  });
+  DagIds condIds([&](ENode *n, std::vector<unsigned> &ids) {
+    if (isOpX<ITE>(n)) {
+      const std::vector<unsigned> &b = boolIds.of(n->arg(0));
+      ids.insert(ids.end(), b.begin(), b.end());
+    }
+  });
+  std::vector<std::vector<unsigned>> termBools(addrs.size());
+  if (bools && !boolCands.empty())
+    for (unsigned i = 0; i < addrs.size(); ++i) {
+      termBools[i] = condIds.of(normTerm[i].get());
+      for (unsigned j : termBools[i])
+        ++boolCands[j].addrs;
+    }
+  for (ENode *n : openOverlaps) {
+    std::vector<unsigned> ids = addrIds.of(n->arg(0));
+    unite(ids, addrIds.of(n->arg(2)));
+    for (unsigned i : ids) {
+      ++addrs[i].open;
+      if (ids.size() == 1)
+        ++addrs[i].own;
+    }
+    if (direct) {
+      std::vector<unsigned> ts = termIds.of(n->arg(0));
+      unite(ts, termIds.of(n->arg(2)));
+      for (unsigned i : ts)
+        ++addrs[i].direct;
+    }
+    if (!bools || boolCands.empty())
+      continue;
+    std::vector<unsigned> bs = condIds.of(n->arg(0));
+    unite(bs, condIds.of(n->arg(2)));
+    for (unsigned i : ids)
+      unite(bs, termBools[i]);
+    for (unsigned j : bs)
+      ++boolCands[j].open;
+  }
 }
 
 } // namespace sea

@@ -153,6 +153,66 @@ private:
   unsigned nStructural = 0;
 };
 
+/// An address value whose term is an ite tree (or ptr-from-bits of one): a
+/// --split-leaves candidate of a pick run (SplitCensus).
+struct SplitAddrCandidate {
+  mlir::Value value;
+  /// The term as the encoding built it.
+  expr::Expr term;
+  /// Its leaf cases (SplitRun::leafCases); empty when it has more paths
+  /// than the limit.
+  std::vector<SplitCase> cases;
+  /// Open alias questions whose pointers contain the term or one of its
+  /// leaves without an object.
+  uint64_t open = 0;
+  /// Of those, the questions attributed to no other candidate.
+  uint64_t own = 0;
+  /// Of those, the questions whose pointers contain the term itself (not
+  /// only an unknown leaf of it).
+  uint64_t direct = 0;
+  /// Distinct leaves without an object (cases SeaM cannot place).
+  unsigned unknownLeaves = 0;
+};
+
+/// An i1 value or a block guard: a --split candidate of a pick run.
+struct SplitBoolCandidate {
+  /// Exactly one of value / block.
+  mlir::Value value;
+  mlir::Block *block = nullptr;
+  /// The terms that stand for it in the query: the guard constant; for a
+  /// value its bv1 term and that term = 1 (normalized).
+  expr::ExprVector keys;
+  /// Open alias questions with the target in an ite condition of their
+  /// pointers or of the ite tree of an address candidate attributed to
+  /// them.
+  uint64_t open = 0;
+  /// Address candidates with the target in an ite condition of their tree.
+  unsigned addrs = 0;
+};
+
+/// The census of a solverless pick run (sea-vc --split-auto,
+/// --split-candidates): the candidates the encoding defines (hooks), then
+/// the attribution of the open alias questions of the normalized query to
+/// them. A heuristic: one question counts for every candidate behind it.
+class SplitCensus {
+public:
+  /// `full` (--split-candidates): also collect the Boolean candidates (i1
+  /// values, guards) and count `direct`.
+  explicit SplitCensus(bool full) : bools(full), direct(full) {}
+  /// Installs the hooks on `ctx`; they record and change nothing.
+  void install(SeaOpSem &sem, OpSemContext &ctx);
+  /// Attributes the open questions (IS_OVERLAP nodes of the normalized
+  /// query) to the candidates.
+  void attribute(SeaOpSem &sem, llvm::ArrayRef<expr::ENode *> openOverlaps,
+                 unsigned maxPaths);
+  /// In encoding order.
+  std::vector<SplitAddrCandidate> addrs;
+  std::vector<SplitBoolCandidate> boolCands;
+
+private:
+  bool bools, direct;
+};
+
 } // namespace sea
 
 #endif // SEA_VC_SPLIT_H
