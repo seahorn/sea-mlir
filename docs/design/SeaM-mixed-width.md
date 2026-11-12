@@ -289,6 +289,20 @@ emitted `IS_OVERLAP(i, 1, j, 1)` and left it to the program compare
 (no A-INB, no ARM): a read at `ite(c, A + 24, A)` over a store at B stayed
 open (test/VC/seam/wide-row-context.mlir).
 
+Rule W-ITE (`Rules::rowWideLeaves`): a read over a write whose address
+(either one) is an ite, at most maxDecideLeaves leaf pairs. Every pair is
+decided on its own (wideRelation, then W-ROW-CONGRUENT / -ALIGNED's compare
+with the access context) and the read is the ite tree of the leaf values
+under the ite conditions: Hit `v`, Sub(k) the bytes [k, k + r) of v, Skip
+the read below at j. A read at `ite(c, p, q)` over writes at p and q is
+`ite(c, v_p, v_q)`, a word, where the byte fallback gave the concat of
+byte-wise ites (a loaded pointer became `from_bits(concat(...))` and every
+access through it a new alias question). Default: only when every pair
+is decided; `--seam-wide-ite-open` also rewrites an undecided pair, at a
+leaf of the read, to the read at that leaf address (open, untuned: on
+string_eq_byte_cursor (vcc, A-INB off) it doubled the byte-store
+expansions, 42 -> 102). Tests: test/VC/seam/wide-ite-leaves.mlir.
+
 Alignment, two sources:
 1. Proved: the linear form of the address: a registered object base with
    alignment >= w (the registry has `align`), plus a numeral multiple of

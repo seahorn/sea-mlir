@@ -107,6 +107,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -222,6 +223,12 @@ struct SeaMOptions {
   /// W-BYTE-IN: a byte read over an undecided wide write as one membership
   /// ite with a shift (off: expand the write into byte stores)
   bool wideByteIn = true;
+  /// W-ITE (rowWideLeaves) with an undecided leaf pair: the read at that
+  /// leaf address under its ite condition (on: a word value with one open
+  /// read per open leaf; off: no W-ITE unless every pair is decided, the
+  /// read goes to the byte fallback). Open question, untuned
+  /// (sea-vc --seam-wide-ite-open).
+  bool wideIteOpenLeaves = false;
   /// R-STRIDE (PtrIndex.md section 0c; sea-vc --seam-stride): in R-ABORT, an
   /// entry b + o is skipped for a read whose every leaf is a promised node
   /// over b whose offsets never reach o. Uses the promises (PremPtrIndex)
@@ -2005,6 +2012,155 @@ public:
     return true;
   }
 
+  /// The relation of one leaf pair (li, lj) of a read over a write (as
+  /// rowWide: wideRelation, then for equal power-of-two widths whose spans
+  /// coincide or are disjoint, congruent starts or both `align` promises,
+  /// the compare of row(): decideEq with the access context). \p d gets the
+  /// reasons, \p prem the ALIGN premise when the promises were used.
+  WRel wideLeafRelation(const Expr &exp, const Expr &arr, const Expr &li,
+                        const Expr &lj, uint64_t &k, Decision &d,
+                        unsigned &prem, bool shadow) {
+    const bool wideRead = isOpX<W_SELECT>(exp);
+    const uint64_t r = wideRead ? op::bv::width(exp->arg(2)) / 8 : 1;
+    const uint64_t w = widthOf(arr->arg(2)) / 8;
+    Decision dl;
+    WRel rel = wideRelation(li, w, lj, r, k, dl, shadow);
+    if (rel != WRel::Unknown) {
+      d.add(dl);
+      return rel;
+    }
+    if (!wideRead || !isOpX<W_STORE>(arr) || r != w)
+      return WRel::Unknown;
+    const bool congruent = congruentStarts(li, lj, w);
+    if (!congruent && !alignedPair(exp, arr, w))
+      return WRel::Unknown;
+    Decision de;
+    Tri t = decideEq(li, lj, de, /*diffBase=*/!shadow, shadow);
+    if (t == Tri::Unknown)
+      return WRel::Unknown;
+    d.add(de);
+    if (!congruent)
+      prem |= PremAlign;
+    k = 0;
+    return t == Tri::Yes ? WRel::Hit : WRel::Skip;
+  }
+
+  /// Both accesses promise w-alignment (W-ROW-ALIGNED's condition): w a
+  /// power of two >= 2 dividing both `align` promises (trusted).
+  bool alignedPair(const Expr &exp, const Expr &arr, uint64_t w) const {
+    return m_opts.assumeAligned && (w & (w - 1)) == 0 && w >= 2 &&
+           // w divides both promises (not >= w: equal for the power-of-two
+           // `align` the dialect verifies, but the Expr layer does not
+           // re-check it here).
+           op::array::promisedAlign(exp) % w == 0 &&
+           op::array::promisedAlign(exp) != 0 &&
+           op::array::promisedAlign(arr) % w == 0 &&
+           op::array::promisedAlign(arr) != 0;
+  }
+
+  /// W-ITE (wide ROW over ite addresses): a read (select, wselect) at j over
+  /// a store / wstore at i, one of them an ite (at most maxDecideLeaves leaf
+  /// pairs, as decideEq): every leaf pair is decided on its own
+  /// (wideLeafRelation) and the read is the ite tree of the leaf values,
+  /// under the ite conditions (ITE-EQ's pairing: ites with one condition
+  /// branch by branch):
+  ///   Hit -> v, Sub(k) -> bytes [k, k + r) of v, Skip -> the read below
+  ///   at j, an undecided pair -> the read at the leaf address lj (only
+  ///   where j was split: on that path j = lj; it is rewritten as its own
+  ///   read). One open pair where j is not split: no rewrite here.
+  /// The value keeps its word shape: a read at ite(c, p, q) over writes at
+  /// p and q is ite(c, v_p, v_q), not the concat of its bytes. Uses the
+  /// premises of the leaf decisions (A-INB: cmp.diff-base, cmp.size0-
+  /// vacuous, arm.skip across bases; ALIGN), stated on the whole accesses
+  /// (Rules::inBounds and the alignment of an ite address hold leaf by
+  /// leaf). Nothing when no pair is decided. All leaves one value: that
+  /// value. RW_FULL (new reads and extracts below the ite tree).
+  std::optional<RewriteResult> rowWideLeaves(const Expr &exp, const Expr &arr,
+                                             bool shadow) {
+    const Expr i = arr->arg(1), j = exp->arg(1), v = arr->arg(2);
+    llvm::SmallVector<std::pair<Expr, Expr>, 8> pairs;
+    if (!eqPairs(i, j, pairs, m_opts.maxDecideLeaves))
+      return std::nullopt;
+    const bool wideRead = isOpX<W_SELECT>(exp);
+    const uint64_t r = wideRead ? op::bv::width(exp->arg(2)) / 8 : 1;
+    const uint64_t al = wideRead ? op::array::promisedAlign(exp) : 0;
+    auto readAt = [&](const Expr &mem, const Expr &a) -> Expr {
+      return wideRead ? op::array::wselect(mem, a, exp->arg(2), al)
+                      : op::array::select(mem, a);
+    };
+    const Expr below = readAt(arr->arg(0), j);
+    unsigned resolved = 0, prem = PremNone;
+    bool failed = false;
+    Decision all;
+    llvm::StringMap<uint64_t> leafCounts;
+    std::function<Expr(const Expr &, const Expr &, bool)> tree =
+        [&](const Expr &l0, const Expr &r0, bool splitJ) -> Expr {
+      if (failed)
+        return Expr();
+      const Expr a = op::ptr::stripObservation(l0),
+                 b = op::ptr::stripObservation(r0);
+      if (isOpX<ITE>(a) && isOpX<ITE>(b) && a->arg(0) == b->arg(0)) {
+        Expr t = tree(a->arg(1), b->arg(1), true);
+        Expr e = tree(a->arg(2), b->arg(2), true);
+        return failed ? Expr() : mk<ITE>(a->arg(0), t, e);
+      }
+      if (isOpX<ITE>(a)) {
+        Expr t = tree(a->arg(1), r0, splitJ);
+        Expr e = tree(a->arg(2), r0, splitJ);
+        return failed ? Expr() : mk<ITE>(a->arg(0), t, e);
+      }
+      if (isOpX<ITE>(b)) {
+        Expr t = tree(l0, b->arg(1), true);
+        Expr e = tree(l0, b->arg(2), true);
+        return failed ? Expr() : mk<ITE>(b->arg(0), t, e);
+      }
+      uint64_t k = 0;
+      WRel rel = wideLeafRelation(exp, arr, a, b, k, all, prem, shadow);
+      switch (rel) {
+      case WRel::Hit:
+        ++resolved;
+        ++leafCounts["wide.ite-leaf-hit"];
+        return v;
+      case WRel::Sub:
+        ++resolved;
+        ++leafCounts["wide.ite-leaf-sub"];
+        return op::bv::extract(unsigned(8 * (k + r) - 1), unsigned(8 * k), v);
+      case WRel::Skip:
+        ++resolved;
+        ++leafCounts["wide.ite-leaf-skip"];
+        return below;
+      case WRel::Unknown:
+        break;
+      }
+      if (!splitJ || !m_opts.wideIteOpenLeaves) {
+        failed = true;
+        return Expr();
+      }
+      ++leafCounts["wide.ite-leaf-open"];
+      return readAt(arr, r0);
+    };
+    Expr res = tree(i, j, false);
+    if (failed || !res || resolved == 0)
+      return std::nullopt;
+    m_stats.count("wide.ite-split");
+    for (auto &kv : leafCounts)
+      m_stats.rules[kv.getKey()] += kv.getValue();
+    countReasons(all);
+    countPremises(prem | all.premises);
+    // one value on every leaf: that value
+    Expr one;
+    std::function<bool(const Expr &)> same = [&](const Expr &e) -> bool {
+      if (isOpX<ITE>(e) && !isOpX<ITE>(v) && !isOpX<ITE>(below))
+        return same(e->arg(1)) && same(e->arg(2));
+      if (!one)
+        one = e;
+      return one == e;
+    };
+    if (same(res) && one)
+      res = one;
+    return RewriteResult{res, RWStatus::RW_FULL};
+  }
+
   /// W-ROW-CONGRUENT / W-ROW-ALIGNED: a wselect at j over a wstore of the
   /// same width at i whose spans coincide or are disjoint (\p prem: the
   /// premise that says so, none for congruent starts, ALIGN for the `align`
@@ -2053,6 +2209,10 @@ public:
     if (w == 0)
       return {exp, RWStatus::RW_DONE};
     const bool shadow = shadowMemory(arr);
+    if (isOpX<ITE>(op::ptr::stripObservation(i)) ||
+        isOpX<ITE>(op::ptr::stripObservation(j)))
+      if (std::optional<RewriteResult> res = rowWideLeaves(exp, arr, shadow))
+        return *res;
     Decision d;
     uint64_t k = 0;
     WRel rel = wideRelation(i, w, j, r, k, d, shadow);
@@ -2066,14 +2226,7 @@ public:
         congruentStarts(i, j, w))
       return rowEqWidth(exp, arr, "wide.row-congruent", PremNone, shadow);
     if (rel == WRel::Unknown && wideRead && isOpX<W_STORE>(arr) && r == w &&
-        m_opts.assumeAligned && (w & (w - 1)) == 0 && w >= 2 &&
-        // w divides both promises (not >= w: equal for the power-of-two
-        // `align` the dialect verifies, but the Expr layer does not re-check
-        // it here).
-        op::array::promisedAlign(exp) % w == 0 &&
-        op::array::promisedAlign(exp) != 0 &&
-        op::array::promisedAlign(arr) % w == 0 &&
-        op::array::promisedAlign(arr) != 0)
+        alignedPair(exp, arr, w))
       return rowEqWidth(exp, arr, "wide.row-aligned", PremAlign, shadow);
     if (rel == WRel::Unknown) {
       // what the fallback pays for (census for an aligned word-level rule)
