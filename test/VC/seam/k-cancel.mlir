@@ -6,9 +6,13 @@
 // overlap(q+8, 1, p+8, 1), one alias question (an IS_OVERLAP, not a PTR_EQ). The byte pairs k != k'
 // (partial overlaps of misaligned pointers) cancel to one term per
 // difference k - k' (14): 15 open questions, 64 without the rule.
-// With --seam-pull-concat the load's bytes share no guard (the 14 byte
-// pairs k != k' differ), so the rule splits on an unshared condition
-// (ptr.load-resolve-concat.unshared) within its budget.
+// With --seam-pull-concat=8 the load does not resolve: every split is on a
+// guard all ite bytes share (first the k = k' guard, after which byte 7
+// is X's byte 7, then each k - k' guard), the then side is taken first,
+// and the 8 pulls go to sides that put X's byte 7 into more and more
+// bytes. .unshared counts the side, reached after the budget, whose bytes
+// share no guard; it is not split (pull-concat-unshared.mlir has an
+// unshared split that resolves a load).
 // @kcancel_sat, the control: the store at q + 16, the load at p + 8, p = q.
 // The numerals cancel to overlap(p, 1, q + 8, 1) and nothing more: the
 // load does not see X (sat, replayed).
@@ -16,7 +20,8 @@
 // RUN: sea-vc %s --program=kcancel --lower --seam --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --program=kcancel --lower --seam --seam-pull-concat=8 --seam-stats 2>&1 | FileCheck %s --check-prefix=PULL
 // RUN: sea-vc %s --program=kcancel_sat --lower --seam --seam-stats 2>&1 | FileCheck %s --check-prefix=SAT
-// PULL: seam.rule.ptr.load-resolve-concat.unshared: {{[1-9]}}
+// PULL-NOT: seam.rule.ptr.load-resolve-concat:
+// PULL: seam.rule.ptr.load-resolve-concat.unshared: 1
 // PULL: result: unsat
 // SAT: seam.rule.ptr.overlap.cancel-num: {{[1-9]}}
 // SAT: result: sat

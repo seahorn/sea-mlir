@@ -551,10 +551,11 @@ static cl::opt<unsigned> seamResolveIteNodes(
 static cl::opt<unsigned> seamPullConcat(
     "seam-pull-concat",
     cl::desc("With --seam: resolve a split pointer load (a concat of bytes) "
-             "by pulling an ite condition its bytes share out of the "
-             "concat, at most N pulls per load, kept only when a side "
-             "reassembles a stored pointer (PtrSort S6 probe, counter "
-             "ptr.load-resolve-concat). 0 (default): off"),
+             "by pulling an ite condition out of the concat: one its ite "
+             "bytes share, else the first of its first ite byte (counter "
+             "ptr.load-resolve-concat.unshared); at most N pulls per load, "
+             "kept only when a side reassembles a stored pointer (PtrSort "
+             "S6 probe, counter ptr.load-resolve-concat). 0 (default): off"),
     cl::init(0));
 
 static cl::opt<bool> seamCongruence(
@@ -1413,9 +1414,10 @@ TYPICAL:
                                  #   nodes (default 0: <= 4 tree leaves;
                                  #   counter ptr.load-resolve-ite-dag)
   sea-vc p.mlir --lower --seam --seam-pull-concat=N  # resolve a split
-                                 #   pointer load by pulling an ite its
-                                 #   bytes share out of the concat (<= N
-                                 #   pulls; counter ptr.load-resolve-concat)
+                                 #   pointer load by pulling ite conditions
+                                 #   out of the concat, shared by its bytes
+                                 #   first (<= N pulls; counters
+                                 #   ptr.load-resolve-concat[.unshared])
   sea-vc p.mlir --lower --seam --ptr-companion=exact  # split pointer
                                  #   loads read a companion memory of the
                                  #   stored pointers, guarded (opaque mode;

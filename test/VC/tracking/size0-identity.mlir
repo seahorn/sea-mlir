@@ -8,6 +8,13 @@
 // @track: reset through select(c, p, a) does not reset q: assert fails.
 // @null: reset of null does not reset q: assert fails.
 // @self: is_modified(p) after a tracked store to q is false: holds.
+// @open: a tracked store through x, a pointer loaded from memory (no
+// object), then is_modified(p). The shadow compare of x with p stays open:
+// it is a PTR_EQ (a cell keyed by object identity), not an alias question,
+// so neither cmp.size0-vacuous nor cmp.diff-base decides it, and x = p
+// makes the assert fail (sat); it is not counted in seam.alias.open.*.
+// Built as IS_OVERLAP(x, 1, p, 1) it would be false by cmp.size0-vacuous
+// (unsat).
 // Every sea-vc run must exit 0 (sat: replay agrees with the model).
 // RUN: sea-run %s --program=track --input=4=1 --missing=zero | FileCheck %s --check-prefix=FAIL
 // RUN: sea-vc %s --program=track --lower --solver=z3 | FileCheck %s --check-prefix=SAT
@@ -19,12 +26,15 @@
 // RUN: sea-run %s --program=self --missing=zero | FileCheck %s --check-prefix=OK
 // RUN: sea-vc %s --program=self --lower --solver=z3 | FileCheck %s --check-prefix=UNSAT
 // RUN: sea-vc %s --program=self --lower --seam --seam-stats --seam-check --solver=z3 2>&1 | FileCheck %s --check-prefixes=UNSAT,SEAM,CHK
+// RUN: sea-vc %s --program=open --lower --solver=z3 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %s --program=open --lower --seam --seam-stats --seam-check --solver=z3 2>&1 | FileCheck %s --check-prefixes=SAT,OPEN,CHK --implicit-check-not=cmp.size0-vacuous --implicit-check-not=cmp.diff-base --implicit-check-not=ptr.overlap --implicit-check-not=seam.alias.open
 // RUN: sea-opt %s --sea-apply-tracking --sea-lower-tracking | FileCheck %s --check-prefix=LOW
 // SEAM-NOT: vc.seam-inb-violated
 // SEAM: seam.inb: assumed
 // SEAM-NOT: cmp.size0-vacuous
 // SEAM: seam.rule.shadow.access: {{[1-9]}}
 // SEAM: seam.rule.shadow.distinct-base: {{[1-9]}}
+// OPEN: seam.rule.shadow.access: {{[1-9]}}
 // FAIL: status: assert-failed
 // OK: status: halted
 // SAT: result: sat
@@ -75,6 +85,22 @@ sea.program @self {
   %q = sea.malloc %four align 4 [2] : i64 -> !sea.ptr<64>
   %v = sea.const 1 : i8
   %m1 = sea.store %m0[%q], %v inplace tracked : !m, i8
+  %mod = sea.mem.is_modified %m1[%p] : !m
+  %false = sea.const 0 : i1
+  %ok = sea.icmp eq, %mod, %false : i1
+  sea.assert %ok
+  sea.halt
+}
+
+sea.program @open {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %zero = sea.const 0 : i64
+  %eight = sea.const 8 : i64
+  %p = sea.malloc %zero align 4 [1] : i64 -> !sea.ptr<64>
+  %h = sea.malloc %eight align 8 [2] : i64 -> !sea.ptr<64>
+  %x = sea.load %m0[%h] : !m -> !sea.ptr<64>
+  %v = sea.const 1 : i8
+  %m1 = sea.store %m0[%x], %v inplace tracked : !m, i8
   %mod = sea.mem.is_modified %m1[%p] : !m
   %false = sea.const 0 : i1
   %ok = sea.icmp eq, %mod, %false : i1
