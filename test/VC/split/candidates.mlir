@@ -61,17 +61,40 @@
 // PARTS: splits nothing
 // MAX: --split-candidates-max needs --split-candidates
 
-// An unknown verdict of a --seam run (here: a z3 rlimit of 1) points to
-// --split-candidates; not without --seam (nor in a split run, whose parts
-// name the hard case).
-// RUN: not sea-vc %s --program=factor --seam --z3-param=rlimit=1 2>/dev/null | FileCheck %s --check-prefix=HINT
-// RUN: not sea-vc %s --program=factor --seam --z3-param=rlimit=1 --format=jsonl 2>/dev/null | FileCheck %s --check-prefix=HINTJ
-// RUN: not sea-vc %s --program=factor --z3-param=rlimit=1 2>/dev/null | FileCheck %s --check-prefix=NOHINT
+// An ite tree with more paths than --split-max-paths has no leaf cases:
+// listed with leaves=0, and a warning. Its question held only the unknown
+// leaf, so without leaves nothing is attributed to it.
+// RUN: sea-vc %s --lower --program=alias --seam --split-candidates --split-max-paths=1 2>&1 | FileCheck %s --check-prefix=PATHS
+// PATHS-DAG: [vc.split-max-paths]
+// PATHS-DAG: split.leaves-candidate: name=%q leaves=0 unknown-leaves=0 open-aliases=0
+
+// Nothing is solved, so the checks that need a solve are refused;
+// --brunch-stats gives the result as --vcgen-only does.
+// RUN: not sea-vc %s --lower --program=alias --seam --split-candidates --seam-check 2>&1 | FileCheck %s --check-prefix=SOLVES
+// RUN: not sea-vc %s --lower --program=alias --seam --split-candidates --eq-audit 2>&1 | FileCheck %s --check-prefix=SOLVES
+// RUN: not sea-vc %s --lower --program=alias --seam --split-candidates --x-read-table-check=1 2>&1 | FileCheck %s --check-prefix=SOLVES
+// RUN: sea-vc %s --lower --program=alias --seam --split-candidates --brunch-stats | FileCheck %s --check-prefix=BRUNCH
+// SOLVES: --split-candidates solves nothing
+// BRUNCH: BRUNCH_STAT result none
+
+// An unknown verdict of a --seam run (here: a z3 rlimit of 1) whose
+// normalized query has open alias questions points to --split-candidates.
+// No hint without open questions (@factor), without --seam, or in a split
+// run (its parts name the hard case).
+// RUN: not sea-vc %s --lower --program=alias --seam --z3-param=rlimit=1 2>/dev/null | FileCheck %s --check-prefix=HINT
+// RUN: not sea-vc %s --lower --program=alias --seam --z3-param=rlimit=1 --format=jsonl 2>/dev/null | FileCheck %s --check-prefix=HINTJ
+// RUN: not sea-vc %s --program=factor --seam --z3-param=rlimit=1 2>/dev/null | FileCheck %s --check-prefix=NOHINT
+// RUN: not sea-vc %s --lower --program=alias --z3-param=rlimit=1 2>/dev/null | FileCheck %s --check-prefix=NOHINT
+// RUN: not sea-vc %s --lower --program=alias --seam --z3-param=rlimit=1 --split=nd.5 --split-check=false 2>/dev/null | FileCheck %s --check-prefix=NOHINTSPLIT
 // HINT: result: unknown
-// HINT: hint: split: {{.*}}--split-candidates
-// HINTJ: "kind":"hint","topic":"split","option":"--split-candidates"
+// HINT: hint: split: open-aliases=1; {{.*}}--split-candidates
+// HINTJ: "kind":"hint","topic":"split","open_aliases":1,"option":"--split-candidates"
 // NOHINT: result: unknown
 // NOHINT-NOT: hint:
+// NOHINTSPLIT: split.part-result: unknown
+// NOHINTSPLIT-NOT: hint:
+// NOHINTSPLIT: result: unknown
+// NOHINTSPLIT-NOT: hint:
 
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @alias {

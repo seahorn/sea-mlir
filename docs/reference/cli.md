@@ -101,8 +101,9 @@ A selector is a VC name of the lowered program (`%x`, `nd.<site>`,
 `^bb3`) or `@<file>:<line>`. The verdict is sat if a part is sat (replayed
 as usual), unsat if every part is, else unknown; `split.part:` lines give
 each part's counters, answer and time. Not knowing the names, start with
-`--split-candidates`; a `--seam` run that ends `unknown` prints a
-`hint: split:` line that points to it.
+`--split-candidates`; a `--seam` run that ends `unknown` with open alias
+questions prints a `hint: split: open-aliases=<n>; ...` line that points
+to it.
 
 **Output**
 

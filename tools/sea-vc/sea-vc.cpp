@@ -1840,9 +1840,11 @@ OUTPUT (stdout, `key: value` lines):
   vc.dag-size: <n>                (--dag-stats: distinct nodes of the query
                                   the solver gets; with --smt2 on stderr)
   vc.dag-op: <op> <n>             (--dag-stats: distinct nodes per operator)
-  result: sat|unsat|unknown|none  (none: --vcgen-only)
-  hint: split: rerun with --split-candidates ...  (unknown, --seam, not a
-                                  split: where to look next; jsonl kind hint)
+  result: sat|unsat|unknown|none  (none: --vcgen-only, --split-candidates)
+  hint: split: open-aliases=<n>; rerun with --split-candidates ...
+                                  (unknown, --seam, not a split, n > 0 open
+                                  alias questions in the normalized query:
+                                  where to look next; jsonl kind hint)
   solve-timeout: true             (unknown because --timeout expired)
   mem-limit: hit                  (unknown because --mem-limit was hit
                                   (RLIMIT_AS: address space, not resident
@@ -2376,8 +2378,9 @@ memset / memmove: run sea-vc --seam on it.
   safety verdict.
 
 SPLIT (--split=<sel,...>, --split-leaves=<sel,...>, --split-auto,
---split-candidates; docs/design/Split.md): Shannon cofactoring of the VC, as experiment and
-debugging infrastructure (which case of a timeout is hard). A target is
+--split-candidates; docs/design/Split.md): Shannon cofactoring of the VC,
+as experiment and debugging infrastructure (which case of a timeout is
+hard). A target is
 fixed when the encoding defines it, before SeaM rewrites its uses; each part
 is VC[t := value] /\ condition, answered by the usual run (lowering once;
 encoding, SeaM, Ackermann, solver, replay per part). --split: an i1 value
@@ -2434,7 +2437,10 @@ split.candidate: name= leaves= open-aliases= loc=, split.auto-pick: <name>.
 --split-candidates (--seam; not with a split, --smt2, --reach, --mem=lambda;
 --split-max-paths applies): the pick run of --split-auto, listed; no split,
 no solver; then result: none. Start here when the names are unknown (a
---seam run that ends unknown prints `hint: split: ...` pointing here).
+--seam run that ends unknown with open alias questions prints
+`hint: split: open-aliases=<n>; ...` pointing here). An ite tree with more
+paths than --split-max-paths is listed with leaves=0 (warning
+vc.split-max-paths).
   split.candidates: open-aliases= leaves-candidates= bool-candidates=
     bool-listed= bool-dropped= bool-values= vc-time=
     (bool-values: i1 values and guards recorded; bool-candidates: those
@@ -2491,7 +2497,7 @@ Kinds and fields:
   split-leaves-candidate name, loc, leaves, unknown_leaves, open_aliases,
                 direct, own
   split-bool-candidate name, loc, target (value|guard), open_aliases, addrs
-  hint          topic (split), option (--split-candidates)
+  hint          topic (split), open_aliases, option (--split-candidates)
   nondet        site, callee, width, value
   memread       site, addr, width, value, [obj + off] (the object id and
                 the cell's offset in it; text obj=&<obj>[<off>])
@@ -2934,6 +2940,11 @@ int main(int argc, char **argv) {
                   "--split-check, --split-check-rlimit, --split-stop-on-sat "
                   "and --split-smt2 need --split, --split-leaves or "
                   "--split-auto");
+    // they run after a solve, which --split-candidates never reaches
+    if (seamCheck.getNumOccurrences() || eqAudit.getNumOccurrences() ||
+        xReadTableCheck.getNumOccurrences())
+      return fail("--split-candidates solves nothing: not with --seam-check, "
+                  "--eq-audit or --x-read-table-check");
   } else if (splitCandidatesMax.getNumOccurrences()) {
     return fail("--split-candidates-max needs --split-candidates");
   }
@@ -2943,7 +2954,8 @@ int main(int argc, char **argv) {
        splitStopOnSat.getNumOccurrences() || !splitSmt2.empty()))
     return fail("--split-max-parts, --split-max-paths, --split-check, "
                 "--split-check-rlimit, --split-stop-on-sat and --split-smt2 "
-                "need --split, --split-leaves or --split-auto");
+                "need --split, --split-leaves or --split-auto "
+                "(--split-max-paths: or --split-candidates)");
   if (splitOn && (smt2 || reach || lambdaMem))
     return fail("--split, --split-leaves and --split-auto: not with --smt2 "
                 "(use --split-smt2), --reach or --mem=lambda");
@@ -3716,6 +3728,11 @@ int main(int argc, char **argv) {
     sem.setTrailContext("query");
     query = sem.simplify(query);
     lap("simplify-query");
+    // the unknown hint counts its open alias questions (only then: a DAG
+    // walk after the solver); a reference, the nodes are hash-consed
+    expr::Expr hintQuery;
+    if (!splitOn && !splitPickRun && !reach && sem.seamRewriter())
+      hintQuery = query;
     if (simplifyPhase)
       SEA_PHASE_END(*simplifyPhase).kv("nodes-made", efac.nodesMade());
     // census (PtrSort S4): the loaded pointers no rule resolved, by what the
@@ -5395,14 +5412,33 @@ int main(int argc, char **argv) {
         vout() << "mem-limit: hit\n";
         brunchStat(vout(), "mem-limit", "hit");
       }
-      // where to go next: the split targets (not a split run, whose parts
-      // say which case is hard)
-      if (!splitOn && seam) {
-        sea::out::Record rec("hint");
-        rec.str("topic", "split").str("option", "--split-candidates");
-        rec.text = "hint: split: rerun with --split-candidates to list split "
-                   "targets (no solver)";
-        gOut->emit(rec);
+      // where to go next: the split targets, when the normalized query
+      // has open alias questions to attribute (not a split run, whose
+      // parts say which case is hard)
+      if (hintQuery) {
+        uint64_t open = 0;
+        std::unordered_set<expr::ENode *> seen;
+        std::vector<expr::ENode *> stack{hintQuery.get()};
+        while (!stack.empty()) {
+          expr::ENode *n = stack.back();
+          stack.pop_back();
+          if (!seen.insert(n).second)
+            continue;
+          if (expr::isOpX<expr::IS_OVERLAP>(n))
+            ++open;
+          for (size_t i = 0; i < n->arity(); ++i)
+            stack.push_back(n->arg(i));
+        }
+        if (open) {
+          sea::out::Record rec("hint");
+          rec.str("topic", "split")
+              .num("open_aliases", open)
+              .str("option", "--split-candidates");
+          rec.text = "hint: split: open-aliases=" + std::to_string(open) +
+                     "; rerun with --split-candidates to list split targets "
+                     "(no solver)";
+          gOut->emit(rec);
+        }
       }
       gOut->flush();
       if (!timedOut && !memHit)
@@ -5935,6 +5971,7 @@ int main(int argc, char **argv) {
       rec.str("value", "none");
       rec.text = "result: none";
       gOut->emit(rec);
+      brunchStat(vout(), "result", "none");
       gOut->flush();
       return 0;
     }();

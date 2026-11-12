@@ -7,6 +7,7 @@
 
 #include "sea/Expr/SeaMRules.hh"
 #include "sea/Interp/Interpreter.h"
+#include "sea/Support/Diag.h"
 #include "sea/VC/Names.h"
 #include "sea/VC/OpSem.h"
 
@@ -427,8 +428,15 @@ void SplitCensus::attribute(SeaOpSem &sem, ArrayRef<ENode *> openOverlaps,
     addCand(c.term, i);
     normTerm[i] = keep.back();
     std::string why;
-    if (!SplitRun::leafCases(c.term, sem, maxPaths, c.cases, why))
+    if (!SplitRun::leafCases(c.term, sem, maxPaths, c.cases, why)) {
+      // a candidate without cases: listed with leaves=0, never picked
       c.cases.clear();
+      diag::warn("vc.split-max-paths",
+                 "a split candidate (an ite-valued address) is counted "
+                 "without its leaves (leaves=0, unknown-leaves=0; only its "
+                 "term attributes questions): " +
+                     why);
+    }
     for (const SplitCase &k : c.cases)
       if (!sem.seamRewriter()->rules().view(k.value)) {
         addCand(k.value, i);

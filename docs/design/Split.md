@@ -132,12 +132,22 @@ separate runs, so the list never depends on a split.
 Both rankings are heuristics: cheap syntactic counts over the normalized
 query, not a measure of how hard a part will be.
 
-A `--seam` run (not a split) whose verdict is `unknown` prints one line,
-`hint: split: rerun with --split-candidates to list split targets (no
-solver)` (jsonl kind `hint`), after the result and its reason lines. It
-changes no query and no other line; `utils/bench.py` reads only
-`BRUNCH_STAT` lines and `utils/query-diff.py` compares `--smt2` output, so
-neither sees it.
+A `--seam` run (not a split) whose verdict is `unknown` counts the open
+alias questions (`IS_OVERLAP`) of its normalized query, a DAG walk after
+the solver (no cost to sat or unsat runs). If there is at least one, it
+prints one line, `hint: split: open-aliases=<n>; rerun with
+--split-candidates to list split targets (no solver)` (jsonl kind `hint`,
+field `open_aliases`), after the result and its reason lines; without
+open questions the list would be empty, and there is no hint. It changes
+no query and no other line. `utils/query-diff.py` compares `--smt2`
+output and does not see it; `utils/bench.py` reads `BRUNCH_STAT` lines
+and named `key: value` counters of a run (`observed_counter`), and no
+counter is named `hint`.
+
+An ite tree with more paths than `--split-max-paths` has no leaf cases:
+the candidate is listed (and ranked) with `leaves=0` and
+`unknown-leaves=0`, only its term attributes questions, `--split-auto`
+never picks it, and the census warns `vc.split-max-paths`.
 
 ## Open questions
 
