@@ -88,7 +88,10 @@ nav:
       - tutorials/index.md
       - NKI kernels: tutorials/nki.md
       - "Firedancer: QUIC fragment reassembly": tutorials/inductive-proof.md
-      - Stellar: tutorials/stellar.md
+      - Stellar:
+          - Overview: tutorials/stellar.md
+          - Lifetime extensions: tutorials/stellar-ttl.md
+          - Queue accounting: tutorials/stellar-txqueue.md
       - "Firedancer: HPACK": tutorials/firedancer.md
       - "Firedancer: transaction parsing": tutorials/txn-parse.md
       - "Firedancer: HTTP/2 flow control": tutorials/h2-flow-control.md
