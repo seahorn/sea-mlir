@@ -184,9 +184,13 @@ struct SeaMOptions {
   /// A bvadd is pulled through ites only if the product of their leaf counts
   /// is at most this (the pull is exponential).
   unsigned maxPullLeaves = 4;
-  /// An equality is pushed through ites only for at most this many leaf pairs.
+  /// A program compare (eq(), ITE-EQ) is pushed through ites only for at
+  /// most this many leaf pairs.
   unsigned maxEqLeaves = 4;
-  /// decideEq looks at most at this many leaf pairs (no term is built).
+  /// The decisions of the accesses look at most at this many leaf pairs:
+  /// decideEq / decideIn (no term is built), and the compare trees of ROW
+  /// (rowCompareEq) and of a memory-operation read (rowMemOp) are built over
+  /// the same pairs, so every pair a decision looked at is resolved per leaf.
   unsigned maxDecideLeaves = 8;
   /// BvRules.hh: the bit-vector and Boolean normalization rules
   /// (extract / concat, linear equality, AC order, Boolean ite), valid over
@@ -2001,6 +2005,43 @@ public:
     return true;
   }
 
+  /// W-ROW-CONGRUENT / W-ROW-ALIGNED: a wselect at j over a wstore of the
+  /// same width at i whose spans coincide or are disjoint (\p prem: the
+  /// premise that says so, none for congruent starts, ALIGN for the `align`
+  /// promises). Then the spans overlap iff i = j, so the step is row()'s on
+  /// the compare i = j, decided by the same procedure with the access context
+  /// (decideEq, diffBase = !shadow; a shadow memory: object identity):
+  ///   Yes: v (wide.hit), RW_DONE; No: the read below (wide.skip), RW_1;
+  ///   Unknown: ite(<rowCompare(i, j)>, v, the read below), the compare tree
+  ///   over the leaves (leaves decided by A-INB, ARM already true / false,
+  ///   the rest alias questions). uses: \p prem, and A-INB through the
+  ///   compare (cmp.diff-base, cmp.size0-vacuous, arm.skip across bases).
+  ///   RW_FULL for the ite (the compare tree and the new wselect).
+  RewriteResult rowEqWidth(const Expr &exp, const Expr &arr, const char *rule,
+                           unsigned prem, bool shadow) {
+    const Expr i = arr->arg(1), j = exp->arg(1), v = arr->arg(2);
+    m_stats.count(rule);
+    Expr below = op::array::wselect(arr->arg(0), j, exp->arg(2),
+                                    op::array::promisedAlign(exp));
+    Decision d;
+    Tri t = decideEq(i, j, d, /*diffBase=*/!shadow, shadow);
+    if (t != Tri::Unknown) {
+      countReasons(d);
+      countPremises(prem | d.premises);
+      if (t == Tri::Yes) {
+        m_stats.count("wide.hit");
+        return {v, RWStatus::RW_DONE};
+      }
+      m_stats.count("wide.skip");
+      return {below, RWStatus::RW_1};
+    }
+    countPremises(prem);
+    unsigned depth, premises;
+    bool reduced;
+    Expr cmp = rowCompare(i, j, depth, reduced, premises, shadow);
+    return {mk<ITE>(cmp, v, below), RWStatus::RW_FULL};
+  }
+
   /// A read (select: \p r = 1, or wselect) at j over a store / wstore
   /// \p arr: W-HIT, W-SUB, W-SKIP, else the byte fallback.
   RewriteResult rowWide(const Expr &exp, const Expr &arr) {
@@ -2017,18 +2058,13 @@ public:
     WRel rel = wideRelation(i, w, j, r, k, d, shadow);
     // W-ROW-CONGRUENT (rev 5): equal power-of-two widths whose starts are
     // congruent mod w: the spans coincide or are disjoint, exactly (no
-    // premise): ite(i = j, v, the read below); the compare goes to the
-    // compare rules
+    // premise). W-ROW-ALIGNED (rev 5): equal power-of-two widths, both
+    // accesses annotated w-aligned (trusted `align`, PremAlign): the same.
+    // Either way the read is a ROW step on the compare i = j, which row()'s
+    // decision procedure answers with the access context (rowEqWidth)
     if (rel == WRel::Unknown && wideRead && isOpX<W_STORE>(arr) && r == w &&
-        congruentStarts(i, j, w)) {
-      m_stats.count("wide.row-congruent");
-      return {mk<ITE>(op::ptr::overlap(i, 1, j, 1), v,
-                      op::array::wselect(arr->arg(0), j, exp->arg(2),
-                                         op::array::promisedAlign(exp))),
-              RWStatus::RW_FULL};
-    }
-    // W-ROW-ALIGNED (rev 5): equal power-of-two widths, both accesses
-    // annotated w-aligned (trusted `align`): ite(i = j, v, below)
+        congruentStarts(i, j, w))
+      return rowEqWidth(exp, arr, "wide.row-congruent", PremNone, shadow);
     if (rel == WRel::Unknown && wideRead && isOpX<W_STORE>(arr) && r == w &&
         m_opts.assumeAligned && (w & (w - 1)) == 0 && w >= 2 &&
         // w divides both promises (not >= w: equal for the power-of-two
@@ -2037,14 +2073,8 @@ public:
         op::array::promisedAlign(exp) % w == 0 &&
         op::array::promisedAlign(exp) != 0 &&
         op::array::promisedAlign(arr) % w == 0 &&
-        op::array::promisedAlign(arr) != 0) {
-      m_stats.count("wide.row-aligned");
-      countPremises(PremAlign);
-      return {mk<ITE>(op::ptr::overlap(i, 1, j, 1), v,
-                      op::array::wselect(arr->arg(0), j, exp->arg(2),
-                                         op::array::promisedAlign(exp))),
-              RWStatus::RW_FULL};
-    }
+        op::array::promisedAlign(arr) != 0)
+      return rowEqWidth(exp, arr, "wide.row-aligned", PremAlign, shadow);
     if (rel == WRel::Unknown) {
       // what the fallback pays for (census for an aligned word-level rule)
       if (wideRead && isOpX<W_STORE>(arr))
@@ -3687,7 +3717,10 @@ public:
     return e;
   }
 
-  /// rowCompare's compare with PTR_EQ leaves.
+  /// rowCompare's compare with PTR_EQ leaves. The tree is built over as
+  /// many leaf pairs as decideEq looks at (maxDecideLeaves, not the
+  /// program compare's maxEqLeaves): a pair the access decision resolves is
+  /// resolved in the tree, not left in one compare of the whole ites.
   Expr rowCompareEq(const Expr &i, const Expr &idx, unsigned &depth,
                     bool &reduced, unsigned &premises, bool shadow) {
     Expr cmp = mk<PTR_EQ>(i, idx);
@@ -3695,8 +3728,8 @@ public:
     reduced = false;
     premises = PremNone;
     if (isOpX<ITE>(i) || isOpX<ITE>(idx)) {
-      llvm::SmallVector<std::pair<Expr, Expr>, 4> pairs;
-      if (eqPairs(i, idx, pairs, m_opts.maxEqLeaves)) {
+      llvm::SmallVector<std::pair<Expr, Expr>, 8> pairs;
+      if (eqPairs(i, idx, pairs, m_opts.maxDecideLeaves)) {
         unsigned resolved = 0;
         RewriteStats scratch;
         std::swap(scratch, m_stats);
@@ -4100,6 +4133,44 @@ public:
     return allIn ? Range::In : Range::Out;
   }
 
+  /// The in-test `(idx - d) <u n` of a read at \p idx of a memory-operation
+  /// term with destination \p d and length \p n, over the leaf pairs of the
+  /// ites of idx and d (as buildEq: ites with one condition paired branch by
+  /// branch): a pair decideInPair resolves is true (In) / false (Out), with
+  /// its reasons counted and its premises in \p premises; an open pair is
+  /// its own `PTR_DIFF(j, d') <u n`. \p resolved counts the resolved pairs. On
+  /// the path that selects a pair, idx and d are that pair, so the tree equals
+  /// the in-test of the whole terms. uses: the premises of the resolved pairs
+  /// (A-INB: cmp.diff-base, cmp.size0-vacuous, arm.skip; LAYOUT:
+  /// mem.in-layout).
+  Expr buildIn(const Expr &l, const Expr &r, const Expr &n, bool haveN,
+               const mpz_class &nlo, const mpz_class &nhi, bool inb,
+               unsigned &resolved, unsigned &premises) {
+    const Expr a = op::ptr::stripObservation(l),
+               b = op::ptr::stripObservation(r);
+    auto branches = [&](const Expr &c, const Expr &lt, const Expr &rt,
+                        const Expr &le, const Expr &re) {
+      Expr t = buildIn(lt, rt, n, haveN, nlo, nhi, inb, resolved, premises);
+      Expr e = buildIn(le, re, n, haveN, nlo, nhi, inb, resolved, premises);
+      return mk<ITE>(c, t, e);
+    };
+    if (isOpX<ITE>(a) && isOpX<ITE>(b) && a->arg(0) == b->arg(0))
+      return branches(a->arg(0), a->arg(1), b->arg(1), a->arg(2), b->arg(2));
+    if (isOpX<ITE>(a))
+      return branches(a->arg(0), a->arg(1), b, a->arg(2), b);
+    if (isOpX<ITE>(b))
+      return branches(b->arg(0), a, b->arg(1), a, b->arg(2));
+    Decision d;
+    Range rg = decideInPair(a, b, haveN, nlo, nhi, d, nullptr, inb);
+    if (rg != Range::Unknown) {
+      ++resolved;
+      countReasons(d);
+      premises |= d.premises;
+      return rg == Range::In ? mk<TRUE>(m_efac) : mk<FALSE>(m_efac);
+    }
+    return memOpIn(mk<PTR_DIFF>(a, b), n); // S1.5: a pointer difference
+  }
+
   /// select(T, idx) over a memory-operation term T (MemOps.hh), decided once
   /// per (term, read), not per cell:
   ///   skip (row.<op>-skip): in(idx, d, n) false: select(M, idx). RW_1 (the
@@ -4115,6 +4186,9 @@ public:
   ///   undecided (row.<op>): ite(k <u n, <hit form>, select(M, idx)): one ite
   ///     with one compare (MemOps.hh memopRead); kept as it is when
   ///     expandUnknownRow is off (the boundary translates it). No assumption.
+  ///     When idx or d is an ite, the compare is the tree of buildIn over
+  ///     their leaf pairs (mem.in-push, at least one pair resolved): uses
+  ///     the premises of the resolved pairs (A-INB across objects).
   ///   RW_FULL for the source read of mcopy and for the ite: the new selects
   ///   start their own chains below new sums (s + k, idx - d).
   RewriteResult rowMemOp(const Expr &exp, const Expr &t, const Expr &idx) {
@@ -4152,8 +4226,30 @@ public:
     if (!m_opts.expandUnknownRow)
       return {exp, RWStatus::RW_DONE};
     counter("");
-    return {mk<ITE>(memOpIn(k, memOpLen(t)), hit,
-                    op::array::select(memOpBase(t), idx)),
+    // the in-test over the leaf pairs (as ROW's compare tree): the pairs
+    // decided In / Out are true / false, the rest stay open
+    Expr in = memOpIn(k, memOpLen(t));
+    const Expr d = memOpDst(t);
+    llvm::SmallVector<std::pair<Expr, Expr>, 8> pairs;
+    if ((isOpX<ITE>(op::ptr::stripObservation(idx)) ||
+         isOpX<ITE>(op::ptr::stripObservation(d))) &&
+        eqPairs(idx, d, pairs, m_opts.maxDecideLeaves)) {
+      mpz_class nlo, nhi;
+      const bool haveN = lenRange(memOpLen(t), nlo, nhi);
+      unsigned resolved = 0, premises = PremNone;
+      RewriteStats scratch;
+      std::swap(scratch, m_stats);
+      Expr built = buildIn(idx, d, memOpLen(t), haveN, nlo, nhi,
+                           /*inb=*/!shadowMemory(t), resolved, premises);
+      std::swap(scratch, m_stats);
+      if (resolved) {
+        m_stats.merge(scratch);
+        m_stats.count("mem.in-push");
+        countPremises(premises);
+        in = built;
+      }
+    }
+    return {mk<ITE>(in, hit, op::array::select(memOpBase(t), idx)),
             RWStatus::RW_FULL};
   }
 

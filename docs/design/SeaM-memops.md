@@ -92,7 +92,13 @@ per cell:
   premise carries the guard); MSET -> v;
   MHAVOC -> `select(H, j)`; MFILL -> the byte at a numeral `j - d`.
 - **undecided**: `ite((j - d) <u n, <hit form>, select(M, j))`: one ite
-  with one compare, not one per cell. MFILL with a symbolic `j - d`:
+  with one compare, not one per cell. When j or d is an ite, the compare
+  is built over their leaf pairs (`Rules::buildIn`, as ROW's compare tree;
+  `mem.in-push`): a pair decided in / out (A-INB across objects included)
+  is true / false, only the other pairs stay `(j' - d') <u n`. An earlier
+  version kept the whole compare when any pair was open, and the program
+  rules then lost the pairs only A-INB decides
+  (test/VC/seam/memop-in-leaves.mlir). MFILL with a symbolic `j - d`:
   decided later (an ite over the bytes or a lookup term); MFILL is step 2.
 
 The hit / skip decisions reuse `decideEq`'s machinery (bases, ARM,

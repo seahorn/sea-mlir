@@ -280,9 +280,14 @@ both addresses w-aligned (w a power of two; i, j multiples of w):
     wselect(wstore(M, i, v), j, S)  ~>  ite(i = j, v, wselect(M, j, S))
 Exact given the alignment: two aligned w-spans coincide or are disjoint.
 One word compare instead of eight byte compares, and the read stays wide
-down the chain (it meets the next wstore, a skip, or a hit). The compare
-goes to the existing compare machinery (cmp.* rules, ite-push, ARM) as
-ROW's does.
+down the chain (it meets the next wstore, a skip, or a hit). The compare is
+ROW's (`Rules::rowEqWidth`, W-ROW-CONGRUENT too): decided first with the
+access context (decideEq with A-INB across objects, ARM, size 0), and when
+undecided built as ROW's compare tree over the ite leaves (rowCompare), so
+only the leaves that stay open are alias questions. An earlier version
+emitted `IS_OVERLAP(i, 1, j, 1)` and left it to the program compare
+(no A-INB, no ARM): a read at `ite(c, A + 24, A)` over a store at B stayed
+open (test/VC/seam/wide-row-context.mlir).
 
 Alignment, two sources:
 1. Proved: the linear form of the address: a registered object base with
