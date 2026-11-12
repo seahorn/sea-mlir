@@ -13,38 +13,42 @@ problem and the scope of the check before discussing verification machinery.
 |---|---|---|
 | [NKI kernels](nki.md) | `nki-library` gather, dynamic add and scatter-add | Do tiled transfers and runtime updates preserve the intended tensor values? |
 | [QUIC fragment reassembly](inductive-proof.md) | Firedancer's fragment reassembly | Can a fragment sequence cause a copy outside its buffer? |
-| [Stellar](stellar.md) | stellar-core's TTL merge, ported to C | Can committing one cluster lose another cluster's TTL extension? |
+| [Stellar: lifetime extensions](stellar-ttl.md) | stellar-core's TTL merge, ported to C | Can committing one cluster lose another cluster's TTL extension? |
+| [Stellar: queue accounting](stellar-txqueue.md) | stellar-core's C++ queue methods with modeled surroundings | Do fee reservations follow the right payer through replacement and eviction? |
 | [HPACK decoding](firedancer.md) | nghttp2's Huffman decoder in Firedancer | Does the decoder respect its input and output boundaries? |
 | [Transaction parsing](txn-parse.md) | Firedancer's `fd_txn_parse_core` | Do parsing steps preserve the bounds needed for subsequent reads? |
 | [HTTP/2 flow control](h2-flow-control.md) | Firedancer's h2 client | Do window updates and data transmission preserve the protocol's accounting? |
 
 ## Reproducing the experiments
 
-All programs are in the benchmark repository
+The runnable examples use exported programs from the benchmark repository
 [seahorn/sea-mlir-bench](https://github.com/seahorn/sea-mlir-bench),
 under Apache-2.0 and the licenses of the code under test. Each family has
 its exported `.mlir` jobs, a `manifest.yaml` with the expected verdict and
 tier of each job, and a `PROVENANCE.md` with the source commits and the
 export commands. The C families also have their harness sources under
-`harness/`.
+`harness/`. The queue-accounting story describes a separate source-extraction
+study, with code examples and recorded results. Its harness and generated
+programs are not distributed with the tutorial.
 
-A job runs with its family's default arguments plus its own. For
-Firedancer and Stellar the defaults are `--lower --seam --widen-memory=4`;
-for NKI they are `--lower --seam`. The commands on these pages run from
-the root of a benchmark checkout:
+A benchmark job runs with its family's default arguments plus its own.
+For Firedancer and Stellar TTL benchmark jobs, the defaults are
+`--lower --seam --widen-memory=4`; for NKI they are `--lower --seam`.
+The benchmark commands run from the root of a benchmark checkout:
 
 ```bash
 sea-vc firedancer/hpack-huff-proof.mlir --lower --seam --widen-memory=4
 ```
 
-The jobs and the sample output on these pages are from the benchmark at
-commit `f14be40`. The times shown are from single runs and vary between
-machines and runs. Transcripts illustrate that recorded snapshot; replay
-counts and source locations can differ with the build and solver model.
+The benchmark jobs and transcripts use commit `f14be40`. The queue study
+records its own toolchain snapshot on its page. Times shown are from single
+runs and vary between machines and runs. Transcripts illustrate the recorded
+snapshots; replay counts and source locations can differ with the build
+and solver model.
 
 ## How a job is made
 
-A harness is a C program that calls the code under test on
+A harness is a C or C++ program that calls the code under test on
 nondeterministic inputs, constrains the inputs with `assume`, and states
 the claims with `sassert`. clang compiles it to LLVM bitcode, and SeaHorn
 exports the `sea` program. A typical export uses an unroll bound of 8:

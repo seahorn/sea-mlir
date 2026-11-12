@@ -12,8 +12,8 @@ See what that takes in real code:
 
 - [NKI kernels](tutorials/nki.md): does a tiled kernel move and update the
   right tensor elements for every allowed index vector?
-- [Stellar](tutorials/stellar.md): does merging parallel ledger updates
-  preserve the largest requested TTL?
+- [Stellar](tutorials/stellar.md): do queue changes preserve fee reservations,
+  and do ledger merges preserve lifetime extensions?
 - [Firedancer](tutorials/h2-flow-control.md): do HTTP/2 flow-control updates
   preserve the protocol's credit accounting?
 
