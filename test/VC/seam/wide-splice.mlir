@@ -12,6 +12,12 @@
 // RUN: sea-vc %s --lower --program=single --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,SINGLE
 // RUN: sea-vc %s --lower --program=ite --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,ITE
 // RUN: sea-vc %s --lower --program=mixed --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,MIXED
+// @edge0 / @edgetop: a byte store at A + 0 and a 2-byte store at A + 6
+// under an 8-byte read at A: the splice at the first and at the last bytes.
+// RUN: sea-vc %s --lower --program=edge0 --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,SINGLE
+// RUN: sea-vc %s --lower --program=edgetop --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,SINGLE
+// RUN: sea-vc %s --lower --program=edge0 --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
+// RUN: sea-vc %s --lower --program=edgetop --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --program=single --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --program=ite --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --program=mixed --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
@@ -86,6 +92,42 @@ sea.program @mixed {
   %h = sea.and %r, %hi : i64
   %eA = sea.or %h, %b : i64
   %e = sea.select %c, %eA, %r : i64
+  %ok = sea.icmp eq, %l, %e : i64
+  sea.assert %ok
+  sea.halt
+}
+sea.program @edge0 {
+  %m0 = sea.mem.nondet "m" [9] : !m
+  %c32 = sea.const 32 : i64
+  %co = sea.const 0 : i64
+  %A = sea.malloc %c32 align 8 [1] : i64 -> !sea.ptr<64>
+  %Ao = sea.ptr.add %A, %co : !sea.ptr<64>, i64
+  %r = sea.load %m0[%A] : !m -> i64
+  %v = sea.const 0x5a : i8
+  %m1 = sea.store %m0[%Ao], %v inplace : !m, i8
+  %l = sea.load %m1[%A] : !m -> i64
+  %hi = sea.const 0xffffffffffffff00 : i64
+  %b = sea.const 0x5a : i64
+  %h = sea.and %r, %hi : i64
+  %e = sea.or %h, %b : i64
+  %ok = sea.icmp eq, %l, %e : i64
+  sea.assert %ok
+  sea.halt
+}
+sea.program @edgetop {
+  %m0 = sea.mem.nondet "m" [9] : !m
+  %c32 = sea.const 32 : i64
+  %co = sea.const 6 : i64
+  %A = sea.malloc %c32 align 8 [1] : i64 -> !sea.ptr<64>
+  %Ao = sea.ptr.add %A, %co : !sea.ptr<64>, i64
+  %r = sea.load %m0[%A] : !m -> i64
+  %v = sea.const 0x1234 : i16
+  %m1 = sea.store %m0[%Ao], %v inplace : !m, i16
+  %l = sea.load %m1[%A] : !m -> i64
+  %hi = sea.const 0x0000ffffffffffff : i64
+  %b = sea.const 0x1234000000000000 : i64
+  %h = sea.and %r, %hi : i64
+  %e = sea.or %h, %b : i64
   %ok = sea.icmp eq, %l, %e : i64
   sea.assert %ok
   sea.halt

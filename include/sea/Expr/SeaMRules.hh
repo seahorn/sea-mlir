@@ -2341,6 +2341,9 @@ public:
     const bool haveN = lenRange(n, nlo, nhi);
     if (haveN && nhi == 0) {
       m_stats.count("wide.memop-empty");
+      Decision de;
+      de.add("mem.empty"); // as decideIn
+      countReasons(de);
       return {below, RWStatus::RW_1};
     }
     const bool inb = !shadowMemory(arr);
@@ -2354,6 +2357,8 @@ public:
       Range rg = decideInPair(lj, ld, haveN, nlo, nhi, dl, &kv, inb, r);
       if (rg == Range::Unknown)
         return Expr();
+      if (dl.premises & PremAInb)
+        checkInbPremise(lj, r, ld, 1); // as wideRelation
       all.add(dl);
       if (rg == Range::Out) {
         ++skips;
@@ -2448,6 +2453,9 @@ public:
       if (!shadow && decideInPair(lj, b, /*haveN=*/false, none, none, d,
                                   nullptr, /*inb=*/true) == Range::Out) {
         ++skips;
+        if ((d.premises & PremAInb) && m_opts.checkInbPremise)
+          for (const SMapEntry &e : StoreMapTable::entries(ocl))
+            checkInbPremise(lj, r, ptrAt(b, e.offset), 1); // as wideRelation
         all.add(d);
         return below;
       }

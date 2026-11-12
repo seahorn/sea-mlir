@@ -308,8 +308,8 @@ W-SPLICE (Super in `wideRelation`): a write of w bytes inside a read of r
 bytes (one base, numeral offsets, the write at byte k of the read, k + w <=
 r) is the read below with the written bytes in place, `concat(below[8r-1 :
 8(k+w)], v, below[8k-1 : 0])`, exact: a byte store under an 8-byte load
-keeps the word. Also a leaf value of W-ITE (`wide.ite-leaf-splice`). Tests:
-test/VC/seam/wide-splice.mlir.
+keeps the word (counter `wide.splice`). Also a leaf value of W-ITE
+(`wide.ite-leaf-splice`). Tests: test/VC/seam/wide-splice.mlir.
 
 The other wide reads are decided per leaf the same way (`Rules::leafTree`:
 the ite tree over the leaf pairs, at most maxDecideLeaves, every pair
@@ -320,12 +320,17 @@ decided or no rewrite):
   context (decideInPair without a length: cmp.diff-base, arm.skip,
   cmp.size0-vacuous; A-INB), the word below. Before, only a single view
   into another object was decided, every other read split into bytes, a
-  numeral offset of b included. Tests: test/VC/seam/wide-smap-leaves.mlir.
+  numeral offset of b included. Counters: one pair `wide.smap-hit`,
+  `wide.smap-miss`, `wide.smap-skip`; an ite `wide.smap-split` with
+  `wide.smap-leaf-hit`, `-leaf-miss`, `-leaf-skip`. Tests:
+  test/VC/seam/wide-smap-leaves.mlir.
 - over a memop term (`rowWideMemOp`): the in-test of the read span (the
   memops' decideInPair with span r: In when every byte is in [d, d + n),
   Out when none is), per leaf pair of j and d: In the hit form, Out the read
-  below. Before: single views, numeral lengths only. Tests:
-  test/VC/seam/wide-memop-leaves.mlir.
+  below. Before: single views, numeral lengths only. Counters: one pair
+  `wide.memop-hit`, `wide.memop-skip`; an ite `wide.memop-split` with
+  `wide.memop-leaf-hit`, `-leaf-skip`; a length of 0 `wide.memop-empty`
+  (reason `mem.empty`). Tests: test/VC/seam/wide-memop-leaves.mlir.
 
 R-LEAVES (`Rules::leafSplit`, byte and wide reads, `--seam-leaf-split`,
 default on): a read at an ite address is the ite of the reads at its
@@ -491,3 +496,13 @@ read only as aligned words; a separate design).
 4. W-ITE with undecided leaf pairs (`--seam-wide-ite-open`, off): the read at
    the leaf address vs the byte fallback; untuned (string_eq_byte_cursor:
    byte-store expansions 42 -> 102).
+5. Memory of wide reads at a whole ite address. On the stellar txqueue
+   round-0 program (VC only, `--seam-wide --widen-memory=4`), the per-leaf
+   wide reads (store-map, memop, W-SPLICE) raised the maximum RSS from 3.18
+   to 4.41 GB. [HYP] A read below a write at the whole address j (W-ITE's
+   Skip leaf, the map's and the memop's Out leaves) survives to the
+   boundary, and WideExpander keeps its byte expansion. R-LEAVES removes most
+   of these reads there: 0.32 GB, DAG 1.94M -> 129k nodes, Ackermann pairs
+   159330 -> 6555. With `--seam-words=auto` the initial memory becomes
+   words only after R-LEAVES (words.chosen 0 -> 1, Ackermann pairs 6555 ->
+   210). Not measured: which surviving read the expansion was pinned for.

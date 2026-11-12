@@ -13,6 +13,14 @@
 // RUN: sea-vc %s --lower --program=mset --seam --seam-wide --seam-leaf-split=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,MSET
 // RUN: sea-vc %s --lower --program=mcopy --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,INB
 // RUN: sea-vc %s --lower --program=mhavoc --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,INB
+// @partial: memset(D + 16, 0, 16) on a 40-byte D, an 8-byte read at D + 28:
+// half of the read span is in the range (the in-test is of the whole span,
+// not of its start): no hit, and the other half is old memory: sat.
+// RUN: sea-vc %s --lower --program=partial --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefix=PART
+// RUN: sea-vc %s --lower --program=partial --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
+// PART-NOT: seam.rule.wide.memop-hit
+// PART-NOT: seam.rule.wide.memop-leaf-hit
+// PART: result: sat
 // RUN: sea-vc %s --lower --program=mset --seam --seam-wide --seam-leaf-split=0 --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --program=mcopy --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --program=mhavoc --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
@@ -78,6 +86,22 @@ sea.program @mhavoc {
   %m1 = sea.memhavoc %md[%D], %n [7] inplace : !m
   %l = sea.load %m1[%q] align 8 : !m -> i64
   %ok = sea.icmp eq, %l, %r : i64
+  sea.assert %ok
+  sea.halt
+}
+sea.program @partial {
+  %m0 = sea.mem.nondet "m" [9] : !m
+  %c40 = sea.const 40 : i64
+  %c16 = sea.const 16 : i64
+  %c28 = sea.const 28 : i64
+  %D = sea.malloc %c40 align 8 [5] : i64 -> !sea.ptr<64>
+  %D16 = sea.ptr.add %D, %c16 : !sea.ptr<64>, i64
+  %D28 = sea.ptr.add %D, %c28 : !sea.ptr<64>, i64
+  %z = sea.const 0 : i8
+  %m1 = sea.memset %m0[%D16], %z, %c16 inplace : !m
+  %l = sea.load %m1[%D28] align 4 : !m -> i64
+  %z64 = sea.const 0 : i64
+  %ok = sea.icmp eq, %l, %z64 : i64
   sea.assert %ok
   sea.halt
 }
