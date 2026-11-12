@@ -71,8 +71,14 @@ Observations (the only ways out):
 - `PTR_EQ(p, q) : Bool`: pointer equality = address equality (D6);
   `sea.addr.cmp eq / ne` and the eq join of pointer block arguments.
   Ordered compares are bit-vector compares of `ADDR`s. SeaM's `ptrEq`
-  applies `eq()`'s pointer rules and orders the sides (`ptr.eq.order`);
-  the bit-vector compare rules do not apply.
+  applies `eq()`'s pointer rules, cancels a common numeral
+  (`ptr.eq.cancel-num`: `PTR_EQ(p + r1, q + r2)` with r1, r2 of one sign
+  becomes the compare with the one nearer 0 subtracted from both; r is K
+  of a flagged node, c + K of an unflagged one, the common r of an ite's
+  leaves; exact, addition mod 2^w) and orders the sides (`ptr.eq.order`);
+  the bit-vector compare rules do not apply. Byte k of two accesses
+  then compares as their starts: the eight unit overlaps
+  `overlap(p + K=k, 1, q + K=k, 1)` of a split pointer are one term.
 - `IS_OVERLAP(p, n, q, m) : Bool` (D13): do the n units at p and the m
   units at q share an address (on the circle: `addr(q) - addr(p) <u n` or
   `addr(p) - addr(q) <u m`)? An alias question the rewriter left open: the
@@ -171,6 +177,15 @@ the abstract program, only for a corpus that needs it; vcc has none).
   pulls a condition shared by the bytes out of the concat. Each byte is
   taken under c = true / false along its ite spine. A side that
   reassembles a stored pointer is that pointer. The rule is address-exact (the pointer keeps the loaded address).
+  A side is split only on a condition that every ite byte of it has (in
+  the ites reachable through ites, at most 64 per byte), and only if each
+  of its other bytes is bits of a pointer; a condition of some bytes only
+  cannot make a side reassemble a pointer and splits up to 2^N sides for
+  nothing (`ptr.load-resolve-concat.unshared`). With `ptr.eq.cancel-num`
+  the bytes' guards are shared. What stays open in byte mode: the byte
+  pairs k != k' of a store and a load at unrelated pointers (partial
+  overlaps of misaligned pointers), one guard per difference k - k', which
+  only an alignment premise would decide.
   On vcc it fires 87 times in 4 jobs (hash_table_eq 72, hash_table_find 9,
   hash_table_init_* 3 + 3), with identical verdicts and unchanged A-INB
   conditions (4842); the resolved pointers are callbacks no access goes

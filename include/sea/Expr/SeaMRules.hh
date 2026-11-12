@@ -857,6 +857,20 @@ public:
                         modPow2(ptr::constant(in) + ptr::constant(e), n),
                         modPow2(ptr::byteOffset(in) + ptr::byteOffset(e), n));
     }
+    // ptrindex.absorb-k: a numeral added to a promised node is that node
+    // with K + k (k signed), the form op::ptr::addressPlus builds (PtrIndex.md
+    // section 4); an unflagged constant-only node over it (the ite push of
+    // pullIteNode, the byte k of an address whose ite has an unflagged leaf)
+    // takes that form, so that byte k of one address is one term whatever
+    // built it. The same value; the promise is about b + O, without K.
+    if (m_opts.simplify && !ptr::isFlagged(e.get()) &&
+        ptr::numIndices(e) == 0 && ptr::isFlagged(ptr::base(e).get())) {
+      mpz_class k = modPow2(ptr::constant(e) + ptr::byteOffset(e), n);
+      if (k >= pow2(n - 1))
+        k = k - pow2(n);
+      m_stats.count("ptrindex.absorb-k");
+      return {ptr::withByteOffset(ptr::base(e), k), RWStatus::RW_DONE};
+    }
     if (std::optional<RewriteResult> r = pullIteNode(e))
       return *r;
     // ptrindex.trivial (S2c): an unflagged node that adds nothing is its
@@ -3599,11 +3613,123 @@ public:
     RewriteResult r = eq(e, /*ptrLeaf=*/true);
     if (r.exp != e)
       return r;
+    if (std::optional<RewriteResult> k = ptrEqCancelNum(exp))
+      return *k;
     if (order && bvnorm::Rules::idLess(exp->arg(1), exp->arg(0))) {
       m_stats.count("ptr.eq.order");
       return {mk<PTR_EQ>(exp->arg(1), exp->arg(0)), RWStatus::RW_1};
     }
     return {exp, RWStatus::RW_DONE};
+  }
+
+  /// The numeral part of a pointer \p a: a = core + r (mod 2^n), r an
+  /// integer (PtrIndex.md section 2: a node's value is b + sum x_k*s_k + c +
+  /// K). A flagged node: r = K, core = the node with K = 0 (K is not part
+  /// of its promise); an unflagged node: r = c + K read signed, core = the
+  /// node with c = K = 0 (its base, recursively, if it has no index); an
+  /// ite whose leaves have one r: that r, core = the ite of their cores; any
+  /// other term: r = 0, core = a.
+  void numeralPart(const Expr &a, unsigned n, Expr &core, mpz_class &r) const {
+    using namespace op;
+    if (ptr::isFlagged(a.get())) {
+      ExprVector kids(a->args_begin(), a->args_end());
+      kids.back() = mkTerm<mpz_class>(mpz_class(0L), m_efac);
+      core = m_efac.mkNary(a->op(), kids);
+      r = ptr::byteOffset(a);
+      return;
+    }
+    // an ite whose leaves have one numeral part: the ite of their cores
+    // (at most maxEqLeaves leaves)
+    if (isOpX<ITE>(a) &&
+        leafCount(a, m_opts.maxEqLeaves) <= m_opts.maxEqLeaves) {
+      Expr ct, ce;
+      mpz_class rt, re;
+      numeralPart(a->arg(1), n, ct, rt);
+      numeralPart(a->arg(2), n, ce, re);
+      if (rt == re) {
+        core = mk<ITE>(a->arg(0), ct, ce);
+        r = rt;
+        return;
+      }
+    }
+    if (!ptr::isPtrIndex(a)) {
+      core = a;
+      r = 0;
+      return;
+    }
+    mpz_class v = modPow2(ptr::constant(a) + ptr::byteOffset(a), n);
+    if (v >= pow2(n - 1))
+      v = v - pow2(n);
+    if (ptr::numIndices(a) == 0) {
+      numeralPart(ptr::base(a), n, core, r);
+      r = r + v;
+      return;
+    }
+    std::vector<std::pair<Expr, mpz_class>> idx;
+    for (size_t k = 0; k < ptr::numIndices(a); ++k)
+      idx.push_back({ptr::index(a, k), ptr::stride(a, k)});
+    core = ptr::ptrIndex(PtrOpKind::PTR_INDEX, ptr::base(a), idx, mpz_class(0L),
+                         mpz_class(0L));
+    r = v;
+  }
+
+  /// core + r as a node: a flagged core takes r into its K (the form
+  /// op::ptr::addressPlus gives a numeral added to a promised node); an
+  /// unflagged node takes it into c (mod 2^n, K folded in); any other term
+  /// (an ite included) is the base of a new node PTR_INDEX(core, c = r);
+  /// r = 0: the core.
+  Expr withNumeral(const Expr &core, unsigned n, const mpz_class &r) const {
+    using namespace op;
+    if (r == 0)
+      return core;
+    if (ptr::isFlagged(core.get())) {
+      ExprVector kids(core->args_begin(), core->args_end());
+      kids.back() = mkTerm<mpz_class>(ptr::byteOffset(core) + r, m_efac);
+      return m_efac.mkNary(core->op(), kids);
+    }
+    if (ptr::isPtrIndex(core)) {
+      std::vector<std::pair<Expr, mpz_class>> idx;
+      for (size_t k = 0; k < ptr::numIndices(core); ++k)
+        idx.push_back({ptr::index(core, k), ptr::stride(core, k)});
+      return ptr::ptrIndex(
+          PtrOpKind::PTR_INDEX, ptr::base(core), idx,
+          modPow2(ptr::constant(core) + ptr::byteOffset(core) + r, n),
+          mpz_class(0L));
+    }
+    // any other term (an ite included): a node over it
+    return ptr::ptrIndex(PtrOpKind::PTR_INDEX, core, {}, modPow2(r, n),
+                         mpz_class(0L));
+  }
+
+  /// ptr.eq.cancel-num: PTR_EQ(p + r1, q + r2) ~> PTR_EQ(p + (r1 - t), q +
+  /// (r2 - t)), r1 and r2 nonzero of one sign, t the one nearer 0
+  /// (numeralPart; the common numeral
+  /// cancels, addition mod 2^n is cancellative: exact, no assumption). The
+  /// byte k of two accesses compares as the accesses' starts: the unit
+  /// overlap(P + c + k, 1, Q + d + k, 1) of the byte fallback becomes
+  /// PTR_EQ(P + c, Q + d) for every k, one term (concat-pull splits the 8
+  /// bytes of a split pointer load on it). RW_2: the compare and its new
+  /// nodes.
+  std::optional<RewriteResult> ptrEqCancelNum(const Expr &exp) {
+    const unsigned n = widthOf(exp->arg(0));
+    if (n == 0 || n != widthOf(exp->arg(1)))
+      return std::nullopt;
+    Expr ca, cb;
+    mpz_class ra, rb;
+    numeralPart(exp->arg(0), n, ca, ra);
+    numeralPart(exp->arg(1), n, cb, rb);
+    // both numerals of one sign: t the one nearer 0 (a side whose numeral
+    // is 0 keeps its form: nothing is moved onto it)
+    if (mpz_sgn(ra.get_mpz_t()) == 0 ||
+        mpz_sgn(ra.get_mpz_t()) != mpz_sgn(rb.get_mpz_t()))
+      return std::nullopt;
+    const mpz_class t =
+        mpz_sgn(ra.get_mpz_t()) > 0 ? (ra < rb ? ra : rb) : (ra < rb ? rb : ra);
+    Expr a = withNumeral(ca, n, ra - t), b = withNumeral(cb, n, rb - t);
+    if (a == exp->arg(0) && b == exp->arg(1))
+      return std::nullopt;
+    m_stats.count("ptr.eq.cancel-num");
+    return RewriteResult{mk<PTR_EQ>(a, b), RWStatus::RW_2};
   }
 
   //===------------------------------------------------------------------===//
@@ -4025,18 +4151,72 @@ public:
     Bytes bytes;
     flat(x, bytes);
     const unsigned w = widthOf(x);
+    // the conditions of the ites reachable from a byte through ites only,
+    // in DFS order (at most kCondNodes ite nodes visited: a partial set
+    // only misses a split)
+    constexpr unsigned kCondNodes = 64;
+    std::unordered_map<ENode *, std::vector<Expr>> condMemo;
+    auto condsOf = [&](const Expr &b) -> const std::vector<Expr> & {
+      auto it = condMemo.find(b.get());
+      if (it != condMemo.end())
+        return it->second;
+      std::vector<Expr> out;
+      std::unordered_set<ENode *> seen, seenCond;
+      std::vector<Expr> stack{b};
+      while (!stack.empty() && seen.size() < kCondNodes) {
+        Expr e = stack.back();
+        stack.pop_back();
+        if (!isOpX<ITE>(e) || !seen.insert(e.get()).second)
+          continue;
+        if (seenCond.insert(e->arg(0)).second)
+          out.push_back(e->arg(0));
+        stack.push_back(e->arg(2));
+        stack.push_back(e->arg(1));
+      }
+      return condMemo.emplace(b.get(), std::move(out)).first->second;
+    };
+    // the split condition of a side: none if a byte that is not an ite is
+    // not bits of a pointer (no split can reassemble one: the side is a
+    // leaf), else the first condition of the first ite byte that every ite
+    // byte has (a condition only some bytes have splits without making a
+    // side resolvable: up to 2^pulls sides for nothing)
+    auto sharedCond = [&](const Bytes &bs) -> Expr {
+      const Expr *first = nullptr;
+      for (const Expr &b : bs) {
+        if (isOpX<ITE>(b)) {
+          if (!first)
+            first = &b;
+          continue;
+        }
+        const Expr x = isOpX<BEXTRACT>(b) ? Expr(op::bv::earg(b)) : b;
+        if (!isOpX<PTR_TO_BITS>(x))
+          return Expr();
+      }
+      if (!first)
+        return Expr();
+      for (const Expr &c : condsOf(*first)) {
+        bool all = true;
+        for (const Expr &b : bs)
+          if (isOpX<ITE>(b) && &b != first) {
+            const std::vector<Expr> &cs = condsOf(b);
+            if (std::find(cs.begin(), cs.end(), c) == cs.end()) {
+              all = false;
+              break;
+            }
+          }
+        if (all)
+          return c;
+      }
+      m_stats.count("ptr.load-resolve-concat.unshared");
+      return Expr();
+    };
     unsigned pulls = 0, resolved = 0;
     std::function<Expr(const Bytes &)> split = [&](const Bytes &bs) -> Expr {
       if (Expr p = storedPointer(bs, w)) {
         ++resolved;
         return p;
       }
-      Expr c;
-      for (const Expr &b : bs)
-        if (isOpX<ITE>(b)) {
-          c = b->arg(0);
-          break;
-        }
+      Expr c = sharedCond(bs);
       if (!c || pulls >= m_opts.pullConcatIte) {
         Expr leaf =
             bs.size() == 1 ? bs[0] : mknary<BCONCAT>(bs.begin(), bs.end());

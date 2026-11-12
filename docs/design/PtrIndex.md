@@ -452,6 +452,12 @@ by terms.
   `PTR_INDEX`, counted `ptrindex.fold-dropped-flags` (Q12). On an
   unflagged node the fold has no range check (c is reduced mod 2^n). A node
   with no index left stays a node `PTR_INDEX*(b, c', K)`.
+- `ptrindex.absorb-k`: an unflagged node with no index over a flagged
+  node, `PTR_INDEX(F, c, K)`, is F with K + c + K' (read signed), the form
+  `op::ptr::addressPlus` builds for a numeral added to a flagged node
+  (section 4). The ite push of a node whose ite has an unflagged leaf
+  (pullIteNode) made the other form, so byte k of one address had two
+  terms. Same value; F's promise is about b + O, without K.
 
 **Eligibility: when a term carries a promise (S2).** A promise is
 read only from a term whose operator is PTR_INDEX_NUSW or PTR_INDEX_NUW
