@@ -30,6 +30,7 @@
 
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace expr {
@@ -374,6 +375,61 @@ inline Expr addressPlus(const Expr &a, const Expr &o) {
   }
   return ptrIndex(PtrOpKind::PTR_INDEX, a, {{o, mpz_class(1L)}}, mpz_class(0L),
                   mpz_class(0L));
+}
+
+/// Result of byteAddress: how the offset was placed.
+enum class OffsetPush { None, Pushed, Refused };
+
+/// The address of byte \p k (a numeral) of an access at \p a, with k pushed
+/// into the leaves of an ite address (exact, mod 2^n):
+///   ite(c, x, y) + k  ~>  ite(c, x + k, y + k)
+/// each leaf by addressPlus (a node merges k into c or K, another leaf gets
+/// PTR_INDEX(leaf, c = k)). ite(c, A + 24, A) + 3 is ite(c, A + 27, A + 3):
+/// a leaf compare A + 27 = A + j folds by rewriting, where the bvadd over
+/// the ite left it to the solver's adders (z3 23.6 s -> 0.17 s on a W-ITE
+/// check obligation). Only when the ite spine of \p a has at most
+/// \p maxLeaves distinct leaves and at most as many distinct ite nodes
+/// (shared subterms counted once and rebuilt once: the growth per byte is
+/// the spine's size); otherwise, or with maxLeaves = 0, addressPlus(a, k)
+/// (Refused for an ite over the cap). \p how: Pushed when this pushed k
+/// where addressPlus would not have (an ite of promised nodes is
+/// addressPlus's own push, None).
+inline Expr byteAddress(const Expr &a, const Expr &k, unsigned maxLeaves,
+                        OffsetPush &how) {
+  how = OffsetPush::None;
+  Expr plain = addressPlus(a, k);
+  if (!isOpX<ITE>(a) || isOpX<ITE>(plain) || maxLeaves == 0)
+    return plain;
+  // the spine: distinct ite nodes and leaves, within the cap
+  std::unordered_set<ENode *> ites, leaves;
+  std::vector<ENode *> stack{a.get()};
+  while (!stack.empty()) {
+    ENode *n = stack.back();
+    stack.pop_back();
+    if (!isOpX<ITE>(n)) {
+      leaves.insert(n);
+    } else if (ites.insert(n).second) {
+      stack.push_back(n->arg(1));
+      stack.push_back(n->arg(2));
+    }
+    if (leaves.size() > maxLeaves || ites.size() > maxLeaves) {
+      how = OffsetPush::Refused;
+      return plain;
+    }
+  }
+  std::unordered_map<ENode *, Expr> memo;
+  std::function<Expr(const Expr &)> push = [&](const Expr &e) -> Expr {
+    auto it = memo.find(e.get());
+    if (it != memo.end())
+      return it->second;
+    Expr r = isOpX<ITE>(e)
+                 ? mk<ITE>(e->arg(0), push(e->arg(1)), push(e->arg(2)))
+                 : addressPlus(e, k);
+    memo.emplace(e.get(), r);
+    return r;
+  };
+  how = OffsetPush::Pushed;
+  return push(a);
 }
 
 /// The promise of a flagged node N = PTR_INDEX_F(b, x_k, s_k, c, K) as a

@@ -26,7 +26,13 @@ asserts a pointer compare. Not an oracle (test/README.md): a second check of
                     sums over ites of 5-8 pointers (more leaves than the
                     syntactic rules look at: the ARM case, and its access
                     check) with a numeral or nondet offset, used by most
-                    accesses. The same agreement as for any.
+                    accesses; and width-term shapes at numeral offsets of
+                    one object: narrow stores or store-map bytes read as
+                    i32 at an ite address (W-SPLICE, wide store-map
+                    reads), an mset / mcopy range read inside or outside
+                    it (wide memop reads), and i32 or pointer field stores
+                    read through an ite of the field addresses (R-LEAVES,
+                    ptr.load-resolve-leaves). The same agreement as for any.
   --accesses=cells  many stores and loads at numeral offsets of two to four
                     16 / 32-byte objects, every access inside its object
                     (a 4-byte cell at an offset in [0, size - 4]), with a few
@@ -335,6 +341,103 @@ def gen(rng, any_access, wide=False, cells=False, violate=False):
             src = last_sel[0] if last_sel and rng.random() < 0.5 else rng.choice(ptrs)
             emit(f"{p} = sea.ptr.add {src}, {o} : {PT}, i32")
             ptrs.append(p)
+        elif r < 0.45 and wide and rng.random() < 0.5:
+            # width-term shapes (docs/design/SeaM-mixed-width.md) at numeral
+            # offsets of one object, read as i32 at an ite of an address in
+            # it and another object: narrow stores inside the read
+            # (W-SPLICE) or byte entries of a store-map (rowWideSmap), an
+            # mset / mcopy range (rowWideMemOp), or i32 or pointer field
+            # stores read through an ite of the field addresses (R-LEAVES)
+            b = rng.choice(bases[: len(sizes)])
+            other = rng.choice([x for x in bases[: len(sizes)] if x != b] or [b])
+
+            def at(off, b=b):
+                q = fresh()
+                emit(f"{q} = sea.ptr.add {b}, {const(off)} : {PT}, i32")
+                return q
+
+            def keep(x):
+                # an assume keeps the read in the query (the lowering's
+                # cleanup drops an unused load)
+                y, c = const(rng.randint(1, 1 << 20)), fresh()
+                emit(f"{c} = sea.icmp ne, {x}, {y} : i32")
+                emit(f"sea.assume {c}")
+                ints.append(x)
+                i32s.append(x)
+
+            def ite_read(q, mem, other=other):
+                if rng.random() < 0.7:
+                    c, s_ = fresh(), fresh()
+                    emit(f'{c} = sea.nondet "c" [{site[0]}] : i1')
+                    site[0] += 1
+                    emit(f"{s_} = sea.select {c}, {q}, {other} : {PT}")
+                    q = s_
+                x = fresh()
+                emit(f"{x} = sea.load {mem}[{q}] align 1 : {M} -> i32")
+                keep(x)
+
+            k = rng.random()
+            if k < 0.35:
+                for off in rng.sample(range(8), rng.randint(1, 3)):
+                    ty, v = rng.choice([("i8", rng.randint(0, 255)), ("i16", 0x1234)])
+                    w, m = fresh(), fresh()
+                    emit(f"{w} = sea.const {v} : {ty}")
+                    emit(
+                        f"{m} = sea.store {mem}[{at(off)}], {w} inplace align 1 : {M}, {ty}"
+                    )
+                    mem = m
+                ite_read(at(rng.choice([0, 1, 2, 4])), mem)
+            elif k < 0.65:
+                # [b, b + 8): an i32 read at b, b + 4 is in it, at b + 8 or
+                # b + 12 outside (decided either way)
+                n_, m, d = const(8), fresh(), at(0)
+                if rng.random() < 0.6:
+                    z = fresh()
+                    emit(f"{z} = sea.const {rng.randint(0, 255)} : i8")
+                    emit(f"{m} = sea.memset {mem}[{d}], {z}, {n_} inplace : {M}")
+                else:
+                    emit(
+                        f"{m} = sea.memmove {mem}[{d}], {mem}[{other}], "
+                        f"{n_} inplace : {M}"
+                    )
+                mem = m
+                ite_read(at(rng.choice([0, 4, 8, 12])), mem)
+            else:
+                # i32 fields, or pointer fields loaded as a pointer through
+                # the ite (ptr.load-resolve-leaves); sometimes a field left
+                # unwritten (the leaf reads the memory below: a refused or
+                # a one-remainder split)
+                fields = []
+                ptr_fields = rng.random() < 0.4
+                ty = PT if ptr_fields else "i32"
+                for off in rng.sample([0, 4, 8, 12], rng.randint(2, 4)):
+                    fp = at(off)
+                    fields.append(fp)
+                    if len(fields) > 1 and rng.random() < 0.15:
+                        continue
+                    w = rng.choice(ptrs) if ptr_fields else const(rng.randint(0, 255))
+                    m = fresh()
+                    emit(
+                        f"{m} = sea.store {mem}[{fp}], {w} inplace align 1 : {M}, {ty}"
+                    )
+                    mem = m
+                cur = fields[0]
+                for fp in fields[1:]:
+                    c, q = fresh(), fresh()
+                    emit(f'{c} = sea.nondet "c" [{site[0]}] : i1')
+                    site[0] += 1
+                    emit(f"{q} = sea.select {c}, {fp}, {cur} : {PT}")
+                    cur = q
+                x = fresh()
+                emit(f"{x} = sea.load {mem}[{cur}] align 1 : {M} -> {ty}")
+                if ptr_fields:
+                    # an assume keeps the load (an unused one is dropped)
+                    c = fresh()
+                    emit(f"{c} = sea.ptr.cmp ne, {x}, {other} : {PT}")
+                    emit(f"sea.assume {c}")
+                    ptrs.append(x)
+                else:
+                    keep(x)
         elif r < 0.45:
             m = fresh()
             if rng.random() < 0.3:
@@ -1076,6 +1179,28 @@ COUNTERS = [
     "wide.expanded",
     "row.smap-abort-stride",
     "premise.ptr-index",
+    "row.leaf-split",
+    "row.leaf-split-refused",
+    "row.leaf-split-node",
+    # with --extra-args=--seam-leaf-split-partial
+    "row.leaf-split-partial",
+    "ptr.load-resolve-leaves",
+    "ptr.load-resolve-leaf-ite",
+    # <name>@wide: the counter of the seam-wide variant (R-LEAVES decides a
+    # wide read at an ite address before the per-pair rules below)
+    "row.leaf-split@wide",
+    "row.leaf-split-refused@wide",
+    "row.leaf-split-node@wide",
+    "row.leaf-split-partial@wide",
+    "wide.splice",
+    "wide.ite-leaf-splice",
+    "wide.ite-split",
+    "wide.smap-hit",
+    "wide.smap-miss",
+    "wide.smap-skip",
+    "wide.smap-split",
+    "wide.memop-split",
+    "wide.split-read",
 ]
 
 
@@ -1436,7 +1561,8 @@ def main():
         else:
             for c in COUNTERS:
                 # the width-term counters from the seam-wide variant
-                v = counter(res["seam-wide"][3] if c.startswith("wide.") else out, c)
+                w = c.startswith("wide.") or c.endswith("@wide")
+                v = counter(res["seam-wide"][3] if w else out, c.removesuffix("@wide"))
                 totals[c] += v
                 programs_with[c] += 1 if v else 0
         tally[verdicts["plain"]] = tally.get(verdicts["plain"], 0) + 1

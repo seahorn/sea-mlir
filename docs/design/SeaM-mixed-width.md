@@ -226,11 +226,12 @@ most wide accesses first.
   / store's cell bytes at most the context's units; a byte read made by the
   fallback inside a wide load's context is one byte: found by fuzz-seam's
   --seam-check, 4 unexpressible firings before the fix).
-- Rules: W-HIT, W-SUB, W-SKIP (`wideRelation`: circular numerals of one
-  base; across objects under A-INB with single pointer views), a wide read
-  through an ite, across a store-map of another object, over a memop term
-  (numeral length: inside -> the hit form of the source version / the
-  repeated byte / H; disjoint or n = 0 -> below; across objects -> below).
+- Rules: W-HIT, W-SUB, W-SKIP, W-SPLICE (`wideRelation`: circular
+  numerals of one base; across objects under A-INB with single pointer
+  views), a wide read through an ite, over a store-map, over a memop term
+  (inside -> the hit form of the source version / the repeated byte / H;
+  disjoint or n = 0 -> below; across objects -> below), per leaf pair of
+  an ite address (W-ITE, below).
 - Deviation from rev 3 ("undecided keeps the term"), measured: a width term
   left to the boundary is expanded there over the whole remaining chain,
   with no SeaM rule on the bytes (vcc: hash_iter_* 0.7 -> 27 s with Yices,
@@ -280,9 +281,139 @@ both addresses w-aligned (w a power of two; i, j multiples of w):
     wselect(wstore(M, i, v), j, S)  ~>  ite(i = j, v, wselect(M, j, S))
 Exact given the alignment: two aligned w-spans coincide or are disjoint.
 One word compare instead of eight byte compares, and the read stays wide
-down the chain (it meets the next wstore, a skip, or a hit). The compare
-goes to the existing compare machinery (cmp.* rules, ite-push, ARM) as
-ROW's does.
+down the chain (it meets the next wstore, a skip, or a hit). The compare is
+ROW's (`Rules::rowEqWidth`, W-ROW-CONGRUENT too): decided first with the
+access context (decideEq with A-INB across objects, ARM, size 0), and when
+undecided built as ROW's compare tree over the ite leaves (rowCompare), so
+only the leaves that stay open are alias questions. An earlier version
+emitted `IS_OVERLAP(i, 1, j, 1)` and left it to the program compare
+(no A-INB, no ARM): a read at `ite(c, A + 24, A)` over a store at B stayed
+open (test/VC/seam/wide-row-context.mlir).
+
+Rule W-ITE (`Rules::rowWideLeaves`): a read over a write whose address
+(either one) is an ite, at most maxDecideLeaves leaf pairs. Every pair is
+decided on its own (wideRelation, then W-ROW-CONGRUENT / -ALIGNED's compare
+with the access context) and the read is the ite tree of the leaf values
+under the ite conditions: Hit `v`, Sub(k) the bytes [k, k + r) of v, Skip
+the read below at j. A read at `ite(c, p, q)` over writes at p and q is
+`ite(c, v_p, v_q)`, a word, where the byte fallback gave the concat of
+byte-wise ites (a loaded pointer became `from_bits(concat(...))` and every
+access through it a new alias question). Default: only when every pair
+is decided; `--seam-wide-ite-open` also rewrites an undecided pair, at a
+leaf of the read, to the read at that leaf address (open, untuned: on
+string_eq_byte_cursor (vcc, A-INB off) it doubled the byte-store
+expansions, 42 -> 102). Tests: test/VC/seam/wide-ite-leaves.mlir.
+
+Boundary byte addresses at an ite (`op::ptr::byteAddress`, WideExpander,
+`--seam-offset-leaves=N`, default 8, untuned): a width term left to the
+boundary (--seam-wide) at an ite address is expanded with the byte offset in the ite
+leaves, `ite(c, A + 24, A) + k` -> `ite(c, A + 24 + k, A + k)` (exact mod
+2^n), when the ite has at most N distinct leaves and N distinct ite nodes
+(shared subterms rebuilt once). No rule runs after the boundary, so a bvadd
+over the ite went to the solver as it was; inside the rewriter the same push
+is ptrindex.pull-ite's. Two caps, both untuned: pull-ite bounds the product of the tree leaf
+counts (maxPullLeaves=4), byteAddress bounds the distinct DAG leaves and ite
+nodes (cap 8). Measured (z3 5.3.3): lemur's standalone obligation file
+23.6 s -> 0.17 s; the @mixed W-ITE check obligation of wide-ite-leaves.mlir
+dumped from sea-vc 20.8 s -> 0.07 s; the seam-check run of @mixed 133-197 s
+with 1 unknown -> ~15 s, 0 unknown
+(the compare of a leaf with a byte address folds by rewriting; with the
+bvadd outside, z3 refutes it over bit-blasted adders). Counters
+`wide.expanded-ite-offset`, `wide.expanded-ite-offset-refused` (over the
+cap). Tests: test/VC/seam/ite-offset-leaves.mlir, sea-memops-test
+`ite-offset`.
+
+W-SPLICE (Super in `wideRelation`): a write of w bytes inside a read of r
+bytes (one base, numeral offsets, the write at byte k of the read, k + w <=
+r) is the read below with the written bytes in place, `concat(below[8r-1 :
+8(k+w)], v, below[8k-1 : 0])`, exact: a byte store under an 8-byte load
+keeps the word (counter `wide.splice`). Also a leaf value of W-ITE
+(`wide.ite-leaf-splice`). Tests: test/VC/seam/wide-splice.mlir.
+
+The other wide reads are decided per leaf the same way (`Rules::leafTree`:
+the ite tree over the leaf pairs, at most maxDecideLeaves, every pair
+decided or no rewrite):
+- over a store-map of b (`rowWideSmap`): a leaf at a numeral offset of b
+  reads the entries it covers and the word below for the rest (no entry:
+  the word below), exact; a leaf in another object is Out by the access
+  context (decideInPair without a length: cmp.diff-base, arm.skip,
+  cmp.size0-vacuous; A-INB), the word below. Before, only a single view
+  into another object was decided, every other read split into bytes, a
+  numeral offset of b included. Counters: one pair `wide.smap-hit`,
+  `wide.smap-miss`, `wide.smap-skip`; an ite `wide.smap-split` with
+  `wide.smap-leaf-hit`, `-leaf-miss`, `-leaf-skip`. Tests:
+  test/VC/seam/wide-smap-leaves.mlir.
+- over a memop term (`rowWideMemOp`): the in-test of the read span (the
+  memops' decideInPair with span r: In when every byte is in [d, d + n),
+  Out when none is), per leaf pair of j and d: In the hit form, Out the read
+  below. Before: single views, numeral lengths only. Counters: one pair
+  `wide.memop-hit`, `wide.memop-skip`; an ite `wide.memop-split` with
+  `wide.memop-leaf-hit`, `-leaf-skip`; a length of 0 `wide.memop-empty`
+  (reason `mem.empty`). Tests: test/VC/seam/wide-memop-leaves.mlir.
+
+R-LEAVES (`Rules::leafSplit`, byte and wide reads, `--seam-leaf-split`,
+default on): a read at an ite address is the ite of the reads at its
+leaves, `read(M, ite(c, a1, a2)) ~> ite(c, read(M, a1), read(M, a2))`
+(exact, no premise), only when every leaf read is decided down the whole
+memory (`leafWalk`: each write met is decided by the rule the leaf read
+meets there, down to a write that gives the read or to a memory without
+writes), a write gives every leaf (on every side of an ite memory), and
+some leaf is not decided apart from the top write. The read of W-ITE and
+of ROW keeps j below a write it partly decides: a read at `ite(e, S + 0, ite(e', S + 8, S + 24))` over
+stores at S + 0, S + 8 and S + 24 left a read of the initial memory at the
+whole ite, under guards that together cover every leaf, and a pointer
+loaded there was `from_bits(concat(byte ites))` with every access through
+it an alias question. A split pointer load whose bytes then share one ite
+spine of split-address conditions is the ite of the stored pointers
+(`ptr.load-resolve-leaves`, all leaves or nothing; other shared
+conditions, a join's, stay `--seam-pull-concat`'s). The general split
+over an ite index (SeaM-memops.md) stays dropped: no split while a leaf stays open (unless
+`--seam-leaf-split-partial`, below). Counters `row.leaf-split`,
+`row.leaf-split-leaves`, `row.leaf-split-refused` (a leaf reaches the
+memory without writes; Open item 6; it counts refused attempts, one per
+byte read and memory level: a read refused at an ite memory can still
+split lower down, at a side where a write gives every leaf). Tests: test/VC/seam/row-leaf-split.mlir.
+
+The address of R-LEAVES is an ite or a node over an ite base
+(`N(ite(c, b1, b2), x...)`, whose leaves are `N(b_k, x...)`: the pull of
+ptrindex.pull-ite, which stops at `maxPullLeaves` = 4 tree leaves; counter
+`row.leaf-split-node`). The ite is a DAG (joins of joins share their
+arms): R-LEAVES walks it once per ite node, bounds its distinct leaves by
+`maxDecideLeaves` (before: its tree leaves), decides each distinct leaf
+once, and builds the result in the shape of the DAG. The pointer
+recombination follows: `ptr.load-resolve-leaves` memoizes the byte split
+per byte tuple (distinct leaves bounded), steps over a byte whose top is
+not a split condition (it goes to both sides), and resolves a whole
+(wide) load `from_bits(ite)` whose ite conditions are all split
+conditions over the DAG (counter `ptr.load-resolve-leaf-ite`). Tests: test/VC/seam/row-leaf-split-dag.mlir.
+
+R-LEAVES-PARTIAL (`--seam-leaf-split-partial`, off, untuned): when some
+leaf reads are Undecided and the others are given by a write, the decided
+leaves split and the undecided ones stay one read at the residual address
+U, the ite pruned to its undecided leaves (a sub-ite with none is replaced
+by its sibling). Exact: on a path that selects an undecided leaf u, U
+selects u too. Counters `row.leaf-split-partial`,
+`row.leaf-split-residual-leaves`. A leaf that reaches the memory without
+writes still refuses the split (item 6).
+[OBS] Default (DAG, node): stellar txqueue round0, VC only, byte /
+`--seam-wide --widen-memory=4`: row.leaf-split 373 -> 381 / 148 -> 156,
+Ackermann pairs 4753 -> 4371 / 4851 -> 4465, alias.open.all 53195 -> 53187 /
+53427 -> 53419.
+[OBS] Partial: the stellar txqueue placed harness (one leaf of its source
+split, `--seam-wide --widen-memory=4`): the loaded pointer U =
+`from_bits(ite(...))` (33 tree leaves, 6 distinct: three frame storages,
+three nondet words) resolves with `--seam-resolve-ite-nodes=64` (the
+existing DAG mode of ptr.load-resolve), and the reads at U + k split
+partially (8 firings, 3 residual leaves each). alias.open.all stays 15469:
+every open question was already a one-unknown pair against a nondet leaf
+(`alias.open-pairs.one-unknown` 15467), which no exact rewrite decides. The
+query without the partial split (default, or with only the DAG mode) is
+byte-identical to the base; with it, 6.39 -> 6.40 MB, and z3 (5.3.3, 300 s) is slower on every seed: default
+seed 55 s -> unknown, seed 1 47 -> 165 s, seed 2 23 -> 168 s (all unsat).
+[HYP] the residual read is a second address term next to U + k, which the
+other reads keep. Not examined further: the partial split stays off. The
+lever for this query is the harness (a root site for the never-written
+payload), not SeaM.
 
 Alignment, two sources:
 1. Proved: the linear form of the address: a registered object base with
@@ -426,3 +557,36 @@ read only as aligned words; a separate design).
 2. An optimized ite for undecided pairs (guards + partial arm) vs keeping
    the term.
 3. Canonical non-overlapping store-map fragments (later).
+4. W-ITE with undecided leaf pairs (`--seam-wide-ite-open`, off): the read at
+   the leaf address vs the byte fallback; untuned (string_eq_byte_cursor:
+   byte-store expansions 42 -> 102).
+5. Memory of wide reads at a whole ite address. On the stellar txqueue
+   round-0 program (VC only, `--seam-wide --widen-memory=4`), the per-leaf
+   wide reads (store-map, memop, W-SPLICE) raised the maximum RSS from 3.18
+   to 4.41 GB. [HYP] A read below a write at the whole address j (W-ITE's
+   Skip leaf, the map's and the memop's Out leaves) survives to the
+   boundary, and WideExpander keeps its byte expansion. R-LEAVES removes most
+   of these reads there: 0.32 GB, DAG 1.94M -> 129k nodes, Ackermann pairs
+   159330 -> 6555. With `--seam-words=auto` the initial memory becomes
+   words only after R-LEAVES (words.chosen 0 -> 1, Ackermann pairs 6555 ->
+   210). Not measured: which surviving read the expansion was pinned for.
+6. R-LEAVES guard. The split pays when it removes the read of the memory
+   without writes; a leaf that still reaches it becomes a read of its own
+   next to the reads at the whole ite address that other reads (over
+   memories where no leaf is given) keep. The first guard asked a
+   write to give some leaf. On vcc (`--seam --widen-memory=8`, VC only,
+   compared with `--seam-leaf-split=0`) it fired in 18 jobs and made
+   Ackermann pairs grow in 13 (hash_table_init_bounded 1596 -> 6328,
+   hash_table_init_unbounded 1540 -> 6216, linked_list_swap_contents
+   148 -> 457), with alias.open unchanged. Allowing one such leaf per split
+   still grew 12 of them (hash_table_init_bounded: one leaf of two reaches
+   the initial memory, and the read at it is new). The guard now asks a
+   write to give every leaf (decided, no option): no vcc job is worse in
+   Ackermann pairs, alias.open or query size (3 jobs still split;
+   summed query 25,897,860 -> 25,897,553 bytes); stellar round0 (VC only,
+   byte / `--seam-wide --widen-memory=4`) keeps alias.open.all 53195 /
+   53427, Ackermann pairs 6441 -> 4753 / 6555 -> 4851, VC time 6.5 / 4.7 s
+   (6.4 / 4.8 s before).
+   Not done: a partial split that keeps the leaves reaching the initial
+   memory under one read at their sub-ite (it pays only when no other read
+   keeps the whole address).

@@ -198,8 +198,14 @@ public:
   /// memhavoc array) for the initial-words step (InitialWords.hh; its byte
   /// expansion comes after it). Set before the first expand().
   void keepOverArrayConstants(bool b) { m_keepOverArrayConstants = b; }
-  /// Byte k of an access at a promised PTR_INDEX node as that node with
-  /// K + k (the stride rule's K writer, PtrIndex.md section 4); off: a + k.
+  /// Byte k of an access at an ite address with k pushed into the leaves
+  /// (op::ptr::byteAddress) when the ite has at most \p n leaves; 0: a + k
+  /// over the ite (as before). Set before the first expand().
+  void maxOffsetLeaves(unsigned n) { m_maxOffsetLeaves = n; }
+  /// addresses built with the offset pushed into ite leaves / refused (over
+  /// the leaf cap)
+  uint64_t offsetPushed() const { return m_offsetPushed; }
+  uint64_t offsetRefused() const { return m_offsetRefused; }
 
 private:
   static bool isArrayConstant(ENode *n) {
@@ -207,13 +213,19 @@ private:
   }
 
   /// a + k at the address width of a; a K-node when a is a promised node
-  /// (op::ptr::addressPlus)
+  /// (op::ptr::addressPlus); k pushed into the leaves of an ite a
+  /// (op::ptr::byteAddress, at most m_maxOffsetLeaves leaves)
   Expr at(const Expr &a, unsigned k) {
     if (k == 0)
       return a;
     unsigned w = op::ptr::addrWidth(a, m_tc);
     // a node (PtrSort rev 5, S1.3): expanded at the boundary to its flat form
-    return op::ptr::addressPlus(a, op::bv::bvnum(mpz_class(k), w, a->efac()));
+    op::ptr::OffsetPush how;
+    Expr res = op::ptr::byteAddress(
+        a, op::bv::bvnum(mpz_class(k), w, a->efac()), m_maxOffsetLeaves, how);
+    m_offsetPushed += how == op::ptr::OffsetPush::Pushed;
+    m_offsetRefused += how == op::ptr::OffsetPush::Refused;
+    return res;
   }
   Expr store(const Expr &m, const Expr &a, const Expr &v) {
     ++m_expanded;
@@ -239,6 +251,8 @@ private:
   std::vector<Expr> m_keep;
   std::vector<Expr> m_pinned; ///< the keys of m_has
   uint64_t m_expanded = 0;
+  uint64_t m_offsetPushed = 0, m_offsetRefused = 0;
+  unsigned m_maxOffsetLeaves = 0;
   bool m_keepOverArrayConstants = false;
 };
 
