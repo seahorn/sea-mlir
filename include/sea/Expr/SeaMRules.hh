@@ -2938,6 +2938,7 @@ public:
   /// (overlap() on one object, the W-BYTE-IN guard (j - i) <u w); the
   /// census counts their normal forms in the query (D13)
   const ExprSet &aliasReduced() const { return m_aliasReduced; }
+  const ExprSet &memOpOpen() const { return m_memOpOpen; }
 
   RewriteResult ptrEq(const Expr &exp, bool order) {
     const Expr e = mk<EQ>(exp->arg(0), exp->arg(1));
@@ -3717,6 +3718,18 @@ public:
     return e;
   }
 
+  /// The EQ leaves of a ROW compare tree (ite, Boolean constants and
+  /// PTR_EQ leaves aside) go to the census of same-object questions
+  /// (aliasReduced).
+  void noteReducedLeaves(const Expr &e) {
+    if (isOpX<ITE>(e)) {
+      noteReducedLeaves(e->arg(1));
+      noteReducedLeaves(e->arg(2));
+    } else if (isOpX<EQ>(e)) {
+      m_aliasReduced.insert(e);
+    }
+  }
+
   /// rowCompare's compare with PTR_EQ leaves. The tree is built over as
   /// many leaf pairs as decideEq looks at (maxDecideLeaves, not the
   /// program compare's maxEqLeaves): a pair the access decision resolves is
@@ -3742,6 +3755,11 @@ public:
           cmp = built;
           premises = used;
           countPremises(used);
+          // a leaf reduced to a compare of offsets (cmp.same-base,
+          // cmp.cancel) has no pointer left to mark: an open alias question
+          // in its reduced form, for the census (as overlap() records)
+          if (reduced)
+            noteReducedLeaves(built);
         } else {
           depth = 0;
           reduced = false;
@@ -4138,7 +4156,8 @@ public:
   /// ites of idx and d (as buildEq: ites with one condition paired branch by
   /// branch): a pair decideInPair resolves is true (In) / false (Out), with
   /// its reasons counted and its premises in \p premises; an open pair is
-  /// its own `PTR_DIFF(j, d') <u n`. \p resolved counts the resolved pairs. On
+  /// its own `PTR_DIFF(j, d') <u n` (recorded for the census, memOpOpen).
+  /// \p resolved counts the resolved pairs. On
   /// the path that selects a pair, idx and d are that pair, so the tree equals
   /// the in-test of the whole terms. uses: the premises of the resolved pairs
   /// (A-INB: cmp.diff-base, cmp.size0-vacuous, arm.skip; LAYOUT:
@@ -4168,7 +4187,9 @@ public:
       premises |= d.premises;
       return rg == Range::In ? mk<TRUE>(m_efac) : mk<FALSE>(m_efac);
     }
-    return memOpIn(mk<PTR_DIFF>(a, b), n); // S1.5: a pointer difference
+    Expr in = memOpIn(mk<PTR_DIFF>(a, b), n); // S1.5: a pointer difference
+    m_memOpOpen.insert(in);
+    return in;
   }
 
   /// select(T, idx) over a memory-operation term T (MemOps.hh), decided once
@@ -4249,6 +4270,8 @@ public:
         in = built;
       }
     }
+    if (in == memOpIn(k, memOpLen(t)))
+      m_memOpOpen.insert(in);
     return {mk<ITE>(in, hit, op::array::select(memOpBase(t), idx)),
             RWStatus::RW_FULL};
   }
@@ -4498,6 +4521,9 @@ private:
   /// canon (sameAddr), memoized per term; the pins keep the keys alive
   mutable std::unordered_map<ENode *, Expr> m_canonMemo;
   mutable ExprSet m_aliasReduced;
+  /// the open in-tests of memory-operation reads (rowMemOp, buildIn), for
+  /// the census (seam.alias.open-memop.<kind>)
+  ExprSet m_memOpOpen;
   /// checkInbPremise: the recorded accesses (normal-form address, units),
   /// by node and by object base
   struct InbRec {

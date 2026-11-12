@@ -83,8 +83,12 @@ Observations (the only ways out):
   query is the one before). Program compares stay `PTR_EQ`. Keeping alias
   queries explicit allows unresolved queries to be counted
   (`--seam-stats`: `seam.alias.open.<kind>`, by what the two pointers'
-  views say) and, later, a partial aliasing scenario chosen as a named
-  assumption when aliasing makes a query hard.
+  views say, per leaf pair of an ite pointer: `seam.alias.open-pairs.<kind>`
+  counts the pairs, and a question is the least decided kind among them),
+  and, later, a partial aliasing scenario chosen as a named
+  assumption when aliasing makes a query hard. The open in-tests of reads
+  over memory-operation terms (`(j - d) <u n`, SeaM-memops.md) are counted
+  as `seam.alias.open-memop.<kind>`.
 
 Equality (`EQ`) refuses `ptr(w)` arguments. Memories indexed by addresses
 are `array(ptr(w), bv(c))` (D1): the Select / Store typing rule is the check
@@ -220,7 +224,8 @@ the abstract program, only for a corpus that needs it; vcc has none).
 - Census of same-object alias questions (D13). An undecided same-base
   compare is reduced by `ptrEq` to an integer compare of the offsets, so
   there is no pointer left to mark. The W-BYTE-IN guard `(j - i) <u w` is
-  the same kind of question. Both are recorded (`Rules::aliasReduced`), and
+  the same kind of question, as is a leaf of a ROW compare tree reduced to
+  an offset compare (rowCompareEq). All are recorded (`Rules::aliasReduced`), and
   the census counts the normal forms of the recorded terms in the final
   query as `same-object` (they are normalized further after recording; a
   first version matched them as recorded and found almost none). Queries

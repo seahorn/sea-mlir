@@ -1886,8 +1886,19 @@ OUTPUT (stdout, `key: value` lines):
                                   terms of the query; kind all,
                                   same-object, diff-object, one-unknown,
                                   both-unknown: what the views of the two
-                                  pointers say; same-object: the offset
-                                  compares one-object questions reduce to)
+                                  pointers say, per leaf pair of an ite
+                                  pointer, the least decided pair (in that
+                                  order, diff-object first); many-leaves:
+                                  more pairs than the decisions look at;
+                                  same-object: also the offset compares
+                                  one-object questions reduce to)
+  seam.alias.open-pairs.<kind>: <n>  (--seam-stats: the leaf pairs of the
+                                  IS_OVERLAP questions, by kind)
+  seam.alias.open-memop.<kind>: <n>  (--seam-stats: the open in-tests
+                                  (idx - d) <u n of reads over memset /
+                                  memmove / memhavoc terms, one per leaf
+                                  pair left open; kinds as above, of the
+                                  read and destination pointers)
   seam.alias.same-object-reduced: <n>  (--seam-stats: one-object alias
                                   questions asked, decided or not)
   seam.ptr.from-bits-left.<kind>: <n>  (--seam-stats: loaded pointers no
@@ -3322,6 +3333,38 @@ int main(int argc, char **argv) {
     std::unordered_set<expr::ENode *> sameObjectOpen;
     std::vector<expr::Expr> sameObjectKeep;
     uint64_t sameObjectReduced = 0;
+    // the kind of an alias question by its leaf pairs (Rules::eqPairs: an
+    // ite pointer is its leaves, not one pointer without a view): every pair
+    // by what the views of its two pointers say; the question is the least
+    // decided kind among its pairs (diff-object first: A-INB decides such a
+    // pair at an access, so one left open is the census's alarm), and
+    // `many-leaves` when it has more pairs than the decisions look at
+    std::map<std::string, uint64_t> aliasOpenPairs, memOpOpen;
+    auto aliasKind = [&](const expr::Expr &p, const expr::Expr &q,
+                         std::map<std::string, uint64_t> &pairs) {
+      const auto &R = sem.seamRewriter()->rules();
+      llvm::SmallVector<std::pair<expr::Expr, expr::Expr>, 8> lp;
+      if (!R.eqPairs(p, q, lp, R.options().maxDecideLeaves))
+        return "many-leaves";
+      static const char *order[] = {"diff-object", "one-unknown",
+                                    "both-unknown", "same-object"};
+      unsigned worst = 3;
+      for (const auto &[a, b] : lp) {
+        auto va = R.view(a), vb = R.view(b);
+        unsigned k = va && vb   ? (va->base == vb->base ? 3 : 0)
+                     : va || vb ? 1
+                                : 2;
+        ++pairs[order[k]];
+        ++pairs["all"];
+        worst = std::min(worst, k);
+      }
+      return order[worst];
+    };
+    // the open in-tests of memory-operation reads (Rules::memOpOpen: one per
+    // leaf pair, or one over whole ites), by their normal forms, each with
+    // the kind of its read / destination pair
+    std::unordered_map<expr::ENode *, expr::Expr> memOpOpenAt;
+    std::vector<expr::Expr> memOpKeep;
     if (seamStats && sem.seamRewriter()) {
       auto &rw = *sem.seamRewriter();
       const expr::ExprSet red = rw.rules().aliasReduced();
@@ -3333,6 +3376,13 @@ int main(int argc, char **argv) {
         if (!expr::isOpX<expr::TRUE>(f) && !expr::isOpX<expr::FALSE>(f)) {
           sameObjectKeep.push_back(f);
           sameObjectOpen.insert(f.get());
+        }
+      }
+      for (const expr::Expr &t : rw.rules().memOpOpen()) {
+        expr::Expr f = rw.simplify(t);
+        if (!expr::isOpX<expr::TRUE>(f) && !expr::isOpX<expr::FALSE>(f)) {
+          memOpKeep.push_back(f);
+          memOpOpenAt.emplace(f.get(), t);
         }
       }
       rw.stats() = saved;
@@ -3386,15 +3436,16 @@ int main(int argc, char **argv) {
           ++aliasOpen["all"];
         }
         if (expr::isOpX<expr::IS_OVERLAP>(n) && sem.seamRewriter()) {
-          const auto &R = sem.seamRewriter()->rules();
-          auto va = R.view(expr::Expr(n->arg(0))),
-               vb = R.view(expr::Expr(n->arg(2)));
-          const char *k =
-              va && vb ? (va->base == vb->base ? "same-object" : "diff-object")
-              : va || vb ? "one-unknown"
-                         : "both-unknown";
-          ++aliasOpen[k];
+          ++aliasOpen[aliasKind(expr::Expr(n->arg(0)), expr::Expr(n->arg(2)),
+                                aliasOpenPairs)];
           ++aliasOpen["all"];
+        }
+        if (auto it = memOpOpenAt.find(n); it != memOpOpenAt.end()) {
+          // the recorded (idx - d) <u n: its pointer difference
+          const expr::Expr diff = it->second->arg(0);
+          std::map<std::string, uint64_t> ignored;
+          ++memOpOpen[aliasKind(diff->arg(0), diff->arg(1), ignored)];
+          ++memOpOpen["all"];
         }
         if (expr::isOpX<expr::PTR_FROM_BITS>(n)) {
           auto kind = [](expr::ENode *a) -> const char * {
@@ -3978,6 +4029,10 @@ int main(int argc, char **argv) {
         os << "seam.ptr.from-bits-left." << k << ": " << v << "\n";
       for (const auto &[k, v] : aliasOpen)
         os << "seam.alias.open." << k << ": " << v << "\n";
+      for (const auto &[k, v] : aliasOpenPairs)
+        os << "seam.alias.open-pairs." << k << ": " << v << "\n";
+      for (const auto &[k, v] : memOpOpen)
+        os << "seam.alias.open-memop." << k << ": " << v << "\n";
       if (sameObjectReduced)
         os << "seam.alias.same-object-reduced: " << sameObjectReduced << "\n";
       if (seamStats && sem.seamStats()) {

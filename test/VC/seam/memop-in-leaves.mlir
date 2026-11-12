@@ -2,13 +2,17 @@
 // leaf pairs (as ROW's compare tree): a byte read at ite(c, A, B + k) over
 // an operation on [B, B + n): the A leaf is out by A-INB (cmp.diff-base),
 // only the B leaf stays (k <u n). It used to stay one in-test of the whole
-// ite, which the program rules (no A-INB) could not split.
+// ite, which the program rules (no A-INB) could not split. The census
+// counts the open in-tests (seam.alias.open-memop.<kind>, by leaf pair).
 // RUN: sea-vc %s --lower --seam --program=mset --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,MSET
 // RUN: sea-vc %s --lower --seam --program=mcopy --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,MCOPY
 // RUN: sea-vc %s --lower --seam --program=mhavoc --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,MHAVOC
 // RUN: sea-vc %s --lower --seam --program=mset --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --seam --program=mcopy --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --seam --program=mhavoc --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
+// CHECK-NOT: seam.alias.open-memop.one-unknown
+// CHECK: seam.alias.open-memop.all: 1
+// CHECK-NEXT: seam.alias.open-memop.same-object: 1
 // CHECK: seam.rule.cmp.diff-base: {{[1-9]}}
 // CHECK: seam.rule.mem.in-push: 1
 // CHECK: seam.rule.premise.a-inb: {{[1-9]}}
