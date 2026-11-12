@@ -34,6 +34,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "sea/VC/Reach.h"
 #include "sea/VC/Replay.h"
+#include "sea/VC/Split.h"
 #include "sea/VC/VCGen.h"
 
 #include <chrono>
@@ -1144,6 +1145,70 @@ static cl::opt<sea::PrintRefs> printRefs(
                    "SSA operands (sea-print-strengthen): the values are kept "
                    "through the lowering")));
 
+// Case splitting of the VC (sea/VC/Split.h, docs/design/Split.md)
+static cl::list<std::string> splitBool(
+    "split", cl::CommaSeparated,
+    cl::desc("Split the VC on a Boolean: an i1 value or a block guard of the "
+             "encoded program, by VC name (%x, nd.<site>, ^bb3) or "
+             "@<file>:<line> (the one i1 op result there). Two parts: the "
+             "value fixed to 1 / 0 (the guard to true / false) before SeaM "
+             "rewrites its uses, each with its condition. Repeatable "
+             "(nested splits)"),
+    cl::value_desc("selector"));
+static cl::list<std::string> splitLeaves(
+    "split-leaves", cl::CommaSeparated,
+    cl::desc("Split the VC on an address value whose term is an ite tree (or "
+             "ptr-from-bits of one): one part per distinct leaf, the value "
+             "fixed to the leaf, with the disjunction of the leaf's path "
+             "conditions. Selector as for --split (an address-typed op "
+             "result)"),
+    cl::value_desc("selector"));
+static cl::opt<bool> splitAuto(
+    "split-auto",
+    cl::desc("Heuristic (needs --seam): one VC generation without a solver "
+             "picks the ite-valued address whose term the most open alias "
+             "questions (IS_OVERLAP) contain, then splits on its leaves "
+             "(--split-leaves); ranks the candidates as split.candidate "
+             "lines"),
+    cl::init(false));
+static cl::opt<unsigned> splitMaxParts(
+    "split-max-parts",
+    cl::desc("Hard cap on the number of parts of a split (default 64): more "
+             "is an error (vc.split-max-parts)"),
+    cl::init(64));
+static cl::opt<unsigned> splitMaxPaths(
+    "split-max-paths",
+    cl::desc("--split-leaves: the most root-to-leaf paths of an ite tree "
+             "(default 1024)"),
+    cl::init(1024));
+static cl::opt<bool> splitCheck(
+    "split-check",
+    cl::desc("Check the construction of every split level with z3 (default "
+             "on): its case conditions are exhaustive (valid disjunction) "
+             "and the chosen case's condition implies term = value; "
+             "split.check lines; a failed check is exit 5"),
+    cl::init(true));
+static cl::opt<unsigned> splitCheckRlimit(
+    "split-check-rlimit",
+    cl::desc("z3 rlimit of each --split-check query (default 10000000; 0: "
+             "none); an exhausted one is unknown, reported"),
+    cl::init(10000000));
+static cl::opt<bool> splitStopOnSat(
+    "split-stop-on-sat",
+    cl::desc("Stop at the first part whose answer is sat (the verdict is sat "
+             "then; the parts not run are not reported)"),
+    cl::init(false));
+static cl::opt<std::string>
+    splitPlant("x-split-plant", cl::Hidden,
+               cl::desc("Test only: plant a split construction bug "
+                        "(drop-case, wrong-value) for --split-check"));
+static cl::opt<std::string> splitSmt2(
+    "split-smt2",
+    cl::desc("Write the query of part N to <prefix>.part<N>.smt2 (the "
+             "solver's SMT-LIB, as --smt2 prints it); with --vcgen-only, "
+             "nothing is solved"),
+    cl::value_desc("prefix"));
+
 static cl::opt<bool> agent("agent",
                            cl::desc("Print a terse guide for agents and exit"),
                            cl::init(false));
@@ -1183,6 +1248,10 @@ TYPICAL:
                                  #   built with -DBITWUZLA_ROOT=<install>;
                                  #   else an error)
   sea-vc p.mlir --smt2           # print the query (SMT-LIB) only
+  sea-vc p.mlir --lower --seam --split-leaves=@f.cc:768  # one part per leaf
+                                 #   of the address loaded there, each with
+                                 #   its counters, answer and time (SPLIT;
+                                 #   --split-auto picks one)
   sea-vc p.mlir --format=jsonl   # every stdout line one JSON object (jq;
                                  #   OUTPUT FORMATS)
   sea-vc p.mlir --timeout=600 --mem-limit=16  # limits: the solver's check
@@ -2286,6 +2355,57 @@ memset / memmove: run sea-vc --seam on it.
   target (the answer rests on A-INB); 2 a bug as above; 1 error. Not a
   safety verdict.
 
+SPLIT (--split=<sel,...>, --split-leaves=<sel,...>, --split-auto;
+docs/design/Split.md): Shannon cofactoring of the VC, as experiment and
+debugging infrastructure (which case of a timeout is hard). A target is
+fixed when the encoding defines it, before SeaM rewrites its uses; each part
+is VC[t := value] /\ condition, answered by the usual run (lowering once;
+encoding, SeaM, Ackermann, solver, replay per part). --split: an i1 value
+(2 parts: 1, 0) or a block guard (true, false). --split-leaves: an address
+whose term is an ite tree, or ptr-from-bits of one: one part per distinct
+leaf, condition = the disjunction of its path conditions. Selectors: the VC
+name (%x, nd.<site>, ^bb3; names of the lowered program) or @<file>:<line>
+(the one op result of the kind with a file position, its own or an inlined
+call site, on that line). Several targets nest (one level per target, in
+encoding order, under the cases before it; enumerated depth-first, one run
+per part; a part whose levels differ from its plan is vc.split-unstable).
+--split-auto (--seam): a solverless pick run ranks the ite-valued addresses
+by the open alias questions (IS_OVERLAP of the normalized query) whose
+pointers contain the address's term or one of its leaves without an object
+(ties: more leaves first; a heuristic: one unknown leaf behind several ites
+counts for each), prints the top 5 as split.candidate lines, splits on the
+leaves of the first with >= 2 leaves (none: warning vc.split-auto-none,
+one unsplit part). --split-check (default on): per level, z3 (rlimit
+--split-check-rlimit) proves the case conditions exhaustive and the chosen
+case exact (condition => term = value, on the solver's terms: pointers by
+address); failed: exit 5, vc.split-check-failed; unknown: warning
+vc.split-check-unknown. --split-max-parts (64): more parts is an error
+(vc.split-max-parts), no verdict. --split-max-paths (1024): paths of an ite
+tree. --split-stop-on-sat. --split-smt2=<prefix>: <prefix>.part<N>.smt2
+per part (with --vcgen-only: nothing solved). Not with --smt2, --reach,
+--mem=lambda. Under --seam a split turns on --seam-stats (the per-part
+counters). A level with one case (warning vc.split-trivial), a target the
+encoding never meets (vc.split-unmet).
+Lines: every part prints its usual output between
+  split.part-start: <N>
+  split.check: level=<i> target=<name> cases=<n> exhaustive=ok|failed|unknown exact=...
+  split.smt2: <path>
+  split.part-result: sat|unsat|unknown|none   (a part's answer; no result: line)
+  split.part: <N> choice=<name>=<case>#<k>/<n>[,...] result=... vc-time=
+    solve-time= dag= alias-open= alias-open-pairs= alias-open-memop= rows=
+    ack-reads= ack-pairs= ack-constraints= check=ok|unknown|off
+  (<case>: 1|0, true|false, leaf:<obj> or leaf:unknown(<op>), with
+  /paths=<n>; dag: nodes of the solver's query; rows: the row.* counters'
+  sum)
+then
+  split.verdict: <v> parts= unsat= sat= unknown= none= hardest-part=
+    hardest-solve-time= [stopped=first-sat]
+  split.unknown-part: <N>:<choice>   (each unknown part)
+  result: <v>     sat if a part is sat (replayed), unsat if every part is,
+                  none under --vcgen-only, else unknown
+--split-auto adds split.auto: open-aliases= candidates= vc-time=,
+split.candidate: name= leaves= open-aliases= loc=, split.auto-pick: <name>.
+
 OUTPUT FORMATS (--format=text|jsonl; default text, the lines above):
 jsonl: every stdout line is one JSON object
   {"kind":"<kind>", <fields>..., "text":"<the text line(s)>"}
@@ -2309,6 +2429,13 @@ Kinds and fields:
   object        id (<seg>), symbol (the VC constant obj.<seg> of the text's
                 name=), order, objkind, base, size, align
   result        value: sat|unsat|unknown|none
+  split-part-start part
+  split-part    part, choice, result, vc_time, solve_time, dag, alias_open,
+                alias_open_pairs, alias_open_memop, rows, ack_reads,
+                ack_pairs, ack_constraints, check
+  split-verdict result, parts, unsat, sat, unknown, none, hardest_part,
+                hardest_solve_time, [stopped]
+  split-candidate name, loc, leaves, open_aliases
   nondet        site, callee, width, value
   memread       site, addr, width, value, [obj + off] (the object id and
                 the cell's offset in it; text obj=&<obj>[<off>])
@@ -2394,6 +2521,9 @@ the lowered program, but the original program on the same inputs does not
 fail the same assertion (vc.replay-original-mismatch): the lowering changed
 what the program does, a bug in a pass, or a program whose behavior depends
 on placement (a pointer compare across objects).
+Split (--split*): the status of the verdict (0 sat or unsat, 3 unknown); a
+part's status 1, 2, 4, 5 or 6 stops the split with that status; 5 also for
+a failed --split-check.
 )";
 
 /// --version: the solvers linked in (their library versions at run time)
@@ -2729,6 +2859,28 @@ int main(int argc, char **argv) {
   if (lambdaMem && backend != Backend::Z3)
     return fail("vc.lambda-unsupported: --mem=lambda needs --solver=z3 "
                 "(the Yices and Bitwuzla marshalers refuse lambdas)");
+  // case splitting (sea/VC/Split.h)
+  const bool splitOn = !splitBool.empty() || !splitLeaves.empty() || splitAuto;
+  if (!splitOn &&
+      (splitMaxParts.getNumOccurrences() || splitMaxPaths.getNumOccurrences() ||
+       splitCheck.getNumOccurrences() || splitCheckRlimit.getNumOccurrences() ||
+       splitStopOnSat.getNumOccurrences() || !splitSmt2.empty()))
+    return fail("--split-max-parts, --split-max-paths, --split-check, "
+                "--split-check-rlimit, --split-stop-on-sat and --split-smt2 "
+                "need --split, --split-leaves or --split-auto");
+  if (splitOn && (smt2 || reach || lambdaMem))
+    return fail("--split, --split-leaves and --split-auto: not with --smt2 "
+                "(use --split-smt2), --reach or --mem=lambda");
+  if (!splitPlant.empty() && splitPlant != "drop-case" &&
+      splitPlant != "wrong-value")
+    return fail("--x-split-plant: drop-case or wrong-value");
+  if (splitAuto && !seam)
+    return fail("--split-auto ranks SeaM's open alias questions: needs --seam");
+  if (splitOn && !splitMaxParts)
+    return fail("--split-max-parts must be at least 1");
+  // the per-part counters (alias.open.*, row.*) are part of a split's report
+  if (splitOn && seam)
+    seamStats = true;
   const bool checkOn = seamCheck.getNumOccurrences() > 0;
   const bool auditOn = eqAudit.getNumOccurrences() > 0;
   unsigned auditSample = 200;
@@ -3006,6 +3158,42 @@ int main(int argc, char **argv) {
     reachRuns = std::move(*rr);
   }
 
+  // case splitting (sea/VC/Split.h): the targets, on the program the VC
+  // encodes; the choices of the run's first levels; what a run reports
+  std::vector<sea::SplitTarget> splitTargets;
+  if (splitOn) {
+    std::string error;
+    if (failed(sea::resolveSplitTargets(program, splitBool,
+                                        sea::SplitTarget::Kind::Bool,
+                                        splitTargets, error)) ||
+        failed(sea::resolveSplitTargets(program, splitLeaves,
+                                        sea::SplitTarget::Kind::Leaves,
+                                        splitTargets, error))) {
+      sea::diag::error("vc.split-target", error);
+      return 1;
+    }
+  }
+  std::vector<unsigned> splitPrefix;
+  unsigned splitPartId = 0;
+  struct SplitPartInfo {
+    // per level: case count, chosen case
+    std::vector<std::pair<unsigned, unsigned>> levels;
+    std::string choice = "-", result = "error";
+    double vcSeconds = 0, solveSeconds = 0;
+    uint64_t dag = 0, aliasOpen = 0, aliasOpenPairs = 0, memopOpen = 0,
+             rows = 0, ackReads = 0, ackPairs = 0, ackConstraints = 0;
+    bool ackOn = false;
+    std::string check = "off";
+  } splitPart;
+  // --split-auto: the pick run (no solver) and its ranking
+  bool splitPickRun = false;
+  struct SplitCandidate {
+    Value value;
+    std::string name, loc;
+    unsigned leaves = 0;
+    uint64_t open = 0;
+  };
+  std::vector<SplitCandidate> splitCandidates;
   // One run of the VC and the solver. Returns kRetryWithoutInb if A-INB
   // (assumed by the rewriting) is found not to hold.
   constexpr int kRetryWithoutInb = -1;
@@ -3318,6 +3506,29 @@ int main(int argc, char **argv) {
         }
         return val;
       };
+    // case splitting: the run's levels (--split / --split-leaves), or the
+    // candidates of --split-auto's pick run (ite-valued addresses)
+    std::unique_ptr<sea::SplitRun> splitRun;
+    std::vector<std::pair<Value, expr::Expr>> pickTerms;
+    if (splitPickRun) {
+      ctx.defHook = [&](Value v) {
+        if (!isa<sea::AddrType>(v.getType()))
+          return;
+        expr::Expr t = ctx.read(sem.mkSymbReg(v));
+        expr::Expr tree =
+            expr::isOpX<expr::PTR_FROM_BITS>(t) ? expr::Expr(t->arg(0)) : t;
+        if (expr::isOpX<expr::ITE>(tree))
+          pickTerms.emplace_back(v, t);
+      };
+    } else if (!splitTargets.empty()) {
+      splitRun = std::make_unique<sea::SplitRun>(splitTargets, splitPrefix,
+                                                 splitMaxPaths);
+      splitRun->install(sem, ctx);
+      if (splitPlant == "drop-case")
+        splitRun->setPlant(sea::SplitRun::Plant::DropCase);
+      else if (splitPlant == "wrong-value")
+        splitRun->setPlant(sea::SplitRun::Plant::WrongValue);
+    }
     sea::VCGen vcgen(sem, joinEncoding);
     vcgen.setReach(reach);
     vcgen.setJoinCases(vcJoinCases, {vcCasesReorder, vcCasesDropDefault});
@@ -3326,6 +3537,28 @@ int main(int argc, char **argv) {
     if (failed(vcgen.genVc(program, ctx)))
       return 1;
     lap("encode");
+    if (splitRun) {
+      if (!splitRun->failure().empty()) {
+        sea::diag::error("vc.split-target",
+                         "cannot split: " + splitRun->failure());
+        return 1;
+      }
+      splitPart.levels.clear();
+      for (const sea::SplitLevel &l : splitRun->levels()) {
+        splitPart.levels.emplace_back(l.cases.size(), l.chosen);
+        if (l.cases.size() < 2)
+          sea::diag::warn("vc.split-trivial",
+                          splitTargets[l.target].name +
+                              ": one case only (its ite tree has a single "
+                              "distinct leaf); no split at this level");
+      }
+      splitPart.choice = splitRun->choiceText();
+      if (splitRun->levels().empty())
+        sea::diag::warn("vc.split-unmet",
+                        "no split target was met by the encoding (each is "
+                        "in a block no path reaches): the part is the "
+                        "whole VC");
+    }
     SEA_PHASE_END(encodePhase)
         .kv("nodes-made", efac.nodesMade())
         .kv("sides", side.size())
@@ -3347,6 +3580,10 @@ int main(int argc, char **argv) {
     // the memory values may hold store-maps, which no solver knows: the
     // query goes through the boundary (StoreMap.hh)
     expr::Expr query = reach ? sea::mkReachQuery(ctx) : sea::mkQuery(ctx);
+    // the part's condition (case splitting): VC[t := value] /\ condition
+    if (splitRun)
+      if (expr::Expr c = splitRun->partCondition(efac))
+        query = expr::op::boolop::land(query, c);
     if (reach && reachPlant == "skip-assumes") {
       const auto &ap = sem.assumeSidePositions();
       std::set<size_t> skip(ap.begin(), ap.end());
@@ -3488,6 +3725,8 @@ int main(int argc, char **argv) {
       if (sem.ptrIntChecking())
         os << "seam.ptrint: checked loads=" << sem.companionChecked() << "\n";
     };
+    // --split-auto's pick run: the open alias questions
+    std::vector<expr::ENode *> openOverlaps;
     if (seamStats && sem.seam()) {
       std::unordered_set<expr::ENode *> seen;
       std::vector<expr::ENode *> stack{query.get()};
@@ -3506,6 +3745,8 @@ int main(int argc, char **argv) {
           ++aliasOpen[aliasKind(expr::Expr(n->arg(0)), expr::Expr(n->arg(2)),
                                 aliasOpenPairs)];
           ++aliasOpen["all"];
+          if (splitPickRun)
+            openOverlaps.push_back(n);
         }
         if (auto it = memOpOpenAt.find(n); it != memOpOpenAt.end()) {
           // the recorded (idx - d) <u n: its pointer difference
@@ -3549,6 +3790,96 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i < n->arity(); ++i)
           stack.push_back(n->arg(i));
       }
+    }
+    // --split-auto's pick run: each candidate (an ite-valued address) by
+    // the open alias questions whose pointers contain its term; no solver
+    if (splitPickRun) {
+      // a candidate is behind a question whose pointers contain its term or
+      // one of its leaves without an object (SeaM's leaf pairs split an
+      // ite pointer: the open pair holds the unknown leaf, not the ite)
+      // (by their normal forms: the query was normalized after them)
+      std::unordered_multimap<expr::ENode *, unsigned> candOf;
+      expr::ExprVector candKeep;
+      std::vector<std::vector<sea::SplitCase>> pickCases(pickTerms.size());
+      auto addCand = [&](const expr::Expr &e, unsigned i) {
+        candKeep.push_back(sem.simplify(e));
+        candOf.emplace(candKeep.back().get(), i);
+      };
+      for (unsigned i = 0; i < pickTerms.size(); ++i) {
+        addCand(pickTerms[i].second, i);
+        std::string why;
+        if (!sea::SplitRun::leafCases(pickTerms[i].second, sem, splitMaxPaths,
+                                      pickCases[i], why))
+          pickCases[i].clear();
+        for (const sea::SplitCase &c : pickCases[i])
+          if (!sem.seamRewriter()->rules().view(c.value))
+            addCand(c.value, i);
+      }
+      // the candidates in each node's DAG (iterative post-order, memoized)
+      std::unordered_map<expr::ENode *, std::vector<unsigned>> memo;
+      auto idsOf = [&](expr::ENode *root) -> const std::vector<unsigned> & {
+        std::vector<std::pair<expr::ENode *, bool>> st{{root, false}};
+        while (!st.empty()) {
+          auto [n, done] = st.back();
+          st.pop_back();
+          if (memo.count(n))
+            continue;
+          if (!done) {
+            st.push_back({n, true});
+            for (size_t i = 0; i < n->arity(); ++i)
+              if (!memo.count(n->arg(i)))
+                st.push_back({n->arg(i), false});
+            continue;
+          }
+          std::vector<unsigned> ids;
+          auto [lo, hi] = candOf.equal_range(n);
+          for (auto it = lo; it != hi; ++it)
+            ids.push_back(it->second);
+          for (size_t i = 0; i < n->arity(); ++i) {
+            const std::vector<unsigned> &a = memo[n->arg(i)];
+            ids.insert(ids.end(), a.begin(), a.end());
+          }
+          llvm::sort(ids);
+          ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+          memo[n] = std::move(ids);
+        }
+        return memo[root];
+      };
+      std::vector<uint64_t> open(pickTerms.size(), 0);
+      for (expr::ENode *n : openOverlaps) {
+        std::vector<unsigned> ids = idsOf(n->arg(0));
+        const std::vector<unsigned> &b = idsOf(n->arg(2));
+        ids.insert(ids.end(), b.begin(), b.end());
+        llvm::sort(ids);
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+        for (unsigned i : ids)
+          ++open[i];
+      }
+      sea::ValueNames vn(program);
+      for (unsigned i = 0; i < pickTerms.size(); ++i) {
+        SplitCandidate c;
+        c.value = pickTerms[i].first;
+        c.name = vn.name(c.value).str();
+        c.loc = sea::formatLoc(c.value.getLoc());
+        c.open = open[i];
+        c.leaves = pickCases[i].size();
+        splitCandidates.push_back(std::move(c));
+      }
+      std::stable_sort(splitCandidates.begin(), splitCandidates.end(),
+                       [](const SplitCandidate &a, const SplitCandidate &b) {
+                         // ties (one unknown leaf behind several ites):
+                         // the most leaves
+                         return a.open != b.open ? a.open > b.open
+                                                 : a.leaves > b.leaves;
+                       });
+      vout() << "split.auto: open-aliases=" << openOverlaps.size()
+             << " candidates=" << splitCandidates.size() << " vc-time="
+             << llvm::format("%.3f",
+                             std::chrono::duration<double>(
+                                 std::chrono::steady_clock::now() - vcStart)
+                                 .count())
+             << "\n";
+      return 0;
     }
     // the layout (obj.k = <numeral>: unconditional side conditions of the
     // query, OpSem.cpp sea.segment), for pairs that are never equal and for
@@ -3921,6 +4252,66 @@ int main(int argc, char **argv) {
       if (mayRetry)
         return kRetryWithoutInb;
     }
+    // --split-check: the construction of each level, by z3 (rlimit), on the
+    // solver's terms (the boundary of the query): its case conditions are
+    // exhaustive, and the chosen case's condition implies term = value
+    if (splitRun && splitCheck) {
+      using SR = sea::solver::SolverResult;
+      auto unsatOf = [&](expr::Expr f, std::string &why) -> SR {
+        expr::Expr g = sem.solverTerm(f, why);
+        if (!g)
+          return SR::UNKNOWN;
+        auto z = std::make_unique<sea::solver::z3_solver_impl>(efac);
+        if (splitCheckRlimit) {
+          sea::ZParams<sea::EZ3> params(z->get_context());
+          params.set("rlimit", unsigned(splitCheckRlimit));
+          z->get_solver().set(params);
+        }
+        return z->add(g) ? z->check() : SR::UNKNOWN;
+      };
+      auto word = [](SR r) {
+        return r == SR::UNSAT ? "ok" : r == SR::SAT ? "failed" : "unknown";
+      };
+      bool failedAny = false, unknownAny = false;
+      const auto &lv = splitRun->levels();
+      for (size_t i = 0; i < lv.size(); ++i) {
+        const sea::SplitLevel &l = lv[i];
+        expr::ExprVector conds;
+        for (const sea::SplitCase &c : l.cases)
+          conds.push_back(c.cond);
+        std::string why1, why2;
+        SR ex = unsatOf(
+            expr::op::boolop::lneg(expr::op::boolop::lor(conds, efac)), why1);
+        const sea::SplitCase &c = l.cases[l.chosen];
+        expr::Expr eq =
+            l.ptr ? expr::Expr(expr::mk<expr::PTR_EQ>(l.term, c.value))
+                  : expr::Expr(expr::mk<expr::EQ>(l.term, c.value));
+        SR exact = unsatOf(
+            expr::op::boolop::land(c.cond, expr::op::boolop::lneg(eq)), why2);
+        vout() << "split.check: level=" << i
+               << " target=" << splitTargets[l.target].name
+               << " cases=" << l.cases.size() << " exhaustive=" << word(ex)
+               << " exact=" << word(exact) << "\n";
+        if (!why1.empty() || !why2.empty())
+          sea::diag::warn("vc.split-check-unexpressible",
+                          "--split-check: a check has no solver form: " + why1 +
+                              why2);
+        failedAny |= ex == SR::SAT || exact == SR::SAT;
+        unknownAny |= ex == SR::UNKNOWN || exact == SR::UNKNOWN;
+      }
+      splitPart.check = failedAny ? "failed" : unknownAny ? "unknown" : "ok";
+      if (failedAny) {
+        sea::diag::error("vc.split-check-failed",
+                         "a split level is not exhaustive or not exact (a "
+                         "bug in the case split construction)");
+        return 5;
+      }
+      if (unknownAny)
+        sea::diag::warn("vc.split-check-unknown",
+                        "--split-check: z3 gave no answer within "
+                        "--split-check-rlimit for a split level: its "
+                        "construction is not checked");
+    }
     // --vcgen-only: no solver at all
     std::unique_ptr<sea::solver::Solver> solver;
     if (!vcgenOnly) {
@@ -3959,6 +4350,26 @@ int main(int argc, char **argv) {
     // add reports (through sea::diag) a query the backend cannot encode
     if (solver && !solver->add(query))
       return 1;
+    // --split-smt2: the part's query (the solver's SMT-LIB), also without a
+    // solver of the verdict (--vcgen-only)
+    if (!splitSmt2.empty()) {
+      std::unique_ptr<sea::solver::Solver> printer;
+      sea::solver::Solver *ps = solver.get();
+      if (!ps) {
+        printer = makeSolver();
+        if (!printer || !printer->add(query))
+          return 1;
+        ps = printer.get();
+      }
+      std::string path =
+          splitSmt2 + ".part" + std::to_string(splitPartId) + ".smt2";
+      std::error_code ec;
+      llvm::raw_fd_ostream os(path, ec);
+      if (ec)
+        return fail("--split-smt2: cannot write " + path + ": " + ec.message());
+      ps->to_smt_lib(os);
+      vout() << "split.smt2: " << path << "\n";
+    }
     // the SeaM counters: with --smt2 stdout is the query, so they go to stderr
     auto printSeamStatsText = [&](raw_ostream &os) {
       os << "vc-time: " << llvm::format("%.3f", vcSeconds) << "\n";
@@ -4650,6 +5061,12 @@ int main(int argc, char **argv) {
     }
 
     auto emitResult = [&](StringRef v) {
+      // a part's answer (the verdict of a split comes after its parts)
+      if (splitOn) {
+        splitPart.result = v.str();
+        vout() << "split.part-result: " << v << "\n";
+        return;
+      }
       sea::out::Record rec("result");
       rec.str("value", v);
       rec.text = ("result: " + v).str();
@@ -4696,6 +5113,26 @@ int main(int argc, char **argv) {
       gOut->emit(rec);
     }
     printSeamStats(vout());
+    if (splitOn) {
+      splitPart.vcSeconds = vcSeconds;
+      auto get = [](const std::map<std::string, uint64_t> &m, const char *k) {
+        auto it = m.find(k);
+        return it == m.end() ? uint64_t(0) : it->second;
+      };
+      splitPart.aliasOpen = get(aliasOpen, "all");
+      splitPart.aliasOpenPairs = get(aliasOpenPairs, "all");
+      splitPart.memopOpen = get(memOpOpen, "all");
+      splitPart.rows = 0;
+      if (const expr::RewriteStats *st = sem.seamStats())
+        for (const auto &kv : st->rules)
+          if (kv.first().starts_with("row."))
+            splitPart.rows += kv.second;
+      splitPart.ackOn = ackOn;
+      splitPart.ackReads = ack.stats().reads;
+      splitPart.ackPairs = ack.stats().pairs;
+      splitPart.ackConstraints = ack.stats().constraints;
+      splitPart.dag = expr::dagSize(query);
+    }
     if (vcgenOnly) {
       // the VC is generated and checked; no solver (and none of the checks
       // that run one: --seam-check, --eq-audit, --x-read-table-check)
@@ -4845,6 +5282,7 @@ int main(int argc, char **argv) {
         .kv("time", solveSec)
         .kv("nodes-made", efac.nodesMade());
     SEA_PHASE_END(solvePhase);
+    splitPart.solveSeconds = solveSec;
     std::string solveSeconds =
         llvm::formatv("{0:f3}",
                       std::chrono::duration<double>(
@@ -5316,34 +5754,229 @@ int main(int argc, char **argv) {
       return replayOnOriginal(replayModel, sem, ctx, replay.run, ptrIntCheck);
     return 0;
   };
-  int rc = runVc(seamInb, seam && seamInb, "");
-  if (rc == kRetryExactCompanion) {
-    companionMode = CompanionMode::Exact;
-    rc = runVc(seamInb, seam && seamInb, " (fallback: sat under A-PTRINT)");
-  }
-  if (rc == kRetryWithoutStride) {
-    strideOn = false;
-    rc = runVc(seamInb, seam && seamInb,
-               " (fallback: the model breaks a GEP promise)");
+  // one VC and solver run with its fallbacks (a part of a split, or the
+  // whole query)
+  auto runOnce = [&]() -> int {
+    int rc = runVc(seamInb, seam && seamInb, "");
     if (rc == kRetryExactCompanion) {
       companionMode = CompanionMode::Exact;
       rc = runVc(seamInb, seam && seamInb, " (fallback: sat under A-PTRINT)");
     }
-  }
-  // the A-INB fallback keeps the rule: its firings that rest on A-INB (K,
-  // size-0 bases) are off without it.
-  if (rc == kRetryWithoutInb) {
-    // the lowering's drops still rest on A-INB, which this program breaks
-    if (dropFreshInb)
-      sea::diag::warn("vc.seam-inb-fallback-conditional",
-                      Twine("the run without A-INB still rests on it: the "
-                            "lowering dropped ") +
-                          Twine(dropFreshInb) +
-                          " memhavoc(s) that are no-ops only under A-INB "
-                          "(assume.a-inb), and an access of this program "
-                          "leaves its object: the answer is conditional on "
-                          "an assumption the program is known to break");
-    rc = runVc(false, false, " (fallback: an access leaves its object)");
+    if (rc == kRetryWithoutStride) {
+      strideOn = false;
+      rc = runVc(seamInb, seam && seamInb,
+                 " (fallback: the model breaks a GEP promise)");
+      if (rc == kRetryExactCompanion) {
+        companionMode = CompanionMode::Exact;
+        rc = runVc(seamInb, seam && seamInb, " (fallback: sat under A-PTRINT)");
+      }
+    }
+    // the A-INB fallback keeps the rule: its firings that rest on A-INB (K,
+    // size-0 bases) are off without it.
+    if (rc == kRetryWithoutInb) {
+      // the lowering's drops still rest on A-INB, which this program breaks
+      if (dropFreshInb)
+        sea::diag::warn("vc.seam-inb-fallback-conditional",
+                        Twine("the run without A-INB still rests on it: the "
+                              "lowering dropped ") +
+                            Twine(dropFreshInb) +
+                            " memhavoc(s) that are no-ops only under A-INB "
+                            "(assume.a-inb), and an access of this program "
+                            "leaves its object: the answer is conditional on "
+                            "an assumption the program is known to break");
+      rc = runVc(false, false, " (fallback: an access leaves its object)");
+    }
+    return rc;
+  };
+  int rc = 0;
+  if (!splitOn) {
+    rc = runOnce();
+  } else {
+    rc = [&]() -> int {
+      // --split-auto: the pick run, then the leaves of the top candidate
+      if (splitAuto) {
+        splitPickRun = true;
+        int prc = runVc(seamInb, false, "");
+        splitPickRun = false;
+        if (prc)
+          return prc;
+        unsigned shown = 0;
+        for (const SplitCandidate &c : splitCandidates) {
+          if (shown++ == 5)
+            break;
+          sea::out::Record rec("split-candidate");
+          rec.str("name", c.name)
+              .str("loc", c.loc)
+              .num("leaves", c.leaves)
+              .num("open_aliases", c.open);
+          rec.text = "split.candidate: name=" + c.name +
+                     " leaves=" + std::to_string(c.leaves) +
+                     " open-aliases=" + std::to_string(c.open) +
+                     " loc=" + (c.loc.empty() ? "-" : c.loc);
+          gOut->emit(rec);
+        }
+        const SplitCandidate *pick = nullptr;
+        for (const SplitCandidate &c : splitCandidates)
+          if (c.open && c.leaves >= 2) {
+            pick = &c;
+            break;
+          }
+        if (!pick) {
+          sea::diag::warn("vc.split-auto-none",
+                          "--split-auto: no ite-valued address with at "
+                          "least two leaves is behind an open alias "
+                          "question");
+        } else {
+          for (const sea::SplitTarget &t : splitTargets)
+            if (t.value == pick->value)
+              pick = nullptr;
+          if (pick) {
+            splitTargets.push_back({sea::SplitTarget::Kind::Leaves, pick->value,
+                                    nullptr, pick->name, "auto"});
+            vout() << "split.auto-pick: " << pick->name << "\n";
+          }
+        }
+      }
+      // the parts, depth first: a run fixes the choices of its prefix and
+      // takes case 0 below it; its levels give the siblings to run later
+      std::vector<std::vector<unsigned>> todo{{}};
+      unsigned nUnsat = 0, nSat = 0, nUnknown = 0, nNone = 0;
+      double hardest = -1;
+      unsigned hardestId = 0;
+      std::vector<std::string> unknownParts;
+      bool stopped = false;
+      while (!todo.empty()) {
+        splitPrefix = std::move(todo.back());
+        todo.pop_back();
+        splitPart = SplitPartInfo();
+        {
+          sea::out::Record rec("split-part-start");
+          rec.num("part", splitPartId);
+          rec.text = "split.part-start: " + std::to_string(splitPartId);
+          gOut->emit(rec);
+          gOut->flush();
+        }
+        int prc = runOnce();
+        if (prc != 0 && prc != 3)
+          return prc; // an error or a bug: stop
+        const auto &lv = splitPart.levels;
+        if (lv.size() < splitPrefix.size()) {
+          sea::diag::error("vc.split-unstable",
+                           "a part met fewer split levels than its planned "
+                           "choices (the encoding is not deterministic)");
+          return 1;
+        }
+        // siblings below the prefix, deepest last (run first)
+        for (size_t i = splitPrefix.size(); i < lv.size(); ++i)
+          for (unsigned j = lv[i].first; j-- > 1;) {
+            std::vector<unsigned> p;
+            for (size_t k = 0; k < i; ++k)
+              p.push_back(lv[k].second);
+            p.push_back(j);
+            todo.push_back(std::move(p));
+          }
+        {
+          const SplitPartInfo &pi = splitPart;
+          sea::out::Record rec("split-part");
+          auto sec = [](double d) { return llvm::formatv("{0:f3}", d).str(); };
+          rec.num("part", splitPartId)
+              .str("choice", pi.choice)
+              .str("result", pi.result)
+              .set("vc_time", sec(pi.vcSeconds))
+              .set("solve_time", sec(pi.solveSeconds))
+              .num("dag", pi.dag)
+              .num("alias_open", pi.aliasOpen)
+              .num("alias_open_pairs", pi.aliasOpenPairs)
+              .num("alias_open_memop", pi.memopOpen)
+              .num("rows", pi.rows)
+              .num("ack_reads", pi.ackReads)
+              .num("ack_pairs", pi.ackPairs)
+              .num("ack_constraints", pi.ackConstraints)
+              .str("check", pi.check);
+          rec.text = "split.part: " + std::to_string(splitPartId) +
+                     " choice=" + pi.choice + " result=" + pi.result +
+                     " vc-time=" + sec(pi.vcSeconds) +
+                     " solve-time=" + sec(pi.solveSeconds) +
+                     " dag=" + std::to_string(pi.dag) +
+                     " alias-open=" + std::to_string(pi.aliasOpen) +
+                     " alias-open-pairs=" + std::to_string(pi.aliasOpenPairs) +
+                     " alias-open-memop=" + std::to_string(pi.memopOpen) +
+                     " rows=" + std::to_string(pi.rows) +
+                     " ack-reads=" + std::to_string(pi.ackReads) +
+                     " ack-pairs=" + std::to_string(pi.ackPairs) +
+                     " ack-constraints=" + std::to_string(pi.ackConstraints) +
+                     " check=" + pi.check;
+          gOut->emit(rec);
+          gOut->flush();
+          if (pi.result == "unsat")
+            ++nUnsat;
+          else if (pi.result == "sat")
+            ++nSat;
+          else if (pi.result == "none")
+            ++nNone;
+          else {
+            ++nUnknown;
+            unknownParts.push_back(std::to_string(splitPartId) + ":" +
+                                   pi.choice);
+          }
+          if (pi.solveSeconds > hardest) {
+            hardest = pi.solveSeconds;
+            hardestId = splitPartId;
+          }
+        }
+        ++splitPartId;
+        if (nSat && splitStopOnSat) {
+          stopped = !todo.empty();
+          break;
+        }
+        if (splitPartId + todo.size() > splitMaxParts) {
+          sea::diag::error(
+              "vc.split-max-parts",
+              "the split has more than " + Twine(unsigned(splitMaxParts)) +
+                  " parts (--split-max-parts); " + Twine(splitPartId) +
+                  " run, " + Twine(unsigned(todo.size())) +
+                  " known left: no verdict");
+          return 1;
+        }
+      }
+      const char *verdict = nSat       ? "sat"
+                            : nNone    ? "none"
+                            : nUnknown ? "unknown"
+                                       : "unsat";
+      {
+        sea::out::Record rec("split-verdict");
+        rec.str("result", verdict)
+            .num("parts", splitPartId)
+            .num("unsat", nUnsat)
+            .num("sat", nSat)
+            .num("unknown", nUnknown)
+            .num("none", nNone)
+            .num("hardest_part", hardestId)
+            .set("hardest_solve_time",
+                 llvm::formatv("{0:f3}", std::max(hardest, 0.0)).str());
+        if (stopped)
+          rec.str("stopped", "first-sat");
+        rec.text = std::string("split.verdict: ") + verdict +
+                   " parts=" + std::to_string(splitPartId) +
+                   " unsat=" + std::to_string(nUnsat) +
+                   " sat=" + std::to_string(nSat) +
+                   " unknown=" + std::to_string(nUnknown) +
+                   " none=" + std::to_string(nNone) +
+                   " hardest-part=" + std::to_string(hardestId) +
+                   " hardest-solve-time=" +
+                   llvm::formatv("{0:f3}", std::max(hardest, 0.0)).str() +
+                   (stopped ? " stopped=first-sat" : "");
+        gOut->emit(rec);
+        for (const std::string &u : unknownParts)
+          vout() << "split.unknown-part: " << u << "\n";
+      }
+      sea::out::Record rec("result");
+      rec.str("value", verdict);
+      rec.text = std::string("result: ") + verdict;
+      gOut->emit(rec);
+      gOut->flush();
+      return nSat || nUnknown == 0 ? 0 : 3;
+    }();
   }
   if (auditOn) {
     statOut() << auditReport;

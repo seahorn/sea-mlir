@@ -583,11 +583,22 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
   blockRanges.clear();
   pendingKeyed.clear();
   pendingKeyedRanges.clear();
+  // the defHook of the results of the op before (the loop below leaves an
+  // op at many places)
+  Operation *defined = nullptr;
+  auto runDefHook = [&]() {
+    if (defined && ctx.defHook)
+      for (Value r : defined->getResults())
+        ctx.defHook(r);
+    defined = nullptr;
+  };
   for (Operation &op : b.without_terminator()) {
+    runDefHook();
     // prints (weak or strong) encode nothing: no term, no side constraint
     // (docs/design/Print.md); their operands cost what their defs cost
     if (isPrintOp(&op))
       continue;
+    defined = &op;
     curOp = &op;
     auto in = [&](unsigned i) { return lookup(op.getOperand(i), ctx); };
     // A segment is the base address of a placed object. By default it is
@@ -876,6 +887,7 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
     // Ops are total, so definitions need no path condition.
     ctx.write(mkSymbReg(op.getResult(0)), val);
   }
+  runDefHook();
   settleKeyed(ctx);
   return success();
 }

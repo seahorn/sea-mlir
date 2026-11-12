@@ -135,6 +135,15 @@ Expr VCGen::computePathCondForBb(Block &bb,
 
   // -- update constant representing current bb
   Expr bbV = ctx.havoc(sem.mkSymbReg(&bb));
+  // -- case splitting may fix the guard (sea/VC/Split.h): the successors
+  // -- read it from the store
+  if (ctx.guardHook) {
+    Expr g = ctx.guardHook(&bb, bbV);
+    if (g != bbV) {
+      bbV = g;
+      ctx.values().write(sem.mkSymbReg(&bb), bbV);
+    }
+  }
 
   // -- an edge into bb is (SRC && DST). SeaHorn's VCGen also introduces an
   // -- edge variable for critical edges; BMC form has none (verifyBmcForm),
@@ -205,6 +214,9 @@ Expr VCGen::computePathCondForBb(Block &bb,
   if (bb.getNumArguments() > 0 && join == JoinEncoding::Ite)
     if (failed(sem.joinCompanions(bb, preds, edges, ctx, cases.get())))
       return Expr();
+  if (ctx.defHook)
+    for (BlockArgument arg : bb.getArguments())
+      ctx.defHook(arg);
   return bbV;
 }
 

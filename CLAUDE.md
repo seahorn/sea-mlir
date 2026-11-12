@@ -41,6 +41,8 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   execution of sea ops on a `SymStore`) and `VCGen.h` (block guards, edges,
   block arguments; BMC form check); `Names.h` (VC symbol names = printed
   MLIR names); `Replay.h` (model -> interpreter run, with validation);
+  `Split.h` (case splitting of the VC at the definitions of chosen values
+  / block guards, `sea-vc --split`, docs/design/Split.md);
   `sea/Expr/ExprMlir.hh` (Expr terminals holding mlir::Value / Block)
 - `lib/Transforms/` — passes: `sea-place-static` (abstract pointers ->
   constant addresses; each object is a `sea.segment`, whose result, the base
