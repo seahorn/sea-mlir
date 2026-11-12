@@ -35,7 +35,8 @@
 // Used only by `cmp.diff-base`, `cmp.size0-vacuous` and by `arm.skip` across
 // two bases (or dropping a size-0 provenance), and only on
 // the compares ROW makes between a store address and a read address
-// (`diffBase` of decideEq / decidePair, set by row() alone): a compare is not
+// (`diffBase` of decideEq / decidePair, set by row() and by overlap(), the
+// alias questions IS_OVERLAP those compares leave open): a compare is not
 // an access, so the equalities of the program (a one-past-the-end pointer
 // against the next object's base is legal C) never use it, whether they stand
 // in an address, a stored value or a condition.
@@ -1815,6 +1816,18 @@ public:
       uint64_t bytes = std::max<uint64_t>(1, widthOf(cellValue) / 8);
       return std::min<uint64_t>(ctxUnits, bytes);
     };
+    // an alias question (overlap(): the access context): its two pointers,
+    // one unit each, when each lies in an access OpSem recorded (the same
+    // term or a byte of it: inbRecorded), so that their A-INB follows from
+    // the run's. A numeral cancellation can leave a pointer that is no
+    // access byte (ptr.overlap.cancel-num): not stated (unexpressible)
+    if (op::ptr::isUnitOverlap(lhs)) {
+      if (!inbRecorded(lhs->arg(0), 1) || !inbRecorded(lhs->arg(2), 1))
+        return false;
+      out.push_back({lhs->arg(0), 1});
+      out.push_back({lhs->arg(2), 1});
+      return true;
+    }
     if (isOpX<SELECT>(lhs))
       readUnits = cellSpan(lhs);
     else if (isOpX<STORE>(lhs))
@@ -3580,26 +3593,88 @@ public:
   /// bv.eq.order orders an EQ; symmetric, no assumption). The other
   /// bit-vector compare rules (bv.eq.*) do not apply: the sides are
   /// pointers, not bit-vectors.
-  /// IS_OVERLAP(p, 1, q, 1) (D13, S4): decided as PTR_EQ(p, q) (ptrEq's
-  /// rules); what stays open stays an alias question (markAlias). Wider
-  /// overlaps are left to the solver.
+  /// IS_OVERLAP(p, 1, q, 1) (D13, S4): an access question, decided in the
+  /// access context, never reduced to a PTR_EQ. Its pointers are bytes of
+  /// two accesses (a ROW step's store and read addresses: rowCompare,
+  /// R-ABORT, W-ROW-CONGRUENT / -ALIGNED), or their numeral cancellation
+  /// below. In order:
+  ///  - decideEq with diffBase (as row() decides the same pair): different
+  ///    objects do not overlap whatever the offsets (cmp.diff-base, ARM
+  ///    across bases, cmp.size0-vacuous: uses A-INB, counted); RW_DONE.
+  ///  - ITE-EQ over the address ites (buildEq with diffBase, as
+  ///    rowCompareEq), the open leaves alias questions again (markAlias).
+  ///  - one object, offsets undecided: the compare of the offsets
+  ///    (cmp.same-base, exact; the census records it as an open
+  ///    same-object question).
+  ///  - ptr.overlap.cancel-num: IS_OVERLAP(p + r1, 1, q + r2, 1) ~>
+  ///    IS_OVERLAP(p + (r1 - t), 1, q + (r2 - t), 1) (cancelNumerals: exact
+  ///    on addresses). p + r1 - t need not be an access address, so the
+  ///    access context must not read in-object ranges of it as facts. It
+  ///    does not: what the access context adds to a program compare is
+  ///    object identity only (cmp.diff-base and cmp.size0-vacuous read the
+  ///    bases of the two views; ARM across bases reads each leaf's
+  ///    provenance, its intervals are exact claims about the term, no
+  ///    A-INB in them: AddrRangeMap.hh). The cancellation keeps the base
+  ///    of every leaf (numeralPart: the K, c of a node, the same ite), so
+  ///    a decision of the cancelled question is one about the accesses.
+  ///  - the sides ordered by id (ptr.overlap.order; symmetric for unit
+  ///    widths).
+  /// Only n = m = 1 (the byte fallback and the ROW steps build no other);
+  /// wider overlaps are left to the solver, the cancellation included.
   RewriteResult overlap(const Expr &exp, bool order) {
     if (!op::ptr::isUnitOverlap(exp))
       return {exp, RWStatus::RW_DONE};
-    const Expr e = mk<PTR_EQ>(exp->arg(0), exp->arg(2));
-    RewriteResult r = ptrEq(e, order);
-    if (r.exp == e)
-      return {exp, RWStatus::RW_DONE};
-    Expr res = markAlias(r.exp);
-    // an undecided same-object question becomes a compare of the offsets
-    // (no pointer left to mark): recorded for the census
-    // (seam.alias.open.same-object), the query unchanged
-    if (!isOpX<TRUE>(res) && !isOpX<FALSE>(res) && !isOpX<IS_OVERLAP>(res)) {
-      auto va = view(exp->arg(0)), vb = view(exp->arg(2));
-      if (va && vb && va->base == vb->base)
-        m_aliasReduced.insert(res);
+    const Expr a = exp->arg(0), b = exp->arg(2);
+    Decision d;
+    Tri t = decideEq(a, b, d, /*diffBase=*/true); // uses: A-INB
+    if (t != Tri::Unknown) {
+      countReasons(d);
+      countPremises(d.premises);
+      m_stats.count("ptr.overlap.decided");
+      return {t == Tri::Yes ? mk<TRUE>(m_efac) : mk<FALSE>(m_efac),
+              RWStatus::RW_DONE};
     }
-    return {res, r.status};
+    const Expr as = op::ptr::stripObservation(a),
+               bs = op::ptr::stripObservation(b);
+    if (isOpX<ITE>(as) || isOpX<ITE>(bs)) {
+      llvm::SmallVector<std::pair<Expr, Expr>, 4> pairs;
+      if (m_opts.pushEqIte && eqPairs(as, bs, pairs, m_opts.maxEqLeaves)) {
+        unsigned depth = 0, resolved = 0, premises = PremNone;
+        bool reduced = false;
+        RewriteStats scratch;
+        std::swap(scratch, m_stats);
+        Expr built = buildEq(as, bs, depth, resolved, /*diffBase=*/true,
+                             reduced, premises, /*shadow=*/false,
+                             /*ptrLeaf=*/true);
+        std::swap(scratch, m_stats);
+        if (resolved) {
+          m_stats.merge(scratch);
+          m_stats.count("ptr.overlap.ite-push");
+          countPremises(premises);
+          return {markAlias(built), levels(depth + (reduced ? 1 : 0))};
+        }
+      }
+    } else {
+      std::optional<PtrView> pa = view(as), pb = view(bs);
+      if (pa && pb && pa->base == pb->base) {
+        m_stats.count("cmp.same-base");
+        // an undecided same-object question becomes a compare of the
+        // offsets: recorded for the census (seam.alias.open.same-object)
+        Expr res = mk<EQ>(offSum(pa->off), offSum(pb->off));
+        m_aliasReduced.insert(res);
+        return {res, RWStatus::RW_1};
+      }
+    }
+    Expr ca, cb;
+    if (cancelNumerals(a, b, ca, cb)) {
+      m_stats.count("ptr.overlap.cancel-num");
+      return {op::ptr::overlap(ca, 1, cb, 1), RWStatus::RW_2};
+    }
+    if (order && bvnorm::Rules::idLess(b, a)) {
+      m_stats.count("ptr.overlap.order");
+      return {op::ptr::overlap(b, 1, a, 1), RWStatus::RW_1};
+    }
+    return {exp, RWStatus::RW_DONE};
   }
 
   /// the offset compares same-object alias questions were reduced to
@@ -3628,32 +3703,41 @@ public:
   /// of its promise); an unflagged node: r = c + K read signed, core = the
   /// node with c = K = 0 (its base, recursively, if it has no index); an
   /// ite whose leaves have one r: that r, core = the ite of their cores; any
-  /// other term: r = 0, core = a.
-  void numeralPart(const Expr &a, unsigned n, Expr &core, mpz_class &r) const {
+  /// other term: r = 0, core = a. \p core null: r only, no term built
+  /// (cancelNumerals builds the cores only when the rule fires). The core
+  /// has the base of \p a at every leaf (the same ites).
+  void numeralPart(const Expr &a, unsigned n, Expr *core, mpz_class &r) const {
     using namespace op;
     if (ptr::isFlagged(a.get())) {
-      ExprVector kids(a->args_begin(), a->args_end());
-      kids.back() = mkTerm<mpz_class>(mpz_class(0L), m_efac);
-      core = m_efac.mkNary(a->op(), kids);
       r = ptr::byteOffset(a);
+      if (core) {
+        ExprVector kids(a->args_begin(), a->args_end());
+        kids.back() = mkTerm<mpz_class>(mpz_class(0L), m_efac);
+        *core = m_efac.mkNary(a->op(), kids);
+      }
       return;
     }
     // an ite whose leaves have one numeral part: the ite of their cores
     // (at most maxEqLeaves leaves)
     if (isOpX<ITE>(a) &&
         leafCount(a, m_opts.maxEqLeaves) <= m_opts.maxEqLeaves) {
-      Expr ct, ce;
       mpz_class rt, re;
-      numeralPart(a->arg(1), n, ct, rt);
-      numeralPart(a->arg(2), n, ce, re);
+      numeralPart(a->arg(1), n, nullptr, rt);
+      numeralPart(a->arg(2), n, nullptr, re);
       if (rt == re) {
-        core = mk<ITE>(a->arg(0), ct, ce);
         r = rt;
+        if (core) {
+          Expr ct, ce;
+          numeralPart(a->arg(1), n, &ct, rt);
+          numeralPart(a->arg(2), n, &ce, re);
+          *core = mk<ITE>(a->arg(0), ct, ce);
+        }
         return;
       }
     }
     if (!ptr::isPtrIndex(a)) {
-      core = a;
+      if (core)
+        *core = a;
       r = 0;
       return;
     }
@@ -3665,12 +3749,14 @@ public:
       r = r + v;
       return;
     }
-    std::vector<std::pair<Expr, mpz_class>> idx;
-    for (size_t k = 0; k < ptr::numIndices(a); ++k)
-      idx.push_back({ptr::index(a, k), ptr::stride(a, k)});
-    core = ptr::ptrIndex(PtrOpKind::PTR_INDEX, ptr::base(a), idx, mpz_class(0L),
-                         mpz_class(0L));
     r = v;
+    if (core) {
+      std::vector<std::pair<Expr, mpz_class>> idx;
+      for (size_t k = 0; k < ptr::numIndices(a); ++k)
+        idx.push_back({ptr::index(a, k), ptr::stride(a, k)});
+      *core = ptr::ptrIndex(PtrOpKind::PTR_INDEX, ptr::base(a), idx,
+                            mpz_class(0L), mpz_class(0L));
+    }
   }
 
   /// core + r as a node: a flagged core takes r into its K (the form
@@ -3701,32 +3787,41 @@ public:
                          mpz_class(0L));
   }
 
-  /// ptr.eq.cancel-num: PTR_EQ(p + r1, q + r2) ~> PTR_EQ(p + (r1 - t), q +
-  /// (r2 - t)), r1 and r2 nonzero of one sign, t the one nearer 0
-  /// (numeralPart; the common numeral
-  /// cancels, addition mod 2^n is cancellative: exact, no assumption). The
-  /// byte k of two accesses compares as the accesses' starts: the unit
-  /// overlap(P + c + k, 1, Q + d + k, 1) of the byte fallback becomes
-  /// PTR_EQ(P + c, Q + d) for every k, one term (concat-pull splits the 8
-  /// bytes of a split pointer load on it). RW_2: the compare and its new
-  /// nodes.
-  std::optional<RewriteResult> ptrEqCancelNum(const Expr &exp) {
-    const unsigned n = widthOf(exp->arg(0));
-    if (n == 0 || n != widthOf(exp->arg(1)))
-      return std::nullopt;
-    Expr ca, cb;
+  /// The common numeral of two pointers \p p = p' + r1 and \p q = q' + r2
+  /// (numeralPart), r1 and r2 nonzero of one sign, t the one nearer 0:
+  /// \p pc = p' + (r1 - t), \p qc = q' + (r2 - t); false if nothing
+  /// cancels. pc - qc = p - q (addition mod 2^n is cancellative: exact, no
+  /// assumption). A side whose numeral is 0 keeps its form: nothing is
+  /// moved onto it.
+  bool cancelNumerals(const Expr &p, const Expr &q, Expr &pc, Expr &qc) const {
+    const unsigned n = widthOf(p);
+    if (n == 0 || n != widthOf(q))
+      return false;
     mpz_class ra, rb;
-    numeralPart(exp->arg(0), n, ca, ra);
-    numeralPart(exp->arg(1), n, cb, rb);
-    // both numerals of one sign: t the one nearer 0 (a side whose numeral
-    // is 0 keeps its form: nothing is moved onto it)
-    if (mpz_sgn(ra.get_mpz_t()) == 0 ||
-        mpz_sgn(ra.get_mpz_t()) != mpz_sgn(rb.get_mpz_t()))
-      return std::nullopt;
+    numeralPart(p, n, nullptr, ra);
+    if (mpz_sgn(ra.get_mpz_t()) == 0)
+      return false;
+    numeralPart(q, n, nullptr, rb);
+    if (mpz_sgn(ra.get_mpz_t()) != mpz_sgn(rb.get_mpz_t()))
+      return false;
     const mpz_class t =
         mpz_sgn(ra.get_mpz_t()) > 0 ? (ra < rb ? ra : rb) : (ra < rb ? rb : ra);
-    Expr a = withNumeral(ca, n, ra - t), b = withNumeral(cb, n, rb - t);
-    if (a == exp->arg(0) && b == exp->arg(1))
+    Expr ca, cb;
+    numeralPart(p, n, &ca, ra);
+    numeralPart(q, n, &cb, rb);
+    pc = withNumeral(ca, n, ra - t);
+    qc = withNumeral(cb, n, rb - t);
+    return pc != p || qc != q;
+  }
+
+  /// ptr.eq.cancel-num: PTR_EQ(p + r1, q + r2) ~> PTR_EQ(p + (r1 - t), q +
+  /// (r2 - t)) (cancelNumerals: exact, no assumption). A program compare:
+  /// address equality cancels exactly. The alias questions of two accesses
+  /// (IS_OVERLAP) cancel by their own rule (ptr.overlap.cancel-num in
+  /// overlap()). RW_2: the compare and its new nodes.
+  std::optional<RewriteResult> ptrEqCancelNum(const Expr &exp) {
+    Expr a, b;
+    if (!cancelNumerals(exp->arg(0), exp->arg(1), a, b))
       return std::nullopt;
     m_stats.count("ptr.eq.cancel-num");
     return RewriteResult{mk<PTR_EQ>(a, b), RWStatus::RW_2};
@@ -4680,10 +4775,14 @@ public:
   /// \p premises gets the premises of the leaves it resolved (and the
   /// premise counter is bumped for them). uses: A-INB, through buildEq.
   /// \p shadow: the step is in a shadow memory: no A-INB, the leaves are
-  /// decided by object identity (decidePair, shadow.distinct-base).
+  /// decided by object identity (decidePair, shadow.distinct-base), and the
+  /// open leaves stay PTR_EQ: a shadow cell is keyed by an object's base, not
+  /// an access, so it is no alias question (overlap() would decide it in the
+  /// access context).
   Expr rowCompare(const Expr &i, const Expr &idx, unsigned &depth,
                   bool &reduced, unsigned &premises, bool shadow = false) {
-    return markAlias(rowCompareEq(i, idx, depth, reduced, premises, shadow));
+    Expr cmp = rowCompareEq(i, idx, depth, reduced, premises, shadow);
+    return shadow ? cmp : markAlias(cmp);
   }
 
   /// The pointer compares of a ROW compare as alias questions (D13, S4):

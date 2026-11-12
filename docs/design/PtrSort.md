@@ -71,30 +71,51 @@ Observations (the only ways out):
 - `PTR_EQ(p, q) : Bool`: pointer equality = address equality (D6);
   `sea.addr.cmp eq / ne` and the eq join of pointer block arguments.
   Ordered compares are bit-vector compares of `ADDR`s. SeaM's `ptrEq`
-  applies `eq()`'s pointer rules, cancels a common numeral
-  (`ptr.eq.cancel-num`: `PTR_EQ(p + r1, q + r2)` with r1, r2 of one sign
-  becomes the compare with the one nearer 0 subtracted from both; r is K
-  of a flagged node, c + K of an unflagged one, the common r of an ite's
-  leaves; exact, addition mod 2^w) and orders the sides (`ptr.eq.order`);
-  the bit-vector compare rules do not apply. Byte k of two accesses
-  then compares as their starts: the eight unit overlaps
-  `overlap(p + K=k, 1, q + K=k, 1)` of a split pointer are one term.
+  applies `eq()`'s pointer rules in the program context (no A-INB: a
+  one-past-the-end pointer may equal the next object's base), cancels a
+  common numeral (`ptr.eq.cancel-num`: `PTR_EQ(p + r1, q + r2)` with r1,
+  r2 of one sign becomes the compare with the one nearer 0 subtracted
+  from both; r is K of a flagged node, c + K of an unflagged one, the
+  common r of an ite's leaves; exact, addition mod 2^w) and orders the
+  sides (`ptr.eq.order`); the bit-vector compare rules do not apply.
 - `IS_OVERLAP(p, n, q, m) : Bool` (D13): do the n units at p and the m
   units at q share an address (on the circle: `addr(q) - addr(p) <u n` or
-  `addr(p) - addr(q) <u m`)? An alias question the rewriter left open: the
-  compare of a ROW step (rowCompare, so also store-map R-ABORT entries;
-  W-ROW-CONGRUENT / -ALIGNED) is
-  `IS_OVERLAP(p, 1, q, 1)`, decided by `ptrEq`'s rules where they can, and
-  what stays open stays an `IS_OVERLAP` (erased to the address `EQ`, so the
-  query is the one before). Program compares stay `PTR_EQ`. Keeping alias
-  queries explicit allows unresolved queries to be counted
-  (`--seam-stats`: `seam.alias.open.<kind>`, by what the two pointers'
-  views say, per leaf pair of an ite pointer: `seam.alias.open-pairs.<kind>`
-  counts the pairs, and a question is the least decided kind among them),
-  and, later, a partial aliasing scenario chosen as a named
-  assumption when aliasing makes a query hard. The open in-tests of reads
-  over memory-operation terms (`(j - d) <u n`, SeaM-memops.md) are counted
-  as `seam.alias.open-memop.<kind>`.
+  `addr(p) - addr(q) <u m`)? An alias question of two accesses: the
+  compare of a ROW step that the rewriter left open (rowCompare, so also
+  store-map R-ABORT entries; W-ROW-CONGRUENT / -ALIGNED) is
+  `IS_OVERLAP(p, 1, q, 1)`. It stays an `IS_OVERLAP`; it is never reduced
+  to a `PTR_EQ`. SeaM's `overlap` decides it in the access context, as ROW
+  decides the compare it came from (`decideEq` with diffBase): different
+  objects do not overlap, whatever the offsets (`cmp.diff-base`, ARM
+  across bases, `cmp.size0-vacuous`; uses A-INB, counted, and stated by
+  `--seam-check` when both pointers are bytes of recorded accesses). Then
+  the ite push with the open leaves marked again, one object's offsets
+  compared (`cmp.same-base`, recorded for the census), the numeral
+  cancellation, and the order of the sides (`ptr.overlap.order`).
+  `ptr.overlap.cancel-num`, only for n = m = 1:
+  `IS_OVERLAP(p + r1, 1, q + r2, 1)` becomes
+  `IS_OVERLAP(p + (r1 - t), 1, q + (r2 - t), 1)` (r and t as for
+  `ptr.eq.cancel-num`; exact on addresses). Byte k of two accesses then
+  asks as their starts: the eight unit overlaps
+  `overlap(p + K=k, 1, q + K=k, 1)` of a split pointer are one term. A
+  cancelled pointer need not be an access address (p + r1 is the access,
+  p + r1 - t maybe not), so the access context may not read an in-object
+  range of it as a fact. It does not: what it adds to the program context
+  is object identity only (the bases of the two views, the provenance of
+  each ARM leaf; ARM's intervals are exact claims about the term). The
+  cancellation keeps the base of every leaf, so a decision of the
+  cancelled question is a decision about the two accesses. Shadow
+  memories (keyed by object identity, not accessed) keep their compares
+  as `PTR_EQ`. What stays open is erased to the address `EQ` (unit
+  widths), so the query is the one before. Keeping alias questions
+  explicit allows unresolved ones to be counted (`--seam-stats`:
+  `seam.alias.open.<kind>`, by what the two pointers' views say, per leaf
+  pair of an ite pointer: `seam.alias.open-pairs.<kind>` counts the pairs,
+  and a question is the least decided kind among them) and, later, a
+  partial aliasing scenario chosen as a named assumption (A-SEP) when
+  aliasing makes a query hard. The open in-tests of reads over
+  memory-operation terms (`(j - d) <u n`, SeaM-memops.md) are counted as
+  `seam.alias.open-memop.<kind>`.
 
 Equality (`EQ`) refuses `ptr(w)` arguments. Memories indexed by addresses
 are `array(ptr(w), bv(c))` (D1): the Select / Store typing rule is the check
@@ -153,7 +174,8 @@ erased before every backend; lambda mode excepted), D6 (`PTR_EQ`), D7
 (`--vc-typecheck` default on), D9 (S1 before S2), D10 / D10a / D12 (keyed
 companions, the align fix; the fat cell and its shared antecedent
 withdrawn, D14), D15 (`--ptr-mode=auto`), D17 (no A-REPROV).
-D13 (`IS_OVERLAP`, first use: the open compare of a ROW step, counted;
+D13 (`IS_OVERLAP`, first use: the open compare of a ROW step, counted,
+decided in the access context, never a `PTR_EQ`;
 not yet: the memory-operation range tests, the wide byte fallback,
 wider than one unit).
 Open: D8 (Lean: a pointer as a structure, S5), D11 (A-PTRINT, built as --ptr-companion=assume with its discharge =check,
@@ -237,7 +259,7 @@ the abstract program, only for a corpus that needs it; vcc has none).
   In the unit test (`test/VC/seam/congruence.mlir`) nothing else decides
   them.
 - Census of same-object alias questions (D13). An undecided same-base
-  compare is reduced by `ptrEq` to an integer compare of the offsets, so
+  compare is reduced by `overlap` to an integer compare of the offsets, so
   there is no pointer left to mark. The W-BYTE-IN guard `(j - i) <u w` is
   the same kind of question, as is a leaf of a ROW compare tree reduced to
   an offset compare (rowCompareEq). All are recorded (`Rules::aliasReduced`), and

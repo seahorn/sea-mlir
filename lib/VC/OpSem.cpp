@@ -269,7 +269,8 @@ Expr SeaOpSem::accessPremise(const RewriteTrail &trail,
   // the width of its own access
   llvm::SmallVector<std::pair<Expr, uint64_t>, 4> spans;
   if (!seamRw->rules().accessSpans(f.lhs, c.units, spans)) {
-    why = "A-INB firing on a term that is not a select, store or wselect";
+    why = "A-INB firing on a term that is not a select, store or wselect, "
+          "or an overlap of recorded access bytes";
     return Expr();
   }
   ExprVector conj;

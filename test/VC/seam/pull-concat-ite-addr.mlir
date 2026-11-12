@@ -3,8 +3,8 @@
 // (no object, no view). Byte k of the load is ite(g_k, byte_k(X), old_k),
 // g_k the overlap of byte k of the store with byte k of the load; the
 // byte pairs k != k' are decided apart by --seam-congruence (8x + d, d not
-// 0 mod 8). ptr.eq.cancel-num makes g_k one term g for every k (the common
-// K cancels inside the ite), so concat-pull splits the eight bytes once on
+// 0 mod 8). ptr.overlap.cancel-num makes g_k one term g for every k (the
+// common K cancels inside the ite), so concat-pull splits the eight bytes once on
 // g and the then side reassembles X: ite(g, X, from_bits(old)). Without
 // the cancellation the eight guards differ and the rule spends its 8
 // pulls without a shared split. Split pointers left: the load of p itself

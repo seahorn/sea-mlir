@@ -1,15 +1,15 @@
-// ptr.eq.cancel-num: a pointer stored at q + 8 and loaded at p + 8 in byte
-// mode (no --seam-wide), p and q loaded pointers (no object, no view). The
+// ptr.overlap.cancel-num: a pointer stored at q + 8 and loaded at p + 8 in
+// byte mode (no --seam-wide), p and q loaded pointers (no object, no view). The
 // byte fallback asks overlap(q+8 [K=k], 1, p+8 [K=k], 1) for byte k of the
 // load against byte k of the store, eight terms that differ only in K. The
 // common numeral cancels (addition mod 2^64; no assumption): every one is
-// overlap(q+8, 1, p+8, 1), one alias question. The byte pairs k != k'
+// overlap(q+8, 1, p+8, 1), one alias question (an IS_OVERLAP, not a PTR_EQ). The byte pairs k != k'
 // (partial overlaps of misaligned pointers) cancel to one term per
 // difference k - k' (14): 15 open questions, 64 without the rule.
 // RUN: sea-vc %s --lower --seam --seam-stats 2>&1 | FileCheck %s
 // RUN: sea-vc %s --lower --seam --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // CHECK: seam.alias.open.all: 15
-// CHECK: seam.rule.ptr.eq.cancel-num: {{[1-9]}}
+// CHECK: seam.rule.ptr.overlap.cancel-num: {{[1-9]}}
 // CHECK: result: unsat
 // CHK: result: unsat
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
