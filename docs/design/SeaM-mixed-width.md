@@ -327,6 +327,25 @@ decided or no rewrite):
   below. Before: single views, numeral lengths only. Tests:
   test/VC/seam/wide-memop-leaves.mlir.
 
+R-LEAVES (`Rules::leafSplit`, byte and wide reads, `--seam-leaf-split`,
+default on): a read at an ite address is the ite of the reads at its
+leaves, `read(M, ite(c, a1, a2)) ~> ite(c, read(M, a1), read(M, a2))`
+(exact, no premise), only when every leaf read is decided down the whole
+memory (`leafWalk`: each write met is decided by the rule the leaf read
+meets there, down to a write that gives the read or to a memory without
+writes), a write gives some leaf, and some leaf is not decided apart from
+the top write. The read of W-ITE and of ROW keeps j below a write it
+partly decides: a read at `ite(e, S + 0, ite(e', S + 8, S + 24))` over
+stores at S + 0, S + 8 and S + 24 left a read of the initial memory at the
+whole ite, under guards that together cover every leaf, and a pointer
+loaded there was `from_bits(concat(byte ites))` with every access through
+it an alias question. A split pointer load whose bytes then share one ite
+spine of split-address conditions is the ite of the stored pointers
+(`ptr.load-resolve-leaves`, all leaves or nothing; other shared
+conditions, a join's, stay `--seam-pull-concat`'s). The general split over an ite index (SeaM-memops.md)
+stays dropped: no split while a leaf stays open. Counters `row.leaf-split`,
+`row.leaf-split-leaves`. Tests: test/VC/seam/row-leaf-split.mlir.
+
 Alignment, two sources:
 1. Proved: the linear form of the address: a registered object base with
    alignment >= w (the registry has `align`), plus a numeral multiple of

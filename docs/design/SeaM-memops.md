@@ -229,7 +229,9 @@ lines where the --seam verdict differs: the n > K programs).
   objects than d's (`arm.skip`, A-INB; d needs a view, so that its range
   premise can be stated). A split of the read over an ite index whose
   branches decide was tried and dropped (hash_iter_begin: DAG 15.7k ->
-  21.6k, z3 29 -> 41 s).
+  21.6k, z3 29 -> 41 s). R-LEAVES (SeaM-mixed-width.md) splits only when
+  every leaf read is decided down the whole memory (hash_iter_begin: no
+  firing, the query is unchanged).
 - Boundary: `MemOpTranslator` as specified (memo by node and by (memory,
   index); store-maps expanded first); counted `memop.translated`. The
   query fails with `vc.memop-term-at-boundary` on a refusal; replay treats

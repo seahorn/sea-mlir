@@ -9,13 +9,15 @@
 // ite(c, A + 4, B + 4): Sub(4) on both leaves, the high half of the value.
 // @cross: an 8-byte store at B, a read at ite(c, A + 8, A): Skip on both
 // leaves by A-INB (no `align`: neither W-ROW-ALIGNED nor congruence).
-// RUN: sea-vc %s --lower --program=mixed --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,MIXED
+// @mixed runs with --seam-leaf-split=0: R-LEAVES (row-leaf-split.mlir)
+// decides its read first, leaf by leaf down the memory.
+// RUN: sea-vc %s --lower --program=mixed --seam --seam-wide --seam-leaf-split=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,MIXED
 // RUN: sea-vc %s --lower --program=sub --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,SUB
 // RUN: sea-vc %s --lower --program=cross --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,CROSS
 // (z3 runs out of the 10 s check limit on the mixed firing, a z3
 // performance case, not soundness; Bitwuzla and Yices also run it)
-// RUN: %if bitwuzla %{ sea-vc %s --lower --program=mixed --seam --seam-wide --seam-check --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=CHK %}
-// RUN: %if yices %{ sea-vc %s --lower --program=mixed --seam --seam-wide --seam-check --solver=yices 2>&1 | FileCheck %s --check-prefix=CHK %}
+// RUN: %if bitwuzla %{ sea-vc %s --lower --program=mixed --seam --seam-wide --seam-leaf-split=0 --seam-check --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=CHK %}
+// RUN: %if yices %{ sea-vc %s --lower --program=mixed --seam --seam-wide --seam-leaf-split=0 --seam-check --solver=yices 2>&1 | FileCheck %s --check-prefix=CHK %}
 // RUN: sea-vc %s --lower --program=sub --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --program=cross --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // CHECK-NOT: seam.alias.open

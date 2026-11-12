@@ -8,10 +8,12 @@
 // leaf (zero), Out on the A leaf (another object): ite(c, 0, <old word>).
 // @mcopy / @mhavoc: a symbolic length at D, a read at ite(c, A, B): Out on
 // both leaves by A-INB; the read moves below the term.
-// RUN: sea-vc %s --lower --program=mset --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,MSET
+// @mset runs with --seam-leaf-split=0: R-LEAVES (row-leaf-split.mlir)
+// decides its read first, leaf by leaf down the memory.
+// RUN: sea-vc %s --lower --program=mset --seam --seam-wide --seam-leaf-split=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,MSET
 // RUN: sea-vc %s --lower --program=mcopy --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,INB
 // RUN: sea-vc %s --lower --program=mhavoc --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,INB
-// RUN: sea-vc %s --lower --program=mset --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
+// RUN: sea-vc %s --lower --program=mset --seam --seam-wide --seam-leaf-split=0 --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --program=mcopy --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --program=mhavoc --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // CHECK-NOT: seam.alias.open

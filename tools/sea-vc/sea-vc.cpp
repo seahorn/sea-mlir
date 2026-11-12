@@ -574,6 +574,16 @@ static cl::opt<bool> seamWideIteOpen(
              "every pair is decided (an open question, untuned)"),
     cl::init(false));
 
+static cl::opt<bool> seamLeafSplit(
+    "seam-leaf-split",
+    cl::desc("With --seam: R-LEAVES, a read at an ite address is the ite "
+             "of the reads at its leaves when every leaf read is decided "
+             "down the whole memory and a write gives some leaf (exact; "
+             "counters row.leaf-split, ptr.load-resolve-leaves for a split "
+             "pointer load whose bytes then share one ite spine). Default "
+             "on"),
+    cl::init(true));
+
 enum class CompanionMode { Off, Exact, Check, Assume };
 static cl::opt<CompanionMode> ptrCompanion(
     "ptr-companion",
@@ -1392,6 +1402,9 @@ TYPICAL:
                                  #   with undecided leaf pairs too (each a
                                  #   read at its leaf address; default:
                                  #   only when every pair is decided)
+  sea-vc p.mlir --lower --seam --seam-leaf-split=0  # keep reads at ite
+                                 #   addresses whole (default: split when
+                                 #   every leaf read is decided)
   sea-vc p.mlir --lower --seam --seam-congruence  # decide addresses
                                  #   apart by divisibility: 8i+1 vs 8j
                                  #   (exact; rule cmp.congruence)
@@ -2637,13 +2650,13 @@ int main(int argc, char **argv) {
   }
   if ((!seamInb || !seamRowExpand || !seamRowGroup || seamCheckInbPremise ||
        !seamLayout || !seamArm || !seamPruneSize0 || seamWide ||
-       seamWideIteOpen || seamPullIndex || seamResolveIteNodes ||
-       seamPullConcat || seamCongruence || ptrCompanion != CompanionMode::Off ||
-       !seamStoreMap || !seamSimplify) &&
+       seamWideIteOpen || !seamLeafSplit || seamPullIndex ||
+       seamResolveIteNodes || seamPullConcat || seamCongruence ||
+       ptrCompanion != CompanionMode::Off || !seamStoreMap || !seamSimplify) &&
       !seam)
     return fail("--seam-inb, --seam-row-expand, --seam-row-group, "
                 "--seam-check-inb-premise, --seam-layout, --seam-prune-size0, "
-                "--seam-wide, --seam-wide-ite-open, "
+                "--seam-wide, --seam-wide-ite-open, --seam-leaf-split, "
                 "--seam-arm, --seam-pull-index, --seam-resolve-ite-nodes, "
                 "--seam-pull-concat, --seam-congruence, --ptr-companion, "
                 "--seam-store-map and "
@@ -3179,6 +3192,7 @@ int main(int argc, char **argv) {
     seamOpts.pullConcatIte = seamPullConcat;
     seamOpts.congruence = seamCongruence;
     seamOpts.wideIteOpenLeaves = seamWideIteOpen;
+    seamOpts.leafSplit = seamLeafSplit;
     seamOpts.storeMap = seamStoreMap;
     seamOpts.simplify = simplify;
     seamOpts.plantBug = plantBug;

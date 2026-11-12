@@ -229,6 +229,11 @@ struct SeaMOptions {
   /// read goes to the byte fallback). Open question, untuned
   /// (sea-vc --seam-wide-ite-open).
   bool wideIteOpenLeaves = false;
+  /// R-LEAVES (Rules::leafSplit): a read (select, wselect) at an ite address
+  /// is split into the reads at its leaves when every leaf read is decided
+  /// down the whole memory and some leaf is given by a write.
+  /// Off: the read keeps its ite address (sea-vc --seam-leaf-split=0).
+  bool leafSplit = true;
   /// R-STRIDE (PtrIndex.md section 0c; sea-vc --seam-stride): in R-ABORT, an
   /// entry b + o is skipped for a read whose every leaf is a promised node
   /// over b whose offsets never reach o. Uses the promises (PremPtrIndex)
@@ -2252,6 +2257,8 @@ public:
     if (w == 0)
       return {exp, RWStatus::RW_DONE};
     const bool shadow = shadowMemory(arr);
+    if (std::optional<RewriteResult> res = leafSplit(exp))
+      return *res;
     if (isOpX<ITE>(op::ptr::stripObservation(i)) ||
         isOpX<ITE>(op::ptr::stripObservation(j)))
       if (std::optional<RewriteResult> res = rowWideLeaves(exp, arr, shadow))
@@ -2464,6 +2471,202 @@ public:
     return RewriteResult{res, RWStatus::RW_FULL};
   }
 
+  /// One step of a read of \p r bytes (a select: 1) at the address \p a, not
+  /// an ite, at the top write of \p mem, decided as the rule the read meets
+  /// there decides it: decideEq (row), wideRelation and the congruent
+  /// decideEq (rowWide), a numeral offset of the map's object or another
+  /// object (rowStoreMap, rowWideSmap), decideInPair (rowMemOp,
+  /// rowWideMemOp). Cover: the write gives the read (ROW's hit, W-HIT,
+  /// W-SUB, a store-map entry, an mset / mhavoc range); Below: the read
+  /// goes on in \p next (decided apart, a store-map miss, a narrower write
+  /// inside a wide read: the other bytes below); Base: a memory without
+  /// writes (an initial memory, a const array); Ite: an ite memory;
+  /// Undecided: anything else (an mcopy hit included). No term is built.
+  enum class LeafStep { Undecided, Cover, Below, Base, Ite };
+  LeafStep leafStep(const Expr &mem, const Expr &a, uint64_t r, Expr &next) {
+    const bool shadow = shadowMemory(mem);
+    if (isOpX<STORE>(mem) || isOpX<W_STORE>(mem)) {
+      const Expr i = mem->arg(1);
+      const uint64_t w = std::max<uint64_t>(1, widthOf(mem->arg(2)) / 8);
+      next = mem->arg(0);
+      Decision d;
+      if (r == 1 && isOpX<STORE>(mem)) {
+        Tri t = decideEq(i, a, d, /*diffBase=*/!shadow, shadow);
+        return t == Tri::Yes  ? LeafStep::Cover
+               : t == Tri::No ? LeafStep::Below
+                              : LeafStep::Undecided;
+      }
+      uint64_t k = 0;
+      WRel rel = wideRelation(i, w, a, r, k, d, shadow);
+      if (rel == WRel::Unknown && isOpX<W_STORE>(mem) && r == w &&
+          congruentStarts(i, a, w)) {
+        Tri t = decideEq(i, a, d, /*diffBase=*/!shadow, shadow);
+        rel = t == Tri::Yes  ? WRel::Hit
+              : t == Tri::No ? WRel::Skip
+                             : WRel::Unknown;
+      }
+      if (rel == WRel::Unknown)
+        return LeafStep::Undecided;
+      // Skip, or Super (the write inside the read: the other bytes below)
+      return rel == WRel::Hit || rel == WRel::Sub ? LeafStep::Cover
+                                                  : LeafStep::Below;
+    }
+    if (isOpX<STORE_MAP>(mem)) {
+      next = mem->arg(0);
+      std::optional<PtrView> v = view(a);
+      if (!v)
+        return LeafStep::Undecided;
+      if (v->base == mem->arg(1)) {
+        if (!op::bv::isBvNum(v->off))
+          return LeafStep::Undecided;
+        // a cell read of an entry: the entry; a miss, or a wide read (the
+        // entries and the word below): the memory below too
+        return r == 1 && m_smaps.find(mem->arg(2), numVal(v->off))
+                   ? LeafStep::Cover
+                   : LeafStep::Below;
+      }
+      return !shadow && distinctObjects(v->base, mem->arg(1))
+                 ? LeafStep::Below
+                 : LeafStep::Undecided;
+    }
+    if (isMemOpTerm(mem)) {
+      next = memOpBase(mem);
+      mpz_class nlo, nhi;
+      const bool haveN = lenRange(memOpLen(mem), nlo, nhi);
+      llvm::SmallVector<std::pair<Expr, Expr>, 8> pairs;
+      if (!eqPairs(a, memOpDst(mem), pairs, m_opts.maxDecideLeaves))
+        return LeafStep::Undecided;
+      bool allIn = true, allOut = true;
+      for (auto &p : pairs) {
+        Decision dp;
+        Range rg = decideInPair(p.first, p.second, haveN, nlo, nhi, dp, nullptr,
+                                !shadow, r);
+        allIn = allIn && rg == Range::In;
+        allOut = allOut && rg == Range::Out;
+      }
+      if (allOut)
+        return LeafStep::Below;
+      return allIn && !isOpX<MEM_COPY>(mem) ? LeafStep::Cover
+                                            : LeafStep::Undecided;
+    }
+    if (isOpX<ITE>(mem))
+      return LeafStep::Ite;
+    // no write: an initial memory (a constant), a const array; any other
+    // memory term is undecided
+    return mem->arity() == 0 || bind::isFapp(mem) || isOpX<CONST_ARRAY>(mem)
+               ? LeafStep::Base
+               : LeafStep::Undecided;
+  }
+
+  /// The walk of a read of \p r bytes at \p a (not an ite) down \p mem0 by
+  /// leafStep: Cover (some write gives it), Base (every write decided apart
+  /// down to a memory without writes), Undecided (a write on the way is
+  /// not decided). An ite memory: Undecided if a side is, else Cover if a
+  /// side is. A lookahead for leafSplit only: nothing is rewritten here, so
+  /// the premises of the decisions are not this firing's (each leaf read
+  /// is rewritten in its own firing, with its own). Memoized per (memory,
+  /// address, r).
+  LeafStep leafWalk(const Expr &mem0, const Expr &a, uint64_t r) {
+    std::vector<Expr> path;
+    Expr mem = mem0;
+    LeafStep res = LeafStep::Undecided;
+    while (true) {
+      auto it = m_leafMemo.find(std::make_tuple(mem.get(), a.get(), r));
+      if (it != m_leafMemo.end()) {
+        res = it->second;
+        break;
+      }
+      path.push_back(mem);
+      Expr next;
+      LeafStep s = leafStep(mem, a, r, next);
+      if (s == LeafStep::Below) {
+        mem = next;
+        continue;
+      }
+      if (s == LeafStep::Ite) {
+        LeafStep t = leafWalk(mem->arg(1), a, r);
+        LeafStep e = leafWalk(mem->arg(2), a, r);
+        res = t == LeafStep::Undecided || e == LeafStep::Undecided
+                  ? LeafStep::Undecided
+              : t == LeafStep::Cover || e == LeafStep::Cover ? LeafStep::Cover
+                                                             : LeafStep::Base;
+      } else {
+        res = s;
+      }
+      break;
+    }
+    for (const Expr &m : path) {
+      m_leafMemo[std::make_tuple(m.get(), a.get(), r)] = res;
+      m_leafPin.push_back(m);
+    }
+    m_leafPin.push_back(a);
+    return res;
+  }
+
+  /// R-LEAVES: a read at an ite address is the ite of the reads at its
+  /// leaves (exact, no premise: on the paths that select a leaf, the address
+  /// is that leaf):
+  ///   read(M, ite(c, a1, a2)) ~> ite(c, read(M, a1), read(M, a2))
+  /// when every leaf read is decided down the whole memory (leafWalk: none
+  /// Undecided, so the split leaves no read at an ite address and no
+  /// compare open), some leaf is given by a write (Cover: a read that only
+  /// reaches the initial memory stays one read), and some leaf is not
+  /// decided apart from the top write (otherwise ROW skips the whole read
+  /// first and the split waits for the write that gives a leaf). At most
+  /// maxDecideLeaves leaves; the address's own ites are the conditions. A
+  /// general split over an ite index was measured against keeping it
+  /// (SeaM-memops.md, "ite indices"): it grows the DAG when leaves stay
+  /// open; here none does. A pointer or word load then reads the stored
+  /// value per leaf. RW_FULL (new reads).
+  std::optional<RewriteResult> leafSplit(const Expr &exp) {
+    if (!m_opts.leafSplit)
+      return std::nullopt;
+    const Expr mem = exp->arg(0), j = exp->arg(1);
+    if (!isOpX<ITE>(j) || m_bases.lookup(j))
+      return std::nullopt;
+    if (!isOpX<STORE>(mem) && !isOpX<W_STORE>(mem) && !isOpX<STORE_MAP>(mem) &&
+        !isMemOpTerm(mem))
+      return std::nullopt;
+    const bool wideRead = isOpX<W_SELECT>(exp);
+    const uint64_t r = wideRead ? op::bv::width(exp->arg(2)) / 8 : 1;
+    unsigned leaves = 0;
+    bool ok = true, cover = false, topOpen = false;
+    ExprVector conds;
+    std::function<Expr(const Expr &)> tree = [&](const Expr &e) -> Expr {
+      if (!ok)
+        return Expr();
+      if (isOpX<ITE>(e) && !m_bases.lookup(e)) {
+        Expr t = tree(e->arg(1));
+        Expr f = tree(e->arg(2));
+        if (ok)
+          conds.push_back(e->arg(0));
+        return ok ? mk<ITE>(e->arg(0), t, f) : Expr();
+      }
+      const Expr a = op::ptr::stripObservation(e);
+      LeafStep s = LeafStep::Undecided;
+      if (++leaves <= m_opts.maxDecideLeaves)
+        s = leafWalk(mem, a, r);
+      if (s == LeafStep::Undecided) {
+        ok = false;
+        return Expr();
+      }
+      cover = cover || s == LeafStep::Cover;
+      Expr next;
+      topOpen = topOpen || leafStep(mem, a, r, next) != LeafStep::Below;
+      return wideRead ? op::array::wselect(mem, e, exp->arg(2),
+                                           op::array::promisedAlign(exp))
+                      : op::array::select(mem, e);
+    };
+    Expr res = tree(j);
+    if (!ok || !res || !cover || !topOpen)
+      return std::nullopt;
+    m_stats.count("row.leaf-split");
+    m_stats.rules["row.leaf-split-leaves"] += leaves;
+    for (const Expr &c : conds)
+      m_leafConds.insert(c);
+    return RewriteResult{res, RWStatus::RW_FULL};
+  }
+
   /// A wselect: over a store / wstore (rowWide), through an ite (exact),
   /// across a store-map of another object (A-INB), over a memop term
   /// (rowWideMemOp); undecided over any of these: the byte fallback; over
@@ -2473,6 +2676,9 @@ public:
     const Expr arr = exp->arg(0), j = exp->arg(1), sort = exp->arg(2);
     if (isOpX<W_STORE>(arr) || isOpX<STORE>(arr))
       return rowWide(exp, arr);
+    if (isOpX<STORE_MAP>(arr) || isMemOpTerm(arr))
+      if (std::optional<RewriteResult> res = leafSplit(exp))
+        return *res;
     if (isMemOpTerm(arr)) {
       RewriteResult res = rowWideMemOp(exp, arr);
       return res.exp == exp ? byteFallback(exp) : res;
@@ -3412,6 +3618,9 @@ public:
     // constructors by value, ARM reads them as the absolute point c)
     if (op::bv::isBvNum(x, w))
       return {exp, RWStatus::RW_DONE};
+    if (m_opts.leafSplit && isOpX<BCONCAT>(x))
+      if (auto r = loadResolveLeaves(exp))
+        return {r, RWStatus::RW_FULL};
     if (m_opts.pullConcatIte && isOpX<BCONCAT>(x))
       if (auto r = loadResolveConcat(exp))
         return {r, RWStatus::RW_FULL};
@@ -3440,6 +3649,110 @@ public:
       return {exp, RWStatus::RW_DONE};
     m_stats.count("ptr.load-resolve-ite");
     return {res, levels(depth + 1)};
+  }
+
+  /// ptr.load-resolve through a split load whose bytes share one ite spine
+  /// (R-LEAVES' result for the bytes of one load: each byte read at the
+  /// leaves of the same address ite): concat(b_1, ..., b_n) (msb first,
+  /// nested concats flattened) is split on c when every byte that is an ite
+  /// is ite(c, ., .) and c is a condition of an address leafSplit split (a
+  /// byte that is not an ite goes to both sides; other shared conditions,
+  /// a join's, are --seam-pull-concat's), until
+  /// no byte is an ite: the ite tree of from_bits(concat(leaf bytes)), and
+  /// a leaf whose bytes are the contiguous extracts of one to_bits(p) is p.
+  /// All or nothing: at most maxDecideLeaves leaves, every split on a
+  /// condition all ite bytes share at their top, some leaf a stored
+  /// pointer. Address-exact, no assumption (counter
+  /// ptr.load-resolve-leaves).
+  Expr loadResolveLeaves(const Expr &exp) {
+    const Expr x = exp->arg(0);
+    using Bytes = llvm::SmallVector<Expr, 8>;
+    std::function<void(const Expr &, Bytes &)> flat = [&](const Expr &e,
+                                                          Bytes &out) {
+      if (isOpX<BCONCAT>(e)) {
+        for (size_t i = 0; i < e->arity(); ++i)
+          flat(e->arg(i), out);
+      } else {
+        out.push_back(e);
+      }
+    };
+    Bytes bytes;
+    flat(x, bytes);
+    if (llvm::none_of(bytes, [](const Expr &b) { return isOpX<ITE>(b); }))
+      return Expr();
+    const unsigned w = widthOf(x);
+    // the pointer whose bits the bytes are, if any
+    auto stored = [&](const Bytes &bs) -> Expr {
+      Expr p;
+      unsigned next = 0; // the next expected low bit, from the lsb
+      for (auto it = bs.rbegin(); it != bs.rend(); ++it) {
+        const Expr &b = *it;
+        Expr arg;
+        unsigned hi, lo;
+        if (isOpX<PTR_TO_BITS>(b)) {
+          arg = b;
+          lo = 0;
+          hi = w - 1;
+        } else if (isOpX<BEXTRACT>(b) && isOpX<PTR_TO_BITS>(op::bv::earg(b))) {
+          arg = op::bv::earg(b);
+          hi = op::bv::high(b);
+          lo = op::bv::low(b);
+        } else {
+          return Expr();
+        }
+        if (lo != next || (p && arg != p))
+          return Expr();
+        p = arg;
+        next = hi + 1;
+      }
+      if (!p || next != w)
+        return Expr();
+      return p->arg(0);
+    };
+    unsigned leaves = 0, resolved = 0;
+    bool ok = true;
+    std::function<Expr(const Bytes &)> split = [&](const Bytes &bs) -> Expr {
+      if (!ok)
+        return Expr();
+      Expr c;
+      for (const Expr &b : bs)
+        if (isOpX<ITE>(b)) {
+          if (c && b->arg(0) != c) {
+            ok = false; // the bytes do not share one spine
+            return Expr();
+          }
+          c = b->arg(0);
+        }
+      if (c && !m_leafConds.count(c)) {
+        ok = false; // not a condition of a split address
+        return Expr();
+      }
+      if (!c) {
+        if (++leaves > m_opts.maxDecideLeaves) {
+          ok = false;
+          return Expr();
+        }
+        if (Expr p = stored(bs)) {
+          ++resolved;
+          return p;
+        }
+        return mk<PTR_FROM_BITS>(
+            bs.size() == 1 ? bs[0] : mknary<BCONCAT>(bs.begin(), bs.end()));
+      }
+      Bytes t, e;
+      for (const Expr &b : bs) {
+        t.push_back(isOpX<ITE>(b) ? b->arg(1) : b);
+        e.push_back(isOpX<ITE>(b) ? b->arg(2) : b);
+      }
+      Expr l = split(t);
+      Expr r = split(e);
+      return ok ? mk<ITE>(c, l, r) : Expr();
+    };
+    Expr res = split(bytes);
+    if (!ok || !res || !resolved)
+      return Expr();
+    m_stats.count("ptr.load-resolve-leaves");
+    return res;
   }
 
   /// ptr.load-resolve through a split load (pullConcatIte, S6 probe): the
@@ -4710,6 +5023,8 @@ public:
         countPremises(d.premises);
         return {op::array::select(arr->arg(0), idx), RWStatus::RW_1};
       }
+      if (std::optional<RewriteResult> res = leafSplit(exp))
+        return *res;
       if (!m_opts.expandUnknownRow)
         return {exp, RWStatus::RW_DONE};
       m_stats.count("row.store");
@@ -4774,6 +5089,9 @@ public:
       return {mk<ITE>(cmp, arr->arg(2), op::array::select(arr->arg(0), idx)),
               levels(depth + 1 + (reduced ? 1 : 0))};
     }
+    if (isOpX<STORE_MAP>(arr) || isMemOpTerm(arr))
+      if (std::optional<RewriteResult> res = leafSplit(exp))
+        return *res;
     if (isOpX<STORE_MAP>(arr))
       return rowStoreMap(arr, idx);
     if (isMemOpTerm(arr))
@@ -4832,6 +5150,13 @@ private:
   mutable std::vector<std::string> m_inbUnrecorded;
   /// split loads loadResolveConcat looked at (not split again)
   std::unordered_map<ENode *, Expr> m_concatTried;
+  /// leafWalk's memo: (memory, leaf address, read bytes) -> its answer; the
+  /// keys pinned
+  std::map<std::tuple<ENode *, ENode *, uint64_t>, LeafStep> m_leafMemo;
+  std::vector<Expr> m_leafPin;
+  /// the ite conditions of the addresses leafSplit split (the conditions
+  /// loadResolveLeaves splits a load on)
+  ExprSet m_leafConds;
   mutable std::vector<Expr> m_canonPin;
   /// decidePair's memo: (a, b, diffBase, shadow) -> answer and reasons;
   /// the keys pinned

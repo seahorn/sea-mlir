@@ -1076,6 +1076,8 @@ COUNTERS = [
     "wide.expanded",
     "row.smap-abort-stride",
     "premise.ptr-index",
+    "row.leaf-split",
+    "ptr.load-resolve-leaves",
 ]
 
 
