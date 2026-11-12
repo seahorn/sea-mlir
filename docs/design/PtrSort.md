@@ -199,12 +199,15 @@ the abstract program, only for a corpus that needs it; vcc has none).
   pulls a condition shared by the bytes out of the concat. Each byte is
   taken under c = true / false along its ite spine. A side that
   reassembles a stored pointer is that pointer. The rule is address-exact (the pointer keeps the loaded address).
-  A side is split only on a condition that every ite byte of it has (in
-  the ites reachable through ites, at most 64 per byte), and only if each
-  of its other bytes is bits of a pointer; a condition of some bytes only
-  cannot make a side reassemble a pointer and splits up to 2^N sides for
-  nothing (`ptr.load-resolve-concat.unshared`). With `ptr.eq.cancel-num`
-  the bytes' guards are shared. What stays open in byte mode: the byte
+  A side is split only if each of its bytes that is not an ite is bits of
+  a pointer (else no split can reassemble one: the side is a leaf). It is
+  split on a condition that every ite byte of it has (in the ites
+  reachable through ites, at most 64 per byte) when there is one: one
+  split can then reassemble a pointer. Otherwise it is split on the first
+  condition of its first ite byte (`ptr.load-resolve-concat.unshared`): a
+  condition that only some bytes have reassembles a pointer only after
+  further splits, one per guard, within the pull budget N. With
+  `ptr.overlap.cancel-num` the bytes' guards are shared. What stays open in byte mode: the byte
   pairs k != k' of a store and a load at unrelated pointers (partial
   overlaps of misaligned pointers), one guard per difference k - k', which
   only an alignment premise would decide.

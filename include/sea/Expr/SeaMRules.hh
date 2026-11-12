@@ -4273,8 +4273,11 @@ public:
     // the split condition of a side: none if a byte that is not an ite is
     // not bits of a pointer (no split can reassemble one: the side is a
     // leaf), else the first condition of the first ite byte that every ite
-    // byte has (a condition only some bytes have splits without making a
-    // side resolvable: up to 2^pulls sides for nothing)
+    // byte has, else (ptr.load-resolve-concat.unshared) the first condition
+    // of the first ite byte. A split on a condition every byte has can
+    // reassemble a pointer at once; one that only some bytes have
+    // reassembles one only after further splits, one per guard, within the
+    // pull budget (--seam-pull-concat)
     auto sharedCond = [&](const Bytes &bs) -> Expr {
       const Expr *first = nullptr;
       for (const Expr &b : bs) {
@@ -4303,7 +4306,7 @@ public:
           return c;
       }
       m_stats.count("ptr.load-resolve-concat.unshared");
-      return Expr();
+      return condsOf(*first).empty() ? Expr() : condsOf(*first).front();
     };
     unsigned pulls = 0, resolved = 0;
     std::function<Expr(const Bytes &)> split = [&](const Bytes &bs) -> Expr {
