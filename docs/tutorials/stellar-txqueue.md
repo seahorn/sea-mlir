@@ -279,7 +279,7 @@ not bundle the harness distribution.
 The recorded `sea-vc` identifies its linked solver as Z3 5.3.3.0; the separate
 SeaHorn Z3 executable reports 4.12.0. The latter is not the solver-library
 version used by this gate. Record the full `sea-vc --version` output and
-compiler/frontend versions when comparing runs. The revised runner also
+compiler/frontend versions when comparing runs. The runner also
 hashes tracked source files, export profiles, patches, mutation scripts,
 compiler/frontend binaries and verifier shared libraries before and after
 execution, rejecting a changed input set.
@@ -594,7 +594,7 @@ anonymous removal are disjoint by source identity. The no-removal case is the
 complement of those two removal predicates; entering or exiting the loop
 covers the remaining choice.
 
-The revised harness checks this cover mechanically. Each source case assumes
+The harness checks this cover mechanically. Each source case assumes
 its predicate from a shared `batchCase` function. A separate obligation counts
 the eight leaf predicates at an arbitrary loop head and asserts that exactly
 one holds. A completion witness checks that this obligation's premises are
@@ -605,7 +605,7 @@ The initialization, cover and induction-step queries deliberately end with
 `assume(false)` after their checkpoint. Those cuts isolate the obligations.
 Dedicated completion assertions occur before the cuts, with the original
 checks enabled. A validated witness at each intended marker rules out an
-infeasible case being accepted as a useful proof. The revised runner requires
+infeasible case being accepted as a useful proof. The runner requires
 all of these completions for whole-gate success; `--proof-only` is diagnostic
 and cannot report the complete gate proved.
 
@@ -619,7 +619,7 @@ as passes.
 
 Combining retirement and accounting left the last remainder unknown at 120
 seconds. The independent retirement query for that case proves in about eight
-seconds in the final run. The accounting remainder takes about 90
+seconds in the recorded snapshot. The accounting remainder takes about 90
 seconds. Splitting proof obligations retained the complete modeled input
 domain and numeric ranges.
 
@@ -678,9 +678,12 @@ The batch controls are distinct from the initial admission suite's controls:
 The `>=` control's trace removes the current anonymous transaction while T is
 already absent. Its expected liveness is true and its observed liveness
 becomes false. The controls therefore exercise both selected singleton and
-weak individual observations. The age control specifically exercises the
-remaining-invariant query, while retirement and P's reservation equality stay
-correct. These controls do not constitute mutation coverage of every
+weak individual observations. The age control tests the remaining invariant
+in the selected-removal case (`selected/post2`), while retirement and P's
+reservation equality stay correct. It does not test the slow
+`shared-live/post2` query: T stays live in that case, whereas the age condition
+requires T to be absent. No mutation control for that obligation has been
+established. These controls do not constitute mutation coverage of every
 source/self/other-payer or T-gone branch. A control must change its copied production
 statement and fail at the intended functional assertion; an earlier model
 guard, export error, timeout or unvalidated replay is rejected.
