@@ -2,8 +2,10 @@
 // the byte offset k into the ite leaves, ite(c, A + 24, A) + k ~> ite(c, A + 24 + k, A + k)
 // (op::ptr::byteAddress, exact): a compare of a leaf with another byte
 // address folds by rewriting, where a bvadd over the ite left it to the
-// solver's adders (z3 timed out on the W-ITE check obligation of
-// wide-ite-leaves.mlir @mixed; 0.17 s with the offsets in the leaves).
+// solver's adders (the @mixed W-ITE check obligation of wide-ite-leaves.mlir
+// dumped from sea-vc, z3 5.3.3: 20.8 s standalone -> 0.07 s with the offsets
+// in the leaves; the seam-check run of @mixed: 133-197 s with 1 unknown ->
+// ~15 s, 0 unknown).
 // @boundary: an 8-byte read of the initial memory at ite(c, A + 24, A) stays
 // a width term to the boundary; its byte expansion pushes bytes 1..7
 // (wide.expanded-ite-offset); --seam-offset-leaves=0 keeps a + k over the

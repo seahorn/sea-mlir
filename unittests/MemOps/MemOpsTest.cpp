@@ -1303,6 +1303,14 @@ void testIteOffset() {
     CHECK(how == ptr::OffsetPush::None &&
               r == ptr::addressPlus(mk<ITE>(c, p1, p2), num(4)),
           "promised leaves: addressPlus's K push");
+    // mixed: a promised leaf and a plain one (valid compares addresses only)
+    Expr A24m = ptr::addressPlus(A, num(24));
+    Expr rm = ptr::byteAddress(mk<ITE>(c, p1, A24m), num(4), 8, how);
+    CHECK(how == ptr::OffsetPush::Pushed && isOpX<ITE>(rm) &&
+              rm->arg(1) == ptr::addressPlus(p1, num(4)) &&
+              rm->arg(2) == ptr::addressPlus(A, num(28)) &&
+              valid(rm, ptr::addressPlus(mk<ITE>(c, p1, A24m), num(4))),
+          "promised + plain leaf: both pushed, exact");
   }
   {
     // the boundary: a 4-byte read at ite(c, A + 24, A), bytes in the leaves

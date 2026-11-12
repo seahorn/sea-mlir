@@ -582,7 +582,8 @@ static cl::opt<unsigned> seamOffsetLeaves(
              "most this many distinct leaves (counters "
              "wide.expanded-ite-offset, wide.expanded-ite-offset-refused over "
              "the cap). 0: off. Default 8 (untuned: the cap of the access "
-             "decisions)"),
+             "decisions). Only with --seam-wide (without it no width term "
+             "reaches the boundary)."),
     cl::init(8));
 
 static cl::opt<bool> seamLeafSplit(
@@ -1414,11 +1415,12 @@ TYPICAL:
                                  #   with undecided leaf pairs too (each a
                                  #   read at its leaf address; default:
                                  #   only when every pair is decided)
-  sea-vc p.mlir --lower --seam --seam-offset-leaves=0  # the boundary's
+  sea-vc p.mlir --lower --seam --seam-wide --seam-offset-leaves=0  # the boundary's
                                  #   byte k of a width term at an ite
                                  #   address as ite + k (default: k in the
                                  #   ite leaves, <= 8 leaves; counter
-                                 #   wide.expanded-ite-offset)
+                                 #   wide.expanded-ite-offset; only with
+                                 #   --seam-wide)
   sea-vc p.mlir --lower --seam --seam-leaf-split=0  # keep reads at ite
                                  #   addresses whole (default: split when
                                  #   a write gives every leaf read)
