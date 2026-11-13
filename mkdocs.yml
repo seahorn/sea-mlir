@@ -87,6 +87,7 @@ nav:
   - Applications:
       - tutorials/index.md
       - NKI kernels: tutorials/nki.md
+      - "NKI: core-barrier races": tutorials/nki-core-barrier.md
       - "Firedancer: QUIC fragment reassembly": tutorials/inductive-proof.md
       - Stellar:
           - Overview: tutorials/stellar.md

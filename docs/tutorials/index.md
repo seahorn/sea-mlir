@@ -12,6 +12,7 @@ problem and the scope of the check before discussing verification machinery.
 | Tutorial | Code under test | Engineering question |
 |---|---|---|
 | [NKI kernels](nki.md) | `nki-library` gather, dynamic add and scatter-add | Do tiled transfers and runtime updates preserve the intended tensor values? |
+| [NKI core-barrier races](nki-core-barrier.md) | `nki-library` two-core blockwise MoE matmul | Does every cross-core access to shared memory sit behind a barrier? |
 | [QUIC fragment reassembly](inductive-proof.md) | Firedancer's fragment reassembly | Can a fragment sequence cause a copy outside its buffer? |
 | [Stellar: lifetime extensions](stellar-ttl.md) | stellar-core's TTL merge, ported to C | Can committing one cluster lose another cluster's TTL extension? |
 | [Stellar: queue accounting](stellar-txqueue.md) | stellar-core's C++ queue methods with modeled surroundings | Do fee reservations follow the right payer through replacement and eviction? |
