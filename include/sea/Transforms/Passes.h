@@ -188,6 +188,12 @@ enum LowerDisable : unsigned {
   LowerDisableCanonicalize = 1u << 2,
 };
 
+/// What sea-range-fold does with a value the integer ranges settle
+/// (sea/Transforms/RangeFold.h): nothing (Off: the pass does not run),
+/// replace it (Fold), or assert that it has the settled value and keep it
+/// (Check: the paranoid job; the program's own asserts are dropped).
+enum class RangeFoldMode { Off, Fold, Check };
+
 /// Adds the passes that bring a program into the form sea-vc encodes:
 /// folding constants (sccp; \p fold false leaves it out, for the oracle
 /// that matches values by location), scalarizing structs, placement (if
@@ -213,6 +219,8 @@ enum LowerDisable : unsigned {
 /// can be compared (utils/cover-diff.py). \p place: external placement
 /// files of sea-place-static (with either file the pass runs on a concrete
 /// program too: it has no objects to place, and writes an empty file).
+/// \p rangeFold: sea-range-fold (after a cse, right before the final
+/// canonicalize; sea-vc --range-fold, default off).
 void buildVCLoweringPipeline(mlir::OpPassManager &pm, bool abstract,
                              bool nativeMulOverflow = false, bool fold = true,
                              unsigned widenMemory = 0, bool expandMemSet = true,
@@ -220,7 +228,8 @@ void buildVCLoweringPipeline(mlir::OpPassManager &pm, bool abstract,
                              bool keepByteWide = false, bool checkAlign = false,
                              unsigned checkPtrIndex = 0, bool opt = true,
                              bool memhavocNullNoop = true, unsigned disable = 0,
-                             const PlaceFiles &place = {});
+                             const PlaceFiles &place = {},
+                             RangeFoldMode rangeFold = RangeFoldMode::Off);
 
 /// Attaches the `lower.pass` log (one level-1 event per pass run: ops
 /// before and after, time; lib/Transforms/PassLog.cpp) to \p pm. Costs a

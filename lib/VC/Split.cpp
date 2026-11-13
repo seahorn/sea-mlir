@@ -11,6 +11,7 @@
 #include "sea/VC/Names.h"
 #include "sea/VC/OpSem.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -19,6 +20,7 @@
 #include <set>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 using namespace mlir;
 using namespace expr;
@@ -33,6 +35,35 @@ static bool fileMatches(StringRef path, StringRef file) {
          path[path.size() - file.size() - 1] == '/' || file.starts_with("/");
 }
 
+/// `<name> <op> <type>[ col=<c>][ <file:line:col>]` of a value, for the
+/// selector errors: enough to tell the matches of one line apart.
+static std::string describeMatch(Value v, StringRef name,
+                                 std::optional<FileLineColLoc> at,
+                                 bool withPos) {
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  os << name << " ";
+  if (Operation *def = v.getDefiningOp())
+    os << def->getName().getStringRef();
+  else
+    os << "block-arg";
+  os << " " << v.getType();
+  if (at) {
+    if (withPos)
+      os << " at=" << fileLocText(*at);
+    else
+      os << " col=" << at->getColumn();
+  }
+  return text;
+}
+
+/// The longest list of matches an error shows (the rest are counted).
+static constexpr size_t kMaxListed = 32;
+
+static const char *kNamesHint =
+    " (names are those of the lowered program: sea-vc --print-lowered=<file> "
+    "writes it)";
+
 LogicalResult resolveSplitTargets(ProgramOp program,
                                   ArrayRef<std::string> selectors,
                                   SplitTarget::Kind kind,
@@ -45,11 +76,21 @@ LogicalResult resolveSplitTargets(ProgramOp program,
       return v.getType().isInteger(1);
     return isa<AddrType>(v.getType());
   };
+  const char *kindText = isBool ? "i1 value" : "address value";
   for (const std::string &sel : selectors) {
     std::vector<SplitTarget> found;
-    auto addValue = [&](Value v) {
+    // per match: the position the selector matched (@file:line)
+    std::vector<std::optional<FileLineColLoc>> foundAt;
+    auto addValue = [&](Value v, std::optional<FileLineColLoc> at) {
       found.push_back({kind, v, nullptr, names.name(v).str(), sel});
+      foundAt.push_back(at);
     };
+    // @file:line that finds nothing: the results of other types on the
+    // line, and the nearest lines of the file with results of the kind
+    std::vector<std::pair<Value, FileLineColLoc>> otherOnLine;
+    std::map<unsigned, unsigned> kindLines;
+    std::set<std::string> files;
+    bool fileSeen = false, moreFiles = false;
     StringRef s(sel);
     if (s.starts_with("@")) {
       auto [fileText, lineText] = s.drop_front().rsplit(':');
@@ -61,14 +102,32 @@ LogicalResult resolveSplitTargets(ProgramOp program,
       }
       program.walk([&](Operation *op) {
         for (Value r : op->getResults()) {
-          if (!kindOk(r))
-            continue;
-          for (FileLineColLoc p : positionsOf(op->getLoc()))
-            if (p.getLine() == line &&
-                fileMatches(p.getFilename().getValue(), file)) {
-              addValue(r);
-              break;
+          bool matched = false;
+          for (FileLineColLoc p : positionsOf(op->getLoc())) {
+            StringRef path = p.getFilename().getValue();
+            if (!fileMatches(path, file)) {
+              // the first 8 distinct files, and whether there are more
+              if (files.size() < 8)
+                files.insert(path.str());
+              else if (!files.count(path.str()))
+                moreFiles = true;
+              continue;
             }
+            fileSeen = true;
+            if (!kindOk(r)) {
+              // once per result (it may have two positions on the line)
+              if (p.getLine() == line && !matched) {
+                otherOnLine.push_back({r, p});
+                matched = true;
+              }
+              continue;
+            }
+            ++kindLines[p.getLine()];
+            if (p.getLine() == line && !matched) {
+              addValue(r, p);
+              matched = true;
+            }
+          }
         }
       });
     } else if (s.starts_with("^")) {
@@ -85,17 +144,18 @@ LogicalResult resolveSplitTargets(ProgramOp program,
             return failure();
           }
           found.push_back({kind, Value(), &b, s.str(), sel});
+          foundAt.push_back(std::nullopt);
         }
     } else {
       program.walk([&](Operation *op) {
         for (Value r : op->getResults())
           if (names.name(r).getValue() == s)
-            addValue(r);
+            addValue(r, fileLocOf(op->getLoc()));
       });
       for (Block &b : program.getBody())
         for (BlockArgument a : b.getArguments())
           if (names.name(a).getValue() == s)
-            addValue(a);
+            addValue(a, fileLocOf(a.getLoc()));
       for (SplitTarget &t : found)
         if (!kindOk(t.value)) {
           std::string ty;
@@ -109,16 +169,62 @@ LogicalResult resolveSplitTargets(ProgramOp program,
     if (found.empty()) {
       error = "split selector '" + sel + "' finds no " +
               (isBool ? "i1 value or block" : "address value") +
-              " in the encoded program (names are those of the lowered "
-              "program)";
+              " in the encoded program" + kNamesHint;
+      if (s.starts_with("@")) {
+        unsigned line = 0;
+        (void)s.rsplit(':').second.getAsInteger(10, line);
+        if (!fileSeen) {
+          error += "\n  no op has a position in a file ending with '" +
+                   s.drop_front().rsplit(':').first.str() + "'";
+          if (!files.empty()) {
+            error += " (files:";
+            for (const std::string &f : files)
+              error += " " + f;
+            error += moreFiles ? " ...)" : ")";
+          }
+        }
+        if (!otherOnLine.empty()) {
+          error += "\n  on line " + std::to_string(line) + ", not of the kind:";
+          for (size_t i = 0; i < otherOnLine.size() && i < kMaxListed; ++i)
+            error += std::string(i ? ";" : "") + " " +
+                     describeMatch(otherOnLine[i].first,
+                                   names.name(otherOnLine[i].first),
+                                   otherOnLine[i].second, false);
+          if (otherOnLine.size() > kMaxListed)
+            error += "; ... and " +
+                     std::to_string(otherOnLine.size() - kMaxListed) + " more";
+        }
+        if (!kindLines.empty()) {
+          // the three nearest lines on each side
+          std::vector<std::pair<unsigned, unsigned>> near;
+          auto hi = kindLines.lower_bound(line);
+          auto lo = hi;
+          for (unsigned k = 0; k < 3 && lo != kindLines.begin(); ++k)
+            near.push_back(*--lo);
+          for (unsigned k = 0; k < 3 && hi != kindLines.end(); ++k, ++hi)
+            near.push_back(*hi);
+          llvm::sort(near);
+          error += std::string("\n  nearest lines with ") + kindText +
+                   "s (line:count):";
+          for (auto [l, n] : near)
+            error += " " + std::to_string(l) + ":" + std::to_string(n);
+        }
+      }
       return failure();
     }
     if (found.size() > 1) {
       error = "split selector '" + sel + "' is ambiguous (" +
-              std::to_string(found.size()) + " matches:";
-      for (size_t i = 0; i < found.size() && i < 6; ++i)
-        error += " " + found[i].name;
-      error += found.size() > 6 ? " ...)" : ")";
+              std::to_string(found.size()) + " matches; pick one by name)" +
+              kNamesHint + ":";
+      for (size_t i = 0; i < found.size() && i < kMaxListed; ++i)
+        error +=
+            "\n  " + (found[i].block
+                          ? found[i].name + " block"
+                          : describeMatch(found[i].value, found[i].name,
+                                          foundAt[i], !s.starts_with("@")));
+      if (found.size() > kMaxListed)
+        error += "\n  ... and " + std::to_string(found.size() - kMaxListed) +
+                 " more";
       return failure();
     }
     for (const SplitTarget &t : out)
@@ -506,6 +612,175 @@ void SplitCensus::attribute(SeaOpSem &sem, ArrayRef<ENode *> openOverlaps,
     for (unsigned j : bs)
       ++boolCands[j].open;
   }
+}
+
+uint64_t SplitCensus::attributeReads(SeaOpSem &sem, const Expr &solverQuery) {
+  // the keys in the solver's terms: normalized as the query was, then
+  // through the boundary (compositional: a subterm of the query translates
+  // to the translation of the subterm)
+  ExprVector keep;
+  auto solverKey = [&](const Expr &k) -> ENode * {
+    std::string why;
+    Expr t = sem.solverTerm(sem.simplify(k), why);
+    if (!t)
+      return nullptr;
+    keep.push_back(t);
+    return t.get();
+  };
+  std::unordered_multimap<ENode *, unsigned> addrOf, boolOf;
+  for (unsigned i = 0; i < addrs.size(); ++i)
+    if (ENode *n = solverKey(addrs[i].term))
+      addrOf.emplace(n, i);
+  for (unsigned j = 0; j < boolCands.size(); ++j)
+    for (const Expr &k : boolCands[j].keys)
+      if (ENode *n = solverKey(k))
+        boolOf.emplace(n, j);
+  auto idsOf = [](const std::unordered_multimap<ENode *, unsigned> &m) {
+    return [&m](ENode *n, std::vector<unsigned> &ids) {
+      auto [lo, hi] = m.equal_range(n);
+      for (auto it = lo; it != hi; ++it)
+        ids.push_back(it->second);
+    };
+  };
+  DagIds addrIds(idsOf(addrOf));
+  DagIds boolIds(idsOf(boolOf));
+  DagIds condIds([&](ENode *n, std::vector<unsigned> &ids) {
+    if (isOpX<ITE>(n)) {
+      const std::vector<unsigned> &b = boolIds.of(n->arg(0));
+      ids.insert(ids.end(), b.begin(), b.end());
+    }
+  });
+  // the candidates that are an ite condition themselves (not a part of one)
+  DagIds exactIds([&](ENode *n, std::vector<unsigned> &ids) {
+    if (isOpX<ITE>(n)) {
+      auto [lo, hi] = boolOf.equal_range(n->arg(0));
+      for (auto it = lo; it != hi; ++it)
+        ids.push_back(it->second);
+    }
+  });
+  // candidates with the same term (two ops compute one condition): listed
+  // together, by the one with the most uses that reach a select condition,
+  // a branch condition or an address (forward through i1 connectives: and,
+  // or, xor, i1 select, i1 block arguments), then the first: a split
+  // replaces the value of that op only
+  if (bools) {
+    auto selectUses = [](const SplitBoolCandidate &c) {
+      unsigned n = 0;
+      if (!c.value)
+        return n;
+      llvm::DenseSet<Value> seen;
+      std::vector<Value> work{c.value};
+      auto follow = [&](Value v) {
+        if (v.getType().isInteger(1) && seen.insert(v).second)
+          work.push_back(v);
+      };
+      while (!work.empty()) {
+        Value v = work.back();
+        work.pop_back();
+        for (OpOperand &u : v.getUses()) {
+          Operation *op = u.getOwner();
+          if (auto sel = dyn_cast<SelectOp>(op)) {
+            if (sel.getType().isInteger(1))
+              follow(sel.getResult());
+            else if (u.getOperandNumber() == 0)
+              ++n;
+          } else if (isa<AndOp, OrOp, XorOp>(op)) {
+            follow(op->getResult(0));
+          } else if (auto cb = dyn_cast<CondBrOp>(op);
+                     cb && u.getOperandNumber() == 0) {
+            ++n;
+          } else if (auto br = dyn_cast<BranchOpInterface>(op)) {
+            if (std::optional<BlockArgument> a =
+                    br.getSuccessorBlockArgument(u.getOperandNumber()))
+              follow(*a);
+          } else if (llvm::any_of(op->getResultTypes(),
+                                  [](Type t) { return isa<AddrType>(t); })) {
+            ++n;
+          }
+        }
+      }
+      return n;
+    };
+    std::unordered_map<ENode *, unsigned> repOf;
+    std::vector<unsigned> uses(boolCands.size());
+    for (unsigned j = 0; j < boolCands.size(); ++j) {
+      uses[j] = selectUses(boolCands[j]);
+      if (ENode *n = solverKey(boolCands[j].keys.front())) {
+        auto [it, fresh] = repOf.try_emplace(n, j);
+        if (!fresh && uses[j] > uses[it->second])
+          it->second = j;
+      }
+    }
+    for (unsigned j = 0; j < boolCands.size(); ++j)
+      if (ENode *n = solverKey(boolCands[j].keys.front()))
+        if (repOf[n] != j)
+          boolCands[j].sameAs = repOf[n];
+  }
+  // the other candidates in a candidate's Boolean structure (an and of two
+  // compares holds both; not what its atoms read), each term once
+  auto bit1 = [](ENode *e) {
+    unsigned w = 0;
+    return op::bv::isBvNum(Expr(e), w) && w == 1;
+  };
+  if (bools)
+    for (unsigned j = 0; j < boolCands.size(); ++j) {
+      std::set<unsigned> in;
+      std::set<ENode *> seen;
+      std::vector<ENode *> st;
+      for (const Expr &k : boolCands[j].keys)
+        if (ENode *n = solverKey(k))
+          st.push_back(n);
+      while (!st.empty()) {
+        ENode *n = st.back();
+        st.pop_back();
+        if (!seen.insert(n).second)
+          continue;
+        auto [lo, hi] = boolOf.equal_range(n);
+        for (auto it = lo; it != hi; ++it) {
+          unsigned i = it->second;
+          int first = boolCands[i].sameAs < 0 ? int(i) : boolCands[i].sameAs;
+          int self = boolCands[j].sameAs < 0 ? int(j) : boolCands[j].sameAs;
+          if (first != self)
+            in.insert(first);
+        }
+        // Boolean connectives, and their bv1 forms (from a Boolean or bv1
+        // root, the arguments are Boolean or bv1 too)
+        const bool conn =
+            isOpX<AND>(n) || isOpX<OR>(n) || isOpX<XOR>(n) || isOpX<NEG>(n) ||
+            isOpX<IMPL>(n) || isOpX<IFF>(n) || isOpX<ITE>(n) ||
+            isOpX<BAND>(n) || isOpX<BOR>(n) || isOpX<BXOR>(n) ||
+            isOpX<BNOT>(n) ||
+            (isOpX<EQ>(n) && (bit1(n->arg(0)) || bit1(n->arg(1))));
+        if (conn)
+          for (size_t i = 0; i < n->arity(); ++i)
+            st.push_back(n->arg(i));
+      }
+      boolCands[j].covers = in.size();
+    }
+  // every distinct read
+  uint64_t reads = 0;
+  std::unordered_set<ENode *> seen;
+  std::vector<ENode *> stack{solverQuery.get()};
+  while (!stack.empty()) {
+    ENode *n = stack.back();
+    stack.pop_back();
+    if (!seen.insert(n).second)
+      continue;
+    for (size_t i = 0; i < n->arity(); ++i)
+      stack.push_back(n->arg(i));
+    if (!isOpX<SELECT>(n) || op::bv::isBvNum(Expr(n->arg(1))))
+      continue;
+    ++reads;
+    for (unsigned i : addrIds.of(n->arg(1)))
+      ++addrs[i].reads;
+    if (bools) {
+      for (unsigned j : condIds.of(n->arg(1)))
+        ++boolCands[j].reads;
+      for (unsigned j : exactIds.of(n->arg(1)))
+        ++boolCands[j].condReads;
+    }
+  }
+  return reads;
 }
 
 } // namespace sea

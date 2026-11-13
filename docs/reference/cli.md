@@ -28,6 +28,7 @@ The input is a module with a `sea.program` in BMC form, or a program that
 |---|---|
 | `--lower` | run the lowering first (the passes of `sea-opt --sea-vc-lower`): constant folding, struct scalarization, placement of abstract objects, memory widening, intrinsics, splitting critical edges |
 | `--lower-opt=false` | with `--lower`: no cse and no canonicalize (every op stays) |
+| `--print-lowered=<file>` | write the program the VC encodes (after the lowering and every other pass of sea-vc) to this file, with its locations, named as the VC names it: the names of `--split` / `--split-leaves` selectors and of the `split.*` and other report lines (a nondet result is `nd.<site>` in the VC). The run goes on (`--vcgen-only`: no solver); the file is input to sea-vc without `--lower`, with the same names |
 | `--place-out=<file>` | with `--lower`: write the placement of the program's objects to a file, one object per line ([Placement files](output-formats.md#placement-files)) |
 | `--place-in=<file>` | with `--lower`: place the objects at the bases a `--place-out` file gives, checked as placement does; an object the file does not name is an error (`place.in-unplaced`). Two lowerings that share a file put their common objects at the same addresses |
 | `--lower-disable=<pass>,...` | with `--lower`: leave these optimization passes out of the lowering: `sccp`, `cse`, `canonicalize`. The lowering without one against the lowering with it validates the pass (`utils/cover-diff.py`, [Pass validation](../agents/gates.md#pass-validation)). `sea-drop-fresh-memhavoc` is refused: it is a semantics decision (a memhavoc of a fresh object is no tracked modification; without it, one after `sea_tracking_on` is) |
@@ -40,6 +41,7 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--mem=array|lambda` | the memory encoding; `lambda` is SeaHorn's lambda encoding, z3 only |
 | `--config=<name|file>` | read options from a profile ([Profiles](profiles.md)) |
 | `--sink-assumes` | experimental: replace the program's assumes by one assume of their conjunction on the path, before the assertion (exact in BMC form); a solver tradeoff, off by default |
+| `--range-fold=off\|on\|check` | with `--lower`: fold comparisons, i1 ops and select conditions that integer ranges settle under dominating assume bounds (`sea-range-fold`, [Range folding](../design/RangeFold.md)); `check` asserts every fold instead (the paranoid job); off by default (untuned) |
 | `--vc-join-cases` | experimental prototype, off by default: build each ite join (block arguments, values and memories, and the pointer companions of `--ptr-companion`) as a `cases` term, expanded at once to the same ite chain: the query does not change. Prints `cases.<counter>: <total> scalar=<n> memory=<n> companion=<n>` lines (stderr with `--smt2`): the joins, their arity, the repeated values among the joined values, the ones adjacent (a sequential merge folds them; `ite-folded-pairs` are those the ite chain already folds) and the ones only a reordering could fold (`nonadjacent-redundant`). Needs `--vc-join=ite`. The join order is the predecessor use-list order, so the default (last) value is the edge from the branch created first |
 | `--vc-cases-reorder` | experimental, off by default, needs `--vc-join-cases`; changes the query: a pair of a join whose value is an earlier pair's value merges into that pair, with the condition `c_i | (c_j & !c_(i+1) & ... & !c_(j-1))` (moving a pair ahead conjoins the negations of the conditions it skips; first-match semantics, no exclusivity of the edges used). Adds the `cases.reorder-*` counters: `reorder-joins` (joins changed), `reorder-merged-pairs` (of which `reorder-merged-adjacent` skip no pair), `reorder-merge-negations`, `reorder-pairs` (pairs left) |
 | `--vc-cases-drop-default` | experimental, off by default, needs `--vc-join-cases`; changes the query: a pair of a join whose value is the default is dropped, and the negation of its condition is conjoined into the later pairs (`cases.reorder-dropped-default`, `cases.reorder-drop-negations`). Combines with `--vc-cases-reorder` |
@@ -90,7 +92,7 @@ answered and counted)
 | `--split=<sel,...>` | split on an i1 value (1, 0) or a block guard (true, false) |
 | `--split-leaves=<sel,...>` | split on an address whose term is an ite tree: one part per distinct leaf |
 | `--split-auto` | with `--seam`: pick the ite-valued address behind the most open alias questions, split on its leaves |
-| `--split-candidates` | with `--seam`: list the targets of `--split-leaves` (every ite-valued address) and of `--split` (i1 values and block guards in the ite conditions behind open alias questions), ranked; no split, no solver (`result: none`) |
+| `--split-candidates` | with `--seam`: list the targets of `--split-leaves` (every ite-valued address) and of `--split` (i1 values and block guards in the ite conditions behind open alias questions or in the indices of array reads, the reads the Ackermann lowering pairs), ranked by the open questions, and when there are none by those reads; no split, no solver (`result: none`) |
 | `--split-candidates-max=<n>` | the most `split.bool-candidate` lines (default 20; 0: all); the dropped ones are counted |
 | `--split-check` | prove each split level exhaustive and exact with z3 (default on; `--split-check-rlimit=<n>`) |
 | `--split-max-parts=<n>`, `--split-max-paths=<n>` | the cap on the parts (default 64; more is an error) and on the paths of an ite tree |
@@ -98,12 +100,15 @@ answered and counted)
 | `--split-smt2=<prefix>` | write each part's query to `<prefix>.part<N>.smt2` (with `--vcgen-only`: no solving) |
 
 A selector is a VC name of the lowered program (`%x`, `nd.<site>`,
-`^bb3`) or `@<file>:<line>`. The verdict is sat if a part is sat (replayed
+`^bb3`, as `--print-lowered=<file>` writes it) or `@<file>:<line>`. An
+ambiguous `@<file>:<line>` lists every match (name, op, type, column); one
+that matches nothing lists the results of other types on the line and the
+nearest lines with results of the kind. The verdict is sat if a part is sat (replayed
 as usual), unsat if every part is, else unknown; `split.part:` lines give
 each part's counters, answer and time. Not knowing the names, start with
 `--split-candidates`; a `--seam` run that ends `unknown` with open alias
-questions prints a `hint: split: open-aliases=<n>; ...` line that points
-to it.
+questions, or with none but Ackermann constraints, prints a `hint:
+split: open-aliases=<n>; ...` line that points to it.
 
 **Output**
 

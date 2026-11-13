@@ -11,7 +11,7 @@
 // candidate is behind it (own=1); c (nd.5) is the ite condition.
 // RUN: sea-vc %s --lower --program=alias --seam --split-candidates | FileCheck %s --check-prefix=ALIAS
 // ALIAS: split.candidates: open-aliases=1 leaves-candidates=1 bool-candidates=1 bool-listed=1 bool-dropped=0
-// ALIAS: split.leaves-candidate: name=%q leaves=2 unknown-leaves=1 open-aliases=1 direct=0 own=1 loc=src/sel.cc:768:3
+// ALIAS: split.leaves-candidate: name=%q leaves=2 unknown-leaves=1 open-aliases=1 direct=0 own=1 {{.*}}loc=src/sel.cc:768:3
 // ALIAS: split.bool-candidate: name=nd.5 target=value open-aliases=1 addrs=1
 // ALIAS: result: none
 // ALIAS-NOT: split.part
@@ -21,8 +21,8 @@
 // question (the store's address is read at %q): direct tells them apart,
 // own=0 says that the attribution overlaps.
 // RUN: sea-vc %s --lower --program=shared --seam --split-candidates | FileCheck %s --check-prefix=SHARED
-// SHARED: split.leaves-candidate: name=%q leaves=2 unknown-leaves=1 open-aliases=1 direct=1 own=0 loc=src/q.cc:10:3
-// SHARED: split.leaves-candidate: name=%s leaves=2 unknown-leaves=1 open-aliases=1 direct=0 own=0 loc=src/s.cc:20:3
+// SHARED: split.leaves-candidate: name=%q leaves=2 unknown-leaves=1 open-aliases=1 direct=1 own=0 {{.*}}loc=src/q.cc:10:3
+// SHARED: split.leaves-candidate: name=%s leaves=2 unknown-leaves=1 open-aliases=1 direct=0 own=0 {{.*}}loc=src/s.cc:20:3
 
 // @join: the ite comes from a join: its conditions are the guards of the
 // two blocks before it; one question, two guards. --split-candidates-max
@@ -42,9 +42,9 @@
 // RUN: sea-vc %s --lower --program=alias --seam --split-candidates > %t.txt
 // RUN: sea-vc %s --lower --program=alias --seam --split-candidates --format=jsonl > %t.jsonl
 // RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.txt --jsonl %t.jsonl \
-// RUN:   --require split-candidates:open_aliases,leaves_candidates,bool_candidates,bool_listed,bool_dropped,bool_values,vc_time \
-// RUN:   --require split-leaves-candidate:name,loc,leaves,unknown_leaves,open_aliases,direct,own \
-// RUN:   --require split-bool-candidate:name,loc,target,open_aliases,addrs \
+// RUN:   --require split-candidates:open_aliases,leaves_candidates,bool_candidates,bool_listed,bool_dropped,bool_values,reads,same_object_open,memop_open,vc_time \
+// RUN:   --require split-leaves-candidate:name,loc,leaves,unknown_leaves,open_aliases,direct,own,reads \
+// RUN:   --require split-bool-candidate:name,loc,target,open_aliases,addrs,reads,cond_reads,covers,same \
 // RUN:   --require result:value
 
 // It lists, it does not split: not with a split, and it needs --seam;

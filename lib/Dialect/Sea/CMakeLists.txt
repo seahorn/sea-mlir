@@ -4,6 +4,7 @@
 add_mlir_dialect_library(MLIRSea
   SeaDialect.cpp
   SeaOps.cpp
+  SeaIntRanges.cpp
   Semantics.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -16,6 +17,8 @@ add_mlir_dialect_library(MLIRSea
   LINK_LIBS PUBLIC
   MLIRIR
   MLIRControlFlowInterfaces
+  MLIRInferIntRangeCommon
+  MLIRInferIntRangeInterface
   MLIRInferTypeOpInterface
   MLIRSideEffectInterfaces
   SeaSupport

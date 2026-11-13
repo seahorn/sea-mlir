@@ -57,7 +57,13 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   (nsw/nuw promises -> assume/assert/drop), `sea-sink-assumes` (every
   assume of a BMC-form program -> one assume of the conjunction on the
   path, before the assert: SeaHorn's UnifyAssumes; `sea-vc
-  --sink-assumes`, off by default: a solver tradeoff), `sea-widen-memory` (byte
+  --sink-assumes`, off by default: a solver tradeoff), `sea-range-fold`
+  (icmp / i1 op / select condition settled by integer ranges: the sea ops'
+  InferIntRangeInterface, upstream transfer functions adapted to total
+  semantics in `lib/Dialect/Sea/SeaIntRanges.cpp`, intersected with the
+  simple bounds of dominating assumes, at the candidate's definition; `sea-vc --range-fold`,
+  off by default; `check`: the paranoid job; docs/design/RangeFold.md),
+  `sea-widen-memory` (byte
   memory -> aligned k-byte words when every access provably fits; in the
   lowering with `sea-vc --widen-memory=k`), `sea-apply-tracking`
   (tracking_on/off markers -> `tracked` updates; first in the lowering),
@@ -208,8 +214,8 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   roundtrip and interpreter tests in the same change. A pure value op gets
   a folder through `evalPureOp` (`foldByEval`, SeaOps.cpp), never its own
   arithmetic; ops with nsw / nuw do not fold. `sea.segment` is in `evalPureOp` but has no folder on purpose (sccp would erase the object it names), and it is not in `check-semantics.py`: that oracle folds every case to a constant and checks bit-vector arithmetic against z3, while a segment's value is its `base` attribute (checked by `test/Interp/ptr/segment.mlir` and `test/VC/segment-replay.mlir`).
-- Tag conjectures in comments and notes as hypotheses; cite SeaHorn / ctac
-  source (file:line, commit) when porting behavior from them.
+- Tag conjectures in comments and notes as hypotheses; cite SeaHorn
+  source (file:line, commit) when porting behavior from it.
 - Tool output is line-oriented `key: value` text so agents can parse it.
 - sea-vc / sea-run `--format=jsonl`: every stdout line one JSON object
   (`kind`, fields, `text` = the text line). Every stdout line goes through

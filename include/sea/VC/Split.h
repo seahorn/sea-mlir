@@ -172,6 +172,9 @@ struct SplitAddrCandidate {
   uint64_t direct = 0;
   /// Distinct leaves without an object (cases SeaM cannot place).
   unsigned unknownLeaves = 0;
+  /// --split-candidates: array reads of the query at the solver boundary
+  /// whose index contains the term (SplitCensus::attributeReads).
+  uint64_t reads = 0;
 };
 
 /// An i1 value or a block guard: a --split candidate of a pick run.
@@ -188,6 +191,21 @@ struct SplitBoolCandidate {
   uint64_t open = 0;
   /// Address candidates with the target in an ite condition of their tree.
   unsigned addrs = 0;
+  /// --split-candidates: array reads of the query at the solver boundary
+  /// with the target in an ite condition of their index
+  /// (SplitCensus::attributeReads).
+  uint64_t reads = 0;
+  /// Of those, the reads with an ite whose condition is the target itself
+  /// (not only a part of it).
+  uint64_t condReads = 0;
+  /// The other Boolean candidates in its Boolean structure (its
+  /// connectives, down to the atoms; attributeReads), by distinct term.
+  unsigned covers = 0;
+  /// The candidate (index in boolCands) listed for the term when another
+  /// one has the same term, or -1 (attributeReads; the one with the most
+  /// uses that reach a select condition, a branch condition or an address
+  /// through i1 connectives, then the first).
+  int sameAs = -1;
 };
 
 /// The census of a solverless pick run (sea-vc --split-auto,
@@ -205,6 +223,16 @@ public:
   /// query) to the candidates.
   void attribute(SeaOpSem &sem, llvm::ArrayRef<expr::ENode *> openOverlaps,
                  unsigned maxPaths);
+  /// Attributes the array reads (SELECT nodes with a non-numeral index) of
+  /// `solverQuery`, the query at the solver boundary (SeaOpSem::solverTerm,
+  /// before the Ackermann lowering, which turns the reads of read-only
+  /// arrays into constants and pairs their indices): a Boolean candidate
+  /// counts a read when it is in an ite condition of the read's index, an
+  /// address candidate when its term is in the index (keys translated by
+  /// solverTerm). Returns the number of reads. A heuristic for queries
+  /// whose residue is index pairs, not open alias questions; call after
+  /// attribute().
+  uint64_t attributeReads(SeaOpSem &sem, const expr::Expr &solverQuery);
   /// In encoding order.
   std::vector<SplitAddrCandidate> addrs;
   std::vector<SplitBoolCandidate> boolCands;
