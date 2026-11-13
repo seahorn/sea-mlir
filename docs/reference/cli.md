@@ -82,6 +82,29 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--reach-order=program\|deepest` | with `--reach`: the order of the queries; `deepest` (default), reverse program order, so that a model's run passes the targets before its own |
 | `--ptr-companion=check` | with `--seam`, opaque pointers: check A-PTRINT (a split pointer load reads the pointer last stored at its address) instead of the program's assertions; `unsat` prints `seam.ptrint: holds`, a confirmed `sat` lists the failing loads (`seam.ptrint-violated`, `seam.ptrint-unstored`) and exits 0 |
 
+**Case splitting** (Shannon cofactoring of the VC; a part per case, each
+answered and counted)
+
+| option | effect |
+|---|---|
+| `--split=<sel,...>` | split on an i1 value (1, 0) or a block guard (true, false) |
+| `--split-leaves=<sel,...>` | split on an address whose term is an ite tree: one part per distinct leaf |
+| `--split-auto` | with `--seam`: pick the ite-valued address behind the most open alias questions, split on its leaves |
+| `--split-candidates` | with `--seam`: list the targets of `--split-leaves` (every ite-valued address) and of `--split` (i1 values and block guards in the ite conditions behind open alias questions), ranked; no split, no solver (`result: none`) |
+| `--split-candidates-max=<n>` | the most `split.bool-candidate` lines (default 20; 0: all); the dropped ones are counted |
+| `--split-check` | prove each split level exhaustive and exact with z3 (default on; `--split-check-rlimit=<n>`) |
+| `--split-max-parts=<n>`, `--split-max-paths=<n>` | the cap on the parts (default 64; more is an error) and on the paths of an ite tree |
+| `--split-stop-on-sat` | stop at the first sat part |
+| `--split-smt2=<prefix>` | write each part's query to `<prefix>.part<N>.smt2` (with `--vcgen-only`: no solving) |
+
+A selector is a VC name of the lowered program (`%x`, `nd.<site>`,
+`^bb3`) or `@<file>:<line>`. The verdict is sat if a part is sat (replayed
+as usual), unsat if every part is, else unknown; `split.part:` lines give
+each part's counters, answer and time. Not knowing the names, start with
+`--split-candidates`; a `--seam` run that ends `unknown` with open alias
+questions prints a `hint: split: open-aliases=<n>; ...` line that points
+to it.
+
 **Output**
 
 | option | effect |

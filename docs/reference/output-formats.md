@@ -23,8 +23,12 @@ The main lines of `sea-vc`:
 | `seam.inb: off (fallback: an access leaves its object)` | the assumption was dropped after a static violation |
 | `assume.memset-bound: count=<n> bound=<K>` | $n$ symbolic-length memsets were bounded by $K$ |
 | `solve-time: <s>` | the solver's check |
-| `result: sat|unsat|unknown|none` | the verdict (`none`: `--vcgen-only`) |
+| `result: sat|unsat|unknown|none` | the verdict (`none`: `--vcgen-only`, `--split-candidates`) |
 | `solve-timeout: true`, `mem-limit: hit` | why the result is `unknown` |
+| `hint: split: open-aliases=<n>; rerun with --split-candidates ...` | an `unknown` of a `--seam` run (not a split) whose normalized query has $n > 0$ open alias questions: where to look next |
+| `split.candidates: open-aliases= leaves-candidates= bool-candidates= bool-listed= bool-dropped= bool-values= vc-time=` | `--split-candidates`: the census; `bool-dropped`: Boolean candidates beyond `--split-candidates-max` |
+| `split.leaves-candidate: name= leaves= unknown-leaves= open-aliases= direct= own= loc=` | `--split-candidates`: an ite-valued address (a `--split-leaves` selector); `direct`: open questions holding its term itself; `own`: open questions no other candidate is behind |
+| `split.bool-candidate: name= target=value\|guard open-aliases= addrs= loc=` | `--split-candidates`: an i1 value or block guard (a `--split` selector) in the ite conditions behind open questions |
 | `nondet: site= callee= width= value=` | an input from the model |
 | `memread: site= addr= width= value= [obj=&<id>[<off>]]` | a memory cell from the model, with the object and offset it lies in |
 | `replay: <status>` | the interpreter's status on the model's inputs, normally `assert-failed` |
@@ -417,6 +421,14 @@ The record kinds of `sea-vc`:
 | `ptrint-replay` | `loads`, `holds`, `violated`, `unstored` |
 | `replay-original` | `status`, `at`, `match`, `nondets`, `cells`, `defaulted`, `unmapped`, [`earlier_version_loads`], [`expected`, `got`, `message`] (not a match); skipped: `status` `skipped`, `reason` |
 | `smt2` | the query (with `--smt2`) |
+| `split-part-start` | `part` (`--split*`: the part's own records follow) |
+| `split-part` | `part`, `choice`, `result`, `vc_time`, `solve_time`, `dag`, `alias_open`, `alias_open_pairs`, `alias_open_memop`, `rows`, `ack_reads`, `ack_pairs`, `ack_constraints`, `check` |
+| `split-verdict` | `result`, `parts`, `unsat`, `sat`, `unknown`, `none`, `hardest_part`, `hardest_solve_time`, `check_unknown`, `check` (`on`\|`off`), `leaf_structural`, [`stopped`] |
+| `split-candidate` | `name`, `loc`, `leaves`, `open_aliases` (`--split-auto`) |
+| `split-candidates` | `open_aliases`, `leaves_candidates`, `bool_candidates`, `bool_listed`, `bool_dropped`, `bool_values`, `vc_time` (`--split-candidates`) |
+| `split-leaves-candidate` | `name`, `loc`, `leaves`, `unknown_leaves`, `open_aliases`, `direct`, `own` |
+| `split-bool-candidate` | `name`, `loc`, `target` (`value`\|`guard`), `open_aliases`, `addrs` |
+| `hint` | `topic` (`split`), `open_aliases`, `option` (`--split-candidates`) |
 | `print`, `print.mem`, `print.mem.row`, `print.scope`, `print.object`, `print.note`, `print.truncated` | see [Counterexample notation](print.md) and `sea-vc --agent` |
 
 An object has the same id in every record: its print name (`stack.1`,

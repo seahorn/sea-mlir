@@ -7,6 +7,7 @@ add_mlir_library(SeaVC
   OpSem.cpp
   Reach.cpp
   Replay.cpp
+  Split.cpp
   SymStore.cpp
   VCGen.cpp
 

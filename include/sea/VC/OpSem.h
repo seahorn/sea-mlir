@@ -58,6 +58,15 @@ public:
   /// arguments): the per-write simplification of the lambda memory encoding
   /// (docs/design/Lambda.md). Null: none.
   std::function<expr::Expr(expr::Expr reg, expr::Expr val)> writeHook;
+  /// Called after the op defining `v` is encoded (SeaOpSem::exec), and
+  /// after the block arguments of a block are joined (VCGen), with the
+  /// value in the store: case splitting (sea/VC/Split.h) may replace it.
+  /// Null: none.
+  std::function<void(mlir::Value v)> defHook;
+  /// Applied to the guard constant of every block but the entry when VCGen
+  /// creates it; the result is the block's guard (case splitting). Null:
+  /// none.
+  std::function<expr::Expr(mlir::Block *b, expr::Expr guard)> guardHook;
 
   OpSemContext &pc(expr::Expr cond) {
     pathCond = cond;

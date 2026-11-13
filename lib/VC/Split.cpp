@@ -1,0 +1,511 @@
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+//===- Split.cpp - case splitting of a VC (sea-vc --split) ------*- C++ -*-===//
+
+#include "sea/VC/Split.h"
+
+#include "sea/Expr/SeaMRules.hh"
+#include "sea/Interp/Interpreter.h"
+#include "sea/Support/Diag.h"
+#include "sea/VC/Names.h"
+#include "sea/VC/OpSem.h"
+
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <functional>
+#include <map>
+#include <set>
+#include <sstream>
+#include <unordered_map>
+
+using namespace mlir;
+using namespace expr;
+
+namespace sea {
+
+static bool fileMatches(StringRef path, StringRef file) {
+  if (!path.ends_with(file))
+    return false;
+  // a whole path component: `a.h` does not match `data.h`
+  return path.size() == file.size() ||
+         path[path.size() - file.size() - 1] == '/' || file.starts_with("/");
+}
+
+LogicalResult resolveSplitTargets(ProgramOp program,
+                                  ArrayRef<std::string> selectors,
+                                  SplitTarget::Kind kind,
+                                  std::vector<SplitTarget> &out,
+                                  std::string &error) {
+  ValueNames names(program);
+  const bool isBool = kind == SplitTarget::Kind::Bool;
+  auto kindOk = [&](Value v) {
+    if (isBool)
+      return v.getType().isInteger(1);
+    return isa<AddrType>(v.getType());
+  };
+  for (const std::string &sel : selectors) {
+    std::vector<SplitTarget> found;
+    auto addValue = [&](Value v) {
+      found.push_back({kind, v, nullptr, names.name(v).str(), sel});
+    };
+    StringRef s(sel);
+    if (s.starts_with("@")) {
+      auto [fileText, lineText] = s.drop_front().rsplit(':');
+      StringRef file = fileText;
+      unsigned line = 0;
+      if (file.empty() || lineText.getAsInteger(10, line)) {
+        error = "split selector '" + sel + "': want @<file>:<line>";
+        return failure();
+      }
+      program.walk([&](Operation *op) {
+        for (Value r : op->getResults()) {
+          if (!kindOk(r))
+            continue;
+          for (FileLineColLoc p : positionsOf(op->getLoc()))
+            if (p.getLine() == line &&
+                fileMatches(p.getFilename().getValue(), file)) {
+              addValue(r);
+              break;
+            }
+        }
+      });
+    } else if (s.starts_with("^")) {
+      if (!isBool) {
+        error = "split selector '" + sel +
+                "': a block guard is Boolean (--split, not --split-leaves)";
+        return failure();
+      }
+      for (Block &b : program.getBody())
+        if (names.name(&b).getValue() == s) {
+          if (&b == &program.getBody().front()) {
+            error = "split selector '" + sel +
+                    "': the entry block always executes (no guard to split)";
+            return failure();
+          }
+          found.push_back({kind, Value(), &b, s.str(), sel});
+        }
+    } else {
+      program.walk([&](Operation *op) {
+        for (Value r : op->getResults())
+          if (names.name(r).getValue() == s)
+            addValue(r);
+      });
+      for (Block &b : program.getBody())
+        for (BlockArgument a : b.getArguments())
+          if (names.name(a).getValue() == s)
+            addValue(a);
+      for (SplitTarget &t : found)
+        if (!kindOk(t.value)) {
+          std::string ty;
+          llvm::raw_string_ostream os(ty);
+          os << t.value.getType();
+          error = "split selector '" + sel + "': " + t.name + " has type " +
+                  ty + (isBool ? ", not i1" : ", not an address");
+          return failure();
+        }
+    }
+    if (found.empty()) {
+      error = "split selector '" + sel + "' finds no " +
+              (isBool ? "i1 value or block" : "address value") +
+              " in the encoded program (names are those of the lowered "
+              "program)";
+      return failure();
+    }
+    if (found.size() > 1) {
+      error = "split selector '" + sel + "' is ambiguous (" +
+              std::to_string(found.size()) + " matches:";
+      for (size_t i = 0; i < found.size() && i < 6; ++i)
+        error += " " + found[i].name;
+      error += found.size() > 6 ? " ...)" : ")";
+      return failure();
+    }
+    for (const SplitTarget &t : out)
+      if (t.value == found[0].value && t.block == found[0].block) {
+        error = "split selector '" + sel + "' names " + t.name +
+                " again (selector '" + t.selector + "')";
+        return failure();
+      }
+    out.push_back(found[0]);
+  }
+  return success();
+}
+
+bool SplitRun::leafCases(Expr t, SeaOpSem &sem, unsigned maxPaths,
+                         std::vector<SplitCase> &out, std::string &why) {
+  ExprFactory &efac = t->efac();
+  const bool fromBits = isOpX<PTR_FROM_BITS>(t);
+  Expr tree = fromBits ? Expr(t->arg(0)) : t;
+  if (!isOpX<ITE>(tree)) {
+    std::ostringstream os;
+    os << "the term is " << tree->op().name()
+       << (fromBits ? " under ptr-from-bits" : "")
+       << ", not an ite (or ptr-from-bits of an ite)";
+    why = os.str();
+    return false;
+  }
+  // the leaves in first-occurrence order, each with its path conditions
+  std::vector<Expr> leaves;
+  std::map<ENode *, ExprVector> paths;
+  unsigned npaths = 0;
+  struct Item {
+    Expr e;
+    ExprVector lits;
+  };
+  std::vector<Item> stack{{tree, {}}};
+  while (!stack.empty()) {
+    Item it = std::move(stack.back());
+    stack.pop_back();
+    if (isOpX<ITE>(it.e)) {
+      Item els{Expr(it.e->arg(2)), it.lits};
+      els.lits.push_back(op::boolop::lneg(Expr(it.e->arg(0))));
+      it.lits.push_back(Expr(it.e->arg(0)));
+      // then-side first (pushed last)
+      stack.push_back(std::move(els));
+      stack.push_back({Expr(it.e->arg(1)), std::move(it.lits)});
+      continue;
+    }
+    if (++npaths > maxPaths) {
+      why = "the ite tree has more than " + std::to_string(maxPaths) +
+            " paths (--split-max-paths)";
+      return false;
+    }
+    auto [p, fresh] = paths.try_emplace(it.e.get());
+    if (fresh)
+      leaves.push_back(it.e);
+    p->second.push_back(op::boolop::land(it.lits, efac));
+  }
+  expr::SeaMRewriter *rw = sem.seamRewriter();
+  for (const Expr &l : leaves) {
+    SplitCase c;
+    c.cond = op::boolop::lor(paths[l.get()], efac);
+    c.value = fromBits ? Expr(mk<PTR_FROM_BITS>(l)) : l;
+    // from-bits(to-bits p) and the like: the rewriter's normal form, as
+    // for any term the encoding builds
+    if (rw && fromBits)
+      c.value = rw->rewrite(c.value);
+    std::string text = "leaf";
+    if (rw)
+      if (auto v = rw->rules().view(c.value)) {
+        std::ostringstream os;
+        os << *v->base;
+        text += ":" + os.str();
+      }
+    if (text == "leaf")
+      text += ":unknown(" + std::string(c.value->op().name()) + ")";
+    text += "/paths=" + std::to_string(paths[l.get()].size());
+    c.text = text;
+    out.push_back(std::move(c));
+  }
+  return true;
+}
+
+/// `v` is a leaf of the ite tree of `t` (under at most one
+/// PTR_FROM_BITS), or the rewriter's normal form of ptr-from-bits of one.
+static bool isLeafValue(Expr t, Expr v, SeaOpSem &sem) {
+  const bool fromBits = isOpX<PTR_FROM_BITS>(t);
+  Expr tree = fromBits ? Expr(t->arg(0)) : t;
+  expr::SeaMRewriter *rw = sem.seamRewriter();
+  std::set<ENode *> seen;
+  std::vector<Expr> stack{tree};
+  while (!stack.empty()) {
+    Expr e = stack.back();
+    stack.pop_back();
+    if (!seen.insert(e.get()).second)
+      continue;
+    if (isOpX<ITE>(e)) {
+      stack.push_back(Expr(e->arg(1)));
+      stack.push_back(Expr(e->arg(2)));
+      continue;
+    }
+    if (e == v)
+      return true;
+    if (fromBits) {
+      Expr w = Expr(mk<PTR_FROM_BITS>(e));
+      if (w == v || (rw && rw->rewrite(w) == v))
+        return true;
+    }
+  }
+  return false;
+}
+
+unsigned SplitRun::choose(unsigned level, unsigned n) {
+  unsigned c = level < prefix.size() ? prefix[level] : 0;
+  if (c >= n && why.empty()) {
+    isUnstable = true;
+    why = "level " + std::to_string(level) + " has " + std::to_string(n) +
+          " case(s) in this run but case " + std::to_string(c) +
+          " was planned (the encoding is not deterministic)";
+  }
+  return c < n ? c : 0;
+}
+
+void SplitRun::onValue(Value v, SeaOpSem &sem, OpSemContext &ctx) {
+  auto it = byValue.find(v);
+  if (it == byValue.end())
+    return;
+  const SplitTarget &t = targets[it->second];
+  Expr reg = sem.mkSymbReg(v);
+  Expr term = ctx.read(reg);
+  SplitLevel lvl;
+  lvl.target = it->second;
+  lvl.term = term;
+  lvl.ptr = isa<AddrType>(v.getType()) && sem.ptrSorted();
+  if (t.kind == SplitTarget::Kind::Bool) {
+    for (unsigned b : {1u, 0u}) {
+      Expr num = sem.numeral(llvm::APInt(1, b));
+      lvl.cases.push_back({num, mk<EQ>(term, num), b ? "1" : "0"});
+    }
+  } else {
+    std::string w;
+    if (!leafCases(term, sem, maxTreePaths, lvl.cases, w)) {
+      if (why.empty())
+        why = t.name + " (" + t.selector + "): " + w;
+      return;
+    }
+  }
+  if (plant == Plant::DropCase && lvl.cases.size() > 1)
+    lvl.cases.pop_back();
+  lvl.chosen = choose(lvls.size(), lvl.cases.size());
+  if (plant == Plant::WrongValue && lvl.cases.size() > 1)
+    lvl.cases[lvl.chosen].value =
+        lvl.cases[(lvl.chosen + 1) % lvl.cases.size()].value;
+  if (t.kind == SplitTarget::Kind::Leaves) {
+    // (X) at the pointer level, by construction: the value is a leaf of the
+    // term's ite tree, or the rewriter's normal form of ptr-from-bits of one
+    if (!isLeafValue(term, lvl.cases[lvl.chosen].value, sem)) {
+      if (why.empty())
+        why = t.name + " (" + t.selector +
+              "): the chosen value is not a leaf of the term's ite tree "
+              "(a bug in the case split construction)";
+      return;
+    }
+    ++nStructural;
+  }
+  ctx.values().write(reg, lvl.cases[lvl.chosen].value);
+  lvls.push_back(std::move(lvl));
+}
+
+Expr SplitRun::onGuard(Block *b, Expr g, OpSemContext &ctx) {
+  auto it = byBlock.find(b);
+  if (it == byBlock.end())
+    return g;
+  ExprFactory &efac = ctx.efac();
+  SplitLevel lvl;
+  lvl.target = it->second;
+  lvl.term = g;
+  lvl.cases.push_back({mk<TRUE>(efac), g, "true"});
+  lvl.cases.push_back({mk<FALSE>(efac), op::boolop::lneg(g), "false"});
+  lvl.chosen = choose(lvls.size(), 2);
+  Expr v = lvl.cases[lvl.chosen].value;
+  lvls.push_back(std::move(lvl));
+  return v;
+}
+
+void SplitRun::install(SeaOpSem &sem, OpSemContext &ctx) {
+  ctx.defHook = [this, &sem, &ctx](Value v) { onValue(v, sem, ctx); };
+  ctx.guardHook = [this, &ctx](Block *b, Expr g) { return onGuard(b, g, ctx); };
+}
+
+Expr SplitRun::partCondition(ExprFactory &efac) const {
+  if (lvls.empty())
+    return Expr();
+  ExprVector conj;
+  for (const SplitLevel &l : lvls)
+    if (l.cases.size() > 1)
+      conj.push_back(l.cases[l.chosen].cond);
+  return op::boolop::land(conj, efac);
+}
+
+std::string SplitRun::choiceText() const {
+  std::string s;
+  for (const SplitLevel &l : lvls) {
+    if (!s.empty())
+      s += ",";
+    s += targets[l.target].name + "=" + l.cases[l.chosen].text + "#" +
+         std::to_string(l.chosen) + "/" + std::to_string(l.cases.size());
+  }
+  return s.empty() ? "-" : s;
+}
+
+void SplitCensus::install(SeaOpSem &sem, OpSemContext &ctx) {
+  ctx.defHook = [this, &sem, &ctx](Value v) {
+    if (isa<AddrType>(v.getType())) {
+      Expr t = ctx.read(sem.mkSymbReg(v));
+      Expr tree = isOpX<PTR_FROM_BITS>(t) ? Expr(t->arg(0)) : t;
+      if (isOpX<ITE>(tree)) {
+        SplitAddrCandidate c;
+        c.value = v;
+        c.term = t;
+        addrs.push_back(std::move(c));
+      }
+      return;
+    }
+    if (!bools || !v.getType().isInteger(1))
+      return;
+    Expr t = ctx.read(sem.mkSymbReg(v));
+    // a constant has nothing to split
+    if (op::bv::isBvNum(t) || isOpX<TRUE>(t) || isOpX<FALSE>(t))
+      return;
+    SplitBoolCandidate c;
+    c.value = v;
+    c.keys = {t, sem.toBool(t)};
+    boolCands.push_back(std::move(c));
+  };
+  if (bools)
+    ctx.guardHook = [this](Block *b, Expr g) {
+      SplitBoolCandidate c;
+      c.block = b;
+      c.keys = {g};
+      boolCands.push_back(std::move(c));
+      return g;
+    };
+}
+
+namespace {
+/// Per DAG node, the sorted ids collected from the node and its DAG
+/// (iterative post-order, memoized): `own` adds the node's own ids.
+class DagIds {
+public:
+  using Own = std::function<void(ENode *, std::vector<unsigned> &)>;
+  explicit DagIds(Own own) : own(std::move(own)) {}
+  const std::vector<unsigned> &of(ENode *root) {
+    std::vector<std::pair<ENode *, bool>> st{{root, false}};
+    while (!st.empty()) {
+      auto [n, done] = st.back();
+      st.pop_back();
+      if (memo.count(n))
+        continue;
+      if (!done) {
+        st.push_back({n, true});
+        for (size_t i = 0; i < n->arity(); ++i)
+          if (!memo.count(n->arg(i)))
+            st.push_back({n->arg(i), false});
+        continue;
+      }
+      std::vector<unsigned> ids;
+      own(n, ids);
+      for (size_t i = 0; i < n->arity(); ++i) {
+        const std::vector<unsigned> &a = memo[n->arg(i)];
+        ids.insert(ids.end(), a.begin(), a.end());
+      }
+      llvm::sort(ids);
+      ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+      memo[n] = std::move(ids);
+    }
+    return memo[root];
+  }
+
+private:
+  Own own;
+  // node-based: references stay valid as it grows
+  std::unordered_map<ENode *, std::vector<unsigned>> memo;
+};
+
+void unite(std::vector<unsigned> &into, const std::vector<unsigned> &b) {
+  into.insert(into.end(), b.begin(), b.end());
+  llvm::sort(into);
+  into.erase(std::unique(into.begin(), into.end()), into.end());
+}
+} // namespace
+
+void SplitCensus::attribute(SeaOpSem &sem, ArrayRef<ENode *> openOverlaps,
+                            unsigned maxPaths) {
+  // an address candidate is behind a question whose pointers contain its
+  // term or one of its leaves without an object (SeaM's leaf pairs split
+  // an ite pointer: the open pair holds the unknown leaf, not the ite)
+  // (by their normal forms: the query was normalized after them)
+  std::unordered_multimap<ENode *, unsigned> candOf;
+  ExprVector keep;
+  std::vector<Expr> normTerm(addrs.size());
+  auto addCand = [&](const Expr &e, unsigned i) {
+    keep.push_back(sem.simplify(e));
+    candOf.emplace(keep.back().get(), i);
+  };
+  for (unsigned i = 0; i < addrs.size(); ++i) {
+    SplitAddrCandidate &c = addrs[i];
+    addCand(c.term, i);
+    normTerm[i] = keep.back();
+    std::string why;
+    if (!SplitRun::leafCases(c.term, sem, maxPaths, c.cases, why)) {
+      // a candidate without cases: listed with leaves=0, never picked
+      c.cases.clear();
+      diag::warn("vc.split-max-paths",
+                 "a split candidate (an ite-valued address) is counted "
+                 "without its leaves (leaves=0, unknown-leaves=0; only its "
+                 "term attributes questions): " +
+                     why);
+    }
+    for (const SplitCase &k : c.cases)
+      if (!sem.seamRewriter()->rules().view(k.value)) {
+        addCand(k.value, i);
+        ++c.unknownLeaves;
+      }
+  }
+  DagIds addrIds([&](ENode *n, std::vector<unsigned> &ids) {
+    auto [lo, hi] = candOf.equal_range(n);
+    for (auto it = lo; it != hi; ++it)
+      ids.push_back(it->second);
+  });
+  // the term alone (not its leaves): the question holds the ite itself
+  std::unordered_multimap<ENode *, unsigned> termOf;
+  for (unsigned i = 0; i < addrs.size(); ++i)
+    termOf.emplace(normTerm[i].get(), i);
+  DagIds termIds([&](ENode *n, std::vector<unsigned> &ids) {
+    auto [lo, hi] = termOf.equal_range(n);
+    for (auto it = lo; it != hi; ++it)
+      ids.push_back(it->second);
+  });
+  // the Boolean candidates in each node's DAG, and in the ite conditions
+  // of each node's DAG
+  std::unordered_multimap<ENode *, unsigned> boolOf;
+  for (unsigned j = 0; j < boolCands.size(); ++j)
+    for (const Expr &k : boolCands[j].keys) {
+      keep.push_back(sem.simplify(k));
+      boolOf.emplace(keep.back().get(), j);
+    }
+  DagIds boolIds([&](ENode *n, std::vector<unsigned> &ids) {
+    auto [lo, hi] = boolOf.equal_range(n);
+    for (auto it = lo; it != hi; ++it)
+      ids.push_back(it->second);
+  });
+  DagIds condIds([&](ENode *n, std::vector<unsigned> &ids) {
+    if (isOpX<ITE>(n)) {
+      const std::vector<unsigned> &b = boolIds.of(n->arg(0));
+      ids.insert(ids.end(), b.begin(), b.end());
+    }
+  });
+  std::vector<std::vector<unsigned>> termBools(addrs.size());
+  if (bools && !boolCands.empty())
+    for (unsigned i = 0; i < addrs.size(); ++i) {
+      termBools[i] = condIds.of(normTerm[i].get());
+      for (unsigned j : termBools[i])
+        ++boolCands[j].addrs;
+    }
+  for (ENode *n : openOverlaps) {
+    std::vector<unsigned> ids = addrIds.of(n->arg(0));
+    unite(ids, addrIds.of(n->arg(2)));
+    for (unsigned i : ids) {
+      ++addrs[i].open;
+      if (ids.size() == 1)
+        ++addrs[i].own;
+    }
+    if (direct) {
+      std::vector<unsigned> ts = termIds.of(n->arg(0));
+      unite(ts, termIds.of(n->arg(2)));
+      for (unsigned i : ts)
+        ++addrs[i].direct;
+    }
+    if (!bools || boolCands.empty())
+      continue;
+    std::vector<unsigned> bs = condIds.of(n->arg(0));
+    unite(bs, condIds.of(n->arg(2)));
+    for (unsigned i : ids)
+      unite(bs, termBools[i]);
+    for (unsigned j : bs)
+      ++boolCands[j].open;
+  }
+}
+
+} // namespace sea
