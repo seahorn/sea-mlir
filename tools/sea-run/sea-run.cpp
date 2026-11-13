@@ -414,6 +414,12 @@ boundary, or to an object aligned below k, is an error; unaligned: an
 access overlapping a cell that starts elsewhere is an error (accesses must
 match). Range-op lengths must be whole cells.
 
+CLAIMS OVER AN INDEX BOX: `sea.box.all` (docs/design/BoxAll.md) is
+evaluated at every index of its box (unsigned, upper bound exclusive; an
+empty box is 1), each body op one step: a box too large to run ends at the
+step limit. The lowered program (sea-vc) checks one arbitrary index
+instead (nondet `box.all.<tag>.<d>`); both are runnable.
+
 OUTPUT (stdout, one `key: value` per line, stable order):
   program: @<name>
   nondet: site=<n> callee=<f> width=<w> value=<unsigned> origin=input|zero|random
@@ -467,6 +473,10 @@ OUTPUT (stdout, one `key: value` per line, stable order):
                                     else that of the last op before it
                                     in its block; else, like an
                                     unlocated sea.br, it is left out)
+  box-all-false: index=(<k>[, <k>]) [op=<where>]   (assert-failed, a
+                                    sea.box.all of the run was 0: the first
+                                    such op and its first false index, row
+                                    major; docs/design/BoxAll.md)
   reached: halted|assert-failed at=<where>
                                     (memory-error: the op that made the
                                     violation reachable; at: is the
@@ -567,7 +577,9 @@ Kinds and fields:
                 [ptr] (the pointer token)
   status        status, [loc] (at:), [at] [at_inlined] [at_name]
                 (assert-at), [op] [op_inlined] [op_name] (assert-op),
-                [path] (array) [path_inlined], [reached] [reached_at]
+                [path] (array) [path_inlined], [box_all_false]
+                [box_all_op] [box_all_op_inlined] [box_all_op_name],
+                [reached] [reached_at]
                 [reached_at_inlined] [reached_at_name], [message],
                 [deferred] [deferred_kind] [deferred_at]
                 [deferred_at_inlined] [deferred_at_name]; one
@@ -1108,6 +1120,10 @@ static sea::out::Record statusRecord(const sea::RunResult &r) {
       sea::printAssertContext(cs, "", r);
       if (!ctx.empty())
         os << "\n" << StringRef(ctx).drop_back();
+      if (r.boxAllFalse) {
+        rec.str("box_all_false", sea::boxAllFalseText(r));
+        sea::addLocFields(rec, "box_all_op", r.boxAllFalse->op->getLoc());
+      }
       if (r.assertLoc)
         sea::addLocFields(rec, "op", *r.assertLoc);
       sea::addPathFields(rec, r.branchPath);

@@ -4,6 +4,7 @@
 add_mlir_library(SeaTransforms
   ExpandIntrinsics.cpp
   ExpandMemSet.cpp
+  ExpandSmallMemMove.cpp
   Passes.cpp
   PassLog.cpp
   PlaceStatic.cpp
@@ -26,6 +27,7 @@ add_mlir_library(SeaTransforms
   WrapFlags.cpp
   PrintRefs.cpp
   RangeFold.cpp
+  LowerBoxAll.cpp
   TestInsertPrints.cpp
 
   ADDITIONAL_HEADER_DIRS

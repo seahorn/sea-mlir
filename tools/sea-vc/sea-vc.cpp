@@ -128,6 +128,30 @@ static cl::opt<sea::RangeFoldMode> rangeFoldOpt(
                           "valid")),
     cl::init(sea::RangeFoldMode::Off));
 
+static cl::opt<unsigned> expandMemMoveOpt(
+    "expand-memmove",
+    cl::desc("With --lower: a sea.memmove of a constant length <= K index "
+             "units (bytes for byte-addressed memories) becomes loads of "
+             "every source cell, then stores in address order "
+             "(sea-expand-small-memmove; exact, overlap included; K <= "
+             "1024). Every memmove is kept with --ptr-companion; a "
+             "fat-pointer companion memmove is expanded only with its data "
+             "memmove. "
+             "For --seam, whose memmove term (mcopy) leaves Ackermann "
+             "residue when the range test is undecided; prints "
+             "vc.expand-memmove. Untuned default: 0 (off)"),
+    cl::value_desc("K"), cl::init(0));
+
+static cl::opt<unsigned> boxAllExpandOpt(
+    "box-all-expand",
+    cl::desc("With --lower: a sea.box.all whose upper bounds are constants "
+             "and whose trip count (the product over its dimensions) is at "
+             "most K is expanded: the body at every index, and-reduced "
+             "(exact); larger or symbolic boxes get one nondet index. The "
+             "polarity rule is the same for both. 0: never. Prints "
+             "vc.box-all expanded= (docs/design/BoxAll.md). Untuned default"),
+    cl::value_desc("K"), cl::init(sea::kBoxAllExpandDefault));
+
 static cl::list<std::string> lowerDisable(
     "lower-disable",
     cl::desc("With --lower: leave these optimization passes out of the "
@@ -1276,6 +1300,23 @@ INPUT FORM (checked; anything else is an error, never approximated):
   (the value wraps, as in SeaHorn: an over-approximation); --range-fold=on
   uses them (counted: vc.range-fold wrap-flags=). sea-wrap-flags turns
   them into assumes or asserts.
+  sea.box.all (a claim over a box of 1-2 i64 indices, docs/design/BoxAll.md)
+  needs --lower: sea-lower-box-all replaces it by its body at one
+  arbitrary index (nondet box.all.<tag>.<d>, assume t <u trip count; a box
+  that may be empty is entered only when it is not) where its result
+  reaches sea.assert through i1 sea.and / sea.or only; any other use is an
+  error box-all.use-<assume|branch|negation|select|print|value> (no
+  unrolling fallback). A box of constant upper bounds (the op folders
+  reduce them to one before sccp: sea.const, flag-free arithmetic on
+  constants) with at most K indices (--box-all-expand=K <= 1024, untuned
+  default 16) is expanded instead: the body at every index, and-reduced
+  (same polarity rule). Prints vc.box-all: dead= empty= expand-max=
+  expanded= guarded= lowered= nondets=. Use it for claims whose instances
+  are each expensive (a read of a memory through many writes: one index
+  replaces them all); keep a
+  claim whose instances are each matched by an assumption instance (e.g.
+  pairwise distinctness assumed and asserted) as explicit conjunctions:
+  one arbitrary instance hides the match and was measured slower.
 
 TYPICAL:
   sea-vc p.mlir                  # solve with z3, replay if sat
@@ -1775,6 +1816,23 @@ TYPICAL:
                                  #   every fold instead, drop the
                                  #   program's asserts; unsat = every
                                  #   fold valid (docs/design/RangeFold.md)
+  sea-vc p.mlir --lower --seam --expand-memmove=K  # a memmove of a
+                                 #   constant length <= K bytes as copies:
+                                 #   loads of every source byte, then
+                                 #   stores in address order (exact). For
+                                 #   mcopy reads SeaM cannot decide (symbolic
+                                 #   destination): Ackermann residue.
+                                 #   Pays for short copies (up to ~16
+                                 #   bytes measured), loses for long ones
+                                 #   (one load + store per byte).
+                                 #   Untuned default: 0 (off). Prints
+                                 #   vc.expand-memmove: k= expanded= bytes=
+                                 #   kept-symbolic= kept-over-k=
+                                 #   kept-word-layout= kept-abstract=
+                                 #   kept-tracked= kept-companion-mirror=
+                                 #   kept-ptr-companion= (K in index
+                                 #   units: bytes in byte memories; every
+                                 #   memmove kept with --ptr-companion)
   sea-vc p.mlir --seam --seam-stride  # R-STRIDE: store-map entries
                                  #   skipped for reads at promised GEP
                                  #   nodes whose offsets never reach them
@@ -1807,6 +1865,14 @@ OUTPUT (stdout, `key: value` lines):
   vc.config: <path>               (--config: each config loaded, in order,
                                   first; with --smt2 on stderr)
   program: @<name>
+  vc.box-all: dead=<n> empty=<n> expand-max=<K> expanded=<n> guarded=<n>
+      lowered=<n> nondets=<n>     (--lower, a program with sea.box.all:
+                                  ops erased unused, constant empty boxes
+                                  (true), --box-all-expand, boxes expanded
+                                  at every index, boxes entered behind a
+                                  non-empty test, ops lowered to one index,
+                                  index nondets made;
+                                  docs/design/BoxAll.md)
   vc.fold: assume-false=<n> assert-false=<n>   (the lowering folded an
                                   assume / assert of constant false:
                                   warnings fold.assume-false (a proved
@@ -2001,7 +2067,12 @@ OUTPUT (stdout, `key: value` lines):
                                   is confirmed (exit 0) iff one fails, else
                                   vc.replay-no-failure, exit 2)
   replay.original: status=<s> at=<file:line:col|-> match=yes|no|undetermined
-      nondets=<n> cells=<n> defaulted=<n> unmapped=<n> [earlier-version-loads=<n>]
+      nondets=<n> cells=<n> defaulted=<n> unmapped=<n> [box-all-false=(<k>..)]
+      [earlier-version-loads=<n>]   (box-all-false: the first false index
+                                  of the input's first false sea.box.all;
+                                  the lowered program's nondet
+                                  box.all.<tag>.<d> is the trip number t
+                                  of dimension d, index = lo + step*t)
                                   (--replay-original, sat confirmed by the
                                   replay above: the input program as it
                                   was before any pass, run on the model's
@@ -2023,7 +2094,8 @@ OUTPUT (stdout, `key: value` lines):
                                   objects the lowered program has not;
                                   both read as 0. undetermined: the
                                   interpreter cannot run it (ptr.to_int
-                                  before placement, ...), it loads an
+                                  before placement, ...) or hits the step
+                                  limit (a large sea.box.all), it loads an
                                   earlier memory version, it read an
                                   unmapped input, or the assert cannot be
                                   told apart: warning
@@ -2610,7 +2682,8 @@ Kinds and fields:
                 [obj + off] (an address: the object it points into)
   no-clobber-violated  loc (the load's file:line:col)
   replay-original  (--replay-original) status, at, match, nondets, cells,
-                defaulted, unmapped, [earlier_version_loads], [expected,
+                defaulted, unmapped, [box_all_false],
+                [earlier_version_loads], [expected,
                 got, message] (not a match); skipped: status `skipped`,
                 reason; one record for the `replay.original:` lines
   smt2          (--smt2) the query in text (and its `; sea.block-ids`
@@ -2893,6 +2966,17 @@ int main(int argc, char **argv) {
     return fail("--lower-disable needs --lower");
   if (rangeFoldOpt != sea::RangeFoldMode::Off && !lower)
     return fail("--range-fold needs --lower");
+  if (expandMemMoveOpt && !lower)
+    return fail("--expand-memmove needs --lower");
+  if (boxAllExpandOpt.getNumOccurrences() && !lower)
+    return fail("--box-all-expand needs --lower");
+  if (boxAllExpandOpt > sea::kMaxBoxAllExpand)
+    return fail("--box-all-expand=" + Twine(boxAllExpandOpt) +
+                " is above the limit (" + Twine(sea::kMaxBoxAllExpand) + ")");
+  if (expandMemMoveOpt > sea::kMaxExpandMemMoveBytes)
+    return fail("--expand-memmove=" + Twine(expandMemMoveOpt) +
+                " is above the limit (" + Twine(sea::kMaxExpandMemMoveBytes) +
+                ")");
   if ((!placeIn.empty() || !placeOut.empty()) && !lower)
     return fail("--place-in and --place-out need --lower");
   if (!placeIn.empty() && !placeOut.empty())
@@ -3215,7 +3299,8 @@ int main(int argc, char **argv) {
         /*keepByteWide=*/seam && seamWide, checkAlign,
         checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt,
         memhavocNull == MemhavocNull::Noop, lowerDisableMask,
-        sea::PlaceFiles{placeIn, placeOut}, rangeFoldOpt);
+        sea::PlaceFiles{placeIn, placeOut}, rangeFoldOpt, expandMemMoveOpt,
+        ptrCompanion != CompanionMode::Off, boxAllExpandOpt);
     if (failed(configurePM(pm)) || failed(pm.run(*module)))
       return 1;
     SEA_PHASE_END(lowerPhase)
@@ -3272,13 +3357,35 @@ int main(int argc, char **argv) {
           program->getAttrOfType<IntegerAttr>(sea::kMemhavocNullGuardsAttr))
     nullGuards = n.getInt();
   // the memhavocs sea-drop-fresh-memhavoc dropped under A-INB
-  // sea-range-fold's counters (--range-fold)
-  std::string rangeFoldLine;
+  // the counters of the lowering passes: sea-range-fold (--range-fold)
+  std::string lowerStatLines;
   if (auto d =
           program->getAttrOfType<DictionaryAttr>(sea::kRangeFoldStatsAttr)) {
-    raw_string_ostream os(rangeFoldLine);
+    raw_string_ostream os(lowerStatLines);
     os << "vc.range-fold: mode="
        << (rangeFoldOpt == sea::RangeFoldMode::Check ? "check" : "on");
+    for (NamedAttribute a : d)
+      if (auto i = dyn_cast<IntegerAttr>(a.getValue()))
+        os << " " << a.getName().getValue() << "=" << i.getInt();
+    os << "\n";
+  }
+  // sea-expand-small-memmove's counters (--expand-memmove)
+  if (auto d = program->getAttrOfType<DictionaryAttr>(
+          sea::kExpandMemMoveStatsAttr)) {
+    raw_string_ostream os(lowerStatLines);
+    os << "vc.expand-memmove:";
+    for (StringRef key :
+         {"k", "expanded", "bytes", "kept-symbolic", "kept-over-k",
+          "kept-word-layout", "kept-abstract", "kept-tracked",
+          "kept-companion-mirror", "kept-ptr-companion"})
+      if (auto i = d.getAs<IntegerAttr>(key))
+        os << " " << key << "=" << i.getInt();
+    os << "\n";
+  }
+  // sea-lower-box-all's counters (a program with sea.box.all ops)
+  if (auto d = program->getAttrOfType<DictionaryAttr>(sea::kBoxAllStatsAttr)) {
+    raw_string_ostream os(lowerStatLines);
+    os << "vc.box-all:";
     for (NamedAttribute a : d)
       if (auto i = dyn_cast<IntegerAttr>(a.getValue()))
         os << " " << a.getName().getValue() << "=" << i.getInt();
@@ -3544,6 +3651,10 @@ int main(int argc, char **argv) {
     else if (!match && o.run.status == sea::RunStatus::Error &&
              !sea::isMemorySafetyKind(o.run.errorKind))
       undetermined = "the original program cannot be run on these inputs";
+    else if (!match && o.run.status == sea::RunStatus::StepLimit)
+      undetermined = "the original program's run reached the step limit "
+                     "(e.g. a sea.box.all with a large box: the "
+                     "interpreter runs every index)";
     else if (!match && !o.run.earlierVersionLoads.empty())
       undetermined = "the original program loads an earlier memory version "
                      "(a Mem-SSA no-clobber claim the in-place interpreter "
@@ -3568,6 +3679,13 @@ int main(int argc, char **argv) {
          << " at=" << posText(origLoc) << " match=" << matchText
          << " nondets=" << o.nondets << " cells=" << o.cells
          << " defaulted=" << o.defaulted << " unmapped=" << o.unmapped;
+      // the first false index of a sea.box.all of the original (its
+      // claim over the whole box; docs/design/BoxAll.md)
+      if (o.run.boxAllFalse) {
+        std::string idx = sea::boxAllFalseText(o.run);
+        os << " box-all-false=" << idx;
+        rec.str("box_all_false", idx);
+      }
       if (!o.run.earlierVersionLoads.empty()) {
         os << " earlier-version-loads=" << o.run.earlierVersionLoads.size();
         rec.num("earlier_version_loads", o.run.earlierVersionLoads.size());
@@ -5319,7 +5437,7 @@ int main(int argc, char **argv) {
                 << "vc.ptr-from-int-opaque: " << sem.ptrFromIntOpaque() << "\n";
       if (sinkAssumes)
         statOut() << "vc.sink-assumes: " << sunkAssumes << "\n";
-      statOut() << rangeFoldLine;
+      statOut() << lowerStatLines;
       foldLines(statOut());
       companionLine(statOut());
       if (vcgen.joinCases())
@@ -5354,7 +5472,7 @@ int main(int argc, char **argv) {
            << "\nvc.ptr-from-int-opaque: " << sem.ptrFromIntOpaque() << "\n";
     if (sinkAssumes)
       vout() << "vc.sink-assumes: " << sunkAssumes << "\n";
-    vout() << rangeFoldLine;
+    vout() << lowerStatLines;
     foldLines(vout());
     companionLine(vout());
     if (vcgen.joinCases())

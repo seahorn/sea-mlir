@@ -7,6 +7,12 @@
 // sea-vc --agent, INPUT FORM). Order and why:
 //  -1. sea-apply-tracking        tracking markers -> `tracked` updates (part
 //                                of the meaning, not an optimization)
+//  -1'. sea-lower-box-all        sea.box.all in assert polarity -> its
+//                                body at one arbitrary index of the box
+//                                (docs/design/BoxAll.md): before sccp,
+//                                which cannot see into the region, and
+//                                before every pass that is not written for
+//                                region ops; refusals stop the lowering
 //   0. sccp                      (upstream) first: values computed from
 //                                constants become sea.const (by the op
 //                                folders = evalPureOp), so allocation sizes
@@ -211,6 +217,7 @@ void registerPasses() {
   registerPass([] { return createPlaceStaticPass(); });
   registerPass([] { return createScalarizeStructsPass(); });
   registerPass([] { return createExpandMemSetPass(); });
+  registerPass([] { return createExpandSmallMemMovePass(); });
   registerPass([] { return createSplitCriticalEdgesPass(); });
   registerPass([] { return createSplitAtChecksPass(); });
   registerPass([] { return createSplitAssertFailuresPass(); });
@@ -225,6 +232,7 @@ void registerPasses() {
   registerPass([] { return createMergeAssertsPass(); });
   registerPass([] { return createSinkAssumesPass(); });
   registerPass([] { return createRangeFoldPass(); });
+  registerPass([] { return createLowerBoxAllPass(); });
   registerPass([] { return createLowerPtrIndexPass(); });
   registerPass([] { return createCheckAlignPass(); });
   registerPass([] { return createCheckPtrIndexPass(); });
@@ -256,11 +264,15 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
                              bool widenReport, bool keepByteWide,
                              bool checkAlign, unsigned checkPtrIndex, bool opt,
                              bool memhavocNullNoop, unsigned disable,
-                             const PlaceFiles &place, RangeFoldMode rangeFold) {
+                             const PlaceFiles &place, RangeFoldMode rangeFold,
+                             unsigned expandMemMove, bool ptrCompanion,
+                             unsigned boxAllExpand) {
   const bool cse = opt && !(disable & LowerDisableCse);
   const bool canonicalize = opt && !(disable & LowerDisableCanonicalize);
   OpPassManager &prog = pm.nest<ProgramOp>();
   prog.addPass(createApplyTrackingPass());
+  // claims over index boxes, before anything else sees a region op
+  prog.addPass(createLowerBoxAllPass(boxAllExpand));
   if (fold && !(disable & LowerDisableSccp))
     prog.addPass(createSCCPPass());
   if (cse)
@@ -300,6 +312,12 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
       llvm::report_fatal_error("sea-widen-memory: bad k");
     prog.addPass(std::move(widen));
   }
+  // short constant memmoves as explicit copies (exact): after the metadata
+  // lowerings (a keyed companion memmove is expanded only with its data
+  // memmove) and widening (word layouts are kept); before
+  // sea-expand-memset, which leaves constant lengths alone
+  if (expandMemMove)
+    prog.addPass(createExpandSmallMemMovePass(expandMemMove, ptrCompanion));
   // symbolic memset / memmove lengths: a bounded expansion with an explicit
   // assume (n <= K) for the array encoding; not with memory-operation terms
   // (sea-vc --seam), which are exact for every length

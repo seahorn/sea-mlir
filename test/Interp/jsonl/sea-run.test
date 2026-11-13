@@ -60,5 +60,12 @@
 // RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.fmem.txt --jsonl %t.fmem.jsonl \
 // RUN:   --require status:status,reached --require stat:key,value,trial,op,at
 
+
+// A failing sea.box.all: its first false index and the op (status record).
+// RUN: sea-run %S/../box-all.mlir --program=two --input=0=5 > %t.box.txt
+// RUN: sea-run %S/../box-all.mlir --program=two --input=0=5 --format=jsonl > %t.box.jsonl
+// RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.box.txt --jsonl %t.box.jsonl \
+// RUN:   --require status:box_all_false,box_all_op
+
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

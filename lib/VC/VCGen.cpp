@@ -37,6 +37,17 @@ LogicalResult verifyBmcForm(ProgramOp program) {
                  op.getLoc());
   });
 
+  // a claim over an index box is encoded only by its lowering
+  WalkResult box = program.walk([&](BoxAllOp op) {
+    diag::error("vc.box-all-unlowered",
+                "sea.box.all needs the lowering (sea-vc --lower, or "
+                "sea-opt --sea-lower-box-all; docs/design/BoxAll.md)",
+                op.getLoc());
+    return WalkResult::interrupt();
+  });
+  if (box.wasInterrupted())
+    return failure();
+
   SmallVector<HaltOp> halts;
   program.walk([&](HaltOp h) { halts.push_back(h); });
   SmallVector<AssertOp> asserts;

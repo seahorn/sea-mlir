@@ -1044,6 +1044,68 @@ def Sea_SegmentOp : Sea_Op<"segment", [Pure]> {
 }
 
 //===----------------------------------------------------------------------===//
+// Claims over a bounded index box (docs/design/BoxAll.md)
+//===----------------------------------------------------------------------===//
+
+def Sea_BoxAllOp : Sea_Op<"box.all", [SingleBlock, RecursiveMemoryEffects]> {
+  let summary = "1 iff the body yields 1 at every index of a bounded box";
+  let description = [{
+    Not a general quantifier: a conjunction over a box of 1 or 2 i64
+    induction variables with constant lower bounds and steps. The syntax
+    follows `affine.parallel` / `scf.parallel` (`step` is printed only when
+    a step is not 1):
+
+    ```mlir
+    %eq = sea.box.all (%i) = (0) to (%n) {
+      %pa = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+      %pb = sea.ptr.add %b, %i : !sea.ptr<64>, i64
+      %x = sea.load %m[%pa] : !m -> i8
+      %y = sea.load %m[%pb] : !m -> i8
+      %e = sea.icmp eq, %x, %y : i8
+      sea.yield %e
+    }
+    ```
+
+    Dimension d ranges over k = lo_d + step_d * t, t = 0, 1, ..., N_d - 1,
+    with N_d = 0 if ub_d <=u lo_d, else (ub_d - lo_d - 1) /u step_d + 1:
+    unsigned, upper bound exclusive, no wrap. `lowerBounds` are constants
+    in [0, 2^63), `steps` in [1, 2^63), the upper bounds i64 operands. The
+    result is the conjunction of the body's `sea.yield` over the box; an
+    empty box gives 1. The body is one block whose arguments are the
+    indices (i64), and holds pure sea ops (value, address, pointer and
+    struct ops) and loads of memory defined outside the op; no memory
+    results, no effects, no nested regions, no control flow, no op that
+    names an object (sea.segment, sea.global, sea.func_addr).
+
+    The interpreter evaluates the body at every index of the box. The VC
+    needs it lowered (sea-lower-box-all, the first pass of sea-vc
+    --lower), which accepts it only where its result reaches sea.assert
+    through i1 sea.and / sea.or alone.
+  }];
+  let arguments = (ins Variadic<I64>:$upperBounds,
+                   DenseI64ArrayAttr:$lowerBounds, DenseI64ArrayAttr:$steps);
+  let results = (outs I1:$result);
+  let regions = (region SizedRegion<1>:$body);
+  let hasCustomAssemblyFormat = 1;
+  let hasRegionVerifier = 1;
+  let extraClassDeclaration = [{
+    /// The most dimensions a box may have.
+    static constexpr unsigned kMaxDims = 2;
+    unsigned getNumDims() { return getUpperBounds().size(); }
+    ::mlir::Block &getBodyBlock() { return getBody().front(); }
+    /// The i1 the body yields.
+    ::mlir::Value getYielded();
+  }];
+}
+
+def Sea_YieldOp : Sea_Op<"yield", [Pure, Terminator,
+                                   HasParent<"BoxAllOp">]> {
+  let summary = "The value of a sea.box.all body at one index";
+  let arguments = (ins I1:$value);
+  let assemblyFormat = "$value attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
 // Counterexample printing (docs/design/Print.md)
 //
 // A print shows values in a counterexample (sea-run, sea-vc replay) and has

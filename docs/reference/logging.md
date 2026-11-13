@@ -50,6 +50,8 @@ To see what a solver receives, use `--smt2`, not a log.
 |---|---|---|---|
 | `vc.phase` | 1 | `sea-vc` | the start and end of each phase |
 | `lower.pass` | 1 | `sea-vc` | one pass run |
+| `lower.box-all` | 1, 2 | `sea-vc`, `sea-opt` | `sea-lower-box-all`: its counters per run, refusals by reason (1); each op lowered, expanded, empty or dead (2) |
+| `lower.expand-memmove` | 1, 2 | `sea-vc`, `sea-opt` | `sea-expand-small-memmove`: its counters per run (1); each memmove expanded (bytes) or kept (reason) (2) |
 | `lower.range-fold` | 1, 2 | `sea-vc`, `sea-opt` | `sea-range-fold`: its counters per run (1); each fold, kind, value, facts used (2) |
 | `vc.solve` | 1 | `sea-vc` | one solver call of the verdict |
 | `vc.reach` | 2 | `sea-vc` | `--reach`: one target's query (answer, solve time) and replay (status, time); a target a concrete run decided (`via`, `by`) |

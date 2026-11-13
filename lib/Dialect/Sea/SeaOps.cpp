@@ -802,6 +802,132 @@ Operation *SeaDialect::materializeConstant(OpBuilder &b, Attribute value,
 }
 
 //===----------------------------------------------------------------------===//
+// BoxAllOp (docs/design/BoxAll.md)
+//===----------------------------------------------------------------------===//
+
+// (%i, %j) = (0, 0) to (%n, %m) [step (1, 2)] [attributes {...}] { body }
+ParseResult BoxAllOp::parse(OpAsmParser &parser, OperationState &result) {
+  Builder &b = parser.getBuilder();
+  Type i64 = b.getI64Type();
+  SmallVector<OpAsmParser::Argument> ivs;
+  if (parser.parseArgumentList(ivs, OpAsmParser::Delimiter::Paren) ||
+      parser.parseEqual())
+    return failure();
+  auto parseInts = [&](SmallVectorImpl<int64_t> &out) {
+    return parser.parseCommaSeparatedList(OpAsmParser::Delimiter::Paren,
+                                          [&]() -> ParseResult {
+                                            int64_t v;
+                                            if (parser.parseInteger(v))
+                                              return failure();
+                                            out.push_back(v);
+                                            return success();
+                                          });
+  };
+  SmallVector<int64_t> lower, steps;
+  SmallVector<OpAsmParser::UnresolvedOperand> upper;
+  if (parseInts(lower) || parser.parseKeyword("to") ||
+      parser.parseOperandList(upper, OpAsmParser::Delimiter::Paren) ||
+      parser.resolveOperands(upper, i64, result.operands))
+    return failure();
+  if (succeeded(parser.parseOptionalKeyword("step"))) {
+    if (parseInts(steps))
+      return failure();
+  } else {
+    steps.assign(lower.size(), 1);
+  }
+  result.addAttribute(getLowerBoundsAttrName(result.name),
+                      b.getDenseI64ArrayAttr(lower));
+  result.addAttribute(getStepsAttrName(result.name),
+                      b.getDenseI64ArrayAttr(steps));
+  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
+    return failure();
+  for (OpAsmParser::Argument &a : ivs)
+    a.type = i64;
+  Region *body = result.addRegion();
+  if (parser.parseRegion(*body, ivs))
+    return failure();
+  result.addTypes(b.getI1Type());
+  return success();
+}
+
+void BoxAllOp::print(OpAsmPrinter &p) {
+  p << " (";
+  llvm::interleaveComma(getBodyBlock().getArguments(), p,
+                        [&](BlockArgument a) { p.printOperand(a); });
+  p << ") = (";
+  llvm::interleaveComma(getLowerBounds(), p);
+  p << ") to (" << getUpperBounds() << ")";
+  if (llvm::any_of(getSteps(), [](int64_t s) { return s != 1; })) {
+    p << " step (";
+    llvm::interleaveComma(getSteps(), p);
+    p << ")";
+  }
+  p.printOptionalAttrDictWithKeyword(
+      (*this)->getAttrs(), {getLowerBoundsAttrName(), getStepsAttrName()});
+  p << " ";
+  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
+}
+
+Value BoxAllOp::getYielded() {
+  return cast<YieldOp>(getBodyBlock().getTerminator()).getValue();
+}
+
+// Why `op` may not be in the body of `box` (empty: it may).
+static std::string boxBodyRefusal(Operation *op, BoxAllOp box) {
+  if (isa<YieldOp>(op))
+    return op == &box.getBodyBlock().back() ? "" : "a sea.yield before the end";
+  if (op->getNumRegions())
+    return "a nested region";
+  if (op->getNumSuccessors() || op->hasTrait<OpTrait::IsTerminator>())
+    return "control flow";
+  if (!isa<SeaDialect>(op->getDialect()))
+    return "an op of another dialect";
+  if (isa<SegmentOp, GlobalOp, FuncAddrOp>(op))
+    return "an op that names an object (define it outside the box)";
+  if (llvm::any_of(op->getResultTypes(), llvm::IsaPred<MemType>))
+    return "a memory result (no stores, havocs or memories in a box)";
+  if (!isMemoryEffectFree(op))
+    return "an op with effects (store, nondet, assume, assert, allocation, "
+           "print)";
+  // a guard: no op of the body has a memory result (refused above), so a
+  // memory operand is defined outside today; this keeps the load rule
+  // explicit if that changes
+  for (Value v : op->getOperands())
+    if (isa<MemType>(v.getType()) &&
+        box->isAncestor(v.getParentRegion()->getParentOp()))
+      return "a load of memory defined in the box";
+  return "";
+}
+
+LogicalResult BoxAllOp::verifyRegions() {
+  unsigned n = getNumDims();
+  if (n < 1 || n > kMaxDims)
+    return emitOpError("needs 1 to ") << kMaxDims << " dimensions, got " << n;
+  if (getLowerBounds().size() != n || getSteps().size() != n)
+    return emitOpError("needs one lower bound, step and upper bound per "
+                       "dimension");
+  for (unsigned d = 0; d < n; ++d) {
+    if (getLowerBounds()[d] < 0)
+      return emitOpError("lower bound of dimension ")
+             << d << " must be in [0, 2^63), got " << getLowerBounds()[d];
+    if (getSteps()[d] < 1)
+      return emitOpError("step of dimension ")
+             << d << " must be in [1, 2^63), got " << getSteps()[d];
+  }
+  Block &body = getBodyBlock();
+  if (body.getNumArguments() != n ||
+      !llvm::all_of(body.getArgumentTypes(),
+                    [](Type t) { return t.isInteger(64); }))
+    return emitOpError("body needs one i64 argument per dimension");
+  if (body.empty() || !isa<YieldOp>(body.back()))
+    return emitOpError("body must end with sea.yield");
+  for (Operation &op : body)
+    if (std::string why = boxBodyRefusal(&op, *this); !why.empty())
+      return op.emitOpError("not allowed in a sea.box.all body: ") << why;
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // Print ops (docs/design/Print.md)
 //===----------------------------------------------------------------------===//
 

@@ -108,6 +108,20 @@ std::unique_ptr<mlir::Pass> createExpandMemSetPass();
 /// each sea.assume(n <= K) it adds: the bounded expansions, an
 /// under-approximation sea-vc reports (assume.memset-bound).
 inline constexpr llvm::StringLiteral kMemSetBoundAttr = "sea.memset_bound";
+/// sea-expand-small-memmove: a memmove of a constant length <= maxBytes
+/// index units as loads of every source cell, then stores in address order
+/// (exact). \p ptrCompanion: keep every memmove (sea-vc --ptr-companion).
+std::unique_ptr<mlir::Pass>
+createExpandSmallMemMovePass(unsigned maxBytes, bool ptrCompanion = false);
+/// The largest max-bytes of sea-expand-small-memmove: a guard against a
+/// mistaken K, well above the measured crossover (expansion pays only for
+/// short copies; docs/design/SeaM-memops.md).
+inline constexpr unsigned kMaxExpandMemMoveBytes = 1024;
+std::unique_ptr<mlir::Pass> createExpandSmallMemMovePass();
+/// On the sea.program after sea-expand-small-memmove: its counters (a
+/// dictionary of i64 attributes, the keys of `vc.expand-memmove`).
+inline constexpr llvm::StringLiteral kExpandMemMoveStatsAttr =
+    "sea.expand_memmove";
 /// On the sea.program: the number of memhavocs sea-drop-fresh-memhavoc
 /// dropped whose soundness rests on A-INB (an i64; absent: none). sea-vc
 /// reports it as `assume.a-inb: drop-fresh-memhavoc=<n>`.
@@ -171,6 +185,25 @@ std::unique_ptr<mlir::Pass> createDropFreshMemHavocPass();
 /// when it is not (memhavoc of null is a no-op; GuardNullMemHavoc.cpp).
 std::unique_ptr<mlir::Pass> createGuardNullMemHavocPass();
 
+/// sea-lower-box-all: a sea.box.all whose result is only asserted (through
+/// i1 sea.and / sea.or) -> its body at one arbitrary index of the box
+/// (LowerBoxAll.cpp, docs/design/BoxAll.md); other uses are errors.
+std::unique_ptr<mlir::Pass> createLowerBoxAllPass();
+/// With expand-max = \p expandMax: a box of constant upper bounds and at
+/// most that many indices is expanded (the body at every index).
+std::unique_ptr<mlir::Pass> createLowerBoxAllPass(unsigned expandMax);
+/// The default of expand-max (sea-vc --box-all-expand); untuned,
+/// docs/design/BoxAll.md.
+inline constexpr unsigned kBoxAllExpandDefault = 16;
+/// The largest expand-max (the indices of one expanded box): a guard
+/// against a mistaken K, well above the measured crossover
+/// (docs/design/BoxAll.md).
+inline constexpr unsigned kMaxBoxAllExpand = 1024;
+/// On the sea.program after sea-lower-box-all: its counters (i64
+/// attributes: lowered, guarded, expanded, expand-max, empty, dead,
+/// nondets; `vc.box-all`).
+inline constexpr llvm::StringLiteral kBoxAllStatsAttr = "sea.box_all";
+
 /// sea-widen-memory: byte memories whose accesses are all k-aligned whole
 /// words get k-byte cells (aligned word layout).
 std::unique_ptr<mlir::Pass> createWidenMemoryPass();
@@ -221,15 +254,20 @@ enum class RangeFoldMode { Off, Fold, Check };
 /// program too: it has no objects to place, and writes an empty file).
 /// \p rangeFold: sea-range-fold (after a cse, right before the final
 /// canonicalize; sea-vc --range-fold, default off).
-void buildVCLoweringPipeline(mlir::OpPassManager &pm, bool abstract,
-                             bool nativeMulOverflow = false, bool fold = true,
-                             unsigned widenMemory = 0, bool expandMemSet = true,
-                             bool widenReport = false,
-                             bool keepByteWide = false, bool checkAlign = false,
-                             unsigned checkPtrIndex = 0, bool opt = true,
-                             bool memhavocNullNoop = true, unsigned disable = 0,
-                             const PlaceFiles &place = {},
-                             RangeFoldMode rangeFold = RangeFoldMode::Off);
+/// \p expandMemMove: sea-expand-small-memmove{max-bytes=K} after the
+/// metadata lowerings, placement and widening (sea-vc --expand-memmove,
+/// default 0: not run); \p ptrCompanion: its option ptr-companion (sea-vc
+/// --ptr-companion is not off: every memmove kept). \p boxAllExpand:
+/// sea-lower-box-all{expand-max=K} (sea-vc --box-all-expand).
+void buildVCLoweringPipeline(
+    mlir::OpPassManager &pm, bool abstract, bool nativeMulOverflow = false,
+    bool fold = true, unsigned widenMemory = 0, bool expandMemSet = true,
+    bool widenReport = false, bool keepByteWide = false,
+    bool checkAlign = false, unsigned checkPtrIndex = 0, bool opt = true,
+    bool memhavocNullNoop = true, unsigned disable = 0,
+    const PlaceFiles &place = {}, RangeFoldMode rangeFold = RangeFoldMode::Off,
+    unsigned expandMemMove = 0, bool ptrCompanion = false,
+    unsigned boxAllExpand = kBoxAllExpandDefault);
 
 /// Attaches the `lower.pass` log (one level-1 event per pass run: ops
 /// before and after, time; lib/Transforms/PassLog.cpp) to \p pm. Costs a

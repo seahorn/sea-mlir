@@ -42,7 +42,9 @@ The main lines of `sea-vc`:
 | `mismatch: ...` | one value where they differ (then exit status 2) |
 | `seam.rule.<rule>: <n>` | how often a SeaM rule fired (`--seam-stats`) |
 | `vc.sink-assumes: <n>` | assumes moved by `--sink-assumes` |
+| `vc.expand-memmove: k=<K> expanded=<n> bytes=<n> kept-symbolic=<n> kept-over-k=<n> kept-word-layout=<n> kept-abstract=<n> kept-tracked=<n> kept-companion-mirror=<n> kept-ptr-companion=<n>` | `--expand-memmove`: memmoves expanded into copies (and their length in index units, `bytes`) and kept, by reason ([Short memmoves as copies](../design/SeaM-memops.md#short-memmoves-as-copies-expand-memmovek)) |
 | `vc.range-fold: mode=<on\|check> <key>=<n> ...` | `--range-fold`: keys in alphabetical order: `bool`, `checks`, `depth-cap`, `empty`, `facts`, `facts-skipped`, `facts-used`, `icmp`, `no-facts`, `queries`, `select`, `wrap-flags` ([Range folding](../design/RangeFold.md#counters)) |
+| `vc.box-all: dead=<n> empty=<n> expand-max=<K> expanded=<n> guarded=<n> lowered=<n> nondets=<n>` | `--lower` of a program with `sea.box.all`: box ops erased unused, constant empty boxes (true), `--box-all-expand`, boxes expanded at every index, boxes entered behind a non-empty test, ops lowered to one index (guarded ones included), index nondets made ([sea.box.all](../design/BoxAll.md)) |
 | `vc.fold: assume-false=<n> assert-false=<n>` | the lowering folded an assume or assert of constant false (warnings `fold.assume-false`, `fold.assert-false`; `sea-merge-asserts` also warns `fold.assert-false` for an assert of constant 0, except the only assert right before the halt without a source location: SeaHorn's error marker `assert false; halt`; an assert that becomes constant only in the lowering's canonicalize, such as `icmp ne x, x`, is not reported, though the verdict still shows it); only when one did. The counts are of every program in the file the lowering ran on, not only the selected one |
 | `vc.statically-safe: no reachable sea.halt ...` | no path reaches the assertion (every one is blocked, e.g. by a folded `assume` of false): it cannot fail; the solver still answers (`unsat`) |
 | `seam.ptrint: assumed loads=<n>` | `--ptr-companion=assume`: split pointer loads that rest on A-PTRINT |
@@ -55,7 +57,7 @@ The main lines of `sea-vc`:
 | `assume.memhavoc-null-noop: vc sites=<n>` | `--lower`: memhavocs whose pointer may be null, guarded so that the VC runs them only when it is not (`--memhavoc-null=noop`) |
 | `assume.memhavoc-null-noop: uses=<n>` | after `replay.original:` (and in `sea-run`): memhavocs of the null pointer the run executed as no-ops, an open semantics decision (`--memhavoc-null`) |
 | `assume.addr0-is-null: uses=<n>` | after `replay.original:` (and in `sea-run`): steps of the run that rested on the assumption that address 0 is null; only when there are any |
-| `replay.original: status= at= match= nondets= cells= defaulted= unmapped=` | `--replay-original`, `sat`: the input program before any pass, run on the model's inputs; `match=yes` if it fails the same assertion ([below](#replay-on-the-original-program)) |
+| `replay.original: status= at= match= nondets= cells= defaulted= unmapped= [box-all-false=(<k>..)]` | `--replay-original`, `sat`: the input program before any pass, run on the model's inputs; `match=yes` if it fails the same assertion ([below](#replay-on-the-original-program)); `box-all-false`: the first false index of the first false `sea.box.all` of that run |
 
 `sea-vc --agent` lists every line, including all counters.
 
@@ -238,7 +240,10 @@ at=<where> [site=<k>]` line per target, then `reach.programs: <n> dir=<dir>`. `s
 The lines of `sea-run`: `program:`, `nondet:` and `memread:` (with an
 `origin`: `input`, `zero` or `random`), `value:` (with `--trace`), the
 `print` lines, `status:`, `at:`, `assert-at:`, `assert-op:`,
-`assert-path:`, `reached:` (for a `memory-error`), `message:` (for an
+`assert-path:`, `box-all-false: index=(<k>[, <k>]) op=<where>` (an
+`assert-failed` run in which a `sea.box.all` was false: the first such op
+and its first false index, [sea.box.all](../design/BoxAll.md)),
+`reached:` (for a `memory-error`), `message:` (for an
 error), `deferred:` (with `--defer-memory-errors`, when the run went past a
 memory-safety violation) and `steps:`. See
 [Deferred memory errors](fuzzing.md#deferred-memory-errors).
@@ -281,7 +286,8 @@ Otherwise:
 - `match=undetermined`, warning `vc.replay-original-undetermined`, exit
   status unchanged: the interpreter cannot run the original program on
   these inputs (`ptr.to_int` before placement, a pointer load from nondet
-  cells), or the run loaded an earlier memory version, which the in-place
+  cells), or the run reached the step limit (a `sea.box.all` with a large
+  box: the interpreter runs every index), or the run loaded an earlier memory version, which the in-place
   interpreter reads right only if the program's Mem-SSA claim holds; or
   the run read an `unmapped` input; or the assert cannot be told apart;
 - `match=no` after a memory-safety violation: exit 4

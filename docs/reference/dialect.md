@@ -30,7 +30,7 @@ operation ::= `sea.add` $lhs `,` $rhs (`nsw` $nsw^)? (`nuw` $nuw^)? attr-dict `:
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -343,7 +343,7 @@ operation ::= `sea.and` $lhs `,` $rhs attr-dict `:` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -374,7 +374,7 @@ operation ::= `sea.ashr` $lhs `,` $rhs attr-dict `:` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -434,6 +434,68 @@ fold.assume-false.
 | Operand | Description |
 | :-----: | ----------- |
 | `cond` | 1-bit signless integer |
+
+
+
+### `sea.box.all` (::sea::BoxAllOp)
+
+_1 iff the body yields 1 at every index of a bounded box_
+
+Not a general quantifier: a conjunction over a box of 1 or 2 i64
+induction variables with constant lower bounds and steps. The syntax
+follows `affine.parallel` / `scf.parallel` (`step` is printed only when
+a step is not 1):
+
+```mlir
+%eq = sea.box.all (%i) = (0) to (%n) {
+  %pa = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %pb = sea.ptr.add %b, %i : !sea.ptr<64>, i64
+  %x = sea.load %m[%pa] : !m -> i8
+  %y = sea.load %m[%pb] : !m -> i8
+  %e = sea.icmp eq, %x, %y : i8
+  sea.yield %e
+}
+```
+
+Dimension d ranges over k = lo_d + step_d * t, t = 0, 1, ..., N_d - 1,
+with N_d = 0 if ub_d <=u lo_d, else (ub_d - lo_d - 1) /u step_d + 1:
+unsigned, upper bound exclusive, no wrap. `lowerBounds` are constants
+in [0, 2^63), `steps` in [1, 2^63), the upper bounds i64 operands. The
+result is the conjunction of the body's `sea.yield` over the box; an
+empty box gives 1. The body is one block whose arguments are the
+indices (i64), and holds pure sea ops (value, address, pointer and
+struct ops) and loads of memory defined outside the op; no memory
+results, no effects, no nested regions, no control flow, no op that
+names an object (sea.segment, sea.global, sea.func_addr).
+
+The interpreter evaluates the body at every index of the box. The VC
+needs it lowered (sea-lower-box-all, the first pass of sea-vc
+--lower), which accepts it only where its result reaches sea.assert
+through i1 sea.and / sea.or alone.
+
+Traits: `RecursiveMemoryEffects`, `SingleBlock`
+
+Interfaces: `InferTypeOpInterface`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>lowerBounds</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
+<tr><td><code>steps</code></td><td>::mlir::DenseI64ArrayAttr</td><td>i64 dense array attribute</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `upperBounds` | variadic of 64-bit signless integer |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | 1-bit signless integer |
 
 
 
@@ -584,7 +646,7 @@ operation ::= `sea.const` $value attr-dict
 
 Traits: `AlwaysSpeculatableImplTrait`, `ConstantLike`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -864,7 +926,7 @@ operation ::= `sea.icmp` $predicate `,` $lhs `,` $rhs attr-dict `:` type($lhs)
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameTypeOperands`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -956,7 +1018,7 @@ operation ::= `sea.lshr` $lhs `,` $rhs attr-dict `:` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -1309,7 +1371,7 @@ operation ::= `sea.mul` $lhs `,` $rhs (`nsw` $nsw^)? (`nuw` $nuw^)? attr-dict `:
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -1415,7 +1477,7 @@ operation ::= `sea.or` $lhs `,` $rhs attr-dict `:` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -2044,7 +2106,7 @@ operation ::= `sea.sdiv` $lhs `,` $rhs attr-dict `:` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -2170,7 +2232,7 @@ operation ::= `sea.select` $condition `,` $trueValue `,` $falseValue attr-dict `
 
 Traits: `AlwaysSpeculatableImplTrait`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -2202,7 +2264,7 @@ operation ::= `sea.sext` $input attr-dict `:` type($input) `to` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`
 
-Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -2232,7 +2294,7 @@ operation ::= `sea.shl` $lhs `,` $rhs (`nsw` $nsw^)? (`nuw` $nuw^)? attr-dict `:
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -2271,7 +2333,7 @@ operation ::= `sea.smax` $lhs `,` $rhs attr-dict `:` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -2302,7 +2364,7 @@ operation ::= `sea.smin` $lhs `,` $rhs attr-dict `:` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -2369,7 +2431,7 @@ operation ::= `sea.srem` $lhs `,` $rhs attr-dict `:` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -2638,7 +2700,7 @@ operation ::= `sea.sub` $lhs `,` $rhs (`nsw` $nsw^)? (`nuw` $nuw^)? attr-dict `:
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -2701,7 +2763,7 @@ operation ::= `sea.trunc` $input attr-dict `:` type($input) `to` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`
 
-Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -2767,7 +2829,7 @@ operation ::= `sea.udiv` $lhs `,` $rhs attr-dict `:` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -2798,7 +2860,7 @@ operation ::= `sea.umax` $lhs `,` $rhs attr-dict `:` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -2829,7 +2891,7 @@ operation ::= `sea.umin` $lhs `,` $rhs attr-dict `:` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -2914,7 +2976,7 @@ operation ::= `sea.urem` $lhs `,` $rhs attr-dict `:` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -2981,7 +3043,7 @@ operation ::= `sea.xor` $lhs `,` $rhs attr-dict `:` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 
-Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -3000,6 +3062,30 @@ Effects: `MemoryEffects::Effect{}`
 
 
 
+### `sea.yield` (::sea::YieldOp)
+
+_The value of a sea.box.all body at one index_
+
+Syntax:
+
+```
+operation ::= `sea.yield` $value attr-dict
+```
+
+Traits: `AlwaysSpeculatableImplTrait`, `HasParent<BoxAllOp>`, `Terminator`
+
+Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
+
+Effects: `MemoryEffects::Effect{}`
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `value` | 1-bit signless integer |
+
+
+
 ### `sea.zext` (::sea::ZExtOp)
 
 _Zero extension to a wider bit-vector_
@@ -3012,7 +3098,7 @@ operation ::= `sea.zext` $input attr-dict `:` type($input) `to` type($result)
 
 Traits: `AlwaysSpeculatableImplTrait`
 
-Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `InferIntRangeInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
 
 Effects: `MemoryEffects::Effect{}`
 
