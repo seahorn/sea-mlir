@@ -4,7 +4,9 @@ Stellar can execute transaction clusters in parallel and let one account
 pay fees for another. Our verification studies check the rules behind
 those features: ledger commits must preserve requested lifetime
 extensions, and the transaction queue must keep fee reservations and
-capacity counts consistent as transactions enter and leave.
+capacity counts consistent as transactions enter and leave. After a ledger
+closes, the queue must also retire transactions that have become obsolete
+while preserving reservations for the transactions that remain.
 
 These rules span several components. We use Sea-MLIR to check their
 combined behavior across ranges of transaction and ledger states,
@@ -14,7 +16,7 @@ implementation evolves.
 | Study | What we verify | Code under verification |
 |---|---|---|
 | [Ledger lifetime extensions](stellar-ttl.md) | Committing parallel results preserves the largest requested extension and the associated entry metadata. | A C model of Stellar's merge and scope operations. |
-| [Transaction-queue accounting](stellar-txqueue.md) | Fee reservations follow the payer, while queue membership and resource counts stay consistent through admission and removal. | Original C++ method bodies in a specialized harness. |
+| [Transaction-queue accounting and retirement](stellar-txqueue.md) | Fee reservations follow the payer; applied batches retire obsolete transactions while preserving remaining reservations, membership and resource counts. | Original C++ method bodies in a specialized harness, with an invariant for arbitrary finite applied batches in one source/payer profile. |
 
 ## Establish the ledger contract in a C model
 
@@ -46,19 +48,27 @@ For example, a replacement can change a transaction's fee payer. The
 queue must release the old payer's reservation, reserve the new payer's
 fee, and update membership and capacity together. We check these
 relationships through eight source/payer profiles and several admission
-and removal paths. Within the bounded Classic-transaction scenario,
-all 26 symbolic jobs passed, and the harness detected all six deliberately
-introduced accounting regressions.
+and removal paths. That first, bounded Classic-transaction scenario passed
+all 26 symbolic jobs and detected six deliberately introduced accounting
+regressions.
 
-**This study brings repeatable verification to cooperating production
-C++ components.** Each run extracts the selected bodies afresh, tying the
-checks to application changes. The bounded scenario and explicit
-environment contracts make this a concrete foundation for a CI gate.
+We then extended the removal check to arbitrary finite batches. An invariant
+summarizes the other queued transactions while the original C++ loop processes
+an applied request. In the selected source/payer profile, 18 proof obligations
+establish both correct retirement and preservation of fee reservations,
+resources and membership. Ten completion witnesses validate the case premises;
+seven deliberate regressions test the gate's sensitivity.
+
+**The batch proof covers a production C++ loop for any finite number of
+applied requests in the selected profile.** Each run extracts the selected
+bodies afresh. The invariant and explicit environment contracts make the
+guarantee repeatable as the application changes.
 The [queue study](stellar-txqueue.md) explains how we built and tested it.
 
-Agents prepared the C model and C++ extraction, built harnesses, ran the
-checks and investigated difficult cases. Human review shaped the
+Agents prepared the C model and C++ extraction, built harnesses, split proof
+obligations, ran the checks and investigated difficult cases. Human review shaped the
 properties and environment models. Sea-MLIR supplied the mechanical
 verdicts and concrete replays. Together, these studies demonstrate a
 progression from a focused ledger contract to verification over the
-original C++ across a larger application boundary.
+original C++ across cooperating components and arbitrary finite applied
+batches in a specialized environment.
