@@ -6,16 +6,17 @@
 // 20), are one term in the VC. The second check selects the row k read
 // twice from C: those reads are left to the Ackermann lowering, with the
 // check in an ite condition of their indices. No alias question is open;
-// --split-candidates attributes the reads. The check that the select uses
-// is listed (a split replaces the value of that op only), the copy with
-// the same term on the same line (same=); the and before its two compares
-// (covers).
+// --split-candidates attributes the reads. Of two values with one term,
+// the one whose uses reach the select's condition is listed (a split
+// replaces the value of that op only; the compares reach it through the
+// and), the copy on the same line (same=); the and before its two
+// compares (covers).
 // RUN: sea-vc %s --lower --program=ack --seam --split-candidates --print-lowered=%t.low.mlir > %t.out
 // RUN: cat %t.out %t.low.mlir | FileCheck %s --check-prefix=ACK
 // ACK: split.candidates: open-aliases=0 {{.*}} reads={{[1-9]}}
 // ACK-NEXT: split.bool-candidate: name=[[G:%[0-9]+]] target=value open-aliases=0 addrs=0 reads=2 cond-reads=2 covers=2 same=[[G0:%[0-9]+]] loc=t.c:20:3
-// ACK-NEXT: split.bool-candidate: name={{%[0-9]+}} {{.*}} covers=0 same={{%[0-9]+}} loc=t.c:10:7
-// ACK-NEXT: split.bool-candidate: name={{%[0-9]+}} {{.*}} covers=0 same={{%[0-9]+}} loc=t.c:10:20
+// ACK-NEXT: split.bool-candidate: name={{%[0-9]+}} {{.*}} covers=0 same={{%[0-9]+}} loc=t.c:20:7
+// ACK-NEXT: split.bool-candidate: name={{%[0-9]+}} {{.*}} covers=0 same={{%[0-9]+}} loc=t.c:20:20
 // ACK-NEXT: result: none
 // --print-lowered: the program the VC encodes, with the VC's names.
 // ACK: sea-vc --print-lowered
@@ -51,6 +52,17 @@
 // NONE-NEXT: nearest lines with i1 values (line:count): 10:3 20:3
 // RUN: not sea-vc %s --lower --program=ack --seam --split=@x.c:1 2>&1 | FileCheck %s --check-prefix=FILE
 // FILE: no op has a position in a file ending with 'x.c' (files: {{.*}}t.c)
+
+// An unknown (z3 rlimit 1) with no open alias question but Ackermann
+// constraints points to --split-candidates too; @same has neither.
+// RUN: not sea-vc %s --lower --program=ack --seam --z3-param=rlimit=1 2>/dev/null | FileCheck %s --check-prefix=HINT
+// RUN: not sea-vc %s --lower --program=ack --seam --z3-param=rlimit=1 --format=jsonl 2>/dev/null | FileCheck %s --check-prefix=HINTJ
+// RUN: not sea-vc %s --lower --program=same --seam --z3-param=rlimit=1 2>/dev/null | FileCheck %s --check-prefix=NOHINT
+// HINT: result: unknown
+// HINT: hint: split: open-aliases=0 ackermann-constraints={{[1-9][0-9]*}}; {{.*}}--split-candidates
+// HINTJ: "kind":"hint","topic":"split","open_aliases":0,"ackermann_constraints":{{[1-9]}}
+// NOHINT: result: unknown
+// NOHINT-NOT: hint:
 
 // @same: a one-object alias question reduces to an offset compare
 // (i = j). seam.alias.open.all counts it with the IS_OVERLAP questions;

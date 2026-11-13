@@ -11,6 +11,7 @@
 #include "sea/VC/Names.h"
 #include "sea/VC/OpSem.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -89,7 +90,7 @@ LogicalResult resolveSplitTargets(ProgramOp program,
     std::vector<std::pair<Value, FileLineColLoc>> otherOnLine;
     std::map<unsigned, unsigned> kindLines;
     std::set<std::string> files;
-    bool fileSeen = false;
+    bool fileSeen = false, moreFiles = false;
     StringRef s(sel);
     if (s.starts_with("@")) {
       auto [fileText, lineText] = s.drop_front().rsplit(':');
@@ -105,14 +106,20 @@ LogicalResult resolveSplitTargets(ProgramOp program,
           for (FileLineColLoc p : positionsOf(op->getLoc())) {
             StringRef path = p.getFilename().getValue();
             if (!fileMatches(path, file)) {
+              // the first 8 distinct files, and whether there are more
               if (files.size() < 8)
                 files.insert(path.str());
+              else if (!files.count(path.str()))
+                moreFiles = true;
               continue;
             }
             fileSeen = true;
             if (!kindOk(r)) {
-              if (p.getLine() == line)
+              // once per result (it may have two positions on the line)
+              if (p.getLine() == line && !matched) {
                 otherOnLine.push_back({r, p});
+                matched = true;
+              }
               continue;
             }
             ++kindLines[p.getLine()];
@@ -173,7 +180,7 @@ LogicalResult resolveSplitTargets(ProgramOp program,
             error += " (files:";
             for (const std::string &f : files)
               error += " " + f;
-            error += files.size() == 8 ? " ...)" : ")";
+            error += moreFiles ? " ...)" : ")";
           }
         }
         if (!otherOnLine.empty()) {
@@ -652,14 +659,46 @@ uint64_t SplitCensus::attributeReads(SeaOpSem &sem, const Expr &solverQuery) {
     }
   });
   // candidates with the same term (two ops compute one condition): listed
-  // together, by the one with the most uses as a select condition (a split
-  // replaces the value of that op only), then the first
+  // together, by the one with the most uses that reach a select condition,
+  // a branch condition or an address (forward through i1 connectives: and,
+  // or, xor, i1 select, i1 block arguments), then the first: a split
+  // replaces the value of that op only
   if (bools) {
     auto selectUses = [](const SplitBoolCandidate &c) {
       unsigned n = 0;
-      if (c.value)
-        for (OpOperand &u : c.value.getUses())
-          n += isa<SelectOp>(u.getOwner()) && u.getOperandNumber() == 0;
+      if (!c.value)
+        return n;
+      llvm::DenseSet<Value> seen;
+      std::vector<Value> work{c.value};
+      auto follow = [&](Value v) {
+        if (v.getType().isInteger(1) && seen.insert(v).second)
+          work.push_back(v);
+      };
+      while (!work.empty()) {
+        Value v = work.back();
+        work.pop_back();
+        for (OpOperand &u : v.getUses()) {
+          Operation *op = u.getOwner();
+          if (auto sel = dyn_cast<SelectOp>(op)) {
+            if (sel.getType().isInteger(1))
+              follow(sel.getResult());
+            else if (u.getOperandNumber() == 0)
+              ++n;
+          } else if (isa<AndOp, OrOp, XorOp>(op)) {
+            follow(op->getResult(0));
+          } else if (auto cb = dyn_cast<CondBrOp>(op);
+                     cb && u.getOperandNumber() == 0) {
+            ++n;
+          } else if (auto br = dyn_cast<BranchOpInterface>(op)) {
+            if (std::optional<BlockArgument> a =
+                    br.getSuccessorBlockArgument(u.getOperandNumber()))
+              follow(*a);
+          } else if (llvm::any_of(op->getResultTypes(),
+                                  [](Type t) { return isa<AddrType>(t); })) {
+            ++n;
+          }
+        }
+      }
       return n;
     };
     std::unordered_map<ENode *, unsigned> repOf;

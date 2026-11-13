@@ -28,6 +28,7 @@ The input is a module with a `sea.program` in BMC form, or a program that
 |---|---|
 | `--lower` | run the lowering first (the passes of `sea-opt --sea-vc-lower`): constant folding, struct scalarization, placement of abstract objects, memory widening, intrinsics, splitting critical edges |
 | `--lower-opt=false` | with `--lower`: no cse and no canonicalize (every op stays) |
+| `--print-lowered=<file>` | write the program the VC encodes (after the lowering and every other pass of sea-vc) to this file, with its locations, named as the VC names it: the names of `--split` / `--split-leaves` selectors and of the `split.*` and other report lines (a nondet result is `nd.<site>` in the VC). The run goes on (`--vcgen-only`: no solver); the file is input to sea-vc without `--lower`, with the same names |
 | `--place-out=<file>` | with `--lower`: write the placement of the program's objects to a file, one object per line ([Placement files](output-formats.md#placement-files)) |
 | `--place-in=<file>` | with `--lower`: place the objects at the bases a `--place-out` file gives, checked as placement does; an object the file does not name is an error (`place.in-unplaced`). Two lowerings that share a file put their common objects at the same addresses |
 | `--lower-disable=<pass>,...` | with `--lower`: leave these optimization passes out of the lowering: `sccp`, `cse`, `canonicalize`. The lowering without one against the lowering with it validates the pass (`utils/cover-diff.py`, [Pass validation](../agents/gates.md#pass-validation)). `sea-drop-fresh-memhavoc` is refused: it is a semantics decision (a memhavoc of a fresh object is no tracked modification; without it, one after `sea_tracking_on` is) |
@@ -90,7 +91,7 @@ answered and counted)
 | `--split=<sel,...>` | split on an i1 value (1, 0) or a block guard (true, false) |
 | `--split-leaves=<sel,...>` | split on an address whose term is an ite tree: one part per distinct leaf |
 | `--split-auto` | with `--seam`: pick the ite-valued address behind the most open alias questions, split on its leaves |
-| `--split-candidates` | with `--seam`: list the targets of `--split-leaves` (every ite-valued address) and of `--split` (i1 values and block guards in the ite conditions behind open alias questions), ranked; no split, no solver (`result: none`) |
+| `--split-candidates` | with `--seam`: list the targets of `--split-leaves` (every ite-valued address) and of `--split` (i1 values and block guards in the ite conditions behind open alias questions or in the indices of array reads, the reads the Ackermann lowering pairs), ranked by the open questions, and when there are none by those reads; no split, no solver (`result: none`) |
 | `--split-candidates-max=<n>` | the most `split.bool-candidate` lines (default 20; 0: all); the dropped ones are counted |
 | `--split-check` | prove each split level exhaustive and exact with z3 (default on; `--split-check-rlimit=<n>`) |
 | `--split-max-parts=<n>`, `--split-max-paths=<n>` | the cap on the parts (default 64; more is an error) and on the paths of an ite tree |
@@ -98,12 +99,15 @@ answered and counted)
 | `--split-smt2=<prefix>` | write each part's query to `<prefix>.part<N>.smt2` (with `--vcgen-only`: no solving) |
 
 A selector is a VC name of the lowered program (`%x`, `nd.<site>`,
-`^bb3`) or `@<file>:<line>`. The verdict is sat if a part is sat (replayed
+`^bb3`, as `--print-lowered=<file>` writes it) or `@<file>:<line>`. An
+ambiguous `@<file>:<line>` lists every match (name, op, type, column); one
+that matches nothing lists the results of other types on the line and the
+nearest lines with results of the kind. The verdict is sat if a part is sat (replayed
 as usual), unsat if every part is, else unknown; `split.part:` lines give
 each part's counters, answer and time. Not knowing the names, start with
 `--split-candidates`; a `--seam` run that ends `unknown` with open alias
-questions prints a `hint: split: open-aliases=<n>; ...` line that points
-to it.
+questions, or with none but Ackermann constraints, prints a `hint:
+split: open-aliases=<n>; ...` line that points to it.
 
 **Output**
 

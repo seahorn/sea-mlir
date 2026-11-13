@@ -1860,10 +1860,13 @@ OUTPUT (stdout, `key: value` lines):
                                   the solver gets; with --smt2 on stderr)
   vc.dag-op: <op> <n>             (--dag-stats: distinct nodes per operator)
   result: sat|unsat|unknown|none  (none: --vcgen-only, --split-candidates)
-  hint: split: open-aliases=<n>; rerun with --split-candidates ...
+  hint: split: open-aliases=<n>[ ackermann-constraints=<m>]; rerun with
+                                  --split-candidates ...
                                   (unknown, --seam, not a split, n > 0 open
-                                  alias questions in the normalized query:
-                                  where to look next; jsonl kind hint)
+                                  alias questions in the normalized query,
+                                  or n = 0 and m > 0 constraints of the
+                                  Ackermann lowering (then shown): where to
+                                  look next; jsonl kind hint)
   solve-timeout: true             (unknown because --timeout expired)
   mem-limit: hit                  (unknown because --mem-limit was hit
                                   (RLIMIT_AS: address space, not resident
@@ -2460,7 +2463,9 @@ split.candidate: name= leaves= open-aliases= loc=, split.auto-pick: <name>.
 --split-max-paths applies): the pick run of --split-auto, listed; no split,
 no solver; then result: none. Start here when the names are unknown (a
 --seam run that ends unknown with open alias questions prints
-`hint: split: open-aliases=<n>; ...` pointing here). An ite tree with more
+`hint: split: open-aliases=<n>; ...` pointing here, also with
+open-aliases=0 ackermann-constraints=<m> when Ackermann constraints are
+left). An ite tree with more
 paths than --split-max-paths is listed with leaves=0 (warning
 vc.split-max-paths).
   split.candidates: open-aliases= leaves-candidates= bool-candidates=
@@ -2494,8 +2499,10 @@ vc.split-max-paths).
     in the condition); cond-reads: of those, reads with an ite whose
     condition is it; covers: other candidates in its Boolean structure (an
     and covers its compares); same: other values with the same term, listed
-    with the one with the most uses as a select condition (a split
-    replaces that op's value only: uses of a same= value keep the term).
+    with the one with the most uses that reach a select or branch
+    condition or an address, through and / or / xor / i1 selects / i1
+    block arguments (a split replaces that op's value only: uses of a
+    same= value keep the term).
     Ranked by open-aliases; ties: addrs, then encoding order; among
     open-aliases=0: reads, cond-reads, covers, addrs, encoding order. Only
     those behind a question or in a read index; at most
@@ -2543,7 +2550,8 @@ Kinds and fields:
   split-bool-candidate name, loc, target (value|guard), open_aliases, addrs,
                 reads, cond_reads, covers, same (names, comma-separated;
                 - for none)
-  hint          topic (split), open_aliases, option (--split-candidates)
+  hint          topic (split), open_aliases, ackermann_constraints (only
+                with open_aliases 0), option (--split-candidates)
   nondet        site, callee, width, value
   memread       site, addr, width, value, [obj + off] (the object id and
                 the cell's offset in it; text obj=&<obj>[<off>])
@@ -5532,8 +5540,9 @@ int main(int argc, char **argv) {
         brunchStat(vout(), "mem-limit", "hit");
       }
       // where to go next: the split targets, when the normalized query
-      // has open alias questions to attribute (not a split run, whose
-      // parts say which case is hard)
+      // has open alias questions to attribute, or else Ackermann
+      // constraints (--split-candidates attributes the read indices; not a
+      // split run, whose parts say which case is hard)
       if (hintQuery) {
         uint64_t open = 0;
         std::unordered_set<expr::ENode *> seen;
@@ -5548,14 +5557,19 @@ int main(int argc, char **argv) {
           for (size_t i = 0; i < n->arity(); ++i)
             stack.push_back(n->arg(i));
         }
-        if (open) {
+        const uint64_t ackConstraints = ackOn ? ack.stats().constraints : 0;
+        if (open || ackConstraints) {
           sea::out::Record rec("hint");
-          rec.str("topic", "split")
-              .num("open_aliases", open)
-              .str("option", "--split-candidates");
-          rec.text = "hint: split: open-aliases=" + std::to_string(open) +
-                     "; rerun with --split-candidates to list split targets "
-                     "(no solver)";
+          rec.str("topic", "split").num("open_aliases", open);
+          rec.text = "hint: split: open-aliases=" + std::to_string(open);
+          if (!open) {
+            rec.num("ackermann_constraints", ackConstraints);
+            rec.text +=
+                " ackermann-constraints=" + std::to_string(ackConstraints);
+          }
+          rec.str("option", "--split-candidates");
+          rec.text += "; rerun with --split-candidates to list split targets "
+                      "(no solver)";
           gOut->emit(rec);
         }
       }

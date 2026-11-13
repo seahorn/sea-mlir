@@ -25,10 +25,10 @@ The main lines of `sea-vc`:
 | `solve-time: <s>` | the solver's check |
 | `result: sat|unsat|unknown|none` | the verdict (`none`: `--vcgen-only`, `--split-candidates`) |
 | `solve-timeout: true`, `mem-limit: hit` | why the result is `unknown` |
-| `hint: split: open-aliases=<n>; rerun with --split-candidates ...` | an `unknown` of a `--seam` run (not a split) whose normalized query has $n > 0$ open alias questions: where to look next |
-| `split.candidates: open-aliases= leaves-candidates= bool-candidates= bool-listed= bool-dropped= bool-values= vc-time=` | `--split-candidates`: the census; `bool-dropped`: Boolean candidates beyond `--split-candidates-max` |
-| `split.leaves-candidate: name= leaves= unknown-leaves= open-aliases= direct= own= loc=` | `--split-candidates`: an ite-valued address (a `--split-leaves` selector); `direct`: open questions holding its term itself; `own`: open questions no other candidate is behind |
-| `split.bool-candidate: name= target=value\|guard open-aliases= addrs= loc=` | `--split-candidates`: an i1 value or block guard (a `--split` selector) in the ite conditions behind open questions |
+| `hint: split: open-aliases=<n>[ ackermann-constraints=<m>]; rerun with --split-candidates ...` | an `unknown` of a `--seam` run (not a split) whose normalized query has $n > 0$ open alias questions, or none and $m > 0$ constraints of the Ackermann lowering (then shown): where to look next |
+| `split.candidates: open-aliases= leaves-candidates= bool-candidates= bool-listed= bool-dropped= bool-values= reads= same-object-open= memop-open= vc-time=` | `--split-candidates`: the census; `bool-dropped`: Boolean candidates beyond `--split-candidates-max`; `reads`: array reads (index not a numeral) of the query at the solver boundary, the reads Ackermann pairs; `open-aliases`: `IS_OVERLAP` questions only; `same-object-open`: one-object questions reduced to an offset compare and left open; `memop-open`: open in-tests of memset / memmove / memhavoc reads (neither attributed). `seam.alias.open.all` = `open-aliases` + `same-object-open`; `seam.alias.open-memop.all` = `memop-open` |
+| `split.leaves-candidate: name= leaves= unknown-leaves= open-aliases= direct= own= reads= loc=` | `--split-candidates`: an ite-valued address (a `--split-leaves` selector); `direct`: open questions holding its term itself; `own`: open questions no other candidate is behind; `reads`: array reads whose index holds its term |
+| `split.bool-candidate: name= target=value\|guard open-aliases= addrs= reads= cond-reads= covers= same= loc=` | `--split-candidates`: an i1 value or block guard (a `--split` selector) in the ite conditions behind open questions or in the index of an array read; `reads`: reads with it in an ite condition of the index; `cond-reads`: of those, with it as a whole condition; `covers`: other candidates in its Boolean structure; `same`: other values with the same term (`-`: none; a split replaces the named value only) |
 | `nondet: site= callee= width= value=` | an input from the model |
 | `memread: site= addr= width= value= [obj=&<id>[<off>]]` | a memory cell from the model, with the object and offset it lies in |
 | `replay: <status>` | the interpreter's status on the model's inputs, normally `assert-failed` |
@@ -425,10 +425,10 @@ The record kinds of `sea-vc`:
 | `split-part` | `part`, `choice`, `result`, `vc_time`, `solve_time`, `dag`, `alias_open`, `alias_open_pairs`, `alias_open_memop`, `rows`, `ack_reads`, `ack_pairs`, `ack_constraints`, `check` |
 | `split-verdict` | `result`, `parts`, `unsat`, `sat`, `unknown`, `none`, `hardest_part`, `hardest_solve_time`, `check_unknown`, `check` (`on`\|`off`), `leaf_structural`, [`stopped`] |
 | `split-candidate` | `name`, `loc`, `leaves`, `open_aliases` (`--split-auto`) |
-| `split-candidates` | `open_aliases`, `leaves_candidates`, `bool_candidates`, `bool_listed`, `bool_dropped`, `bool_values`, `vc_time` (`--split-candidates`) |
-| `split-leaves-candidate` | `name`, `loc`, `leaves`, `unknown_leaves`, `open_aliases`, `direct`, `own` |
-| `split-bool-candidate` | `name`, `loc`, `target` (`value`\|`guard`), `open_aliases`, `addrs` |
-| `hint` | `topic` (`split`), `open_aliases`, `option` (`--split-candidates`) |
+| `split-candidates` | `open_aliases`, `leaves_candidates`, `bool_candidates`, `bool_listed`, `bool_dropped`, `bool_values`, `reads`, `same_object_open`, `memop_open`, `vc_time` (`--split-candidates`) |
+| `split-leaves-candidate` | `name`, `loc`, `leaves`, `unknown_leaves`, `open_aliases`, `direct`, `own`, `reads` |
+| `split-bool-candidate` | `name`, `loc`, `target` (`value`\|`guard`), `open_aliases`, `addrs`, `reads`, `cond_reads`, `covers`, `same` |
+| `hint` | `topic` (`split`), `open_aliases`, [`ackermann_constraints`] (with `open_aliases` 0), `option` (`--split-candidates`) |
 | `print`, `print.mem`, `print.mem.row`, `print.scope`, `print.object`, `print.note`, `print.truncated` | see [Counterexample notation](print.md) and `sea-vc --agent` |
 
 An object has the same id in every record: its print name (`stack.1`,

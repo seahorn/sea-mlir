@@ -181,8 +181,11 @@ run this step; its ranking and pick are unchanged).
 
 Two ops can compute the same term (a range check before and after a
 store to another object reads the same cell). They are one line: the
-value with the most uses as a select condition is named, the others are
-in `same=`. They are not the same split target: a split replaces the
+value with the most uses that reach a select condition, a branch
+condition or an address is named (followed forward through i1
+connectives: and, or, xor, i1 selects, i1 block arguments; a compare
+reaches the select through the and that is its condition), then the
+first in encoding order; the others are in `same=`. They are not the same split target: a split replaces the
 value of the named op only, and the uses of the others keep the term
 (the part's condition still holds it, so the parts stay exact). Split on
 the one whose uses matter (`--print-lowered` shows them), or on all of
@@ -219,10 +222,13 @@ alias questions (`IS_OVERLAP`) of its normalized query, a DAG walk after
 the solver (no cost to sat or unsat runs). If there is at least one, it
 prints one line, `hint: split: open-aliases=<n>; rerun with
 --split-candidates to list split targets (no solver)` (jsonl kind `hint`,
-field `open_aliases`), after the result and its reason lines; without
-open questions there is no hint (a query whose residue is Ackermann
-pairs gets none, though `--split-candidates` may list read-index
-candidates for it). It changes
+field `open_aliases`), after the result and its reason lines. Without
+open questions but with constraints of the Ackermann lowering
+(`vc.ackermann-constraints`, already counted by the run) it prints
+`hint: split: open-aliases=0 ackermann-constraints=<m>; rerun with
+--split-candidates ...` (field `ackermann_constraints`): the read-index
+attribution above may list targets. The run itself does not attribute
+reads. With neither there is no hint. It changes
 no query and no other line. `utils/query-diff.py` compares `--smt2`
 output and does not see it; `utils/bench.py` reads `BRUNCH_STAT` lines
 and named `key: value` counters of a run (`observed_counter`), and no

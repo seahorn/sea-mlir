@@ -203,7 +203,8 @@ struct SplitBoolCandidate {
   unsigned covers = 0;
   /// The candidate (index in boolCands) listed for the term when another
   /// one has the same term, or -1 (attributeReads; the one with the most
-  /// uses as a select condition, then the first).
+  /// uses that reach a select condition, a branch condition or an address
+  /// through i1 connectives, then the first).
   int sameAs = -1;
 };
 
