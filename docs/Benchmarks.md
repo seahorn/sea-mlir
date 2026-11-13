@@ -99,7 +99,8 @@ jobs:
   expanded or lowered to a nondet index, a memmove expanded or kept), so a
   bound such as `{exact: 1}` makes a silent switch of form visible. A job
   whose lowering did not run prints no such line: the counter is missing.
-  An exact key (BRUNCH_STAT or `key: value` line) takes precedence.
+  An exact key (BRUNCH_STAT or `key: value` line) takes precedence, and
+  the first matching line counts.
 - The effective bounds of a job: `defaults.counters`, then each matching
   `counter-rules` entry in order, then the job's own `counters`; a key set to
   `null` removes an inherited bound.
@@ -181,7 +182,9 @@ The gate fails (exit 1) on
   counted as `counter-failures`; see counter expectations above).
 
 It reports, without failing, `slow:` (wall > `--slow` (2) x the manifest
-time and at least 1 s more) and `solved:` (an `unknown-ok` job solved).
+time and at least 1 s more), `solved:` (an `unknown-ok` job solved) and
+`replayed:` (a job with `replay: impossible` whose sat replayed: the field
+is stale).
 
 Logs and `rows.jsonl` go to `$SEA_BENCH_HOME/results/<stamp>-gate-<tier>/`.
 With `--no-record`, solver logs and results stay in a temporary directory

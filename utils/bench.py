@@ -62,7 +62,10 @@ OUTPUT of run: stats.csv (job config rep wall cpu status verdict + every BRUNCH_
   verdict: sat unsat unknown timeout memout error inb-violation (rc 4) replay-mismatch (rc 2)
   lowering-mismatch (rc 6: --replay-original, the input program does not fail the lowered sat's assertion),
   original-memory-error (rc 4 with replay.original match=no: the input program makes a memory-safety violation).
-  Classified by what sea-vc printed: rc 1 after `result: sat` with error vc.replay-impossible (the in-place
+  Classified by what sea-vc printed: the verdict is the last `result:` line of stdout (text or --format=jsonl;
+  a split's parts and BRUNCH_STAT result do not count; column `result`): rc 0/3 give it (rc 3 with
+  `result: unknown` after a mem-limit hit is unknown, also after an earlier sat; no `result:` line: error).
+  rc 1 after `result: sat` with error vc.replay-impossible (the in-place
   interpreter cannot run the model: a memory update without `inplace`) is verdict sat, column replay=impossible;
   any other rc 1 after a verdict is error; memout needs bad_alloc / out of memory, or rc 16 / abort / segv
   with no verdict printed. A timeout is a timeout even after a printed verdict (stats `result` keeps it).
@@ -329,6 +332,32 @@ def git_state():
     }
 
 
+def as_text(out):
+    """sea-vc stdout as text: a --format=jsonl record becomes its `text` (the text format's rendering)."""
+    if "{" not in out:
+        return out
+    lines = []
+    for line in out.splitlines():
+        if line.startswith("{"):
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                rec = None
+            if isinstance(rec, dict) and isinstance(rec.get("text"), str):
+                lines.append(rec["text"])
+                continue
+        lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
+def final_result(out):
+    """The verdict sea-vc printed last: its final `result:` line. Not the BRUNCH_STAT result, which a split
+    prints per part (the split's own `result:` has none), and which a mem-limit hit after the verdict
+    (`result: unknown`, rc 3) does not follow. None if the run printed no verdict."""
+    m = re.findall(r"^result: (\S+)", out, re.M)
+    return m[-1] if m else None
+
+
 def parse_stats(text, stats):
     for line in text.splitlines():
         if line.startswith("BRUNCH_STAT "):
@@ -369,7 +398,7 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
     wall = time.monotonic() - t
     rc = os.waitstatus_to_exitcode(status)
     stats = {}
-    out, err = open(base + ".out").read(), open(base + ".err").read()
+    out, err = as_text(open(base + ".out").read()), open(base + ".err").read()
     parse_stats(out, stats)
     parse_stats(err, stats)
     # --replay-original: yes | no | undetermined | skipped (the first line)
@@ -380,10 +409,9 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
     # classify by what sea-vc printed, not by the exit code alone: a run that
     # printed a verdict and then exited 1 ended in an error after its answer
     # (never a memout); a resource outcome needs evidence of one
-    printed = stats.get("result")
-    if printed is None:
-        m = re.search(r"^result: (\S+)", out, re.M)
-        printed = m.group(1) if m else None
+    printed = final_result(out) or stats.get("result")
+    if printed is not None:
+        stats["result"] = printed  # the run's verdict, not a split part's
     replay = None  # `impossible`: sat whose model the interpreter cannot run
     oom = (
         "bad_alloc" in err
@@ -842,7 +870,7 @@ def observed_counter(row, key):
     x = row.get(key)
     if x is None and row.get("log"):
         try:
-            text = open(row["log"] + ".out").read()
+            text = as_text(open(row["log"] + ".out").read())
         except OSError:
             text = ""
         mm = re.search(r"^" + re.escape(key) + r": (\S+)", text, re.M)

@@ -8,16 +8,16 @@
 // RUN: cp %S/../VC/box-all-bounds.mlir %t/s1/fam/box.mlir
 // RUN: cp %S/../VC/box-all-bounds.mlir %t/s1/fam/boxlow.mlir
 // RUN: printf "family: fam\ndefaults:\n  args: [--lower, --seam]\n  timeout: 60\n  mem: 4096\n  counters: {vc.box-all.expanded: {exact: 1, why: expanded form}}\ncounter-rules:\n- jobs: ^ri\$\n  counters: {vc.box-all.expanded: null}\njobs:\n  ri: {expected: sat, tier: smoke}\n  box: {expected: unsat, tier: smoke, args: [--program=expanded_out], counters: {vc.box-all.lowered: {exact: 0}}}\n  boxlow: {expected: unsat, tier: smoke, args: [--program=expanded_out, --box-all-expand=0]}\n" > %t/s1/fam/manifest.yaml
-// RUN: env SEA_BENCH_SUITES=%t/s1 SEA_BENCH_HOME=%t/home not python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %sea_vc --min-free-gb 0 --no-record | FileCheck %s --check-prefix=FAIL
-// FAIL: FAIL: replay-impossible s1.fam.ri config=default verdict=sat expected=sat
-// FAIL-NOT: FAIL: counter s1.fam.box
-// FAIL: FAIL: counter s1.fam.boxlow config=default vc.box-all.expanded=0 bound exact=1 why: expanded form
-// FAIL: verdicts: sat=1 unsat=2
-// FAIL: replay-impossible: 1 allowed=0
-// FAIL: failures: 1
-// FAIL: counter-bounds: 3
-// FAIL: counter-failures: 1
-// FAIL: gate: fail
+// RUN: env SEA_BENCH_SUITES=%t/s1 SEA_BENCH_HOME=%t/home not python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %sea_vc --min-free-gb 0 --no-record | FileCheck %s --check-prefix=STRICT
+// STRICT: FAIL: replay-impossible s1.fam.ri config=default verdict=sat expected=sat
+// STRICT-NOT: FAIL: counter s1.fam.box
+// STRICT: FAIL: counter s1.fam.boxlow config=default vc.box-all.expanded=0 bound exact=1 why: expanded form
+// STRICT: verdicts: sat=1 unsat=2
+// STRICT: replay-impossible: 1 allowed=0
+// STRICT: failures: 1
+// STRICT: counter-bounds: 3
+// STRICT: counter-failures: 1
+// STRICT: gate: fail
 // The job allows it, the form bound is dropped where the lowering differs: pass.
 // RUN: sed -i -e 's/ri: {expected: sat,/ri: {expected: sat, replay: impossible,/' -e 's/--box-all-expand=0]}/--box-all-expand=0], counters: {vc.box-all.expanded: null, vc.box-all.lowered: {exact: 1}}}/' %t/s1/fam/manifest.yaml
 // RUN: env SEA_BENCH_SUITES=%t/s1 SEA_BENCH_HOME=%t/home python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %sea_vc --min-free-gb 0 --no-record -v | FileCheck %s --check-prefix=PASS
@@ -30,6 +30,34 @@
 // RUN: sed -i 's/replay: impossible/replay: maybe/' %t/s1/fam/manifest.yaml
 // RUN: env SEA_BENCH_SUITES=%t/s1 SEA_BENCH_HOME=%t/home not python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %sea_vc --min-free-gb 0 --no-record 2>&1 | FileCheck %s --check-prefix=BAD
 // BAD: bench: manifest field `replay` must be `impossible`: s1/fam/ri: replay: 'maybe'
+
+// The mapping from a run's output to its verdict, on a fake sea-vc (each job
+// file scripts what it prints and how it ends; Inputs/fake-sea-vc.py). The
+// verdict is the last `result:` line, text or jsonl (not a split part's
+// BRUNCH_STAT); an abort / segv after a verdict is an error, a memout needs
+// evidence (bad_alloc text, or rc 16 with no verdict).
+// RUN: rm -rf %t.f && mkdir -p %t.f/s/fam %t.f/home
+// RUN: cp %S/Inputs/bench-classify/* %t.f/s/fam/
+// RUN: env SEA_BENCH_SUITES=%t.f/s SEA_BENCH_HOME=%t.f/home not python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %S/Inputs/fake-sea-vc.py --min-free-gb 0 --no-record --par 1 -v | FileCheck %s --check-prefix=MAP
+// MAP-DAG: run: default s.fam.abort-after-sat error
+// MAP-DAG: run: default s.fam.segv-after-sat error
+// MAP-DAG: run: default s.fam.rc16 memout
+// MAP-DAG: run: default s.fam.badalloc-after-sat memout
+// MAP-DAG: run: default s.fam.memlimit unknown
+// MAP-DAG: run: default s.fam.memlimit-after-sat unknown
+// MAP-DAG: run: default s.fam.split unknown
+// MAP-DAG: run: default s.fam.split-jsonl unknown
+// MAP-DAG: run: default s.fam.jsonl unsat
+// MAP-DAG: run: default s.fam.replayed sat
+// MAP: FAIL: unsolved s.fam.abort-after-sat config=default verdict=error expected=sat
+// MAP-NEXT: FAIL: error s.fam.segv-after-sat config=default expected=unknown-ok
+// MAP-NEXT: FAIL: unsolved s.fam.split config=default verdict=unknown expected=unsat
+// MAP-NEXT: FAIL: unsolved s.fam.split-jsonl config=default verdict=unknown expected=unsat
+// MAP-NOT: FAIL:
+// MAP: replayed: s.fam.replayed config=default verdict=sat (manifest replay: impossible)
+// MAP: failures: 4
+// MAP: counter-bounds: 1
+// MAP: counter-failures: 0
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
