@@ -203,6 +203,34 @@ by default, so `--par N` uses at most N cores for z3. The exit status is
 1 on a `DIFF` or `error`, 2 on an `unknown`, and 3 with `--strict` on a
 `both-unsat`, checked in this order.
 
+### Encoding diff
+
+`utils/query-diff.py` compares two binaries on one corpus: use it when the
+tool changes and the programs do not. `utils/encoding-diff.py` is the
+complement: one `sea-vc` on two programs, when the program changes and the
+claim must not (a hand-skolemized claim against `sea.box.all` with
+`--box-all-expand=0`, a rewritten loop, reordered conjuncts).
+
+```bash
+python3 utils/encoding-diff.py --sea-vc build/bin/sea-vc \
+    --left-flags=--box-all-expand=0 --right-flags=--box-all-expand=0 \
+    --alias k=box.all.eq.0 left.mlir right.mlir
+```
+
+Both sides run with `--lower --seam --smt2 --ackermannize=off` (no symbol
+is named after a read's position). Nondets and objects are renamed from
+their sites to the names the programs give them, so two programs that
+number their sites differently compare by name. A symbol declared on one
+side only is projected (`exists`). The classes are `identical`, `same-dag`
+(the same terms up to let names and conjunct order), `equiv-parts` (z3
+proves the differing top-level conjuncts equivalent on their own), `equiv`
+(both sat, z3 proves the whole queries equivalent), `both-unsat` (verdict
+only, not equivalence), `DIFF`, `unknown`, `error`. Each pair prints
+`result: <class>`; the exit status is 0, 1 on `DIFF` or `error`, 2 on
+`unknown`, 3 with `--strict` on `both-unsat`. Every z3 check has an
+`--rlimit` (deterministic) and a `--timeout` backstop. `--agent` prints
+the guide.
+
 ## Pass validation
 
 A change of the lowering (a fold, a pass, an optimization switched on)

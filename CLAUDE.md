@@ -121,6 +121,9 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   over a corpus, each job identical / order / both-unsat (equisat only) /
   equiv-sat (z3) / DIFF / unknown (`--project-blocks`: up to renamed
   block guards; `--agent` says what each class proves);
+  `utils/encoding-diff.py` — its complement: one sea-vc on two programs
+  (two encodings of one job): identical / same-dag / equiv-parts / equiv /
+  both-unsat / DIFF / unknown (`--agent`; both-unsat is not equivalence);
   `utils/bench.py` (`--agent`) — benchmarks: corpora, runs, and the suites
   in separate repositories (`just bench-connect`, `just bench-gate`,
   `docs/Benchmarks.md`); `utils/release-check.sh` (`just release-check`)
