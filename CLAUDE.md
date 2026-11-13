@@ -47,6 +47,8 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   `Origins.h` (Expr node -> location of the sea op that made it, recorded
   by OpSem and followed through simplify / boundary / Ackermann: `sea-vc
   --arith-stats`, `--ack-dump-pairs`; the census is `tools/sea-vc/ArithStats.h`);
+  `sea/Expr/ArithShape.hh` (the arithmetic nodes and their operands' value
+  trees, shared by those reports and Origins);
   `sea/Expr/ExprMlir.hh` (Expr terminals holding mlir::Value / Block)
 - `lib/Transforms/` — passes: `sea-place-static` (abstract pointers ->
   constant addresses; each object is a `sea.segment`, whose result, the base

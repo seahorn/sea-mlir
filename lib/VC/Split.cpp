@@ -913,16 +913,6 @@ uint64_t SplitCensus::attributeReads(SeaOpSem &sem, const Expr &solverQuery) {
 /// untuned bound on its cost): a larger condition attributes nothing.
 static constexpr size_t kMaxArithAtoms = 64;
 
-ArithKind arithKind(const ENode *n) {
-  if (isOpX<BMUL>(n) || isOpX<SMUL_NO_OVERFLOW>(n) ||
-      isOpX<UMUL_NO_OVERFLOW>(n) || isOpX<SMUL_NO_UNDERFLOW>(n))
-    return ArithKind::Mul;
-  if (isOpX<BUDIV>(n) || isOpX<BSDIV>(n) || isOpX<BUREM>(n) ||
-      isOpX<BSREM>(n) || isOpX<BSMOD>(n))
-    return ArithKind::Div;
-  return ArithKind::None;
-}
-
 uint64_t SplitCensus::attributeArith(SeaOpSem &sem, const Expr &solverQuery,
                                      unsigned maxPaths) {
   // the keys in the solver's terms, as attributeReads makes them
@@ -1028,6 +1018,10 @@ uint64_t SplitCensus::attributeArith(SeaOpSem &sem, const Expr &solverQuery,
         if (ints[j].term != ints[i].term)
           ++ints[j].feeds;
   }
+  // "an operand holds": anywhere in its DAG, through every operator (DagIds),
+  // as ValueTrees::iteBelow; not the value tree of sea/Expr/ArithShape.hh
+  // (--arith-stats' path-merged): a candidate behind an add or a compare in
+  // an operand still decides the node
   DagIds directIds(idsOf(intOf));
   // an ite whose condition's atoms are all atoms of an integer candidate's
   // conditions: the candidate's split decides it (its cases fix those
@@ -1231,32 +1225,6 @@ const IteCensus::TreeSets &IteCensus::treeOf(const Expr &root) {
   return treeMemo[root.get()];
 }
 
-bool IteCensus::hasIte(ENode *root) {
-  std::vector<std::pair<ENode *, bool>> st{{root, false}};
-  while (!st.empty()) {
-    auto [n, done] = st.back();
-    st.pop_back();
-    if (iteMemo.count(n))
-      continue;
-    if (isOpX<ITE>(n)) {
-      iteMemo[n] = true;
-      continue;
-    }
-    if (!done) {
-      st.push_back({n, true});
-      for (size_t i = 0; i < n->arity(); ++i)
-        if (!iteMemo.count(n->arg(i)))
-          st.push_back({n->arg(i), false});
-      continue;
-    }
-    bool h = false;
-    for (size_t i = 0; i < n->arity() && !h; ++i)
-      h = iteMemo[n->arg(i)];
-    iteMemo[n] = h;
-  }
-  return iteMemo[root];
-}
-
 void IteCensus::install(SeaOpSem &sem, OpSemContext &ctx) {
   auto prevGuard = ctx.guardHook;
   ctx.guardHook = [this, prevGuard](Block *b, Expr g) {
@@ -1274,10 +1242,10 @@ void IteCensus::install(SeaOpSem &sem, OpSemContext &ctx) {
       if (!ground(a.get(), sem.baseRegistry())) {
         const bool fromBits = isOpX<PTR_FROM_BITS>(a);
         Expr t = fromBits ? Expr(a->arg(0)) : a;
-        loads.push_back({isOpX<ITE>(t)     ? "ite"
-                         : fromBits        ? "from-bits"
-                         : hasIte(t.get()) ? "ite-index"
-                                           : "symbolic",
+        loads.push_back({isOpX<ITE>(t)             ? "ite"
+                         : fromBits                ? "from-bits"
+                         : trees.iteBelow(t.get()) ? "ite-index"
+                                                   : "symbolic",
                          ld});
       }
     }

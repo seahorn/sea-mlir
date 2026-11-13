@@ -4,6 +4,7 @@
 //===- OpSem.cpp - symbolic execution of sea programs -----------*- C++ -*-===//
 
 #include "sea/VC/OpSem.h"
+#include "sea/Expr/ArithShape.hh"
 #include "sea/Expr/ExprOpBinder.hh"
 #include "sea/Expr/ExprOverflow.hh"
 #include "sea/Expr/SeaMRules.hh"
@@ -941,12 +942,6 @@ void SeaOpSem::noteOrigins(Operation &op, OpSemContext &ctx) {
     }
     return;
   }
-  auto target = [&](ENode *n) {
-    return isOpX<BMUL>(n) || isOpX<BUDIV>(n) || isOpX<BSDIV>(n) ||
-           isOpX<BUREM>(n) || isOpX<BSREM>(n) || isOpX<BSMOD>(n) ||
-           isOpX<UMUL_NO_OVERFLOW>(n) || isOpX<SMUL_NO_OVERFLOW>(n) ||
-           isOpX<SMUL_NO_UNDERFLOW>(n);
-  };
   // the walk stops at the operands' values (made by other ops) and at the
   // memory of a select / store (earlier memory versions)
   llvm::DenseSet<const ENode *> stops, seen;
@@ -962,7 +957,7 @@ void SeaOpSem::noteOrigins(Operation &op, OpSemContext &ctx) {
     stack.pop_back();
     if (stops.count(n) || !seen.insert(n).second)
       continue;
-    if (target(n))
+    if (isArith(n))
       origins->add(Expr(n), op.getLoc());
     // a node an earlier op walked: its kids are that op's
     if (!originWalked.insert(n).second)

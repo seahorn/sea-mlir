@@ -13,11 +13,10 @@
 //             tree is a numeral (a constant per path)
 //   ite-sym   else an operand is path-merged (a non-numeral leaf)
 //   nonconst  else (two or more non-constant operands, none path-merged)
-// An operand's value tree goes through ite branches, concat parts, extract,
-// sign / zero extension, bvneg and bvnot; its leaves are the other terms. An
-// operand is path-merged if its tree holds an ite (a value stored on several
-// paths and loaded as bytes is a concat of ites). For the ite kinds, the
-// distinct conditions of the path-merged operands' trees. A product by a
+// An operand's value tree and path-merged: sea/Expr/ArithShape.hh (through
+// ite branches, concat parts, extract, sign / zero extension, bvneg and
+// bvnot). For the ite kinds, the distinct conditions of the path-merged
+// operands' trees. A product by a
 // path-merged value is cheap per path and can be expensive for a
 // bit-blasting solver as one term; nonconst is a nonlinear product.
 //
@@ -30,6 +29,7 @@
 #ifndef SEA_VC_TOOL_ARITHSTATS_H
 #define SEA_VC_TOOL_ARITHSTATS_H
 
+#include "sea/Expr/ArithShape.hh"
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/ExprOpBv.hh"
 #include "sea/Expr/TypeChecker.hh"
@@ -76,7 +76,7 @@ public:
         continue;
       for (size_t i = 0; i < n->arity(); ++i)
         stack.push_back(n->arg(i));
-      if (!isArith(n) || n->arity() < 2)
+      if (!expr::isArith(n) || n->arity() < 2)
         continue;
       count(n, origins);
     }
@@ -150,95 +150,8 @@ private:
   unsigned widthOf(expr::ENode *n) {
     return expr::op::bv::width(tc.typeOf(expr::Expr(n)));
   }
-  /// per node of an operand's value tree (see valueTree): it holds an ite,
-  /// every leaf is a numeral
-  struct TreeInfo {
-    bool ite = false, allNum = true;
-  };
-  llvm::DenseMap<const expr::ENode *, TreeInfo> treeMemo;
-
-  static bool isArith(expr::ENode *n) {
-    using namespace expr;
-    return isOpX<BMUL>(n) || isOpX<BUDIV>(n) || isOpX<BSDIV>(n) ||
-           isOpX<BUREM>(n) || isOpX<BSREM>(n) || isOpX<BSMOD>(n) ||
-           isOpX<UMUL_NO_OVERFLOW>(n) || isOpX<SMUL_NO_OVERFLOW>(n) ||
-           isOpX<SMUL_NO_UNDERFLOW>(n);
-  }
-  /// the kids of \p n the value tree goes through: ite branches, concat
-  /// parts, the value of extract / sign / zero extension / bvneg / bvnot;
-  /// none for any other operator (a leaf of the tree)
-  static void treeKids(expr::ENode *n,
-                       llvm::SmallVectorImpl<expr::ENode *> &ks) {
-    using namespace expr;
-    if (isOpX<ITE>(n)) {
-      ks.push_back(n->arg(1));
-      ks.push_back(n->arg(2));
-    } else if (isOpX<BCONCAT>(n)) {
-      for (size_t i = 0; i < n->arity(); ++i)
-        ks.push_back(n->arg(i));
-    } else if (isOpX<BEXTRACT>(n)) {
-      ks.push_back(n->arg(2));
-    } else if (isOpX<BSEXT>(n) || isOpX<BZEXT>(n) || isOpX<BNEG>(n) ||
-               isOpX<BNOT>(n)) {
-      ks.push_back(n->arg(0));
-    }
-  }
-  /// the value tree of \p root (memoized): does it hold an ite, are all its
-  /// leaves numerals
-  TreeInfo valueTree(expr::ENode *root) {
-    using namespace expr;
-    std::vector<std::pair<ENode *, bool>> stack{{root, false}};
-    llvm::SmallVector<ENode *, 4> ks;
-    while (!stack.empty()) {
-      auto [n, expanded] = stack.back();
-      if (treeMemo.count(n)) {
-        stack.pop_back();
-        continue;
-      }
-      ks.clear();
-      treeKids(n, ks);
-      if (!expanded && !ks.empty()) {
-        stack.back().second = true;
-        for (ENode *k : ks)
-          if (!treeMemo.count(k))
-            stack.push_back({k, false});
-        continue;
-      }
-      stack.pop_back();
-      TreeInfo t;
-      if (ks.empty()) {
-        t.allNum = op::bv::is_bvnum(Expr(n));
-      } else {
-        t.ite = isOpX<ITE>(n);
-        for (ENode *k : ks) {
-          const TreeInfo &kt = treeMemo.find(k)->second;
-          t.ite |= kt.ite;
-          t.allNum &= kt.allNum;
-        }
-      }
-      treeMemo[n] = t;
-    }
-    return treeMemo.find(root)->second;
-  }
-  /// the ite conditions of the value tree of \p root into \p conds
-  static void treeConds(expr::ENode *root,
-                        llvm::DenseSet<const expr::ENode *> &conds) {
-    using namespace expr;
-    llvm::DenseSet<const ENode *> seen;
-    std::vector<ENode *> stack{root};
-    llvm::SmallVector<ENode *, 4> ks;
-    while (!stack.empty()) {
-      ENode *n = stack.back();
-      stack.pop_back();
-      if (!seen.insert(n).second)
-        continue;
-      if (isOpX<ITE>(n))
-        conds.insert(n->arg(0));
-      ks.clear();
-      treeKids(n, ks);
-      stack.insert(stack.end(), ks.begin(), ks.end());
-    }
-  }
+  /// the operands' value trees (sea/Expr/ArithShape.hh), memoized
+  expr::ValueTrees trees;
 
   void count(expr::ENode *n, const ExprOrigins &origins) {
     using namespace expr;
@@ -255,12 +168,12 @@ private:
     } else {
       bool anyIteNum = false, anyIte = false;
       for (ENode *a : rest) {
-        TreeInfo t = valueTree(a);
+        expr::ValueTrees::Info t = trees.info(a);
         if (!t.ite)
           continue;
         anyIte = true;
         anyIteNum |= t.allNum;
-        treeConds(a, conds);
+        expr::ValueTrees::conds(a, conds);
       }
       k = anyIteNum ? IteNum : anyIte ? IteSym : NonConst;
     }

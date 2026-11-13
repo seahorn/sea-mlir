@@ -19,6 +19,7 @@ endif()
 add_mlir_library(SeaExpr
   ExprCore.cpp
   ExprToZ.cpp
+  ArithShape.cpp
   ExprUtil.cpp
   ConstArrayDefs.cpp
   MarshalYices.cpp

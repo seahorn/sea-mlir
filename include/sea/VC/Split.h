@@ -33,6 +33,7 @@
 #define SEA_VC_SPLIT_H
 
 #include "sea/Dialect/Sea/SeaOps.h"
+#include "sea/Expr/ArithShape.hh"
 #include "sea/Expr/BaseRegistry.hh"
 #include "sea/Expr/Expr.hh"
 
@@ -251,12 +252,6 @@ struct SplitIntCandidate {
   unsigned feeds = 0;
 };
 
-/// The kind of an arithmetic node for the arithmetic attribution and
-/// --ite-stats: Mul (bvmul, the multiplication overflow predicates), Div
-/// (bvudiv, bvsdiv, bvurem, bvsrem, bvsmod), or None.
-enum class ArithKind { None, Mul, Div };
-ArithKind arithKind(const expr::ENode *n);
-
 /// The census of a solverless pick run (sea-vc --split-auto,
 /// --split-candidates): the candidates the encoding defines (hooks), then
 /// the attribution of the open alias questions of the normalized query to
@@ -282,16 +277,16 @@ public:
   /// whose residue is index pairs, not open alias questions; call after
   /// attribute().
   uint64_t attributeReads(SeaOpSem &sem, const expr::Expr &solverQuery);
-  /// Attributes the arithmetic nodes (arithKind) of `solverQuery` (as for
-  /// attributeReads): a Boolean candidate counts a node when it is in an ite
-  /// condition of one of its operands, an integer candidate when its term
-  /// is in one of its operands, or an ite whose condition is over the atoms
-  /// of the term's ite conditions (the normalization may fold a compare of
-  /// the term into its conditions: `ite(g, 0, 1) = 0` to `g`). Also computes
-  /// the integer candidates' leaves and `feeds`. Returns the number of distinct
-  /// arithmetic nodes. A heuristic for queries whose cost is products or
-  /// quotients by path-merged values; call after attributeReads() (it sets
-  /// sameAs).
+  /// Attributes the arithmetic nodes (expr::arithKind, sea/Expr/ArithShape.hh)
+  /// of `solverQuery` (as for attributeReads): a Boolean candidate counts a
+  /// node when it is in an ite condition of one of its operands, an integer
+  /// candidate when its term is in one of its operands, or an ite whose
+  /// condition is over the atoms of the term's ite conditions (the
+  /// normalization may fold a compare of the term into its conditions: `ite(g,
+  /// 0, 1) = 0` to `g`). Also computes the integer candidates' leaves and
+  /// `feeds`. Returns the number of distinct arithmetic nodes. A heuristic for
+  /// queries whose cost is products or quotients by path-merged values; call
+  /// after attributeReads() (it sets sameAs).
   uint64_t attributeArith(SeaOpSem &sem, const expr::Expr &solverQuery,
                           unsigned maxPaths);
   /// In encoding order.
@@ -346,8 +341,9 @@ private:
   bool ground(expr::ENode *n, const expr::BaseRegistry &bases);
   llvm::DenseSet<mlir::Value> feedsArith;
   std::set<expr::ENode *> guards;
-  /// An ite in the DAG.
-  bool hasIte(expr::ENode *n);
+  /// ValueTrees::iteBelow (an ite anywhere in the DAG, through every
+  /// operator): the ite-index load kind.
+  expr::ValueTrees trees;
   /// The most leaves, conditions or guards a tree's sets keep (untuned):
   /// the memo of a chain of N merges is then O(N) sets of bounded size.
   static constexpr size_t kTreeCap = 256;
@@ -359,7 +355,7 @@ private:
   const TreeSets &treeOf(const expr::Expr &ite);
   std::unordered_map<expr::ENode *, TreeSets> treeMemo;
   expr::ExprVector keepTrees;
-  std::unordered_map<expr::ENode *, bool> groundMemo, iteMemo;
+  std::unordered_map<expr::ENode *, bool> groundMemo;
   /// Keeps the guard terms alive (the set holds raw pointers).
   expr::ExprVector keep;
 };
