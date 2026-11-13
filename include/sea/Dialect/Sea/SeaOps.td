@@ -12,6 +12,7 @@ include "mlir/IR/BuiltinAttributeInterfaces.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
+include "mlir/Interfaces/InferIntRangeInterface.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
@@ -180,6 +181,7 @@ def Sea_NondetOp : Sea_Op<"nondet"> {
 // materializes folded integers as sea.const.
 
 def Sea_ConstOp : Sea_Op<"const", [ConstantLike, Pure,
+    DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>,
     AllTypesMatch<["value", "result"]>]> {
   let summary = "A bit-vector constant";
   let arguments = (ins TypedAttrInterface:$value);
@@ -190,7 +192,8 @@ def Sea_ConstOp : Sea_Op<"const", [ConstantLike, Pure,
 }
 
 class Sea_BinOp<string mnemonic, string smt> :
-    Sea_Op<mnemonic, [Pure, SameOperandsAndResultType]> {
+    Sea_Op<mnemonic, [Pure, SameOperandsAndResultType,
+    DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>]> {
   let summary = "Bit-vector `" # smt # "`";
   let arguments = (ins Sea_BV:$lhs, Sea_BV:$rhs);
   let results = (outs Sea_BV:$result);
@@ -204,7 +207,8 @@ class Sea_BinOp<string mnemonic, string smt> :
 // warns when one is broken; `sea-wrap-flags` turns them into sea.assume /
 // sea.assert (or drops them); the VC ignores them (as SeaHorn does).
 class Sea_WrapBinOp<string mnemonic, string smt> :
-    Sea_Op<mnemonic, [Pure, SameOperandsAndResultType]> {
+    Sea_Op<mnemonic, [Pure, SameOperandsAndResultType,
+    DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>]> {
   let summary = "Bit-vector `" # smt # "`, optionally with no-wrap promises";
   let arguments = (ins Sea_BV:$lhs, Sea_BV:$rhs, UnitAttr:$nsw,
                    UnitAttr:$nuw);
@@ -246,7 +250,8 @@ def Sea_ICmpPredicateAttr : I64EnumAttr<"ICmpPredicate", "", [
   let cppNamespace = "::sea";
 }
 
-def Sea_ICmpOp : Sea_Op<"icmp", [Pure, SameTypeOperands]> {
+def Sea_ICmpOp : Sea_Op<"icmp", [Pure, SameTypeOperands,
+    DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>]> {
   let summary = "Bit-vector comparison; 1 if it holds, else 0";
   let arguments = (ins Sea_ICmpPredicateAttr:$predicate, Sea_BV:$lhs,
                    Sea_BV:$rhs);
@@ -257,6 +262,7 @@ def Sea_ICmpOp : Sea_Op<"icmp", [Pure, SameTypeOperands]> {
 }
 
 def Sea_SelectOp : Sea_Op<"select", [Pure,
+    DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>,
     AllTypesMatch<["trueValue", "falseValue", "result"]>]> {
   let summary = "`trueValue` if the condition is 1, else `falseValue`";
   let arguments = (ins I1:$condition, Sea_RegValue:$trueValue,
@@ -269,7 +275,8 @@ def Sea_SelectOp : Sea_Op<"select", [Pure,
   let hasFolder = 1;
 }
 
-class Sea_CastOp<string mnemonic, string desc> : Sea_Op<mnemonic, [Pure]> {
+class Sea_CastOp<string mnemonic, string desc> : Sea_Op<mnemonic, [Pure,
+    DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>]> {
   let summary = desc;
   let arguments = (ins Sea_BV:$input);
   let results = (outs Sea_BV:$result);

@@ -30,6 +30,7 @@
 #include "sea/Support/Output.h"
 #include "sea/Support/Version.h"
 #include "sea/Transforms/Passes.h"
+#include "sea/Transforms/RangeFold.h"
 
 #include "mlir/Pass/PassManager.h"
 #include "sea/VC/Reach.h"
@@ -111,6 +112,21 @@ static cl::opt<bool> lowerOpt(
              "value), erase dead ops and unreachable blocks; default on; "
              "=false keeps every op)"),
     cl::init(true));
+
+static cl::opt<sea::RangeFoldMode> rangeFoldOpt(
+    "range-fold",
+    cl::desc("With --lower: sea-range-fold before the final canonicalize: a "
+             "sea.icmp, i1 and / or / xor or select condition that the "
+             "integer ranges settle, with the simple bounds of dominating "
+             "sea.assume ops, is folded (docs/design/RangeFold.md); prints "
+             "vc.range-fold. Untuned default: off"),
+    cl::values(clEnumValN(sea::RangeFoldMode::Off, "off", "not run (default)"),
+               clEnumValN(sea::RangeFoldMode::Fold, "on", "fold"),
+               clEnumValN(sea::RangeFoldMode::Check, "check",
+                          "the paranoid job: assert every fold instead, "
+                          "drop the program's asserts; unsat = every fold "
+                          "valid")),
+    cl::init(sea::RangeFoldMode::Off));
 
 static cl::list<std::string> lowerDisable(
     "lower-disable",
@@ -1255,8 +1271,11 @@ INPUT FORM (checked; anything else is an error, never approximated):
   loop-free; one sea.halt; exactly one sea.assert immediately before it;
   no critical edges; sea.cond_br targets distinct. Also: no sea.halt and
   no sea.assert (every path ends in sea.unreachable): statically safe.
-  nsw / nuw flags are ignored (the value wraps, as in SeaHorn); use
-  sea-wrap-flags to assume or assert them.
+  nsw / nuw flags are binding semantics (a front end that does not trust
+  them strips them: sea-wrap-flags mode=drop). The VC encoding ignores them
+  (the value wraps, as in SeaHorn: an over-approximation); --range-fold=on
+  uses them (counted: vc.range-fold wrap-flags=). sea-wrap-flags turns
+  them into assumes or asserts.
 
 TYPICAL:
   sea-vc p.mlir                  # solve with z3, replay if sat
@@ -1737,6 +1756,25 @@ TYPICAL:
                                  #   `align` / every used GEP no-wrap
                                  #   promise, drop the program's asserts;
                                  #   unsat = they hold (one job at a time)
+  sea-vc p.mlir --lower --range-fold=on  # fold a sea.icmp / i1 op /
+                                 #   select condition the integer ranges
+                                 #   settle (InferIntRangeInterface walk,
+                                 #   intersected with the simple bounds
+                                 #   `icmp x, C` of dominating assumes;
+                                 #   no memory reasoning: a load is a
+                                 #   leaf). Off by default (untuned).
+                                 #   Prints vc.range-fold: mode= bool=
+                                 #   checks= depth-cap= empty= facts=
+                                 #   facts-skipped= facts-used= icmp=
+                                 #   no-facts= queries= select=
+                                 #   wrap-flags= (folds whose walk met an
+                                 #   op with nsw / nuw: they use the flag
+                                 #   semantics, which the VC encoding
+                                 #   over-approximates)
+  sea-vc p.mlir --lower --range-fold=check  # its paranoid job: assert
+                                 #   every fold instead, drop the
+                                 #   program's asserts; unsat = every
+                                 #   fold valid (docs/design/RangeFold.md)
   sea-vc p.mlir --seam --seam-stride  # R-STRIDE: store-map entries
                                  #   skipped for reads at promised GEP
                                  #   nodes whose offsets never reach them
@@ -2853,6 +2891,8 @@ int main(int argc, char **argv) {
   }
   if (!lowerDisable.empty() && !lower)
     return fail("--lower-disable needs --lower");
+  if (rangeFoldOpt != sea::RangeFoldMode::Off && !lower)
+    return fail("--range-fold needs --lower");
   if ((!placeIn.empty() || !placeOut.empty()) && !lower)
     return fail("--place-in and --place-out need --lower");
   if (!placeIn.empty() && !placeOut.empty())
@@ -3134,6 +3174,13 @@ int main(int argc, char **argv) {
                     "--addr0-is-null=false changes the replays only: the VC "
                     "still identifies null with address 0 (placement puts "
                     "the null object there; assume.addr0-is-null: vc)");
+  if (rangeFoldOpt == sea::RangeFoldMode::Check &&
+      (checkAlign || checkPtrIndex)) {
+    sea::diag::error("vc.check-jobs",
+                     "--range-fold=check is a job of its own (each check "
+                     "job drops the program's asserts): run one at a time");
+    return 1;
+  }
   if (checkAlign && checkPtrIndex) {
     sea::diag::error("vc.check-jobs",
                      "--check-align and --check-ptr-index are separate jobs "
@@ -3168,7 +3215,7 @@ int main(int argc, char **argv) {
         /*keepByteWide=*/seam && seamWide, checkAlign,
         checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt,
         memhavocNull == MemhavocNull::Noop, lowerDisableMask,
-        sea::PlaceFiles{placeIn, placeOut});
+        sea::PlaceFiles{placeIn, placeOut}, rangeFoldOpt);
     if (failed(configurePM(pm)) || failed(pm.run(*module)))
       return 1;
     SEA_PHASE_END(lowerPhase)
@@ -3225,6 +3272,18 @@ int main(int argc, char **argv) {
           program->getAttrOfType<IntegerAttr>(sea::kMemhavocNullGuardsAttr))
     nullGuards = n.getInt();
   // the memhavocs sea-drop-fresh-memhavoc dropped under A-INB
+  // sea-range-fold's counters (--range-fold)
+  std::string rangeFoldLine;
+  if (auto d =
+          program->getAttrOfType<DictionaryAttr>(sea::kRangeFoldStatsAttr)) {
+    raw_string_ostream os(rangeFoldLine);
+    os << "vc.range-fold: mode="
+       << (rangeFoldOpt == sea::RangeFoldMode::Check ? "check" : "on");
+    for (NamedAttribute a : d)
+      if (auto i = dyn_cast<IntegerAttr>(a.getValue()))
+        os << " " << a.getName().getValue() << "=" << i.getInt();
+    os << "\n";
+  }
   uint64_t dropFreshInb = 0;
   if (auto n = program->getAttrOfType<IntegerAttr>(sea::kDropFreshInbAttr))
     dropFreshInb = n.getInt();
@@ -5260,6 +5319,7 @@ int main(int argc, char **argv) {
                 << "vc.ptr-from-int-opaque: " << sem.ptrFromIntOpaque() << "\n";
       if (sinkAssumes)
         statOut() << "vc.sink-assumes: " << sunkAssumes << "\n";
+      statOut() << rangeFoldLine;
       foldLines(statOut());
       companionLine(statOut());
       if (vcgen.joinCases())
@@ -5294,6 +5354,7 @@ int main(int argc, char **argv) {
            << "\nvc.ptr-from-int-opaque: " << sem.ptrFromIntOpaque() << "\n";
     if (sinkAssumes)
       vout() << "vc.sink-assumes: " << sunkAssumes << "\n";
+    vout() << rangeFoldLine;
     foldLines(vout());
     companionLine(vout());
     if (vcgen.joinCases())

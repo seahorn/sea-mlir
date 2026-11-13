@@ -43,6 +43,13 @@
 //   5. sea-split-wide-access     the VC encodes single-cell accesses
 //   6. sea-expand-intrinsics     the VC encodes core ops; mul overflow is
 //                                kept for a solver that has it natively
+//   6'. sea-range-fold           (sea-vc --range-fold; off by default) after
+//                                a cse of its own: comparisons the ranges
+//                                settle under dominating assume facts, on
+//                                the program every lowering made (their
+//                                icmps included); canonicalize then folds
+//                                the constants and branches left
+//                                (docs/design/RangeFold.md)
 //   7. canonicalize, cse         (upstream; opt) the values the lowerings
 //                                made: folders (evalPureOp), dead pure ops
 //                                and unreachable blocks erased, dead block
@@ -84,6 +91,7 @@
 #include "PassUtils.h"
 #include "sea/Dialect/Sea/SeaOps.h"
 #include "sea/Support/Diag.h"
+#include "sea/Transforms/RangeFold.h"
 
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -216,6 +224,7 @@ void registerPasses() {
   registerPass([] { return createSplitWideAccessPass(); });
   registerPass([] { return createMergeAssertsPass(); });
   registerPass([] { return createSinkAssumesPass(); });
+  registerPass([] { return createRangeFoldPass(); });
   registerPass([] { return createLowerPtrIndexPass(); });
   registerPass([] { return createCheckAlignPass(); });
   registerPass([] { return createCheckPtrIndexPass(); });
@@ -247,7 +256,7 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
                              bool widenReport, bool keepByteWide,
                              bool checkAlign, unsigned checkPtrIndex, bool opt,
                              bool memhavocNullNoop, unsigned disable,
-                             const PlaceFiles &place) {
+                             const PlaceFiles &place, RangeFoldMode rangeFold) {
   const bool cse = opt && !(disable & LowerDisableCse);
   const bool canonicalize = opt && !(disable & LowerDisableCanonicalize);
   OpPassManager &prog = pm.nest<ProgramOp>();
@@ -300,6 +309,16 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
   prog.addPass(createMergeAssertsPass());
   prog.addPass(createSplitWideAccessPass(keepByteWide));
   prog.addPass(createExpandIntrinsicsPass(nativeMulOverflow));
+  // facts of dominating assumes settle comparisons: on the program every
+  // lowering made (their icmps too: expanded intrinsics, fat-pointer
+  // bounds), after a cse (one SSA value per computation: a fact on one
+  // copy is a fact on all), before canonicalize, which then folds the
+  // constants and branches it leaves
+  if (rangeFold != RangeFoldMode::Off) {
+    if (cse)
+      prog.addPass(createCSEPass());
+    prog.addPass(createRangeFoldPass(rangeFold));
+  }
   if (canonicalize)
     prog.addPass(createCanonicalizerPass());
   if (cse)

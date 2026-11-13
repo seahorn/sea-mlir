@@ -25,6 +25,7 @@ add_mlir_library(SeaTransforms
   SplitWideAccess.cpp
   WrapFlags.cpp
   PrintRefs.cpp
+  RangeFold.cpp
   TestInsertPrints.cpp
 
   ADDITIONAL_HEADER_DIRS

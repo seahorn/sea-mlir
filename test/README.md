@@ -43,6 +43,14 @@ An oracle checks meaning against an independent reference. Today:
   which must reach the same status and trace with no other input; at
   least one program must widen (k = 2, 4).
 
+- `Transforms/int-ranges.test` + `unittests/IntRanges`: the integer ranges
+  of the sea value ops (InferIntRangeInterface, upstream transfer functions
+  adapted to sea's total semantics) and the facts of sea-range-fold (the
+  bound of `icmp pred x, c`, its step back through sext / zext, the
+  tightening of a range) vs evalPureOp at small widths (intersections of
+  unsigned and signed intervals sampled at width 3): every value of every
+  operand-range tuple lands in the inferred range.
+
 Coming: expected verdicts of benchmark programs, verdict diffs against
 SeaHorn BMC.
 
