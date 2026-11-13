@@ -144,7 +144,8 @@ public:
   /// PTR_FROM_BITS, by distinct leaf (first occurrence order). False (with
   /// `why`) when `t` is not of that form or has more than `maxPaths` paths.
   /// `isAddr`: the value is an address (leaf texts name objects); else an
-  /// integer (leaf texts are numerals, unsigned, or the leaf's operator).
+  /// integer (leaf texts are numerals, unsigned, constant names, or the
+  /// leaf's operator).
   static bool leafCases(expr::Expr t, SeaOpSem &sem, unsigned maxPaths,
                         std::vector<SplitCase> &out, std::string &why,
                         bool isAddr = true);
@@ -232,8 +233,13 @@ struct SplitIntCandidate {
   mlir::Value value;
   /// The term as the encoding built it.
   expr::Expr term;
-  /// Distinct leaves of its ite tree (0: more paths than the limit).
+  /// Distinct leaves of its ite tree, counted for the candidates with
+  /// arith > 0 (0 with leavesCapped: more than --split-max-paths).
   unsigned leaves = 0;
+  bool leavesCapped = false;
+  /// The candidate (index in ints) with the same term (listed with it,
+  /// same=), or -1.
+  int sameAs = -1;
   /// The arithmetic nodes of the query at the solver boundary with, in an
   /// operand, the term or an ite whose condition's atoms are all atoms of
   /// the conditions of the term's (normalized) ite tree: all,
@@ -319,9 +325,11 @@ public:
   struct Value {
     const char *kind;
     mlir::Value value;
-    /// Distinct leaves of the tree (DAG), distinct ite nodes, distinct
-    /// conditions, and the block guards among the atoms of the conditions.
-    unsigned leaves = 0, ites = 0, conds = 0, guardAtoms = 0;
+    /// Distinct leaves of the tree (DAG), distinct conditions, and the
+    /// block guards among the atoms of the conditions, each at most
+    /// kTreeCap (capped: one of them reached it).
+    unsigned leaves = 0, conds = 0, guardAtoms = 0;
+    bool capped = false;
   };
   struct Load {
     const char *kind;
@@ -340,6 +348,17 @@ private:
   std::set<expr::ENode *> guards;
   /// An ite in the DAG.
   bool hasIte(expr::ENode *n);
+  /// The most leaves, conditions or guards a tree's sets keep (untuned):
+  /// the memo of a chain of N merges is then O(N) sets of bounded size.
+  static constexpr size_t kTreeCap = 256;
+  /// Per ite node: sorted sets of its tree.
+  struct TreeSets {
+    std::vector<expr::ENode *> leaves, conds, guards;
+    bool capped = false;
+  };
+  const TreeSets &treeOf(const expr::Expr &ite);
+  std::unordered_map<expr::ENode *, TreeSets> treeMemo;
+  expr::ExprVector keepTrees;
   std::unordered_map<expr::ENode *, bool> groundMemo, iteMemo;
   /// Keeps the guard terms alive (the set holds raw pointers).
   expr::ExprVector keep;

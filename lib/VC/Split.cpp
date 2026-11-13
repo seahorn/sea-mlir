@@ -98,17 +98,46 @@ LogicalResult resolveSplitTargets(ProgramOp program,
     std::map<unsigned, unsigned> kindLines;
     std::set<std::string> files;
     bool fileSeen = false, moreFiles = false;
+    // @file:line[:col]: the parsed parts (for the errors)
+    StringRef file;
+    unsigned line = 0, col = 0;
     StringRef s(sel);
     if (s.starts_with("@")) {
       auto [fileText, lineText] = s.drop_front().rsplit(':');
-      StringRef file = fileText;
-      unsigned line = 0;
-      if (file.empty() || lineText.getAsInteger(10, line)) {
-        error = "split selector '" + sel + "': want @<file>:<line>";
+      file = fileText;
+      // @<file>:<line>:<col>: the last two components are numbers
+      {
+        auto [f2, l2] = fileText.rsplit(':');
+        unsigned ln = 0;
+        if (!l2.empty() && f2 != fileText && !l2.getAsInteger(10, ln) &&
+            !f2.empty()) {
+          file = f2;
+          line = ln;
+          if (lineText.getAsInteger(10, col) || col == 0) {
+            error = "split selector '" + sel + "': want @<file>:<line>[:<col>]";
+            return failure();
+          }
+        }
+      }
+      if (file.empty() || (!col && lineText.getAsInteger(10, line))) {
+        error = "split selector '" + sel + "': want @<file>:<line>[:<col>]";
         return failure();
       }
+      // the matches by class, in order of preference: --split-leaves:
+      // address op results, address block arguments, integer op results,
+      // integer block arguments; --split: op results, block arguments. The
+      // first non-empty class is the selector's (a line that named one
+      // address before integers and block arguments were targets still
+      // names it)
+      std::vector<std::pair<Value, FileLineColLoc>> byClass[4];
+      auto classOf = [&](Value r) {
+        unsigned c = isa<BlockArgument>(r) ? 1 : 0;
+        if (!isBool && !isa<AddrType>(r.getType()))
+          c += 2;
+        return c;
+      };
       // an op result or a block argument (a join's merged value) with a
-      // position on the line
+      // position on the line (and column)
       auto visit = [&](Value r, Location loc) {
         bool matched = false;
         for (FileLineColLoc p : positionsOf(loc)) {
@@ -131,8 +160,9 @@ LogicalResult resolveSplitTargets(ProgramOp program,
             continue;
           }
           ++kindLines[p.getLine()];
-          if (p.getLine() == line && !matched) {
-            addValue(r, p);
+          if (p.getLine() == line && (!col || p.getColumn() == col) &&
+              !matched) {
+            byClass[classOf(r)].push_back({r, p});
             matched = true;
           }
         }
@@ -145,6 +175,12 @@ LogicalResult resolveSplitTargets(ProgramOp program,
         for (Value r : op->getResults())
           visit(r, op->getLoc());
       });
+      for (auto &cls : byClass)
+        if (!cls.empty()) {
+          for (auto &[r, p] : cls)
+            addValue(r, p);
+          break;
+        }
     } else if (s.starts_with("^")) {
       if (!isBool) {
         error = "split selector '" + sel +
@@ -189,11 +225,9 @@ LogicalResult resolveSplitTargets(ProgramOp program,
                       : "address or integer (iN, N > 1) value") +
               " in the encoded program" + kNamesHint;
       if (s.starts_with("@")) {
-        unsigned line = 0;
-        (void)s.rsplit(':').second.getAsInteger(10, line);
         if (!fileSeen) {
           error += "\n  no op has a position in a file ending with '" +
-                   s.drop_front().rsplit(':').first.str() + "'";
+                   file.str() + "'";
           if (!files.empty()) {
             error += " (files:";
             for (const std::string &f : files)
@@ -232,7 +266,8 @@ LogicalResult resolveSplitTargets(ProgramOp program,
     }
     if (found.size() > 1) {
       error = "split selector '" + sel + "' is ambiguous (" +
-              std::to_string(found.size()) + " matches; pick one by name)" +
+              std::to_string(found.size()) +
+              " matches; pick one by name, or by @<file>:<line>:<col>)" +
               kNamesHint + ":";
       for (size_t i = 0; i < found.size() && i < kMaxListed; ++i)
         error +=
@@ -315,9 +350,14 @@ bool SplitRun::leafCases(Expr t, SeaOpSem &sem, unsigned maxPaths,
     unsigned w = 0;
     if (!isAddr) {
       // an integer leaf: its numeral (unsigned), or the leaf's operator
-      if (op::bv::isBvNum(c.value, w))
+      if (op::bv::isBvNum(c.value, w)) {
         text += ":" + op::bv::toMpz(c.value).to_string();
-      else
+      } else if (bind::isFapp(c.value) && c.value->arity() == 1) {
+        // a constant (a nondet value): its name
+        std::ostringstream os;
+        os << *c.value;
+        text += ":" + os.str();
+      } else
         text += ":term(" + std::string(c.value->op().name()) + ")";
     } else if (rw)
       if (auto v = rw->rules().view(c.value)) {
@@ -530,14 +570,24 @@ public:
             st.push_back({n->arg(i), false});
         continue;
       }
-      std::vector<unsigned> ids;
+      std::vector<unsigned> ids, u;
       own(n, ids);
-      for (size_t i = 0; i < n->arity(); ++i) {
-        const std::vector<unsigned> &a = memo[n->arg(i)];
-        ids.insert(ids.end(), a.begin(), a.end());
-      }
       llvm::sort(ids);
       ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+      // the arguments' sets are sorted: merge (linear), no sort
+      for (size_t i = 0; i < n->arity(); ++i) {
+        const std::vector<unsigned> &a = memo[n->arg(i)];
+        if (a.empty())
+          continue;
+        if (ids.empty()) {
+          ids = a;
+          continue;
+        }
+        u.clear();
+        std::set_union(ids.begin(), ids.end(), a.begin(), a.end(),
+                       std::back_inserter(u));
+        ids.swap(u);
+      }
       memo[n] = std::move(ids);
     }
     return memo[root];
@@ -596,9 +646,16 @@ bool atomsOf(ENode *f, size_t max, std::set<ENode *> &out) {
 }
 
 void unite(std::vector<unsigned> &into, const std::vector<unsigned> &b) {
-  into.insert(into.end(), b.begin(), b.end());
-  llvm::sort(into);
-  into.erase(std::unique(into.begin(), into.end()), into.end());
+  if (b.empty())
+    return;
+  if (into.empty()) {
+    into = b;
+    return;
+  }
+  std::vector<unsigned> u;
+  std::set_union(into.begin(), into.end(), b.begin(), b.end(),
+                 std::back_inserter(u));
+  into.swap(u);
 }
 } // namespace
 
@@ -882,40 +939,79 @@ uint64_t SplitCensus::attributeArith(SeaOpSem &sem, const Expr &solverQuery,
   // per atom, the integer candidates with it in a condition of their tree
   // (in the solver's terms), and each candidate's number of atoms
   std::unordered_map<ENode *, std::vector<unsigned>> intsOfAtom;
+  // the atoms of the conditions of an ite spine, memoized over the DAG (a
+  // chain of merges shares its spine): sorted, at most kMaxArithAtoms
+  // (more: none, `over`)
+  struct Atoms {
+    std::vector<ENode *> atoms;
+    bool over = false;
+  };
+  std::unordered_map<ENode *, Atoms> spineMemo;
+  auto spineOf = [&](ENode *root) -> const Atoms & {
+    std::vector<std::pair<ENode *, bool>> st{{root, false}};
+    while (!st.empty()) {
+      auto [n, done] = st.back();
+      st.pop_back();
+      if (spineMemo.count(n))
+        continue;
+      if (!isOpX<ITE>(n)) {
+        spineMemo[n];
+        continue;
+      }
+      if (!done) {
+        st.push_back({n, true});
+        for (unsigned k : {1u, 2u})
+          if (!spineMemo.count(n->arg(k)))
+            st.push_back({n->arg(k), false});
+        continue;
+      }
+      Atoms r;
+      std::set<ENode *> own;
+      if (!atomsOf(n->arg(0), kMaxArithAtoms, own)) {
+        r.over = true;
+      } else {
+        r.atoms.assign(own.begin(), own.end());
+        for (unsigned k : {1u, 2u}) {
+          const Atoms &c = spineMemo[n->arg(k)];
+          if (c.over) {
+            r.over = true;
+            break;
+          }
+          std::vector<ENode *> u;
+          std::set_union(r.atoms.begin(), r.atoms.end(), c.atoms.begin(),
+                         c.atoms.end(), std::back_inserter(u));
+          r.atoms = std::move(u);
+          if (r.atoms.size() > kMaxArithAtoms) {
+            r.over = true;
+            break;
+          }
+        }
+      }
+      if (r.over)
+        r.atoms.clear();
+      spineMemo[n] = std::move(r);
+    }
+    return spineMemo[root];
+  };
+  // integer candidates with one term are one line (sameAs: the first)
+  std::unordered_map<ENode *, unsigned> firstOf;
   for (unsigned i = 0; i < ints.size(); ++i) {
     SplitIntCandidate &c = ints[i];
-    std::vector<SplitCase> cases;
-    std::string why;
-    if (SplitRun::leafCases(c.term, sem, maxPaths, cases, why,
-                            /*isAddr=*/false))
-      c.leaves = cases.size();
-    else
-      diag::warn("vc.split-max-paths",
-                 "a split candidate (an ite-valued integer) is counted "
-                 "without its leaves (leaves=0): " +
-                     why);
     ENode *key = solverKey(c.term);
     if (!key)
       continue;
+    auto [f, fresh] = firstOf.try_emplace(key, i);
+    if (!fresh) {
+      c.sameAs = f->second;
+      continue;
+    }
     intOf.emplace(key, i);
     // the conditions of its ite spine (the normalized tree: its conditions
     // are what the query's ites hold)
-    std::set<ENode *> atoms, spine;
-    std::vector<ENode *> st{key};
-    bool ok = true;
-    while (!st.empty() && ok) {
-      ENode *n = st.back();
-      st.pop_back();
-      if (!isOpX<ITE>(n) || !spine.insert(n).second)
-        continue;
-      ok = atomsOf(n->arg(0), kMaxArithAtoms, atoms) &&
-           atoms.size() <= kMaxArithAtoms;
-      st.push_back(n->arg(1));
-      st.push_back(n->arg(2));
-    }
-    if (ok)
-      for (ENode *a : atoms)
-        intsOfAtom[a].push_back(i);
+    const Atoms &a = spineOf(key);
+    if (!a.over)
+      for (ENode *x : a.atoms)
+        intsOfAtom[x].push_back(i);
   }
   for (unsigned j = 0; j < boolCands.size(); ++j)
     for (const Expr &k : boolCands[j].keys)
@@ -997,6 +1093,28 @@ uint64_t SplitCensus::attributeArith(SeaOpSem &sem, const Expr &solverQuery,
       ++(k == ArithKind::Mul ? boolCands[j].arithMul : boolCands[j].arithDiv);
     }
   }
+  // the leaves of the candidates that control arithmetic: distinct non-ite
+  // nodes below the ite spine, counted up to maxPaths (more: capped, 0)
+  for (SplitIntCandidate &c : ints) {
+    if (!c.arith || c.sameAs >= 0)
+      continue;
+    std::unordered_set<ENode *> seen, leaves;
+    std::vector<ENode *> st{c.term.get()};
+    while (!st.empty() && !c.leavesCapped) {
+      ENode *n = st.back();
+      st.pop_back();
+      if (!seen.insert(n).second)
+        continue;
+      if (!isOpX<ITE>(n)) {
+        leaves.insert(n);
+        c.leavesCapped = leaves.size() > maxPaths;
+        continue;
+      }
+      st.push_back(n->arg(2));
+      st.push_back(n->arg(1));
+    }
+    c.leaves = c.leavesCapped ? 0 : leaves.size();
+  }
   return nodes;
 }
 
@@ -1061,6 +1179,56 @@ bool IteCensus::ground(ENode *root, const expr::BaseRegistry &bases) {
     groundMemo[n] = g;
   }
   return groundMemo[root];
+}
+
+const IteCensus::TreeSets &IteCensus::treeOf(const Expr &root) {
+  auto add = [](std::vector<ENode *> &into, const std::vector<ENode *> &b,
+                bool &capped) {
+    std::vector<ENode *> u;
+    std::set_union(into.begin(), into.end(), b.begin(), b.end(),
+                   std::back_inserter(u));
+    if (u.size() > kTreeCap) {
+      u.resize(kTreeCap);
+      capped = true;
+    }
+    into = std::move(u);
+  };
+  std::vector<std::pair<ENode *, bool>> st{{root.get(), false}};
+  while (!st.empty()) {
+    auto [n, done] = st.back();
+    st.pop_back();
+    if (treeMemo.count(n))
+      continue;
+    if (!done) {
+      st.push_back({n, true});
+      for (unsigned k : {1u, 2u})
+        if (isOpX<ITE>(n->arg(k)) && !treeMemo.count(n->arg(k)))
+          st.push_back({n->arg(k), false});
+      continue;
+    }
+    TreeSets r;
+    r.conds = {n->arg(0)};
+    std::set<ENode *> atoms;
+    atomsOf(n->arg(0), SIZE_MAX, atoms);
+    for (ENode *a : atoms)
+      if (guards.count(a))
+        r.guards.push_back(a);
+    for (unsigned k : {1u, 2u}) {
+      ENode *c = n->arg(k);
+      if (!isOpX<ITE>(c)) {
+        add(r.leaves, {c}, r.capped);
+        continue;
+      }
+      const TreeSets &cs = treeMemo[c];
+      r.capped |= cs.capped;
+      add(r.leaves, cs.leaves, r.capped);
+      add(r.conds, cs.conds, r.capped);
+      add(r.guards, cs.guards, r.capped);
+    }
+    keepTrees.push_back(Expr(n));
+    treeMemo[n] = std::move(r);
+  }
+  return treeMemo[root.get()];
 }
 
 bool IteCensus::hasIte(ENode *root) {
@@ -1128,30 +1296,14 @@ void IteCensus::install(SeaOpSem &sem, OpSemContext &ctx) {
       t = Expr(t->arg(0));
     if (!isOpX<ITE>(t))
       return;
-    // the tree as a DAG: distinct ites, leaves, conditions; the guards
-    // among the conditions' atoms
+    // the tree as a DAG: distinct leaves, conditions, and the guards
+    // among the conditions' atoms (memoized per ite node, capped)
+    const TreeSets &ts = treeOf(t);
     Value r{kind, v};
-    std::set<ENode *> ites, leaves, conds, atoms;
-    std::vector<ENode *> st{t.get()};
-    while (!st.empty()) {
-      ENode *n = st.back();
-      st.pop_back();
-      if (!isOpX<ITE>(n)) {
-        leaves.insert(n);
-        continue;
-      }
-      if (!ites.insert(n).second)
-        continue;
-      if (conds.insert(n->arg(0)).second)
-        atomsOf(n->arg(0), SIZE_MAX, atoms);
-      st.push_back(n->arg(1));
-      st.push_back(n->arg(2));
-    }
-    r.leaves = leaves.size();
-    r.ites = ites.size();
-    r.conds = conds.size();
-    for (ENode *a : atoms)
-      r.guardAtoms += guards.count(a);
+    r.leaves = ts.leaves.size();
+    r.conds = ts.conds.size();
+    r.guardAtoms = ts.guards.size();
+    r.capped = ts.capped;
     values.push_back(r);
   };
 }

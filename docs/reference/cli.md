@@ -92,12 +92,14 @@ answered and counted)
 | option | effect |
 |---|---|
 | `--split=<sel,...>` | split on an i1 value (1, 0) or a block guard (true, false) |
-| `--split-leaves=<sel,...>` | split on an address whose term is an ite tree: one part per distinct leaf |
+| `--split-leaves=<sel,...>` | split on an address or integer (iN, N > 1) value whose term is an ite tree: one part per distinct leaf. `@<file>:<line>[:<col>]` prefers address op results, then address block arguments, then integer op results, then integer block arguments (`--split`: i1 op results, then block arguments); only the first non-empty class may be ambiguous, `:<col>` picks within it |
 | `--split-auto` | with `--seam`: pick the ite-valued address behind the most open alias questions, split on its leaves |
-| `--split-candidates` | with `--seam`: list the targets of `--split-leaves` (every ite-valued address) and of `--split` (i1 values and block guards in the ite conditions behind open alias questions or in the indices of array reads, the reads the Ackermann lowering pairs), ranked by the open questions, and when there are none by those reads; no split, no solver (`result: none`) |
-| `--split-candidates-max=<n>` | the most `split.bool-candidate` lines (default 20; 0: all); the dropped ones are counted |
+| `--split-candidates` | with `--seam`: list the targets of `--split-leaves` (every ite-valued address) and of `--split` (i1 values and block guards in the ite conditions behind open alias questions or in the indices of array reads, the reads the Ackermann lowering pairs), ranked by the open questions, and when there are none by those reads; also the integer and i1 values and guards by the multiplications and divisions they control (`split.arith-candidate`, a heuristic); no split, no solver (`result: none`) |
+| `--split-candidates-max=<n>` | the most `split.bool-candidate` and `split.arith-candidate` lines (default 20; 0: all); the dropped ones are counted |
 | `--split-check` | prove each split level exhaustive and exact with z3 (default on; `--split-check-rlimit=<n>`) |
-| `--split-max-parts=<n>`, `--split-max-paths=<n>` | the cap on the parts (default 64; more is an error) and on the paths of an ite tree |
+| `--split-max-parts=<n>`, `--split-max-paths=<n>` | the cap on the parts (default 64, untuned; more is an error) and on the paths of an ite tree |
+| `--ite-stats` | report the memories, addresses and integers feeding mul / div / rem whose terms are ite trees, per source location (leaves, conditions, guards among their atoms), and the loads at non-ground addresses by kind and location (`ite.*`; the first encoding, before any solver; also with `--vcgen-only`; stderr under `--smt2`; not with a split) |
+| `--ite-stats-max=<n>` | the most `ite.site` lines per kind and `ite.load-site` lines (default 40, untuned; 0: all) |
 | `--split-stop-on-sat` | stop at the first sat part |
 | `--split-smt2=<prefix>` | write each part's query to `<prefix>.part<N>.smt2` (with `--vcgen-only`: no solving) |
 

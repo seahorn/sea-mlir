@@ -52,7 +52,7 @@ Targets:
   cancels at the word level (a reduced kernel: 9-20 s whole, about 0.1 s
   per case). Splitting on the merged integer gives each part one value.
   The `@<file>:<line>` selector also matches block arguments (a join's
-  merged value), for addresses as well.
+  merged value), for addresses as well (selector policy below).
 
 ## Where: during the encoding
 
@@ -124,7 +124,17 @@ prints without NameLoc prefixes, so its numbers name other values. The
 written file is input to sea-vc without `--lower`, with the same names
 (printing it again gives the same file).
 
-A selector `@<file>:<line>` that matches several values is an error that
+A selector `@<file>:<line>[:<col>]` takes its matches by kind preference,
+so that every selector that named one value before integers and block
+arguments were targets still names it: `--split-leaves` takes address op
+results, else address block arguments, else integer op results, else
+integer block arguments; `--split` takes i1 op results, else i1 block
+arguments (passes such as sea-merge-asserts, sea-lower-box-all and
+sea-sink-assumes create i1 block arguments with op locations, and the
+fat-pointer, struct and tracking lowerings copy block-argument locations to
+their companions). Only the first non-empty class counts; `:<col>` keeps the
+matches at that column.
+Within it, a selector that matches several values is an error that
 lists every match (up to 32, then a count) with its op, type and column;
 one that matches nothing lists the results of other types on that line
 and the nearest lines with results of the kind (three on each side), or,
@@ -315,6 +325,12 @@ never picks it, and the census warns `vc.split-max-paths`.
 - The 64-part cap (`--split-max-parts`) is untuned and stays: a query
   with hundreds of guards needs a target whose cases cover them (an
   integer or address merged over them), not more parts.
+- Integer candidates with one term are one line (`same=`, the first in
+  encoding order named), as the Boolean ones; a split replaces the named
+  value only.
+- `--ite-stats` keeps at most 256 leaves, conditions and guards per tree
+  (memoized per ite node, so a chain of merges costs linear time);
+  `capped=` counts the values that reached the cap. Untuned.
 - The ranking of `split.arith-candidate` (integers first, then `feeds`,
   then `direct`) is untuned, set on the reduced kernel. Whether the gate
   query of that kernel ranks its merged column first is not measured.

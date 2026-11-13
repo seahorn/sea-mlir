@@ -26,10 +26,17 @@
 // RUN: sea-vc %s --lower --program=merge --ite-stats --vcgen-only > %t.txt
 // RUN: sea-vc %s --lower --program=merge --ite-stats --vcgen-only --format=jsonl > %t.jsonl
 // RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.txt --jsonl %t.jsonl \
-// RUN:   --require ite-values:value_kind,values,over_guards,sites,listed,dropped,leaves_max \
-// RUN:   --require ite-site:value_kind,values,leaves,conds,guard_atoms,name,loc \
+// RUN:   --require ite-values:value_kind,values,over_guards,sites,listed,dropped,leaves_max,capped \
+// RUN:   --require ite-site:value_kind,values,leaves,conds,guard_atoms,capped,name,loc \
 // RUN:   --require ite-loads:loads,dynamic,ite,ite_index,from_bits,symbolic,sites,listed,dropped \
 // RUN:   --require ite-load-site:addr_kind,loads,loc
+
+// Under --smt2 stdout is the query: the ite.* lines go to stderr.
+// RUN: sea-vc %s --lower --program=merge --ite-stats --smt2 2> %t.smt2.err > %t.smt2
+// RUN: %z3 %t.smt2 | FileCheck %s --check-prefix=Z3
+// RUN: FileCheck %s --check-prefix=SMT2ERR < %t.smt2.err
+// Z3: {{^}}unsat
+// SMT2ERR: ite.values: kind=mem values=1
 
 // One encoding: not with a split; --ite-stats-max needs --ite-stats.
 // RUN: not sea-vc %s --lower --program=kernel --ite-stats --split-leaves=@k.cc:9 2>&1 | FileCheck %s --check-prefix=SPLIT

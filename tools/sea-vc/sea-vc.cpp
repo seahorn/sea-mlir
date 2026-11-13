@@ -2388,8 +2388,9 @@ OUTPUT (stdout, `key: value` lines):
                                   made the node: mul / div / rem / umulo /
                                   smulo / ptr.index; loc is the last field)
   ite.values: kind=mem|addr|int values= over-guards= sites= listed= dropped=
-    leaves-max=                   (--ite-stats, after the run's first
-                                  encoding, before any solver; with or without --vcgen-only
+    leaves-max= capped=           (--ite-stats, after the run's first
+                                  encoding, before any solver; on stderr
+                                  under --smt2 in text; with or without --vcgen-only
                                   and --seam; not with a split: values of
                                   the kind whose term (as encoded) is an ite
                                   tree (addr: or ptr-from-bits of one).
@@ -2400,8 +2401,10 @@ OUTPUT (stdout, `key: value` lines):
                                   and i1 ops and block arguments, not
                                   through memory. over-guards: values with
                                   a block guard among the atoms of their
-                                  conditions; sites: distinct locations)
-  ite.site: kind= values= leaves= conds= guard-atoms= name= loc=
+                                  conditions; sites: distinct locations;
+                                  capped: values whose leaf, condition or
+                                  guard set reached the cap, 256)
+  ite.site: kind= values= leaves= conds= guard-atoms= capped= name= loc=
                                   (per location of a kind, most leaves
                                   first, at most --ite-stats-max (40; 0:
                                   all); leaves / conds / guard-atoms: the
@@ -3014,8 +3017,12 @@ disjunction of its path conditions (a path-merged column index: one part
 per column). Selectors: the VC
 name (%x, nd.<site>, ^bb3; names of the lowered program as
 --print-lowered=<file> writes it; sea-opt numbers values differently) or
-@<file>:<line> (the one op result or block argument of the kind with a file
-position, its own or an inlined call site, on that line; an ambiguous one lists every match:
+@<file>:<line>[:<col>] (the one op result or block argument of the kind with
+a file position, its own or an inlined call site, on that line (and column),
+by kind preference: --split-leaves takes address op results, else address
+block arguments, else integer op results, else integer block arguments;
+--split takes i1 op results, else i1 block arguments; only the first
+non-empty class may be ambiguous; an ambiguous one lists every match:
 name, op, type, col=; one that finds nothing lists the results of other
 types on the line and the nearest lines with results of the kind). Several targets nest (one level per target, in
 encoding order, under the cases before it; enumerated depth-first, one run
@@ -3128,7 +3135,9 @@ vc.split-max-paths).
     operand. mul / div: of arith, products (and overflow predicates) /
     quotients and remainders; direct: (int) nodes with the term itself in
     an operand; feeds: (int) other int values whose term holds this one's;
-    cases: leaves (int) or 2; same: as split.bool-candidate. Ranked by
+    cases: leaves (int; 0 with warning vc.split-max-paths: more than
+    --split-max-paths) or 2; same: other values with the same term (ints
+    too), as split.bool-candidate. Ranked by
     arith, then ints first, then feeds, then direct, then cases, then
     encoding order (untuned); at most --split-candidates-max. Values that
     share the paths of a merge share the count (over-attribution).
@@ -3185,8 +3194,9 @@ Kinds and fields:
   split-arith-candidate name, loc, target (int|value|guard), arith, mul,
                 div, direct, feeds, cases, same
   ite-values    value_kind (the text's kind=), values, over_guards, sites,
-                listed, dropped, leaves_max
-  ite-site      value_kind, values, leaves, conds, guard_atoms, name, loc
+                listed, dropped, leaves_max, capped
+  ite-site      value_kind, values, leaves, conds, guard_atoms, capped, name,
+                loc
   ite-loads     loads, dynamic, ite, ite_index, from_bits, symbolic, sites,
                 listed, dropped
   ite-load-site addr_kind (the text's kind=), loads, loc
@@ -3379,7 +3389,16 @@ static int writeReachPrograms(ModuleOp module, sea::ProgramOp program,
 
 // --ite-stats: the census of one encoding (sea::IteCensus), by kind and
 // source location
-static void printIteStats(const sea::IteCensus &c, sea::ProgramOp program) {
+// (toStderr: under --smt2 in text, where stdout is the query, the lines go
+// to stderr, as the other statistics)
+static void printIteStats(const sea::IteCensus &c, sea::ProgramOp program,
+                          bool toStderr) {
+  auto emit = [&](const sea::out::Record &rec) {
+    if (toStderr)
+      errs() << rec.text << "\n";
+    else
+      gOut->emit(rec);
+  };
   sea::ValueNames vn(program);
   const size_t cap = iteStatsMax ? size_t(iteStatsMax) : SIZE_MAX;
   auto locOf = [](Value v) {
@@ -3393,17 +3412,18 @@ static void printIteStats(const sea::IteCensus &c, sea::ProgramOp program) {
   };
   struct Site {
     std::string loc, name;
-    unsigned values = 0, leaves = 0, conds = 0, guardAtoms = 0;
+    unsigned values = 0, leaves = 0, conds = 0, guardAtoms = 0, capped = 0;
   };
   for (const char *kind : {"mem", "addr", "int"}) {
     std::vector<Site> sites;
     std::map<std::string, size_t> at;
-    unsigned n = 0, overGuards = 0, leavesMax = 0;
+    unsigned n = 0, overGuards = 0, leavesMax = 0, capped = 0;
     for (const sea::IteCensus::Value &v : c.values) {
       if (StringRef(v.kind) != kind)
         continue;
       ++n;
       overGuards += v.guardAtoms > 0;
+      capped += v.capped;
       leavesMax = std::max(leavesMax, v.leaves);
       std::string l = locOf(v.value);
       auto [it, fresh] = at.try_emplace(l, sites.size());
@@ -3418,6 +3438,7 @@ static void printIteStats(const sea::IteCensus &c, sea::ProgramOp program) {
       st.leaves = std::max(st.leaves, v.leaves);
       st.conds = std::max(st.conds, v.conds);
       st.guardAtoms = std::max(st.guardAtoms, v.guardAtoms);
+      st.capped += v.capped;
     }
     std::stable_sort(sites.begin(), sites.end(),
                      [](const Site &a, const Site &b) {
@@ -3433,15 +3454,17 @@ static void printIteStats(const sea::IteCensus &c, sea::ProgramOp program) {
           .num("sites", sites.size())
           .num("listed", listed)
           .num("dropped", sites.size() - listed)
-          .num("leaves_max", leavesMax);
+          .num("leaves_max", leavesMax)
+          .num("capped", capped);
       rec.text = std::string("ite.values: kind=") + kind +
                  " values=" + std::to_string(n) +
                  " over-guards=" + std::to_string(overGuards) +
                  " sites=" + std::to_string(sites.size()) +
                  " listed=" + std::to_string(listed) +
                  " dropped=" + std::to_string(sites.size() - listed) +
-                 " leaves-max=" + std::to_string(leavesMax);
-      gOut->emit(rec);
+                 " leaves-max=" + std::to_string(leavesMax) +
+                 " capped=" + std::to_string(capped);
+      emit(rec);
     }
     for (size_t i = 0; i < listed; ++i) {
       const Site &st = sites[i];
@@ -3451,6 +3474,7 @@ static void printIteStats(const sea::IteCensus &c, sea::ProgramOp program) {
           .num("leaves", st.leaves)
           .num("conds", st.conds)
           .num("guard_atoms", st.guardAtoms)
+          .num("capped", st.capped)
           .str("name", st.name)
           .str("loc", st.loc);
       rec.text = std::string("ite.site: kind=") + kind +
@@ -3458,8 +3482,9 @@ static void printIteStats(const sea::IteCensus &c, sea::ProgramOp program) {
                  " leaves=" + std::to_string(st.leaves) +
                  " conds=" + std::to_string(st.conds) +
                  " guard-atoms=" + std::to_string(st.guardAtoms) +
-                 " name=" + st.name + " loc=" + st.loc;
-      gOut->emit(rec);
+                 " capped=" + std::to_string(st.capped) + " name=" + st.name +
+                 " loc=" + st.loc;
+      emit(rec);
     }
   }
   // the loads at non-ground addresses, by kind and location
@@ -3501,7 +3526,7 @@ static void printIteStats(const sea::IteCensus &c, sea::ProgramOp program) {
                " sites=" + std::to_string(sites.size()) +
                " listed=" + std::to_string(listed) +
                " dropped=" + std::to_string(sites.size() - listed);
-    gOut->emit(rec);
+    emit(rec);
   }
   for (size_t i = 0; i < listed; ++i) {
     const auto &[kind, loc, k] = sites[i];
@@ -3509,7 +3534,7 @@ static void printIteStats(const sea::IteCensus &c, sea::ProgramOp program) {
     rec.str("addr_kind", kind).num("loads", k).str("loc", loc);
     rec.text = "ite.load-site: kind=" + kind + " loads=" + std::to_string(k) +
                " loc=" + loc;
-    gOut->emit(rec);
+    emit(rec);
   }
 }
 
@@ -4235,6 +4260,7 @@ int main(int argc, char **argv) {
     std::string name, loc, target;
     uint64_t arith = 0, mul = 0, div = 0, direct = 0;
     unsigned cases = 0, feeds = 0;
+    bool leavesCapped = false;
     std::vector<std::string> same;
   };
   std::vector<SplitArithCandidate> splitArithCandidates;
@@ -4635,7 +4661,7 @@ int main(int argc, char **argv) {
                         "whole VC");
     }
     if (iteCensus) {
-      printIteStats(*iteCensus, program);
+      printIteStats(*iteCensus, program, smt2 && !gOut->jsonl());
       iteStatsDone = true;
     }
     SEA_PHASE_END(encodePhase)
@@ -4991,9 +5017,12 @@ int main(int argc, char **argv) {
       // its term itself in an operand, then more cases, then encoding order
       // (untuned)
       splitIntRecorded = census->ints.size();
-      for (const sea::SplitIntCandidate &n : census->ints) {
-        if (!n.arith)
+      std::vector<int> intAt(census->ints.size(), -1);
+      for (size_t i = 0; i < census->ints.size(); ++i) {
+        const sea::SplitIntCandidate &n = census->ints[i];
+        if (!n.arith || n.sameAs >= 0)
           continue;
+        intAt[i] = splitArithCandidates.size();
         SplitArithCandidate c;
         c.name = vn.name(n.value).str();
         c.loc = sea::formatLoc(n.value.getLoc());
@@ -5004,8 +5033,13 @@ int main(int argc, char **argv) {
         c.direct = n.arithDirect;
         c.cases = n.leaves;
         c.feeds = n.feeds;
+        c.leavesCapped = n.leavesCapped;
         splitArithCandidates.push_back(std::move(c));
       }
+      for (const sea::SplitIntCandidate &n : census->ints)
+        if (n.sameAs >= 0 && intAt[n.sameAs] >= 0)
+          splitArithCandidates[intAt[n.sameAs]].same.push_back(
+              vn.name(n.value).str());
       {
         std::vector<int> arithAt(census->boolCands.size(), -1);
         for (size_t i = 0; i < census->boolCands.size(); ++i) {
@@ -7173,6 +7207,12 @@ int main(int argc, char **argv) {
       }
       for (size_t i = 0; i < arithListed; ++i) {
         const SplitArithCandidate &c = splitArithCandidates[i];
+        if (c.leavesCapped)
+          sea::diag::warn("vc.split-max-paths",
+                          "a split candidate (an ite-valued integer, " +
+                              c.name +
+                              ") is listed without its leaves (cases=0): "
+                              "more than --split-max-paths distinct leaves");
         std::string same = c.same.empty() ? "-" : llvm::join(c.same, ",");
         sea::out::Record rec("split-arith-candidate");
         rec.str("name", c.name)
