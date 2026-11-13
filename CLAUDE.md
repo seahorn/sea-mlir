@@ -51,6 +51,10 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   checked, `sea-vc --place-out` / `--place-in`), `sea-scalarize-structs`
   (register structs -> their leaves; runs first), `sea-expand-memset`
   (symbolic length -> bounded store chain + explicit assume),
+  `sea-expand-small-memmove` (constant length <= K -> all source loads,
+  then the stores: exact; `sea-vc --expand-memmove=K`, off by default,
+  for --seam reads whose mcopy range test stays open;
+  docs/design/SeaM-memops.md),
   `sea-split-critical-edges`,
   `sea-split-wide-access`, `sea-expand-intrinsics` (min/max, bswap, funnel
   shifts, overflow ops; mul overflow kept for z3 and Bitwuzla), `sea-wrap-flags`

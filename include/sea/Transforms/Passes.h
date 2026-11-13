@@ -108,6 +108,14 @@ std::unique_ptr<mlir::Pass> createExpandMemSetPass();
 /// each sea.assume(n <= K) it adds: the bounded expansions, an
 /// under-approximation sea-vc reports (assume.memset-bound).
 inline constexpr llvm::StringLiteral kMemSetBoundAttr = "sea.memset_bound";
+/// sea-expand-small-memmove: a memmove of a constant length <= maxBytes
+/// as loads of every source cell, then stores in address order (exact).
+std::unique_ptr<mlir::Pass> createExpandSmallMemMovePass(unsigned maxBytes);
+std::unique_ptr<mlir::Pass> createExpandSmallMemMovePass();
+/// On the sea.program after sea-expand-small-memmove: its counters (a
+/// dictionary of i64 attributes, the keys of `vc.expand-memmove`).
+inline constexpr llvm::StringLiteral kExpandMemMoveStatsAttr =
+    "sea.expand_memmove";
 /// On the sea.program: the number of memhavocs sea-drop-fresh-memhavoc
 /// dropped whose soundness rests on A-INB (an i64; absent: none). sea-vc
 /// reports it as `assume.a-inb: drop-fresh-memhavoc=<n>`.
@@ -221,6 +229,9 @@ enum class RangeFoldMode { Off, Fold, Check };
 /// program too: it has no objects to place, and writes an empty file).
 /// \p rangeFold: sea-range-fold (after a cse, right before the final
 /// canonicalize; sea-vc --range-fold, default off).
+/// \p expandMemMove: sea-expand-small-memmove{max-bytes=K} after the
+/// metadata lowerings, placement and widening (sea-vc --expand-memmove,
+/// default 0: not run).
 void buildVCLoweringPipeline(mlir::OpPassManager &pm, bool abstract,
                              bool nativeMulOverflow = false, bool fold = true,
                              unsigned widenMemory = 0, bool expandMemSet = true,
@@ -229,7 +240,8 @@ void buildVCLoweringPipeline(mlir::OpPassManager &pm, bool abstract,
                              unsigned checkPtrIndex = 0, bool opt = true,
                              bool memhavocNullNoop = true, unsigned disable = 0,
                              const PlaceFiles &place = {},
-                             RangeFoldMode rangeFold = RangeFoldMode::Off);
+                             RangeFoldMode rangeFold = RangeFoldMode::Off,
+                             unsigned expandMemMove = 0);
 
 /// Attaches the `lower.pass` log (one level-1 event per pass run: ops
 /// before and after, time; lib/Transforms/PassLog.cpp) to \p pm. Costs a

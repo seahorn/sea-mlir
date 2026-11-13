@@ -147,6 +147,46 @@ as unexpressible, never valid.
   lambda / range encoding of its own.
 - Without `--seam`: unchanged (store chains; `sea-expand-memset`).
 
+## Short memmoves as copies (`--expand-memmove=K`)
+
+The range test of a read through `MCOPY` is decided when j and d are
+comparable. With a symbolic destination (a copy to row `r` of a table)
+and a source written at another width (a row filled by 2-byte stores and
+copied as 4 bytes), the test stays open, and the hit form
+`select(Ms, s + (j - d))` reads the source at a symbolic index. Each such
+read against each write of the source is an Ackermann residue pair.
+
+`sea-vc --lower --expand-memmove=K` runs `sea-expand-small-memmove`
+(`lib/Transforms/ExpandSmallMemMove.cpp`): a memmove whose length is a
+constant n <= K bytes becomes n loads of the source, all first and from
+the source version the op reads, then n stores in increasing address
+order. This is memmove exactly, overlap included (the loads precede every
+store); `test/VC/expand-memmove-equiv.mlir` proves it with z3 against
+the exact `MCOPY` term over symbolic, overlapping offsets, and
+`test/Transforms/expand-small-memmove-run.mlir` runs both directions of
+overlap in the interpreter. Each copied byte is then an ordinary load and
+store that SeaM resolves at the byte offsets it knows: in
+`test/VC/expand-memmove-row.mlir` the residue goes to 0 with the same
+verdict. `inplace` stays on every store; `align` / `src_align` A gives
+the copy at offset i the largest power of 2 dividing A and i.
+
+The pass runs after the metadata lowerings, placement and widening, so a
+fat-pointer companion memmove (keyed memory, one cell per byte address)
+has the same length and the same decision. Kept, with a counter each
+(`vc.expand-memmove: k= expanded= bytes= kept-symbolic= kept-over-k=
+kept-word-layout= kept-abstract= kept-tracked=`): a symbolic length,
+n > K, a word layout (the VC copies whole words already), a pointer-indexed
+memory (pass run before placement: the abstract semantics has no bytes of
+a stored pointer), a `tracked` memmove (sea-lower-tracking has not run).
+
+Cost: one load and one store per byte, so the program grows linearly in
+K; the term is one node at any length. Whether expansion wins depends on
+whether the range tests stay open, so K is untuned and the default is 0
+(off). memset is not expanded: the hit form of `MSET` is the value, with
+no read of another memory, so an open range test leaves no Ackermann
+residue (hypothesis; not measured). memhavoc's hit form reads its fresh
+array at j and is left as is.
+
 ## What it does not fix (separate items)
 
 - Contextual facts: `item_size in {1, 2}` and "the getter

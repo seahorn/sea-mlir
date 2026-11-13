@@ -128,6 +128,16 @@ static cl::opt<sea::RangeFoldMode> rangeFoldOpt(
                           "valid")),
     cl::init(sea::RangeFoldMode::Off));
 
+static cl::opt<unsigned> expandMemMoveOpt(
+    "expand-memmove",
+    cl::desc("With --lower: a sea.memmove of a constant length <= K bytes "
+             "becomes loads of every source byte, then stores in address "
+             "order (sea-expand-small-memmove; exact, overlap included). "
+             "For --seam, whose memmove term (mcopy) leaves Ackermann "
+             "residue when the range test is undecided; prints "
+             "vc.expand-memmove. Untuned default: 0 (off)"),
+    cl::value_desc("K"), cl::init(0));
+
 static cl::list<std::string> lowerDisable(
     "lower-disable",
     cl::desc("With --lower: leave these optimization passes out of the "
@@ -1775,6 +1785,17 @@ TYPICAL:
                                  #   every fold instead, drop the
                                  #   program's asserts; unsat = every
                                  #   fold valid (docs/design/RangeFold.md)
+  sea-vc p.mlir --lower --seam --expand-memmove=K  # a memmove of a
+                                 #   constant length <= K bytes as copies:
+                                 #   loads of every source byte, then
+                                 #   stores in address order (exact). For
+                                 #   mcopy reads SeaM cannot decide (symbolic
+                                 #   destination): Ackermann residue.
+                                 #   Untuned default: 0 (off). Prints
+                                 #   vc.expand-memmove: k= expanded= bytes=
+                                 #   kept-symbolic= kept-over-k=
+                                 #   kept-word-layout= kept-abstract=
+                                 #   kept-tracked=
   sea-vc p.mlir --seam --seam-stride  # R-STRIDE: store-map entries
                                  #   skipped for reads at promised GEP
                                  #   nodes whose offsets never reach them
@@ -2893,6 +2914,8 @@ int main(int argc, char **argv) {
     return fail("--lower-disable needs --lower");
   if (rangeFoldOpt != sea::RangeFoldMode::Off && !lower)
     return fail("--range-fold needs --lower");
+  if (expandMemMoveOpt && !lower)
+    return fail("--expand-memmove needs --lower");
   if ((!placeIn.empty() || !placeOut.empty()) && !lower)
     return fail("--place-in and --place-out need --lower");
   if (!placeIn.empty() && !placeOut.empty())
@@ -3215,7 +3238,7 @@ int main(int argc, char **argv) {
         /*keepByteWide=*/seam && seamWide, checkAlign,
         checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt,
         memhavocNull == MemhavocNull::Noop, lowerDisableMask,
-        sea::PlaceFiles{placeIn, placeOut}, rangeFoldOpt);
+        sea::PlaceFiles{placeIn, placeOut}, rangeFoldOpt, expandMemMoveOpt);
     if (failed(configurePM(pm)) || failed(pm.run(*module)))
       return 1;
     SEA_PHASE_END(lowerPhase)
@@ -3272,16 +3295,28 @@ int main(int argc, char **argv) {
           program->getAttrOfType<IntegerAttr>(sea::kMemhavocNullGuardsAttr))
     nullGuards = n.getInt();
   // the memhavocs sea-drop-fresh-memhavoc dropped under A-INB
-  // sea-range-fold's counters (--range-fold)
-  std::string rangeFoldLine;
+  // the counters of the lowering passes: sea-range-fold (--range-fold)
+  std::string lowerStatLines;
   if (auto d =
           program->getAttrOfType<DictionaryAttr>(sea::kRangeFoldStatsAttr)) {
-    raw_string_ostream os(rangeFoldLine);
+    raw_string_ostream os(lowerStatLines);
     os << "vc.range-fold: mode="
        << (rangeFoldOpt == sea::RangeFoldMode::Check ? "check" : "on");
     for (NamedAttribute a : d)
       if (auto i = dyn_cast<IntegerAttr>(a.getValue()))
         os << " " << a.getName().getValue() << "=" << i.getInt();
+    os << "\n";
+  }
+  // sea-expand-small-memmove's counters (--expand-memmove)
+  if (auto d = program->getAttrOfType<DictionaryAttr>(
+          sea::kExpandMemMoveStatsAttr)) {
+    raw_string_ostream os(lowerStatLines);
+    os << "vc.expand-memmove:";
+    for (StringRef key :
+         {"k", "expanded", "bytes", "kept-symbolic", "kept-over-k",
+          "kept-word-layout", "kept-abstract", "kept-tracked"})
+      if (auto i = d.getAs<IntegerAttr>(key))
+        os << " " << key << "=" << i.getInt();
     os << "\n";
   }
   uint64_t dropFreshInb = 0;
@@ -5319,7 +5354,7 @@ int main(int argc, char **argv) {
                 << "vc.ptr-from-int-opaque: " << sem.ptrFromIntOpaque() << "\n";
       if (sinkAssumes)
         statOut() << "vc.sink-assumes: " << sunkAssumes << "\n";
-      statOut() << rangeFoldLine;
+      statOut() << lowerStatLines;
       foldLines(statOut());
       companionLine(statOut());
       if (vcgen.joinCases())
@@ -5354,7 +5389,7 @@ int main(int argc, char **argv) {
            << "\nvc.ptr-from-int-opaque: " << sem.ptrFromIntOpaque() << "\n";
     if (sinkAssumes)
       vout() << "vc.sink-assumes: " << sunkAssumes << "\n";
-    vout() << rangeFoldLine;
+    vout() << lowerStatLines;
     foldLines(vout());
     companionLine(vout());
     if (vcgen.joinCases())

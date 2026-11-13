@@ -211,6 +211,7 @@ void registerPasses() {
   registerPass([] { return createPlaceStaticPass(); });
   registerPass([] { return createScalarizeStructsPass(); });
   registerPass([] { return createExpandMemSetPass(); });
+  registerPass([] { return createExpandSmallMemMovePass(); });
   registerPass([] { return createSplitCriticalEdgesPass(); });
   registerPass([] { return createSplitAtChecksPass(); });
   registerPass([] { return createSplitAssertFailuresPass(); });
@@ -256,7 +257,8 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
                              bool widenReport, bool keepByteWide,
                              bool checkAlign, unsigned checkPtrIndex, bool opt,
                              bool memhavocNullNoop, unsigned disable,
-                             const PlaceFiles &place, RangeFoldMode rangeFold) {
+                             const PlaceFiles &place, RangeFoldMode rangeFold,
+                             unsigned expandMemMove) {
   const bool cse = opt && !(disable & LowerDisableCse);
   const bool canonicalize = opt && !(disable & LowerDisableCanonicalize);
   OpPassManager &prog = pm.nest<ProgramOp>();
@@ -300,6 +302,12 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
       llvm::report_fatal_error("sea-widen-memory: bad k");
     prog.addPass(std::move(widen));
   }
+  // short constant memmoves as explicit copies (exact): after the metadata
+  // lowerings (companion memmoves get the same decision) and widening
+  // (word layouts are kept); before sea-expand-memset, which leaves
+  // constant lengths alone
+  if (expandMemMove)
+    prog.addPass(createExpandSmallMemMovePass(expandMemMove));
   // symbolic memset / memmove lengths: a bounded expansion with an explicit
   // assume (n <= K) for the array encoding; not with memory-operation terms
   // (sea-vc --seam), which are exact for every length

@@ -4,6 +4,7 @@
 add_mlir_library(SeaTransforms
   ExpandIntrinsics.cpp
   ExpandMemSet.cpp
+  ExpandSmallMemMove.cpp
   Passes.cpp
   PassLog.cpp
   PlaceStatic.cpp
