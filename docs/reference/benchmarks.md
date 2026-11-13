@@ -150,7 +150,8 @@ at least 1 s more), `solved:` (an `unknown-ok` job that was solved) and
 field is stale).
 Logs go to a results directory, and the record of the run (date, tier,
 configurations, commits, sea-vc checksum, verdict counts, failures) is
-appended to `bench/gates/<date>-<commit>.yaml`.
+appended to `$SEA_BENCH_HOME/gates/<date>-<commit>.yaml` (none with
+`--no-record`).
 
 Before it starts a job, the gate waits until enough memory is free and
 the load is low enough (`--min-free-gb`, `--max-load`). It runs 4 jobs in

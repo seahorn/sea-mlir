@@ -187,9 +187,8 @@ time and at least 1 s more), `solved:` (an `unknown-ok` job solved) and
 is stale).
 
 Logs and `rows.jsonl` go to `$SEA_BENCH_HOME/results/<stamp>-gate-<tier>/`.
-With `--no-record`, solver logs and results stay in a temporary directory
-outside the source tree and are removed when the gate exits, whether it
-passes or fails. No gate record is written.
+With `--no-record`, no gate record is written; logs and results stay in
+`$SEA_BENCH_HOME/results` as for any gate (`utils/attest.py` reads them).
 The gate record (date, tier, configs, sea-mlir commit and dirty flag, sea-vc
 sha256, suite revisions, verdict counts, failures, slow jobs) is appended to
 `$SEA_BENCH_HOME/gates/<date>-<commit>.yaml` alongside benchmark results.
