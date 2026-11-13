@@ -53,6 +53,7 @@
 #include "mlir/Support/Timing.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/CommandLine.h"
@@ -124,6 +125,16 @@ static cl::opt<std::string> placeOut(
     cl::desc("With --lower: write the placement of the program's objects "
              "(sea-place-static place-out) to this file, one object per "
              "line, for another lowering's --place-in"),
+    cl::value_desc("file"));
+
+static cl::opt<std::string> printLowered(
+    "print-lowered",
+    cl::desc("Write the program the VC encodes (after the lowering and "
+             "every other pass of sea-vc) to this file, with its locations, "
+             "named as the VC names it: the names of --split / "
+             "--split-leaves selectors and of the split.* and other report "
+             "lines (a nondet result is nd.<site> in the VC). The run goes "
+             "on (--vcgen-only: no solver)"),
     cl::value_desc("file"));
 
 static cl::opt<std::string> placeIn(
@@ -1177,8 +1188,9 @@ static cl::opt<bool> splitCandidatesOpt(
              "`result: none`): the pick run of --split-auto, then every "
              "ite-valued address (split.leaves-candidate, for "
              "--split-leaves) and the i1 values and block guards in the ite "
-             "conditions behind open alias questions (split.bool-candidate, "
-             "for --split), ranked by those questions (a heuristic)"),
+             "conditions behind open alias questions or in the indices of "
+             "array reads (split.bool-candidate, for --split), ranked by "
+             "those questions, then those reads (a heuristic)"),
     cl::init(false));
 static cl::opt<unsigned> splitCandidatesMax(
     "split-candidates-max",
@@ -1269,7 +1281,9 @@ TYPICAL:
                                  #   --split-auto picks one)
   sea-vc p.mlir --lower --seam --split-candidates  # list what --split and
                                  #   --split-leaves can split on, ranked by
-                                 #   the open alias questions; no solver
+                                 #   the open alias questions (none open:
+                                 #   by the array reads whose index they
+                                 #   are in); no solver
   sea-vc p.mlir --format=jsonl   # every stdout line one JSON object (jq;
                                  #   OUTPUT FORMATS)
   sea-vc p.mlir --timeout=600 --mem-limit=16  # limits: the solver's check
@@ -1386,6 +1400,11 @@ TYPICAL:
                                  #   sea-drop-fresh-memhavoc: it decides
                                  #   that a fresh memhavoc is no tracked
                                  #   write (a semantics decision)
+  sea-vc p.mlir --lower --print-lowered=low.mlir --vcgen-only  # the program
+                                 #   the VC encodes, with locations, named
+                                 #   as the VC (split selectors, split.*
+                                 #   lines) names it; input to sea-vc
+                                 #   without --lower (same names)
   sea-vc p.mlir --lower --place-out=p.place  # write the placement (one
                                  #   object per line: name= kind= base=
                                  #   size= align=)
@@ -2387,9 +2406,12 @@ encoding, SeaM, Ackermann, solver, replay per part). --split: an i1 value
 (2 parts: 1, 0) or a block guard (true, false). --split-leaves: an address
 whose term is an ite tree, or ptr-from-bits of one: one part per distinct
 leaf, condition = the disjunction of its path conditions. Selectors: the VC
-name (%x, nd.<site>, ^bb3; names of the lowered program) or @<file>:<line>
-(the one op result of the kind with a file position, its own or an inlined
-call site, on that line). Several targets nest (one level per target, in
+name (%x, nd.<site>, ^bb3; names of the lowered program as
+--print-lowered=<file> writes it; sea-opt numbers values differently) or
+@<file>:<line> (the one op result of the kind with a file position, its own
+or an inlined call site, on that line; an ambiguous one lists every match:
+name, op, type, col=; one that finds nothing lists the results of other
+types on the line and the nearest lines with results of the kind). Several targets nest (one level per target, in
 encoding order, under the cases before it; enumerated depth-first, one run
 per part; a part whose levels differ from its plan is vc.split-unstable).
 --split-auto (--seam): a solverless pick run ranks the ite-valued addresses
@@ -2442,24 +2464,45 @@ no solver; then result: none. Start here when the names are unknown (a
 paths than --split-max-paths is listed with leaves=0 (warning
 vc.split-max-paths).
   split.candidates: open-aliases= leaves-candidates= bool-candidates=
-    bool-listed= bool-dropped= bool-values= vc-time=
+    bool-listed= bool-dropped= bool-values= reads= same-object-open=
+    memop-open= vc-time=
     (bool-values: i1 values and guards recorded; bool-candidates: those
-    behind an open question; bool-dropped: cut by --split-candidates-max)
+    behind an open question or in a read index, one per term;
+    bool-dropped: cut by --split-candidates-max; reads: array reads (select,
+    index not a numeral) of the query at the solver boundary, the reads the
+    Ackermann lowering pairs; open-aliases: IS_OVERLAP questions only;
+    same-object-open: one-object questions reduced to an offset compare and
+    left open, memop-open: open in-tests of memset / memmove / memhavoc
+    reads; neither is attributed. --seam-stats' seam.alias.open.all =
+    open-aliases + same-object-open; seam.alias.open-memop.all = memop-open)
   split.leaves-candidate: name= leaves= unknown-leaves= open-aliases=
-    direct= own= loc=     every ite-valued address, in --split-auto's
-    order; name is a --split-leaves selector. unknown-leaves: leaves
+    direct= own= reads= loc=     every ite-valued address, in
+    --split-auto's order (with no open question at all: by reads, then
+    leaves); name is a --split-leaves selector. reads: array reads whose
+    index holds its term. unknown-leaves: leaves
     without an object; open-aliases as split.candidate; direct: questions
     holding the term itself, not only an unknown leaf of it; own: questions
     no other candidate is behind (own < open-aliases: the count is shared,
     e.g. one unknown leaf behind several ites)
-  split.bool-candidate: name= target=value|guard open-aliases= addrs= loc=
+  split.bool-candidate: name= target=value|guard open-aliases= addrs=
+    reads= cond-reads= covers= same= loc=
     an i1 value or block guard (name: a --split selector) in an ite
-    condition of a question's pointers or of the term of an address
-    candidate behind it; open-aliases: those questions; addrs: address
-    candidates with it in an ite condition; ranked by open-aliases, then
-    addrs, then encoding order; only those behind a question; at most
+    condition of a question's pointers, of the term of an address candidate
+    behind it, or of the index of an array read; open-aliases: those
+    questions; addrs: address candidates with it in an ite condition;
+    reads: array reads with it in an ite condition of the index (anywhere
+    in the condition); cond-reads: of those, reads with an ite whose
+    condition is it; covers: other candidates in its Boolean structure (an
+    and covers its compares); same: other values with the same term, listed
+    with the one with the most uses as a select condition (a split
+    replaces that op's value only: uses of a same= value keep the term).
+    Ranked by open-aliases; ties: addrs, then encoding order; among
+    open-aliases=0: reads, cond-reads, covers, addrs, encoding order. Only
+    those behind a question or in a read index; at most
     --split-candidates-max (20; 0: all). A guard's loc is its first op's.
-  Both rankings are heuristics (cheap counts, not a measure of hardness).
+  All rankings are heuristics (cheap counts, not a measure of hardness);
+  reads is for queries whose residue is Ackermann pairs, not open alias
+  questions.
 
 OUTPUT FORMATS (--format=text|jsonl; default text, the lines above):
 jsonl: every stdout line is one JSON object
@@ -2493,10 +2536,13 @@ Kinds and fields:
                 leaf_structural, [stopped]
   split-candidate name, loc, leaves, open_aliases
   split-candidates open_aliases, leaves_candidates, bool_candidates,
-                bool_listed, bool_dropped, bool_values, vc_time
+                bool_listed, bool_dropped, bool_values, reads,
+                same_object_open, memop_open, vc_time
   split-leaves-candidate name, loc, leaves, unknown_leaves, open_aliases,
-                direct, own
-  split-bool-candidate name, loc, target (value|guard), open_aliases, addrs
+                direct, own, reads
+  split-bool-candidate name, loc, target (value|guard), open_aliases, addrs,
+                reads, cond_reads, covers, same (names, comma-separated;
+                - for none)
   hint          topic (split), open_aliases, option (--split-candidates)
   nondet        site, callee, width, value
   memread       site, addr, width, value, [obj + off] (the object id and
@@ -2803,6 +2849,8 @@ int main(int argc, char **argv) {
     return fail("--place-in and --place-out need --lower");
   if (!placeIn.empty() && !placeOut.empty())
     return fail("--place-in and --place-out exclude each other");
+  if (printLowered == "-")
+    return fail("--print-lowered needs a file (stdout is the report)");
   if (reachSeed.getNumOccurrences() && !reachFuzz)
     return fail("--reach-seed is the seed of --reach-fuzz");
   if (!reachPrograms.empty() &&
@@ -3246,6 +3294,24 @@ int main(int argc, char **argv) {
     reachRuns = std::move(*rr);
   }
 
+  // --print-lowered: the program the VC encodes, named as sea::ValueNames
+  // names it (AsmState of the module, NameLocs as name prefixes)
+  if (!printLowered.empty()) {
+    std::error_code ec;
+    raw_fd_ostream os(printLowered, ec, sys::fs::OF_Text);
+    if (ec)
+      return fail("cannot write '" + printLowered + "': " + ec.message());
+    os << "// sea-vc --print-lowered: the program the VC encodes, named as "
+          "the VC names it\n// (split selectors, split.* lines); a nondet "
+          "result is nd.<site> in the VC.\n";
+    // locations inline (no #loc aliases), so a grep for a name shows its
+    // position
+    module->print(os, OpPrintingFlags()
+                          .enableDebugInfo(true, false)
+                          .useLocalScope()
+                          .printNameLocAsPrefix());
+    os << "\n";
+  }
   // case splitting (sea/VC/Split.h): the targets, on the program the VC
   // encodes; the choices of the run's first levels; what a run reports
   std::vector<sea::SplitTarget> splitTargets;
@@ -3288,6 +3354,8 @@ int main(int argc, char **argv) {
     // leaves without an object
     uint64_t own = 0, direct = 0;
     unsigned unknownLeaves = 0;
+    // --split-candidates: array reads whose index holds its term
+    uint64_t reads = 0;
   };
   std::vector<SplitCandidate> splitCandidates;
   // --split-candidates: the Boolean candidates behind an open question,
@@ -3297,10 +3365,19 @@ int main(int argc, char **argv) {
     bool guard = false;
     uint64_t open = 0;
     unsigned addrs = 0;
+    uint64_t reads = 0, condReads = 0;
+    unsigned covers = 0;
+    // the later candidates with the same term
+    std::vector<std::string> same;
   };
   std::vector<SplitBoolCandidate> splitBoolCandidates;
   size_t splitBoolRecorded = 0;
   uint64_t splitOpenAliases = 0;
+  // --split-candidates: the array reads of the query at the solver
+  // boundary; the open questions the attribution does not take (the
+  // same-object offset compares and the memory-operation in-tests that
+  // seam.alias.open.* / seam.alias.open-memop.* count)
+  uint64_t splitReads = 0, splitSameObjectOpen = 0, splitMemopOpen = 0;
   double splitPickSeconds = 0;
   // One run of the VC and the solver. Returns kRetryWithoutInb if A-INB
   // (assumed by the rewriting) is found not to hold.
@@ -3850,6 +3927,8 @@ int main(int argc, char **argv) {
         if (sameObjectOpen.count(n)) {
           ++aliasOpen["same-object"];
           ++aliasOpen["all"];
+          if (splitPickRun)
+            ++splitSameObjectOpen;
         }
         if (expr::isOpX<expr::IS_OVERLAP>(n) && sem.seamRewriter()) {
           ++aliasOpen[aliasKind(expr::Expr(n->arg(0)), expr::Expr(n->arg(2)),
@@ -3906,6 +3985,16 @@ int main(int argc, char **argv) {
     // (sea/VC/Split.h, SplitCensus)
     if (splitPickRun) {
       census->attribute(sem, openOverlaps, splitMaxPaths);
+      // --split-candidates: the array reads of the query at the solver
+      // boundary (Ackermann pairs their indices), by the candidates in
+      // their indices
+      if (splitCandidatesOpt) {
+        expr::Expr solverQuery = sem.solverTerm(query);
+        if (!solverQuery)
+          return 1; // vc.memop-term-at-boundary
+        splitReads = census->attributeReads(sem, solverQuery);
+        splitMemopOpen = memOpOpen["all"];
+      }
       sea::ValueNames vn(program);
       for (const sea::SplitAddrCandidate &a : census->addrs) {
         SplitCandidate c;
@@ -3917,6 +4006,7 @@ int main(int argc, char **argv) {
         c.own = a.own;
         c.direct = a.direct;
         c.unknownLeaves = a.unknownLeaves;
+        c.reads = a.reads;
         splitCandidates.push_back(std::move(c));
       }
       std::stable_sort(splitCandidates.begin(), splitCandidates.end(),
@@ -3927,29 +4017,58 @@ int main(int argc, char **argv) {
                                                  : a.leaves > b.leaves;
                        });
       splitBoolRecorded = census->boolCands.size();
-      for (const sea::SplitBoolCandidate &b : census->boolCands) {
-        if (!b.open)
+      // a candidate with the term of another is listed with it (same=), not
+      // on its own (sea::SplitBoolCandidate::sameAs)
+      std::vector<int> listedAt(census->boolCands.size(), -1);
+      auto boolName = [&](const sea::SplitBoolCandidate &b) {
+        return b.block ? vn.name(b.block).str() : vn.name(b.value).str();
+      };
+      for (size_t i = 0; i < census->boolCands.size(); ++i) {
+        const sea::SplitBoolCandidate &b = census->boolCands[i];
+        if (!b.open && !b.reads)
+          continue;
+        if (b.sameAs >= 0)
           continue;
         SplitBoolCandidate c;
         c.guard = b.block != nullptr;
+        c.name = boolName(b);
         if (b.block) {
-          c.name = vn.name(b.block).str();
           // a block has no location: its first op's
           if (!b.block->empty())
             c.loc = sea::formatLoc(b.block->front().getLoc());
         } else {
-          c.name = vn.name(b.value).str();
           c.loc = sea::formatLoc(b.value.getLoc());
         }
         c.open = b.open;
         c.addrs = b.addrs;
+        c.reads = b.reads;
+        c.condReads = b.condReads;
+        c.covers = b.covers;
+        listedAt[i] = splitBoolCandidates.size();
         splitBoolCandidates.push_back(std::move(c));
       }
-      // ties: in more address terms, then encoding order
+      for (const sea::SplitBoolCandidate &b : census->boolCands)
+        if (b.sameAs >= 0 && listedAt[b.sameAs] >= 0)
+          splitBoolCandidates[listedAt[b.sameAs]].same.push_back(boolName(b));
+      // by the open questions; ties: in more address terms, then encoding
+      // order. Without open questions (a heuristic for an Ackermann
+      // residue): by the read indices, then those where it is a whole ite
+      // condition, then the other candidates in its term (an and before its
+      // conjuncts), then the address terms, then encoding order.
       std::stable_sort(
           splitBoolCandidates.begin(), splitBoolCandidates.end(),
           [](const SplitBoolCandidate &a, const SplitBoolCandidate &b) {
-            return a.open != b.open ? a.open > b.open : a.addrs > b.addrs;
+            if (a.open != b.open)
+              return a.open > b.open;
+            if (a.open == 0) {
+              if (a.reads != b.reads)
+                return a.reads > b.reads;
+              if (a.condReads != b.condReads)
+                return a.condReads > b.condReads;
+              if (a.covers != b.covers)
+                return a.covers > b.covers;
+            }
+            return a.addrs > b.addrs;
           });
       splitOpenAliases = openOverlaps.size();
       splitPickSeconds = std::chrono::duration<double>(
@@ -5910,6 +6029,15 @@ int main(int argc, char **argv) {
       splitPickRun = false;
       if (prc)
         return prc;
+      // no open question: the address candidates by the read indices that
+      // hold them (--split-auto's order has nothing to rank by)
+      if (llvm::all_of(splitCandidates,
+                       [](const SplitCandidate &c) { return c.open == 0; }))
+        std::stable_sort(splitCandidates.begin(), splitCandidates.end(),
+                         [](const SplitCandidate &a, const SplitCandidate &b) {
+                           return a.reads != b.reads ? a.reads > b.reads
+                                                     : a.leaves > b.leaves;
+                         });
       const size_t nBool = splitBoolCandidates.size();
       const size_t listed = splitCandidatesMax
                                 ? std::min<size_t>(nBool, splitCandidatesMax)
@@ -5923,15 +6051,21 @@ int main(int argc, char **argv) {
             .num("bool_listed", listed)
             .num("bool_dropped", nBool - listed)
             .num("bool_values", splitBoolRecorded)
+            .num("reads", splitReads)
+            .num("same_object_open", splitSameObjectOpen)
+            .num("memop_open", splitMemopOpen)
             .set("vc_time", t);
-        rec.text = "split.candidates: open-aliases=" +
-                   std::to_string(splitOpenAliases) + " leaves-candidates=" +
-                   std::to_string(splitCandidates.size()) +
-                   " bool-candidates=" + std::to_string(nBool) +
-                   " bool-listed=" + std::to_string(listed) +
-                   " bool-dropped=" + std::to_string(nBool - listed) +
-                   " bool-values=" + std::to_string(splitBoolRecorded) +
-                   " vc-time=" + t;
+        rec.text =
+            "split.candidates: open-aliases=" +
+            std::to_string(splitOpenAliases) +
+            " leaves-candidates=" + std::to_string(splitCandidates.size()) +
+            " bool-candidates=" + std::to_string(nBool) +
+            " bool-listed=" + std::to_string(listed) +
+            " bool-dropped=" + std::to_string(nBool - listed) +
+            " bool-values=" + std::to_string(splitBoolRecorded) +
+            " reads=" + std::to_string(splitReads) +
+            " same-object-open=" + std::to_string(splitSameObjectOpen) +
+            " memop-open=" + std::to_string(splitMemopOpen) + " vc-time=" + t;
         gOut->emit(rec);
       }
       for (const SplitCandidate &c : splitCandidates) {
@@ -5942,13 +6076,15 @@ int main(int argc, char **argv) {
             .num("unknown_leaves", c.unknownLeaves)
             .num("open_aliases", c.open)
             .num("direct", c.direct)
-            .num("own", c.own);
+            .num("own", c.own)
+            .num("reads", c.reads);
         rec.text = "split.leaves-candidate: name=" + c.name +
                    " leaves=" + std::to_string(c.leaves) +
                    " unknown-leaves=" + std::to_string(c.unknownLeaves) +
                    " open-aliases=" + std::to_string(c.open) +
                    " direct=" + std::to_string(c.direct) +
                    " own=" + std::to_string(c.own) +
+                   " reads=" + std::to_string(c.reads) +
                    " loc=" + (c.loc.empty() ? "-" : c.loc);
         gOut->emit(rec);
       }
@@ -5959,11 +6095,19 @@ int main(int argc, char **argv) {
             .str("loc", c.loc)
             .str("target", c.guard ? "guard" : "value")
             .num("open_aliases", c.open)
-            .num("addrs", c.addrs);
+            .num("addrs", c.addrs)
+            .num("reads", c.reads)
+            .num("cond_reads", c.condReads)
+            .num("covers", c.covers)
+            .str("same", c.same.empty() ? "-" : llvm::join(c.same, ","));
         rec.text = "split.bool-candidate: name=" + c.name +
                    " target=" + (c.guard ? "guard" : "value") +
                    " open-aliases=" + std::to_string(c.open) +
                    " addrs=" + std::to_string(c.addrs) +
+                   " reads=" + std::to_string(c.reads) +
+                   " cond-reads=" + std::to_string(c.condReads) +
+                   " covers=" + std::to_string(c.covers) +
+                   " same=" + (c.same.empty() ? "-" : llvm::join(c.same, ",")) +
                    " loc=" + (c.loc.empty() ? "-" : c.loc);
         gOut->emit(rec);
       }

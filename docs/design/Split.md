@@ -101,14 +101,33 @@ for each of them): it is a ranking for experiments, not a strategy.
 ## Finding targets (`--split-candidates`)
 
 The names of the lowered program are not the source's, so a user who
-wants to split by hand first needs a list. `--split-candidates` runs the
+wants to split by hand first needs a list, and the program those names
+belong to. `--print-lowered=<file>` writes the program the VC encodes
+(after the lowering and every other pass of sea-vc), with its locations
+inline, named as `sea::ValueNames` names it: the names of the selectors
+and of the `split.*` lines (a nondet result is `nd.<site>` in the VC). The
+run goes on; with `--vcgen-only` it solves nothing. `sea-opt
+--sea-vc-lower` is not that program: its options differ from those a
+sea-vc run derives (`--seam` skips `sea-expand-memset`, for one) and it
+prints without NameLoc prefixes, so its numbers name other values. The
+written file is input to sea-vc without `--lower`, with the same names
+(printing it again gives the same file).
+
+A selector `@<file>:<line>` that matches several values is an error that
+lists every match (up to 32, then a count) with its op, type and column;
+one that matches nothing lists the results of other types on that line
+and the nearest lines with results of the kind (three on each side), or,
+when no op has a position in such a file, the files that occur.
+
+`--split-candidates` runs the
 pick run of `--split-auto` (the same census, `SplitCensus`), lists, and
 stops: no split, no solver, `result: none`. It is refused with a split
 (`--split`, `--split-leaves`, `--split-auto`): listing and splitting are
 separate runs, so the list never depends on a split.
 
 - `split.leaves-candidate`: every ite-valued address, in `--split-auto`'s
-  order (that ranking and its pick rule are unchanged). Besides
+  order (that ranking and its pick rule are unchanged; with no open
+  question at all, by the read indices below). Besides
   `open-aliases` it gives `unknown-leaves` (leaves without an object),
   `direct` (questions whose pointers hold the term itself, not only an
   unknown leaf of it) and `own` (questions no other candidate is behind).
@@ -122,15 +141,78 @@ separate runs, so the list never depends on a split.
   key of a value is its bv1 term and that term `= 1` (normalized); of a
   guard, its constant. Ranked by those questions (`open-aliases`), then by
   `addrs` (address candidates with it in an ite condition), then encoding
-  order. Only candidates behind a question are listed, at most
+  order. Only candidates behind a question or in a read index (below)
+  are listed, one line per term (`same=`, below), at most
   `--split-candidates-max` (default 20, 0: all); the `split.candidates`
   line counts the recorded values, the candidates, and the dropped ones.
   Ites that come from joins have the guards of the blocks before the join
   in their conditions; a branch's two successor guards usually rank
   together, and splitting on either gives the same two cases.
 
-Both rankings are heuristics: cheap syntactic counts over the normalized
+### When no alias question is open: the read indices
+
+A query can be hard with no open alias question at all: its residue is
+the Ackermann lowering's pairs of reads of a read-only array, whose
+indices are ite terms of conditions the program computes (a select that
+picks a row, an in-range guard). Splitting on such a condition fixes the
+index in each part, and the pairs that compare it go away. So
+`--split-candidates` also translates the normalized query to the
+solver's terms (`SeaOpSem::solverTerm`, as the solver run does before
+Ackermann) and looks at every distinct array read (`select` with an
+index that is not a numeral; the `reads=` of the `split.candidates`
+line):
+
+- a Boolean candidate counts a read (`reads=`) when it occurs in an ite
+  condition of the read's index, as a whole condition or a part of one,
+  and `cond-reads=` when it is a whole condition;
+- an address candidate counts a read (`reads=`) when its term occurs in
+  the index.
+
+Keys are translated by `solverTerm` too (the boundary translates
+node by node, so a subterm of the query becomes the translation of the
+subterm). A Boolean candidate is listed when it is behind an open
+question or counts a read. Among those with `open-aliases=0` the order
+is `reads`, then `cond-reads`, then `covers` (the other candidates in
+its Boolean structure: and / or / not / ite and their bv1 forms, down to
+the atoms; an and of two compares before the compares), then `addrs`,
+then encoding order. With no open question at all, the address
+candidates are ordered by `reads`, then leaves (`--split-auto` does not
+run this step; its ranking and pick are unchanged).
+
+Two ops can compute the same term (a range check before and after a
+store to another object reads the same cell). They are one line: the
+value with the most uses as a select condition is named, the others are
+in `same=`. They are not the same split target: a split replaces the
+value of the named op only, and the uses of the others keep the term
+(the part's condition still holds it, so the parts stay exact). Split on
+the one whose uses matter (`--print-lowered` shows them), or on all of
+them (each is a level).
+
+This attribution is a heuristic. It counts reads, not pairs, and a read
+whose index holds a condition need not be in a costly pair; it does not
+see a condition that SeaM moved out of the index (a read at an ite
+address that SeaM split into an ite of reads).
+
+### The counts of open questions
+
+`open-aliases` counts the `IS_OVERLAP` nodes of the normalized query:
+the questions the attribution distributes. `--seam-stats` counts more
+under `seam.alias.open.*`: also the one-object questions that SeaM
+reduced to an offset compare (`Rules::aliasReduced`) and that stay open
+after normalization (kind `same-object`). The `split.candidates` line
+shows those as `same-object-open=`, so `seam.alias.open.all =
+open-aliases + same-object-open` on one query; the open in-tests of
+memory-operation reads (`seam.alias.open-memop.all`) are
+`memop-open=`. Neither is attributed to a candidate: an offset compare
+has no ite pointer to split. A query with thousands of
+`seam.alias.open.same-object` and `open-aliases=0` is one whose
+questions SeaM decided down to offset compares; its residue, if any, is
+in those compares and in the Ackermann pairs.
+
+All rankings are heuristics: cheap syntactic counts over the normalized
 query, not a measure of how hard a part will be.
+
+### The hint, and long ite trees
 
 A `--seam` run (not a split) whose verdict is `unknown` counts the open
 alias questions (`IS_OVERLAP`) of its normalized query, a DAG walk after
@@ -138,7 +220,9 @@ the solver (no cost to sat or unsat runs). If there is at least one, it
 prints one line, `hint: split: open-aliases=<n>; rerun with
 --split-candidates to list split targets (no solver)` (jsonl kind `hint`,
 field `open_aliases`), after the result and its reason lines; without
-open questions the list would be empty, and there is no hint. It changes
+open questions there is no hint (a query whose residue is Ackermann
+pairs gets none, though `--split-candidates` may list read-index
+candidates for it). It changes
 no query and no other line. `utils/query-diff.py` compares `--smt2`
 output and does not see it; `utils/bench.py` reads `BRUNCH_STAT` lines
 and named `key: value` counters of a run (`observed_counter`), and no
@@ -151,7 +235,12 @@ never picks it, and the census warns `vc.split-max-paths`.
 
 ## Open questions
 
-- The cap of the Boolean list (20) and the order of ties are untuned.
+- The cap of the Boolean list (20) and the order of ties are untuned,
+  as is the order of the read-index keys (`reads` before `cond-reads`
+  before `covers`), set on one query.
+- A candidate with `same=` values is not split with them: the split
+  substitutes by value, not by term. Splitting on a term (every value
+  with it at once) is not implemented.
 - Default of `--split-check`: on; cheap on the measured queries. A target
   whose term is large could make it costly.
 - Splitting a leaf that is itself an ite of pointers under `to-bits`
