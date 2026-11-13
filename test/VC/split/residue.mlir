@@ -17,7 +17,7 @@
 // ACK-NEXT: split.bool-candidate: name=[[G:%[0-9]+]] target=value open-aliases=0 addrs=0 reads=2 cond-reads=2 covers=2 same=[[G0:%[0-9]+]] loc=t.c:20:3
 // ACK-NEXT: split.bool-candidate: name={{%[0-9]+}} {{.*}} covers=0 same={{%[0-9]+}} loc=t.c:20:7
 // ACK-NEXT: split.bool-candidate: name={{%[0-9]+}} {{.*}} covers=0 same={{%[0-9]+}} loc=t.c:20:20
-// ACK-NEXT: result: none
+// ACK-NEXT: split.arith-candidates:
 // --print-lowered: the program the VC encodes, with the VC's names.
 // ACK: sea-vc --print-lowered
 // ACK: [[G0]] = sea.and {{.*}} loc("t.c":10:3)

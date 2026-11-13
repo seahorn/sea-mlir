@@ -537,6 +537,19 @@ static cl::opt<bool> arithStats(
              "sea op that made them (arith.loc; nodes made or rewritten by a "
              "later stage: unattributed). Works with --vcgen-only"),
     cl::init(false));
+static cl::opt<bool> iteStats(
+    "ite-stats",
+    cl::desc("Report the values whose VC terms are ite trees (memories, "
+             "addresses, integers feeding mul/div/rem) per source location, "
+             "with leaves and conditions, and the loads at non-ground "
+             "addresses by kind and location (ite.* lines; also with "
+             "--vcgen-only; not with a split)"),
+    cl::init(false));
+static cl::opt<unsigned> iteStatsMax(
+    "ite-stats-max",
+    cl::desc("--ite-stats: the most ite.site lines per kind and ite.load-site "
+             "lines (default 40; 0: all); the summary lines count the rest"),
+    cl::init(40));
 
 static cl::opt<bool> seamStats(
     "seam-stats",
@@ -1556,11 +1569,11 @@ static cl::list<std::string> splitBool(
     cl::value_desc("selector"));
 static cl::list<std::string> splitLeaves(
     "split-leaves", cl::CommaSeparated,
-    cl::desc("Split the VC on an address value whose term is an ite tree (or "
-             "ptr-from-bits of one): one part per distinct leaf, the value "
-             "fixed to the leaf, with the disjunction of the leaf's path "
-             "conditions. Selector as for --split (an address-typed op "
-             "result)"),
+    cl::desc("Split the VC on an address or integer (iN, N > 1) value whose "
+             "term is an ite tree (an address: or ptr-from-bits of one): one "
+             "part per distinct leaf, the value fixed to the leaf, with the "
+             "disjunction of the leaf's path conditions. Selector as for "
+             "--split (an address or integer op result or block argument)"),
     cl::value_desc("selector"));
 static cl::opt<bool> splitAuto(
     "split-auto",
@@ -1578,18 +1591,22 @@ static cl::opt<bool> splitCandidatesOpt(
              "--split-leaves) and the i1 values and block guards in the ite "
              "conditions behind open alias questions or in the indices of "
              "array reads (split.bool-candidate, for --split), ranked by "
-             "those questions, then those reads (a heuristic)"),
+             "those questions, then those reads; and the integer and i1 "
+             "values and guards by the mul/div/rem nodes they control "
+             "(split.arith-candidate) (heuristics)"),
     cl::init(false));
 static cl::opt<unsigned> splitCandidatesMax(
     "split-candidates-max",
-    cl::desc("--split-candidates: the most split.bool-candidate lines "
-             "(default 20; 0: all); the split.candidates line counts the "
+    cl::desc("--split-candidates: the most split.bool-candidate and "
+             "split.arith-candidate lines (default 20; 0: all); the "
+             "split.candidates and split.arith-candidates lines count the "
              "dropped ones"),
     cl::init(20));
 static cl::opt<unsigned> splitMaxParts(
     "split-max-parts",
-    cl::desc("Hard cap on the number of parts of a split (default 64): more "
-             "is an error (vc.split-max-parts)"),
+    cl::desc("Hard cap on the number of parts of a split (default 64, "
+             "untuned): more is an error (vc.split-max-parts); raise it for "
+             "nested splits or wide leaf sets"),
     cl::init(64));
 static cl::opt<unsigned> splitMaxPaths(
     "split-max-paths",
@@ -1691,7 +1708,16 @@ TYPICAL:
                                  #   --split-leaves can split on, ranked by
                                  #   the open alias questions (none open:
                                  #   by the array reads whose index they
-                                 #   are in); no solver
+                                 #   are in), and by the mul/div/rem they
+                                 #   control; no solver
+  sea-vc p.mlir --lower --split-leaves=@f.cc:286  # one part per value of a
+                                 #   path-merged integer (a column index):
+                                 #   each part multiplies by a constant
+  sea-vc p.mlir --lower --ite-stats --vcgen-only  # which memories,
+                                 #   addresses and integers feeding
+                                 #   arithmetic are ite trees over block
+                                 #   guards, and the loads at non-ground
+                                 #   addresses, per source line; no solver
   sea-vc p.mlir --format=jsonl   # every stdout line one JSON object (jq;
                                  #   OUTPUT FORMATS)
   sea-vc p.mlir --timeout=600 --mem-limit=16  # limits: the solver's check
@@ -2361,6 +2387,41 @@ OUTPUT (stdout, `key: value` lines):
                                   (per source location of the sea op that
                                   made the node: mul / div / rem / umulo /
                                   smulo / ptr.index; loc is the last field)
+  ite.values: kind=mem|addr|int values= over-guards= sites= listed= dropped=
+    leaves-max=                   (--ite-stats, after the run's first
+                                  encoding, before any solver; with or without --vcgen-only
+                                  and --seam; not with a split: values of
+                                  the kind whose term (as encoded) is an ite
+                                  tree (addr: or ptr-from-bits of one).
+                                  mem: memory values; addr: addresses; int:
+                                  integers in the backward slice of an
+                                  operand of mul / udiv / sdiv / urem / srem
+                                  / umulo / smulo / sdivo, through integer
+                                  and i1 ops and block arguments, not
+                                  through memory. over-guards: values with
+                                  a block guard among the atoms of their
+                                  conditions; sites: distinct locations)
+  ite.site: kind= values= leaves= conds= guard-atoms= name= loc=
+                                  (per location of a kind, most leaves
+                                  first, at most --ite-stats-max (40; 0:
+                                  all); leaves / conds / guard-atoms: the
+                                  most over its values of distinct leaves,
+                                  distinct ite conditions, block guards
+                                  among the conditions' atoms; name: its
+                                  first value, a --split-leaves selector;
+                                  a block argument without a position has
+                                  its block's first op's)
+  ite.loads: loads= dynamic= ite= ite-index= from-bits= symbolic= sites=
+    listed= dropped=              (--ite-stats: loads the encoding met;
+                                  dynamic: address term with a free
+                                  constant (numerals and object bases are
+                                  ground), by kind: ite (an ite tree, or
+                                  ptr-from-bits of one), from-bits (a
+                                  pointer read back from memory), ite-index
+                                  (an ite below the top: an index chosen by
+                                  a path or a select), symbolic (other))
+  ite.load-site: kind= loads= loc=  (per kind and location, most first, at
+                                  most --ite-stats-max)
   result: sat|unsat|unknown|none  (none: --vcgen-only, --split-candidates)
   hint: split: open-aliases=<n>[ ackermann-constraints=<m>]; rerun with
                                   --split-candidates ...
@@ -2947,12 +3008,14 @@ fixed when the encoding defines it, before SeaM rewrites its uses; each part
 is VC[t := value] /\ condition, answered by the usual run (lowering once;
 encoding, SeaM, Ackermann, solver, replay per part). --split: an i1 value
 (2 parts: 1, 0) or a block guard (true, false). --split-leaves: an address
-whose term is an ite tree, or ptr-from-bits of one: one part per distinct
-leaf, condition = the disjunction of its path conditions. Selectors: the VC
+or an integer (iN, N > 1) whose term is an ite tree (an address: or
+ptr-from-bits of one): one part per distinct leaf, condition = the
+disjunction of its path conditions (a path-merged column index: one part
+per column). Selectors: the VC
 name (%x, nd.<site>, ^bb3; names of the lowered program as
 --print-lowered=<file> writes it; sea-opt numbers values differently) or
-@<file>:<line> (the one op result of the kind with a file position, its own
-or an inlined call site, on that line; an ambiguous one lists every match:
+@<file>:<line> (the one op result or block argument of the kind with a file
+position, its own or an inlined call site, on that line; an ambiguous one lists every match:
 name, op, type, col=; one that finds nothing lists the results of other
 types on the line and the nearest lines with results of the kind). Several targets nest (one level per target, in
 encoding order, under the cases before it; enumerated depth-first, one run
@@ -2968,8 +3031,9 @@ one unsplit part). --split-check (default on): per level, z3 (rlimit
 case exact (condition => term = value, on the solver's terms: pointers by
 address (pointer identity holds by construction and is checked
 structurally)); failed: exit 5, vc.split-check-failed; unknown: warning
-vc.split-check-unknown. --split-max-parts (64): more parts is an error
-(vc.split-max-parts), no verdict. --split-max-paths (1024): paths of an ite
+vc.split-check-unknown. --split-max-parts (64, untuned): more parts is an
+error (vc.split-max-parts), no verdict; raise it for nested levels or wide
+leaf sets (each part is one encoding and one solver run). --split-max-paths (1024): paths of an ite
 tree. --split-stop-on-sat. --split-smt2=<prefix>: <prefix>.part<N>.smt2
 per part (with --vcgen-only: nothing solved). Not with --smt2, --reach,
 --mem=lambda. Under --seam a split turns on --seam-stats (the per-part
@@ -2983,8 +3047,8 @@ Lines: every part prints its usual output between
   split.part: <N> choice=<name>=<case>#<k>/<n>[,...] result=... vc-time=
     solve-time= dag= alias-open= alias-open-pairs= alias-open-memop= rows=
     ack-reads= ack-pairs= ack-constraints= check=ok|unknown|off
-  (<case>: 1|0, true|false, leaf:<obj> or leaf:unknown(<op>), with
-  /paths=<n>; dag: nodes of the solver's query; rows: the row.* counters'
+  (<case>: 1|0, true|false, leaf:<obj> or leaf:unknown(<op>) (address),
+  leaf:<numeral, unsigned> or leaf:term(<op>) (integer), with /paths=<n>; dag: nodes of the solver's query; rows: the row.* counters'
   sum)
 then
   split.verdict: <v> parts= unsat= sat= unknown= none= hardest-part=
@@ -3047,9 +3111,31 @@ vc.split-max-paths).
     open-aliases=0: reads, cond-reads, covers, addrs, encoding order. Only
     those behind a question or in a read index; at most
     --split-candidates-max (20; 0: all). A guard's loc is its first op's.
+  split.arith-candidates: arith-nodes= int-values= candidates= listed=
+    dropped=
+    (arith-nodes: bvmul / bvudiv / bvsdiv / bvurem / bvsrem / bvsmod and
+    the multiplication overflow predicates of the query at the solver
+    boundary; int-values: integer values (iN, N > 1) whose term is an ite
+    tree; candidates: those and the i1 values / guards controlling at least
+    one node; dropped: cut by --split-candidates-max)
+  split.arith-candidate: name= target=int|value|guard arith= mul= div=
+    direct= feeds= cases= same= loc=
+    a value controlling arithmetic: an int (a --split-leaves selector)
+    counts a node with, in an operand, its term or an ite whose condition's
+    atoms are all atoms of its tree's conditions (the normalization folds
+    a compare of the term into its conditions); an i1 value or guard (a
+    --split selector) counts a node with it in an ite condition of an
+    operand. mul / div: of arith, products (and overflow predicates) /
+    quotients and remainders; direct: (int) nodes with the term itself in
+    an operand; feeds: (int) other int values whose term holds this one's;
+    cases: leaves (int) or 2; same: as split.bool-candidate. Ranked by
+    arith, then ints first, then feeds, then direct, then cases, then
+    encoding order (untuned); at most --split-candidates-max. Values that
+    share the paths of a merge share the count (over-attribution).
   All rankings are heuristics (cheap counts, not a measure of hardness);
   reads is for queries whose residue is Ackermann pairs, not open alias
-  questions.
+  questions; arith for queries whose cost is products or quotients by
+  path-merged values.
 
 OUTPUT FORMATS (--format=text|jsonl; default text, the lines above):
 jsonl: every stdout line is one JSON object
@@ -3094,6 +3180,16 @@ Kinds and fields:
   split-bool-candidate name, loc, target (value|guard), open_aliases, addrs,
                 reads, cond_reads, covers, same (names, comma-separated;
                 - for none)
+  split-arith-candidates arith_nodes, int_values, candidates, listed,
+                dropped
+  split-arith-candidate name, loc, target (int|value|guard), arith, mul,
+                div, direct, feeds, cases, same
+  ite-values    value_kind (the text's kind=), values, over_guards, sites,
+                listed, dropped, leaves_max
+  ite-site      value_kind, values, leaves, conds, guard_atoms, name, loc
+  ite-loads     loads, dynamic, ite, ite_index, from_bits, symbolic, sites,
+                listed, dropped
+  ite-load-site addr_kind (the text's kind=), loads, loc
   hint          topic (split), open_aliases, ackermann_constraints (only
                 with open_aliases 0), option (--split-candidates)
   nondet        site, callee, width, value
@@ -3279,6 +3375,142 @@ static int writeReachPrograms(ModuleOp module, sea::ProgramOp program,
          << "\n";
   gOut->flush();
   return 0;
+}
+
+// --ite-stats: the census of one encoding (sea::IteCensus), by kind and
+// source location
+static void printIteStats(const sea::IteCensus &c, sea::ProgramOp program) {
+  sea::ValueNames vn(program);
+  const size_t cap = iteStatsMax ? size_t(iteStatsMax) : SIZE_MAX;
+  auto locOf = [](Value v) {
+    std::string l = sea::formatLoc(v.getLoc());
+    // a join's block argument without a position: its block's first op's
+    if (l.empty())
+      if (auto a = dyn_cast<BlockArgument>(v))
+        if (!a.getOwner()->empty())
+          l = sea::formatLoc(a.getOwner()->front().getLoc());
+    return l.empty() ? std::string("-") : l;
+  };
+  struct Site {
+    std::string loc, name;
+    unsigned values = 0, leaves = 0, conds = 0, guardAtoms = 0;
+  };
+  for (const char *kind : {"mem", "addr", "int"}) {
+    std::vector<Site> sites;
+    std::map<std::string, size_t> at;
+    unsigned n = 0, overGuards = 0, leavesMax = 0;
+    for (const sea::IteCensus::Value &v : c.values) {
+      if (StringRef(v.kind) != kind)
+        continue;
+      ++n;
+      overGuards += v.guardAtoms > 0;
+      leavesMax = std::max(leavesMax, v.leaves);
+      std::string l = locOf(v.value);
+      auto [it, fresh] = at.try_emplace(l, sites.size());
+      if (fresh) {
+        Site st;
+        st.loc = l;
+        st.name = vn.name(v.value).str();
+        sites.push_back(st);
+      }
+      Site &st = sites[it->second];
+      ++st.values;
+      st.leaves = std::max(st.leaves, v.leaves);
+      st.conds = std::max(st.conds, v.conds);
+      st.guardAtoms = std::max(st.guardAtoms, v.guardAtoms);
+    }
+    std::stable_sort(sites.begin(), sites.end(),
+                     [](const Site &a, const Site &b) {
+                       return a.leaves != b.leaves ? a.leaves > b.leaves
+                                                   : a.values > b.values;
+                     });
+    const size_t listed = std::min(sites.size(), cap);
+    {
+      sea::out::Record rec("ite-values");
+      rec.str("value_kind", kind)
+          .num("values", n)
+          .num("over_guards", overGuards)
+          .num("sites", sites.size())
+          .num("listed", listed)
+          .num("dropped", sites.size() - listed)
+          .num("leaves_max", leavesMax);
+      rec.text = std::string("ite.values: kind=") + kind +
+                 " values=" + std::to_string(n) +
+                 " over-guards=" + std::to_string(overGuards) +
+                 " sites=" + std::to_string(sites.size()) +
+                 " listed=" + std::to_string(listed) +
+                 " dropped=" + std::to_string(sites.size() - listed) +
+                 " leaves-max=" + std::to_string(leavesMax);
+      gOut->emit(rec);
+    }
+    for (size_t i = 0; i < listed; ++i) {
+      const Site &st = sites[i];
+      sea::out::Record rec("ite-site");
+      rec.str("value_kind", kind)
+          .num("values", st.values)
+          .num("leaves", st.leaves)
+          .num("conds", st.conds)
+          .num("guard_atoms", st.guardAtoms)
+          .str("name", st.name)
+          .str("loc", st.loc);
+      rec.text = std::string("ite.site: kind=") + kind +
+                 " values=" + std::to_string(st.values) +
+                 " leaves=" + std::to_string(st.leaves) +
+                 " conds=" + std::to_string(st.conds) +
+                 " guard-atoms=" + std::to_string(st.guardAtoms) +
+                 " name=" + st.name + " loc=" + st.loc;
+      gOut->emit(rec);
+    }
+  }
+  // the loads at non-ground addresses, by kind and location
+  std::map<std::string, uint64_t> byKind;
+  std::vector<std::tuple<std::string, std::string, uint64_t>> sites;
+  std::map<std::pair<std::string, std::string>, size_t> at;
+  for (const sea::IteCensus::Load &l : c.loads) {
+    ++byKind[l.kind];
+    std::string loc = sea::formatLoc(l.op->getLoc());
+    if (loc.empty())
+      loc = "-";
+    auto [it, fresh] = at.try_emplace({l.kind, loc}, sites.size());
+    if (fresh)
+      sites.emplace_back(l.kind, loc, 0);
+    ++std::get<2>(sites[it->second]);
+  }
+  std::stable_sort(sites.begin(), sites.end(),
+                   [](const auto &a, const auto &b) {
+                     return std::get<2>(a) > std::get<2>(b);
+                   });
+  const size_t listed = std::min(sites.size(), cap);
+  {
+    sea::out::Record rec("ite-loads");
+    rec.num("loads", c.allLoads)
+        .num("dynamic", c.loads.size())
+        .num("ite", byKind["ite"])
+        .num("ite_index", byKind["ite-index"])
+        .num("from_bits", byKind["from-bits"])
+        .num("symbolic", byKind["symbolic"])
+        .num("sites", sites.size())
+        .num("listed", listed)
+        .num("dropped", sites.size() - listed);
+    rec.text = "ite.loads: loads=" + std::to_string(c.allLoads) +
+               " dynamic=" + std::to_string(c.loads.size()) +
+               " ite=" + std::to_string(byKind["ite"]) +
+               " ite-index=" + std::to_string(byKind["ite-index"]) +
+               " from-bits=" + std::to_string(byKind["from-bits"]) +
+               " symbolic=" + std::to_string(byKind["symbolic"]) +
+               " sites=" + std::to_string(sites.size()) +
+               " listed=" + std::to_string(listed) +
+               " dropped=" + std::to_string(sites.size() - listed);
+    gOut->emit(rec);
+  }
+  for (size_t i = 0; i < listed; ++i) {
+    const auto &[kind, loc, k] = sites[i];
+    sea::out::Record rec("ite-load-site");
+    rec.str("addr_kind", kind).num("loads", k).str("loc", loc);
+    rec.text = "ite.load-site: kind=" + kind + " loads=" + std::to_string(k) +
+               " loc=" + loc;
+    gOut->emit(rec);
+  }
 }
 
 int main(int argc, char **argv) {
@@ -3574,6 +3806,11 @@ int main(int argc, char **argv) {
                 "--split-check-rlimit, --split-stop-on-sat and --split-smt2 "
                 "need --split, --split-leaves or --split-auto "
                 "(--split-max-paths: or --split-candidates)");
+  if (iteStats && splitOn)
+    return fail("--ite-stats reports one encoding: not with --split, "
+                "--split-leaves or --split-auto (each part is an encoding)");
+  if (!iteStats && iteStatsMax.getNumOccurrences())
+    return fail("--ite-stats-max needs --ite-stats");
   if (splitOn && (smt2 || reach || lambdaMem))
     return fail("--split, --split-leaves and --split-auto: not with --smt2 "
                 "(use --split-smt2), --reach or --mem=lambda");
@@ -3991,6 +4228,20 @@ int main(int argc, char **argv) {
   // seam.alias.open.* / seam.alias.open-memop.* count)
   uint64_t splitReads = 0, splitSameObjectOpen = 0, splitMemopOpen = 0;
   double splitPickSeconds = 0;
+  // --split-candidates: the integer and Boolean candidates by the
+  // arithmetic nodes they control (SplitCensus::attributeArith), ranked;
+  // the arithmetic nodes of the query; the integer ite values recorded
+  struct SplitArithCandidate {
+    std::string name, loc, target;
+    uint64_t arith = 0, mul = 0, div = 0, direct = 0;
+    unsigned cases = 0, feeds = 0;
+    std::vector<std::string> same;
+  };
+  std::vector<SplitArithCandidate> splitArithCandidates;
+  // --ite-stats: printed for the first encoding only (a retry encodes again)
+  bool iteStatsDone = false;
+  uint64_t splitArithNodes = 0;
+  size_t splitIntRecorded = 0;
   // One run of the VC and the solver. Returns kRetryWithoutInb if A-INB
   // (assumed by the rewriting) is found not to hold.
   constexpr int kRetryWithoutInb = -1;
@@ -4339,6 +4590,12 @@ int main(int argc, char **argv) {
       else if (splitPlant == "wrong-value")
         splitRun->setPlant(sea::SplitRun::Plant::WrongValue);
     }
+    // --ite-stats: after the hooks above (it chains to them)
+    std::unique_ptr<sea::IteCensus> iteCensus;
+    if (iteStats && !iteStatsDone) {
+      iteCensus = std::make_unique<sea::IteCensus>(program);
+      iteCensus->install(sem, ctx);
+    }
     sea::VCGen vcgen(sem, joinEncoding);
     vcgen.setReach(reach);
     vcgen.setJoinCases(vcJoinCases, {vcCasesReorder, vcCasesDropDefault});
@@ -4376,6 +4633,10 @@ int main(int argc, char **argv) {
                         "no split target was met by the encoding (each is "
                         "in a block no path reaches): the part is the "
                         "whole VC");
+    }
+    if (iteCensus) {
+      printIteStats(*iteCensus, program);
+      iteStatsDone = true;
     }
     SEA_PHASE_END(encodePhase)
         .kv("nodes-made", efac.nodesMade())
@@ -4644,6 +4905,8 @@ int main(int argc, char **argv) {
         if (!solverQuery)
           return 1; // vc.memop-term-at-boundary
         splitReads = census->attributeReads(sem, solverQuery);
+        splitArithNodes =
+            census->attributeArith(sem, solverQuery, splitMaxPaths);
         splitMemopOpen = memOpOpen["all"];
       }
       sea::ValueNames vn(program);
@@ -4720,6 +4983,68 @@ int main(int argc, char **argv) {
                 return a.covers > b.covers;
             }
             return a.addrs > b.addrs;
+          });
+      // the arithmetic they control: integer candidates (one part per
+      // leaf), then the Boolean ones (one line per term, as above); by the
+      // arithmetic nodes, then integers before Booleans, then (integers)
+      // the other integer candidates computed from it, then the nodes with
+      // its term itself in an operand, then more cases, then encoding order
+      // (untuned)
+      splitIntRecorded = census->ints.size();
+      for (const sea::SplitIntCandidate &n : census->ints) {
+        if (!n.arith)
+          continue;
+        SplitArithCandidate c;
+        c.name = vn.name(n.value).str();
+        c.loc = sea::formatLoc(n.value.getLoc());
+        c.target = "int";
+        c.arith = n.arith;
+        c.mul = n.arithMul;
+        c.div = n.arithDiv;
+        c.direct = n.arithDirect;
+        c.cases = n.leaves;
+        c.feeds = n.feeds;
+        splitArithCandidates.push_back(std::move(c));
+      }
+      {
+        std::vector<int> arithAt(census->boolCands.size(), -1);
+        for (size_t i = 0; i < census->boolCands.size(); ++i) {
+          const sea::SplitBoolCandidate &b = census->boolCands[i];
+          if (!b.arith || b.sameAs >= 0)
+            continue;
+          SplitArithCandidate c;
+          c.name = boolName(b);
+          if (b.block) {
+            if (!b.block->empty())
+              c.loc = sea::formatLoc(b.block->front().getLoc());
+          } else {
+            c.loc = sea::formatLoc(b.value.getLoc());
+          }
+          c.target = b.block ? "guard" : "value";
+          c.arith = b.arith;
+          c.mul = b.arithMul;
+          c.div = b.arithDiv;
+          c.cases = 2;
+          arithAt[i] = splitArithCandidates.size();
+          splitArithCandidates.push_back(std::move(c));
+        }
+        for (const sea::SplitBoolCandidate &b : census->boolCands)
+          if (b.sameAs >= 0 && arithAt[b.sameAs] >= 0)
+            splitArithCandidates[arithAt[b.sameAs]].same.push_back(boolName(b));
+      }
+      std::stable_sort(
+          splitArithCandidates.begin(), splitArithCandidates.end(),
+          [](const SplitArithCandidate &a, const SplitArithCandidate &b) {
+            if (a.arith != b.arith)
+              return a.arith > b.arith;
+            const bool ai = a.target == "int", bi = b.target == "int";
+            if (ai != bi)
+              return ai;
+            if (a.feeds != b.feeds)
+              return a.feeds > b.feeds;
+            if (a.direct != b.direct)
+              return a.direct > b.direct;
+            return a.cases > b.cases;
           });
       splitOpenAliases = openOverlaps.size();
       splitPickSeconds = std::chrono::duration<double>(
@@ -6824,6 +7149,49 @@ int main(int argc, char **argv) {
                    " cond-reads=" + std::to_string(c.condReads) +
                    " covers=" + std::to_string(c.covers) +
                    " same=" + (c.same.empty() ? "-" : llvm::join(c.same, ",")) +
+                   " loc=" + (c.loc.empty() ? "-" : c.loc);
+        gOut->emit(rec);
+      }
+      const size_t nArith = splitArithCandidates.size();
+      const size_t arithListed =
+          splitCandidatesMax ? std::min<size_t>(nArith, splitCandidatesMax)
+                             : nArith;
+      {
+        sea::out::Record rec("split-arith-candidates");
+        rec.num("arith_nodes", splitArithNodes)
+            .num("int_values", splitIntRecorded)
+            .num("candidates", nArith)
+            .num("listed", arithListed)
+            .num("dropped", nArith - arithListed);
+        rec.text = "split.arith-candidates: arith-nodes=" +
+                   std::to_string(splitArithNodes) +
+                   " int-values=" + std::to_string(splitIntRecorded) +
+                   " candidates=" + std::to_string(nArith) +
+                   " listed=" + std::to_string(arithListed) +
+                   " dropped=" + std::to_string(nArith - arithListed);
+        gOut->emit(rec);
+      }
+      for (size_t i = 0; i < arithListed; ++i) {
+        const SplitArithCandidate &c = splitArithCandidates[i];
+        std::string same = c.same.empty() ? "-" : llvm::join(c.same, ",");
+        sea::out::Record rec("split-arith-candidate");
+        rec.str("name", c.name)
+            .str("loc", c.loc)
+            .str("target", c.target)
+            .num("arith", c.arith)
+            .num("mul", c.mul)
+            .num("div", c.div)
+            .num("direct", c.direct)
+            .num("feeds", c.feeds)
+            .num("cases", c.cases)
+            .str("same", same);
+        rec.text = "split.arith-candidate: name=" + c.name +
+                   " target=" + c.target + " arith=" + std::to_string(c.arith) +
+                   " mul=" + std::to_string(c.mul) +
+                   " div=" + std::to_string(c.div) +
+                   " direct=" + std::to_string(c.direct) +
+                   " feeds=" + std::to_string(c.feeds) +
+                   " cases=" + std::to_string(c.cases) + " same=" + same +
                    " loc=" + (c.loc.empty() ? "-" : c.loc);
         gOut->emit(rec);
       }

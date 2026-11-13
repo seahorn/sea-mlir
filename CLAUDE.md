@@ -42,7 +42,8 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   block arguments; BMC form check); `Names.h` (VC symbol names = printed
   MLIR names); `Replay.h` (model -> interpreter run, with validation);
   `Split.h` (case splitting of the VC at the definitions of chosen values
-  / block guards, `sea-vc --split`, docs/design/Split.md);
+  / block guards, `sea-vc --split`; also the ite census of
+  `sea-vc --ite-stats`; docs/design/Split.md);
   `Origins.h` (Expr node -> location of the sea op that made it, recorded
   by OpSem and followed through simplify / boundary / Ackermann: `sea-vc
   --arith-stats`, `--ack-dump-pairs`; the census is `tools/sea-vc/ArithStats.h`);
