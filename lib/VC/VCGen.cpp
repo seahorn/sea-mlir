@@ -261,7 +261,9 @@ LogicalResult VCGen::genVc(ProgramOp program, OpSemContext &ctx) {
                                      bb->without_terminator().end());
     }
     savedOpHook = std::move(ctx.opHook);
-    ctx.opHook = [this, &prog](Operation &op) {
+    ctx.opHook = [this, &prog, &savedOpHook](Operation &op) {
+      if (savedOpHook)
+        savedOpHook(op);
       ++prog.ops;
       prog.op = &op;
       progress(prog);

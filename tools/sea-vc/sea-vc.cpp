@@ -61,6 +61,7 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -992,7 +993,8 @@ static cl::opt<double> progressInterval(
     cl::desc("vc.phase progress lines inside encode: one when this many "
              "seconds passed since the last (checked before each op and "
              "after each block); 0: one after every block (default 10, "
-             "untuned)"),
+             "untuned); under --mem-limit also how often the "
+             "mem-limit-progress note is refreshed"),
     cl::init(10.0), cl::value_desc("seconds"));
 
 static cl::opt<uint64_t> memLimitPlant(
@@ -1002,10 +1004,19 @@ static cl::opt<uint64_t> memLimitPlant(
              "--mem-limit would"),
     cl::init(0), cl::value_desc("n"), cl::Hidden);
 
+static cl::opt<bool> memLimitPlantLlvm(
+    "mem-limit-plant-llvm",
+    cl::desc("Testing only: with --mem-limit-plant, fail through LLVM's "
+             "out-of-memory path (llvm::report_bad_alloc_error, as an LLVM "
+             "container's failed allocation does) instead of operator new's"),
+    cl::init(false), cl::Hidden);
+
 namespace {
 /// A line the --mem-limit handler writes as is (no allocation there):
 /// formatted ahead, in the output format in effect, when its contents
-/// change. Two slots, so a reader on another thread sees a whole line.
+/// change. Two slots: a reader sees a whole line unless set() runs twice while
+/// it writes (the main thread is the only writer, and during encode the only
+/// allocator).
 class HandlerNote {
 public:
   /// `textLine`: one `key: value k=v ...` line, no newline.
@@ -1214,7 +1225,7 @@ struct Phase {
                         .kv("phase", (P).name)                                 \
                         .kv("time", (P).seconds()))
 
-static void memLimitHit();
+[[noreturn]] static void memLimitHit();
 
 namespace {
 /// Progress inside encode (VCGen::setProgress), on when vc.phase is on or
@@ -1238,7 +1249,8 @@ public:
       memCurOpIndex.store(p.ops, std::memory_order_relaxed);
       memCurOp.store(p.op, std::memory_order_release);
       if (memLimitPlant && p.op && p.ops == memLimitPlant)
-        memLimitHit();
+        memLimitPlantLlvm ? llvm::report_bad_alloc_error("planted", false)
+                          : memLimitHit();
     }
     const Clock::time_point now = Clock::now();
     const uint64_t nodes = efac.nodesMade();
@@ -1341,8 +1353,9 @@ static uint64_t countOps(Operation *op) {
 }
 
 /// --mem-limit: an allocation that fails (operator new; Bitwuzla, the VC)
-/// ends the run as unknown. Writes without allocating.
-static void memLimitHit() {
+/// ends the run as unknown (LLVM containers fail through
+/// llvm::report_bad_alloc_error: memLimitHitLlvm). Writes without allocating.
+[[noreturn]] static void memLimitHit() {
   outs().flush();
   static const char msg[] = "result: unknown\nmem-limit: hit\n";
   static const char jmsg[] =
@@ -1361,6 +1374,12 @@ static void memLimitHit() {
       "Error: memory limit (--mem-limit) hit [vc.mem-limit]\n";
   (void)!::write(2, err, sizeof(err) - 1);
   ::_exit(3);
+}
+
+/// The LLVM bad-alloc handler (llvm::safe_malloc, SmallVector growth, ...);
+/// it must not return.
+[[noreturn]] static void memLimitHitLlvm(void *, const char *, bool) {
+  memLimitHit();
 }
 
 static cl::list<std::string> configFiles(
@@ -2296,7 +2315,8 @@ OUTPUT (stdout, `key: value` lines):
                                   size reaches the limit):
                                   z3's memory-out; an allocation that
                                   fails (operator new: the VC, Bitwuzla's
-                                  C++) prints result: unknown and this line
+                                  C++; LLVM containers: llvm bad-alloc
+                                  handler) prints result: unknown and this line
                                   and exits 3; Bitwuzla: an unknown within
                                   the time under --mem-limit. Not detected:
                                   Yices exits on its own out-of-memory
@@ -3382,6 +3402,7 @@ int main(int argc, char **argv) {
       Z3_global_param_set("memory_max_size",
                           std::to_string(uint64_t(memLimit) * 1024).c_str());
     std::set_new_handler(memLimitHit);
+    llvm::install_bad_alloc_error_handler(memLimitHitLlvm);
   }
 
   MLIRContext context;

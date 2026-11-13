@@ -60,7 +60,7 @@ timeout 900 sea-vc job.mlir --lower --seam --widen-memory=4 \
   `mem-limit-op:` (the operation being encoded, with its source position).
 - The end of each phase has the memory (`rss-mb`, `vm-mb`, `peak-rss-mb`);
   inside `encode`, `--progress` adds a `vc.phase progress` line every
-  `--progress-interval` seconds (default 10).
+  `--progress-interval` seconds (default 10, not tuned).
 
 On a shared machine, run a few jobs in parallel at most.
 

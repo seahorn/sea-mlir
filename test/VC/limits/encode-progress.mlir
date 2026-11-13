@@ -13,12 +13,16 @@
 // PROG-NEXT: log: vc.phase end phase=encode
 // PROG-NOT: progress
 
-// The progress events change nothing on stdout (the query included).
-// RUN: sea-vc %s --vcgen-only --dag-stats > %t.off
-// RUN: sea-vc %s --vcgen-only --dag-stats --progress --progress-interval=0 2>/dev/null > %t.on
+// The progress events and a --mem-limit that is not hit change nothing on
+// stdout (the query included).
+// RUN: sea-vc %s --smt2 > %t.off
+// RUN: sea-vc %s --smt2 --progress --progress-interval=0 2>/dev/null > %t.on
+// RUN: sea-vc %s --smt2 --mem-limit=64 > %t.mem
 // RUN: sed -e '/-time:/d' -e '/^tool.version/d' %t.off > %t.off.s
 // RUN: sed -e '/-time:/d' -e '/^tool.version/d' %t.on > %t.on.s
+// RUN: sed -e '/-time:/d' -e '/^tool.version/d' %t.mem > %t.mem.s
 // RUN: diff %t.off.s %t.on.s
+// RUN: diff %t.off.s %t.mem.s
 
 // A --mem-limit hit (planted: the handler runs before encode op n, as when
 // an allocation fails there) names the phase and the op being encoded; the
@@ -36,6 +40,11 @@
 // HIT4-NEXT: mem-limit-phase: encode run=1{{$}}
 // HIT4-NEXT: mem-limit-progress: time={{[0-9.]+}} blocks={{[12]}} blocks-total=4 ops=3 ops-total=6 nodes-made={{[0-9]+}}{{( rss-mb=[0-9]+ vm-mb=[0-9]+)?}} peak-rss-mb={{[0-9]+}} slowest-op=
 // HIT4-NEXT: mem-limit-op: sea.add ops=4 at=f.c:7:3{{$}}
+// The same through LLVM's out-of-memory path (an LLVM container's failed
+// allocation): the same lines, the same status.
+// RUN: not sea-vc %s --mem-limit=64 --mem-limit-plant=4 --progress-interval=0 --mem-limit-plant-llvm 2>%t.llvm.err | FileCheck %s --check-prefix=HIT4
+// RUN: FileCheck %s --check-prefix=HITERR < %t.llvm.err
+// RUN: sh -c 'sea-vc "$0" --mem-limit=64 --mem-limit-plant=4 --progress-interval=0 --mem-limit-plant-llvm >/dev/null 2>&1; test $? -eq 3' %s
 // The exit status of a hit is 3.
 // RUN: sh -c 'sea-vc "$0" --mem-limit=64 --mem-limit-plant=4 >/dev/null 2>&1; test $? -eq 3' %s
 
