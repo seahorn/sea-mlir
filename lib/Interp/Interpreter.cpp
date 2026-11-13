@@ -385,11 +385,29 @@ void printFileLoc(llvm::raw_ostream &os, FileLineColLoc loc) {
      << loc.getColumn();
 }
 
+std::string boxAllFalseText(const RunResult &result) {
+  if (!result.boxAllFalse)
+    return "";
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  os << "(";
+  llvm::interleaveComma(result.boxAllFalse->index, os,
+                        [&](const APInt &k) { os << k.getZExtValue(); });
+  os << ")";
+  return text;
+}
+
 void printAssertContext(llvm::raw_ostream &os, StringRef prefix,
                         const RunResult &result) {
   if (std::string l = result.assertLoc ? formatLoc(*result.assertLoc) : "";
       !l.empty())
     os << prefix << "assert-op: " << l << "\n";
+  if (const auto &f = result.boxAllFalse) {
+    os << prefix << "box-all-false: index=" << boxAllFalseText(result);
+    if (std::string l = formatLoc(f->op->getLoc()); !l.empty())
+      os << " op=" << l;
+    os << "\n";
+  }
   if (result.branchPath.empty())
     return;
   os << prefix << "assert-path:";
@@ -742,6 +760,14 @@ private:
   }
   /// Executes struct.create / extract / insert.
   void execStruct(Operation &op);
+  /// Evaluates a sea.box.all over its whole box (docs/design/BoxAll.md):
+  /// defines its result; records the first false index
+  /// (RunResult::boxAllFalse). On failure, `at` is the body op that
+  /// stopped the run and the status says why (Error or StepLimit).
+  LogicalResult execBoxAll(BoxAllOp box, std::string &error, Operation *&at,
+                           RunStatus &status);
+  /// One op of a sea.box.all body (the ops its verifier admits).
+  LogicalResult execBodyOp(Operation &op, std::string &error);
 
   /// The key of cell `k` of a range starting at index value `idx`, checked
   /// against its object for abstract memories.
@@ -1668,6 +1694,104 @@ LogicalResult Interpreter::jump(Block *dest, ValueRange operands,
   return success();
 }
 
+LogicalResult Interpreter::execBodyOp(Operation &op, std::string &error) {
+  if (isa<LoadOp, IsModifiedOp>(op))
+    return execMem(op, error);
+  if (isa<PtrAddOp, PtrIndexOp, PtrDiffOp, PtrCmpOp, PtrNullOp, PtrToIntOp,
+          PtrFromIntOp, PtrBaseOp, PtrDereferenceableOp>(op))
+    return execPtr(op, error);
+  if (auto sel = dyn_cast<SelectOp>(op);
+      sel && isa<PtrType, StructType>(sel.getType())) {
+    bool c = env.lookup(sel.getCondition()).isOne();
+    defineLeaves(sel.getResult(),
+                 leavesOf(c ? sel.getTrueValue() : sel.getFalseValue()));
+    return success();
+  }
+  if (isa<StructCreateOp, StructExtractOp, StructInsertOp>(op)) {
+    execStruct(op);
+    return success();
+  }
+  SmallVector<APInt> operands = valuesOf(op.getOperands());
+  std::optional<APInt> v = evalPureOp(&op, operands);
+  if (std::optional<StringRef> broken = brokenWrapPromise(&op, operands))
+    diag::warn("interp.wrap-promise",
+               op.getName().getStringRef() + " " + *broken +
+                   ": the promise is broken (the value wraps; run "
+                   "sea-wrap-flags to assume or assert it)",
+               op.getLoc());
+  if (!v || op.getNumResults() != 1) {
+    error = "unsupported op '" + op.getName().getStringRef().str() +
+            "' in a sea.box.all body";
+    return failure();
+  }
+  define(op.getResult(0), *v);
+  if (trackProv)
+    propagateProv(op, operands);
+  return success();
+}
+
+LogicalResult Interpreter::execBoxAll(BoxAllOp box, std::string &error,
+                                      Operation *&at, RunStatus &status) {
+  const unsigned n = box.getNumDims();
+  SmallVector<APInt, 2> lo, step, trips;
+  bool empty = false;
+  for (unsigned d = 0; d < n; ++d) {
+    lo.push_back(APInt(64, uint64_t(box.getLowerBounds()[d])));
+    step.push_back(APInt(64, uint64_t(box.getSteps()[d])));
+    trips.push_back(
+        boxTripCount(lo[d], step[d], env.lookup(box.getUpperBounds()[d])));
+    empty |= trips[d].isZero();
+  }
+  Block &body = box.getBodyBlock();
+  Value yielded = box.getYielded();
+  bool all = true;
+  // t: the trip numbers, row-major (the last dimension fastest)
+  SmallVector<APInt, 2> t(n, APInt::getZero(64));
+  while (!empty) {
+    // one step per index, so a body without ops (a lone yield of an outer
+    // value) still reaches the step limit on a large box
+    if (++result.steps > options.maxSteps) {
+      status = RunStatus::StepLimit;
+      return failure();
+    }
+    SmallVector<APInt, 2> index;
+    for (unsigned d = 0; d < n; ++d) {
+      index.push_back(lo[d] + step[d] * t[d]);
+      define(body.getArgument(d), index.back());
+    }
+    for (Operation &op : body.without_terminator()) {
+      if (++result.steps > options.maxSteps) {
+        at = &op;
+        status = RunStatus::StepLimit;
+        return failure();
+      }
+      if (failed(execBodyOp(op, error))) {
+        at = &op;
+        status = RunStatus::Error;
+        return failure();
+      }
+    }
+    if (env.lookup(yielded).isZero() && all) {
+      all = false;
+      if (!result.boxAllFalse)
+        result.boxAllFalse = RunResult::BoxAllFalse{box, index};
+    }
+    // the next index: the odometer; done once the first dimension wraps
+    unsigned d = n;
+    while (d > 0) {
+      --d;
+      ++t[d];
+      if (t[d] != trips[d])
+        break;
+      t[d] = APInt::getZero(64);
+      if (d == 0)
+        empty = true; // every index visited
+    }
+  }
+  define(box.getResult(), APInt(1, all ? 1 : 0));
+  return success();
+}
+
 RunResult Interpreter::run() {
   Block *block = &program.getBody().front();
   Block *from = nullptr;
@@ -1731,6 +1855,13 @@ RunResult Interpreter::run() {
       if (auto check = dyn_cast<AssertOp>(op)) {
         if (env.lookup(check.getCond()).isZero())
           return finish(RunStatus::AssertFailed, &op);
+        continue;
+      }
+      if (auto box = dyn_cast<BoxAllOp>(op)) {
+        Operation *at = &op;
+        RunStatus status = RunStatus::Error;
+        if (failed(execBoxAll(box, error, at, status)))
+          return finish(status, at, error);
         continue;
       }
       if (isa<TrackingOnOp, TrackingOffOp>(op))

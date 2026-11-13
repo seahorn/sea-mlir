@@ -7,6 +7,12 @@
 // sea-vc --agent, INPUT FORM). Order and why:
 //  -1. sea-apply-tracking        tracking markers -> `tracked` updates (part
 //                                of the meaning, not an optimization)
+//  -1'. sea-lower-box-all        sea.box.all in assert polarity -> its
+//                                body at one arbitrary index of the box
+//                                (docs/design/BoxAll.md): before sccp,
+//                                which cannot see into the region, and
+//                                before every pass that is not written for
+//                                region ops; refusals stop the lowering
 //   0. sccp                      (upstream) first: values computed from
 //                                constants become sea.const (by the op
 //                                folders = evalPureOp), so allocation sizes
@@ -226,6 +232,7 @@ void registerPasses() {
   registerPass([] { return createMergeAssertsPass(); });
   registerPass([] { return createSinkAssumesPass(); });
   registerPass([] { return createRangeFoldPass(); });
+  registerPass([] { return createLowerBoxAllPass(); });
   registerPass([] { return createLowerPtrIndexPass(); });
   registerPass([] { return createCheckAlignPass(); });
   registerPass([] { return createCheckPtrIndexPass(); });
@@ -258,11 +265,14 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
                              bool checkAlign, unsigned checkPtrIndex, bool opt,
                              bool memhavocNullNoop, unsigned disable,
                              const PlaceFiles &place, RangeFoldMode rangeFold,
-                             unsigned expandMemMove, bool ptrCompanion) {
+                             unsigned expandMemMove, bool ptrCompanion,
+                             unsigned boxAllExpand) {
   const bool cse = opt && !(disable & LowerDisableCse);
   const bool canonicalize = opt && !(disable & LowerDisableCanonicalize);
   OpPassManager &prog = pm.nest<ProgramOp>();
   prog.addPass(createApplyTrackingPass());
+  // claims over index boxes, before anything else sees a region op
+  prog.addPass(createLowerBoxAllPass(boxAllExpand));
   if (fold && !(disable & LowerDisableSccp))
     prog.addPass(createSCCPPass());
   if (cse)

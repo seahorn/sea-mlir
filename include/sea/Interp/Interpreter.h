@@ -295,6 +295,14 @@ struct RunResult {
   /// The memhavocs of null the run executed as no-ops
   /// (RunOptions::memhavocNullNoop).
   uint64_t memhavocNullNoopUses = 0;
+  /// The first sea.box.all of the run whose value was 0, and the first index
+  /// (one value per dimension, row-major order) where its body yielded 0
+  /// (docs/design/BoxAll.md).
+  struct BoxAllFalse {
+    mlir::Operation *op = nullptr;
+    llvm::SmallVector<llvm::APInt, 2> index;
+  };
+  std::optional<BoxAllFalse> boxAllFalse;
 };
 
 /// The file location in `loc` (directly, or inside a name / fused /
@@ -372,6 +380,9 @@ void addPathFields(out::Record &rec,
 ///   <prefix>assert-path: <loc> <- <loc> ...      (recent branches; each
 ///                                   <file:line:col>[ inlined-at=..])
 /// Nothing for a missing location.
+/// The index of RunResult::boxAllFalse as text, `(k1[, k2])` (empty: none).
+std::string boxAllFalseText(const RunResult &result);
+
 void printAssertContext(llvm::raw_ostream &os, llvm::StringRef prefix,
                         const RunResult &result);
 

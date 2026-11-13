@@ -78,6 +78,12 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   pointer-holding memories; ptr.base / dereferenceable become arithmetic);
   `sea-lower-ptr-index` (`sea.ptr.index`, explicit GEP pointer arithmetic with trusted no-wrap flags, -> mul / add / ptr.add, flags dropped; standalone only: the VC encodes the op as a PTR_INDEX node, docs/design/PtrIndex.md),
   `sea-check-ptr-index` (paranoid job: assert every used GEP no-wrap promise, docs/design/PtrIndex.md section 6; `sea-vc --check-ptr-index`),
+  `sea-lower-box-all` (`sea.box.all`, a conjunction over a box of 1-2
+  i64 indices, in assert polarity only -> its body at one nondet index
+  with `assume(t ult tripcount)`, guarded when the box may be empty; other
+  uses are errors; a constant box of at most K indices is expanded instead,
+  `sea-vc --box-all-expand=K`; first after sea-apply-tracking in the lowering;
+  docs/design/BoxAll.md),
   `sea-print-strengthen` / `sea-print-weaken` (counterexample print ops,
   weak = by name vs strong = SSA operands, docs/design/Print.md),
   `sea-drop-fresh-memhavoc` (memhavoc of an object nothing wrote since its

@@ -61,6 +61,13 @@ std::optional<llvm::StringRef>
 brokenPtrIndexPromise(mlir::Operation *op, std::optional<llvm::APInt> base,
                       llvm::ArrayRef<llvm::APInt> indices);
 
+/// The trip count of one dimension of a `sea.box.all` (docs/design/BoxAll.md):
+/// the number of indices lo, lo + step, ... below ub, unsigned: 0 if
+/// ub <=u lo, else (ub - lo - 1) /u step + 1 (no wrap; step >= 1). All
+/// three have the index width.
+llvm::APInt boxTripCount(const llvm::APInt &lo, const llvm::APInt &step,
+                         const llvm::APInt &ub);
+
 } // namespace sea
 
 #endif // SEA_DIALECT_SEA_SEMANTICS_H

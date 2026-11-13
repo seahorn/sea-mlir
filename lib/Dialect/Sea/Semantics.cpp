@@ -285,4 +285,10 @@ std::optional<StringRef> brokenPtrIndexPromise(Operation *op,
   return std::nullopt;
 }
 
+APInt boxTripCount(const APInt &lo, const APInt &step, const APInt &ub) {
+  if (ub.ule(lo))
+    return APInt::getZero(ub.getBitWidth());
+  return (ub - lo - 1).udiv(step) + 1;
+}
+
 } // namespace sea

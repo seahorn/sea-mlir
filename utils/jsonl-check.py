@@ -150,6 +150,11 @@ def render(r):
             lines.append("at: " + f["loc"])
         if "op" in f or "op_name" in f:
             lines.append(p + "assert-op: " + where("op"))
+        if "box_all_false" in f:
+            s = p + "box-all-false: index=" + f["box_all_false"]
+            if "box_all_op" in f or "box_all_op_name" in f:
+                s += " op=" + where("box_all_op")
+            lines.append(s)
         if "path" in f:
             sites = f.get("path_inlined", [[]] * len(f["path"]))
             if len(sites) != len(f["path"]):
@@ -175,6 +180,7 @@ def render(r):
                 "at: ",
                 "assert-at",
                 "assert-op",
+                "box-all-false",
                 "assert-path",
                 "reached",
                 "message",

@@ -185,6 +185,23 @@ std::unique_ptr<mlir::Pass> createDropFreshMemHavocPass();
 /// when it is not (memhavoc of null is a no-op; GuardNullMemHavoc.cpp).
 std::unique_ptr<mlir::Pass> createGuardNullMemHavocPass();
 
+/// sea-lower-box-all: a sea.box.all whose result is only asserted (through
+/// i1 sea.and / sea.or) -> its body at one arbitrary index of the box
+/// (LowerBoxAll.cpp, docs/design/BoxAll.md); other uses are errors.
+std::unique_ptr<mlir::Pass> createLowerBoxAllPass();
+/// With expand-max = \p expandMax: a box of constant upper bounds and at
+/// most that many indices is expanded (the body at every index).
+std::unique_ptr<mlir::Pass> createLowerBoxAllPass(unsigned expandMax);
+/// The default of expand-max (sea-vc --box-all-expand); untuned,
+/// docs/design/BoxAll.md.
+inline constexpr unsigned kBoxAllExpandDefault = 16;
+/// The largest expand-max (the indices of one expanded box).
+inline constexpr unsigned kMaxBoxAllExpand = 1u << 16;
+/// On the sea.program after sea-lower-box-all: its counters (i64
+/// attributes: lowered, guarded, expanded, expand-max, empty, dead,
+/// nondets; `vc.box-all`).
+inline constexpr llvm::StringLiteral kBoxAllStatsAttr = "sea.box_all";
+
 /// sea-widen-memory: byte memories whose accesses are all k-aligned whole
 /// words get k-byte cells (aligned word layout).
 std::unique_ptr<mlir::Pass> createWidenMemoryPass();
@@ -238,7 +255,8 @@ enum class RangeFoldMode { Off, Fold, Check };
 /// \p expandMemMove: sea-expand-small-memmove{max-bytes=K} after the
 /// metadata lowerings, placement and widening (sea-vc --expand-memmove,
 /// default 0: not run); \p ptrCompanion: its option ptr-companion (sea-vc
-/// --ptr-companion is not off: every memmove kept).
+/// --ptr-companion is not off: every memmove kept). \p boxAllExpand:
+/// sea-lower-box-all{expand-max=K} (sea-vc --box-all-expand).
 void buildVCLoweringPipeline(
     mlir::OpPassManager &pm, bool abstract, bool nativeMulOverflow = false,
     bool fold = true, unsigned widenMemory = 0, bool expandMemSet = true,
@@ -246,7 +264,8 @@ void buildVCLoweringPipeline(
     bool checkAlign = false, unsigned checkPtrIndex = 0, bool opt = true,
     bool memhavocNullNoop = true, unsigned disable = 0,
     const PlaceFiles &place = {}, RangeFoldMode rangeFold = RangeFoldMode::Off,
-    unsigned expandMemMove = 0, bool ptrCompanion = false);
+    unsigned expandMemMove = 0, bool ptrCompanion = false,
+    unsigned boxAllExpand = kBoxAllExpandDefault);
 
 /// Attaches the `lower.pass` log (one level-1 event per pass run: ops
 /// before and after, time; lib/Transforms/PassLog.cpp) to \p pm. Costs a
