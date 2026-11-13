@@ -1,0 +1,343 @@
+// utils/encoding-diff.py: one sea-vc on two programs (two encodings of one
+// job); the class of each pair. The tests pin the class lines only.
+// REQUIRES: z3
+// RUN: rm -rf %t && split-file %s %t
+// DEFINE: %{ed} = %python %sea_src_root/utils/encoding-diff.py --sea-vc %sea_vc --z3 %z3
+// rc.py: run a command, print its output, then `exit: <status>`.
+// DEFINE: %{rc} = %python %t/rc.py %{ed}
+
+// The same program on both sides.
+// RUN: %{ed} %t/g0.mlir %t/g0.mlir | FileCheck %s --check-prefix=IDENT
+// IDENT: result: identical
+// IDENT: total: identical=1
+
+// Two operations created in another order: other let names / conjunct order
+// in the text, the same terms.
+// RUN: %{ed} %t/g0.mlir %t/g2.mlir | FileCheck %s --check-prefix=DAG
+// DAG: result: same-dag
+
+// A hand-skolemized claim (one index k, assume k <= 7) against sea.box.all
+// with --box-all-expand=0: the index nondet is named box.all.eq.0, --alias
+// maps the hand skolem onto it; the bound is written differently (ule 7 /
+// ult 8): equivalent differing conjuncts.
+// RUN: %{ed} %t/skolem.mlir %t/box.mlir --alias k=box.all.eq.0 --left-flags=--box-all-expand=0 --right-flags=--box-all-expand=0 | FileCheck %s --check-prefix=PARTS
+// PARTS: result: equiv-parts
+
+// The differing conjuncts agree only under the common ones (x == 5):
+// not equiv-parts, equivalent as a whole.
+// RUN: %{ed} %t/eq1.mlir %t/eq2.mlir | FileCheck %s --check-prefix=EQUIV
+// EQUIV: result: equiv{{$}}
+
+// A symbol on one side only (an input g, bounded and otherwise unused):
+// projected.
+// RUN: %{ed} %t/one-sided.mlir %t/e.mlir | FileCheck %s --check-prefix=ONE
+// ONE: result: equiv{{$}}
+// ONE: info: left=sat right=sat {{.*}}only-left=['|nd.g_0|']
+
+// Two unsatisfiable queries whose differing conjuncts are not equivalent:
+// equisatisfiable only. --strict turns it into status 3.
+// RUN: %{rc} %t/unsat1.mlir %t/unsat2.mlir | FileCheck %s --check-prefix=UNSAT
+// UNSAT: result: both-unsat
+// UNSAT: exit: 0
+// RUN: %{rc} --strict %t/unsat1.mlir %t/unsat2.mlir | FileCheck %s --check-prefix=STRICT
+// STRICT: result: both-unsat
+// STRICT: strict: fail both-unsat=1
+// STRICT: exit: 3
+
+// Different claims: DIFF, status 1, with a model.
+// RUN: %{rc} %t/e.mlir %t/f.mlir | FileCheck %s --check-prefix=DIFF
+// DIFF: result: DIFF
+// DIFF: model: sat
+// DIFF: total: {{.*}}diff=1
+// DIFF: exit: 1
+
+// A resource limit of 1: z3 gives up, the pair is unknown, status 2.
+// RUN: %{rc} --rlimit 1 %t/e.mlir %t/f.mlir | FileCheck %s --check-prefix=UNK
+// UNK: result: unknown
+// UNK: exit: 2
+
+// Two sites with one name (two "x" nondets) are not one symbol: the program
+// with two inputs must not compare identical to the one with a single x.
+// RUN: %{rc} %t/dup2.mlir %t/one2.mlir | FileCheck %s --check-prefix=COLL
+// COLL: result: error
+// COLL: info: name collision: {{.*}} -> |nd.x_0|
+// COLL: exit: 1
+
+// --alias onto a name the side already has is the same collision.
+// RUN: %{rc} --alias y=x %t/e.mlir %t/e.mlir | FileCheck %s --check-prefix=ACOLL
+// ACOLL: result: error
+// ACOLL: info: name collision
+// ACOLL: exit: 1
+
+// --alias and --drop-left are reported; a name that matches nothing is an
+// error. The dropped input g and its users (the bound, its assume) are the
+// only difference.
+// RUN: %{ed} --drop-left g --alias x=x %t/one-sided.mlir %t/e.mlir | FileCheck %s --check-prefix=DROP
+// DROP: result: identical
+// DROP: alias: left nondet x->x
+// DROP: dropped: left names=['g'] ops=3
+// RUN: %{rc} --drop-left nope %t/one-sided.mlir %t/e.mlir | FileCheck %s --check-prefix=NODROP
+// NODROP: result: error
+// NODROP: exit: 1
+
+// A label ending in a position number is renamed by position, so two
+// programs that differ in that number only are identical; with the suffix
+// pattern off the objects have different names.
+// RUN: %{ed} %t/lab3.mlir %t/lab9.mlir | FileCheck %s --check-prefix=LAB
+// LAB: result: identical
+// RUN: %{ed} --label-suffix= %t/lab3.mlir %t/lab9.mlir | FileCheck %s --check-prefix=NOLAB
+// NOLAB: info: {{.*}}only-left=['|obj.buf.a3|'] only-right=['|obj.buf.a9|']
+
+// A memhavoc symbol nd.<site> is not renamed (positional), and is listed.
+// RUN: %{ed} %t/havoc.mlir %t/havoc.mlir | FileCheck %s --check-prefix=POS
+// POS: result: identical
+// POS: info: {{.*}}positional=['nd.3']
+
+// --alias without = is a usage error, not a traceback.
+// RUN: not %{ed} --alias foo %t/e.mlir %t/e.mlir 2>&1 | FileCheck %s --check-prefix=BADALIAS
+// BADALIAS: --alias foo: expected OLD=NEW
+
+// Pairs are consecutive; an odd number of files is refused.
+// RUN: not %{ed} %t/e.mlir 2>&1 | FileCheck %s --check-prefix=ODD
+// ODD: an even number of files
+
+// A missing input is an error line, status 1.
+// RUN: not %{ed} %t/e.mlir %t/none.mlir | FileCheck %s --check-prefix=ERR
+// ERR: result: error
+
+// --agent needs no solver and no files.
+// RUN: %python %sea_src_root/utils/encoding-diff.py --agent | FileCheck %s --check-prefix=AGENT
+// AGENT: both-unsat
+// AGENT: STATUS:
+
+//--- rc.py
+import subprocess
+import sys
+
+r = subprocess.run(sys.argv[1:], capture_output=True, text=True)
+print(r.stdout, end="")
+print(r.stderr, end="")
+print(f"exit: {r.returncode}")
+//--- g0.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i32
+  %y = sea.nondet "y" [1] : i32
+  %c5 = sea.const 5 : i32
+  %c7 = sea.const 7 : i32
+  %a = sea.icmp ult, %x, %c5 : i32
+  %b = sea.icmp ult, %y, %c7 : i32
+  sea.assume %a
+  sea.assume %b
+  %e = sea.icmp ult, %x, %y : i32
+  sea.assert %e
+  sea.halt
+}
+//--- g2.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i32
+  %y = sea.nondet "y" [1] : i32
+  %c5 = sea.const 5 : i32
+  %c7 = sea.const 7 : i32
+  %b = sea.icmp ult, %y, %c7 : i32
+  %a = sea.icmp ult, %x, %c5 : i32
+  sea.assume %a
+  sea.assume %b
+  %e = sea.icmp ult, %x, %y : i32
+  sea.assert %e
+  sea.halt
+}
+//--- skolem.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %c8 = sea.const 8 : i64
+  %z = sea.const 0 : i8
+  %m = sea.mem.nondet "m" [0] : !m
+  %a = sea.alloca %c8 align 8 [1] : i64 -> !sea.ptr<64>
+  %k = sea.nondet "k" [2] : i64
+  %c7 = sea.const 7 : i64
+  %lt = sea.icmp ule, %k, %c7 : i64
+  sea.assume %lt
+  %p = sea.ptr.add %a, %k : !sea.ptr<64>, i64
+  %x = sea.load %m[%p] : !m -> i8
+  %e = sea.icmp eq, %x, %z : i8
+  sea.assert %e
+  sea.halt
+}
+//--- box.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %c8 = sea.const 8 : i64
+  %z = sea.const 0 : i8
+  %m = sea.mem.nondet "m" [0] : !m
+  %a = sea.alloca %c8 align 8 [1] : i64 -> !sea.ptr<64>
+  %all = sea.box.all (%i) = (0) to (%c8) {
+    %p = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+    %x = sea.load %m[%p] : !m -> i8
+    %e = sea.icmp eq, %x, %z : i8
+    sea.yield %e
+  } loc("eq")
+  sea.assert %all
+  sea.halt
+}
+//--- e.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i32
+  %y = sea.nondet "y" [1] : i32
+  %c5 = sea.const 5 : i32
+  %a = sea.icmp ult, %x, %c5 : i32
+  sea.assume %a
+  %e = sea.icmp ult, %y, %x : i32
+  sea.assert %e
+  sea.halt
+}
+//--- f.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i32
+  %y = sea.nondet "y" [1] : i32
+  %c5 = sea.const 5 : i32
+  %a = sea.icmp ult, %x, %c5 : i32
+  sea.assume %a
+  %e = sea.icmp ult, %y, %c5 : i32
+  sea.assert %e
+  sea.halt
+}
+//--- one-sided.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i32
+  %y = sea.nondet "y" [1] : i32
+  %c5 = sea.const 5 : i32
+  %a = sea.icmp ult, %x, %c5 : i32
+  sea.assume %a
+  %g = sea.nondet "g" [2] : i32
+  %c10 = sea.const 10 : i32
+  %h = sea.icmp ult, %g, %c10 : i32
+  sea.assume %h
+  %e = sea.icmp ult, %y, %x : i32
+  sea.assert %e
+  sea.halt
+}
+//--- unsat1.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i32
+  %y = sea.nondet "y" [1] : i32
+  %c3 = sea.const 3 : i32
+  %c5 = sea.const 5 : i32
+  %c6 = sea.const 6 : i32
+  %a = sea.icmp ult, %x, %c3 : i32
+  %b = sea.icmp ugt, %x, %c5 : i32
+  sea.assume %a
+  sea.assume %b
+  %e = sea.icmp ult, %y, %x : i32
+  sea.assert %e
+  sea.halt
+}
+//--- unsat2.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i32
+  %y = sea.nondet "y" [1] : i32
+  %c3 = sea.const 3 : i32
+  %c5 = sea.const 5 : i32
+  %c6 = sea.const 6 : i32
+  %a = sea.icmp ult, %x, %c3 : i32
+  %b = sea.icmp ugt, %x, %c5 : i32
+  sea.assume %a
+  sea.assume %b
+  %e = sea.icmp ule, %y, %x : i32
+  sea.assert %e
+  sea.halt
+}
+//--- eq1.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i32
+  %y = sea.nondet "y" [1] : i32
+  %c3 = sea.const 4 : i32
+  %c5 = sea.const 5 : i32
+  %c6 = sea.const 6 : i32
+  %a = sea.icmp ult, %x, %c6 : i32
+  %b = sea.icmp ugt, %x, %c3 : i32
+  sea.assume %a
+  sea.assume %b
+  %e = sea.icmp ult, %y, %x : i32
+  sea.assert %e
+  sea.halt
+}
+//--- eq2.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i32
+  %y = sea.nondet "y" [1] : i32
+  %c3 = sea.const 4 : i32
+  %c5 = sea.const 5 : i32
+  %c6 = sea.const 6 : i32
+  %a = sea.icmp ult, %x, %c6 : i32
+  %b = sea.icmp ugt, %x, %c3 : i32
+  sea.assume %a
+  sea.assume %b
+  %e = sea.icmp ult, %y, %c5 : i32
+  sea.assert %e
+  sea.halt
+}
+
+//--- havoc.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %n = sea.const 8 : i64
+  %v = sea.const 1 : i8
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %a = sea.alloca %n align 8 [1] : i64 -> !sea.ptr<64>
+  %m1 = sea.store %m0[%a], %v inplace : !m, i8
+  %m3 = sea.memhavoc %m1[%a], %n [3] inplace : !m
+  %x = sea.load %m3[%a] : !m -> i8
+  %e = sea.icmp eq, %x, %v : i8
+  sea.assert %e
+  sea.halt
+}
+//--- dup2.mlir
+sea.program @main {
+  %x0 = sea.nondet "x" [0] : i32
+  %x1 = sea.nondet "x" [1] : i32
+  %c5 = sea.const 5 : i32
+  %c10 = sea.const 10 : i32
+  %a = sea.icmp ult, %x0, %c5 : i32
+  sea.assume %a
+  %e = sea.icmp ule, %x1, %c10 : i32
+  sea.assert %e
+  sea.halt
+}
+//--- one2.mlir
+sea.program @main {
+  %x0 = sea.nondet "x" [0] : i32
+  %c5 = sea.const 5 : i32
+  %c10 = sea.const 10 : i32
+  %a = sea.icmp ult, %x0, %c5 : i32
+  sea.assume %a
+  %e = sea.icmp ule, %x0, %c10 : i32
+  sea.assert %e
+  sea.halt
+}
+//--- lab3.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %c8 = sea.const 8 : i64
+  %z = sea.const 0 : i8
+  %m = sea.mem.nondet "m" [0] : !m
+  %a = sea.alloca %c8 align 8 [1] label "buf.a3" : i64 -> !sea.ptr<64>
+  %x = sea.load %m[%a] : !m -> i8
+  %e = sea.icmp eq, %x, %z : i8
+  sea.assert %e
+  sea.halt
+}
+//--- lab9.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %c8 = sea.const 8 : i64
+  %z = sea.const 0 : i8
+  %m = sea.mem.nondet "m" [0] : !m
+  %a = sea.alloca %c8 align 8 [1] label "buf.a9" : i64 -> !sea.ptr<64>
+  %x = sea.load %m[%a] : !m -> i8
+  %e = sea.icmp eq, %x, %z : i8
+  sea.assert %e
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
