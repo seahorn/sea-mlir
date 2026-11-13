@@ -28,6 +28,7 @@
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
 #include "sea/Support/Output.h"
+#include "sea/Support/ProcMem.h"
 #include "sea/Support/Version.h"
 #include "sea/Transforms/Passes.h"
 #include "sea/Transforms/RangeFold.h"
@@ -38,8 +39,10 @@
 #include "sea/VC/Split.h"
 #include "sea/VC/VCGen.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <new>
 #include <set>
@@ -967,7 +970,7 @@ static sea::log::Tag logPhase(
     "vc.phase", 1,
     "the start and end of each sea-vc phase (lower, encode, simplify, "
     "solver-term, ackermann, solve, replay, replay-original); the end with "
-    "time and sizes");
+    "time, memory and sizes; progress inside encode");
 static sea::log::Tag logSolve("vc.solve", 1,
                               "each solver call of the verdict: backend, "
                               "result, time, Expr nodes made so far");
@@ -977,34 +980,221 @@ static cl::opt<bool> progress(
     cl::desc("Log the start and end of each phase on stderr, or the log "
              "file: an alias of --log=vc.phase (=false: vc.phase:0) (lower, "
              "encode, simplify, solver-term, "
-             "ackermann, solve, replay, replay-original)"),
+             "ackermann, solve, replay, replay-original); the end with time, "
+             "memory and sizes; progress lines inside encode "
+             "(--progress-interval)"),
     cl::init(false), cl::cb<void, bool>([](bool on) {
       sea::log::select(on ? "vc.phase" : "vc.phase:0", "--progress");
     }));
+
+static cl::opt<double> progressInterval(
+    "progress-interval",
+    cl::desc("vc.phase progress lines inside encode: one when this many "
+             "seconds passed since the last (checked before each op and "
+             "after each block); 0: one after every block (default 10, "
+             "untuned)"),
+    cl::init(10.0), cl::value_desc("seconds"));
+
+static cl::opt<uint64_t> memLimitPlant(
+    "mem-limit-plant",
+    cl::desc("Testing only: before encode op <n> (1, 2, ... in encoding "
+             "order; 0: off), end the run as an allocation failing under "
+             "--mem-limit would"),
+    cl::init(0), cl::value_desc("n"), cl::Hidden);
+
+namespace {
+/// A line the --mem-limit handler writes as is (no allocation there):
+/// formatted ahead, in the output format in effect, when its contents
+/// change. Two slots, so a reader on another thread sees a whole line.
+class HandlerNote {
+public:
+  /// `textLine`: one `key: value k=v ...` line, no newline.
+  void set(StringRef textLine) {
+    std::string line = outFormat == sea::out::Format::Jsonl
+                           ? sea::out::parseLine(textLine).json()
+                           : textLine.str();
+    line += '\n';
+    const int slot = cur.load(std::memory_order_relaxed) == 0 ? 1 : 0;
+    size_t n = line.size();
+    if (n > sizeof(buf[slot])) { // never a cut line (invalid JSON)
+      sea::diag::warn("vc.mem-limit-note-long",
+                      "a --mem-limit note line does not fit its buffer: a "
+                      "hit will not print it");
+      n = 0;
+    }
+    std::memcpy(buf[slot], line.data(), n);
+    len[slot] = n;
+    cur.store(slot, std::memory_order_release);
+  }
+  void clear() { cur.store(-1, std::memory_order_release); }
+  void write(int fd) const {
+    const int slot = cur.load(std::memory_order_acquire);
+    if (slot >= 0 && len[slot])
+      (void)!::write(fd, buf[slot], len[slot]);
+  }
+
+private:
+  char buf[2][4096];
+  size_t len[2] = {0, 0};
+  std::atomic<int> cur{-1};
+};
+} // namespace
+
+/// The phase in progress (`mem-limit-phase:`) and the last encode progress
+/// tick of it (`mem-limit-progress:`), for memLimitHit; set only under
+/// --mem-limit.
+static HandlerNote memPhaseNote, memProgressNote;
+
+/// The op being encoded and its number in the encoding order (EncodeMeter,
+/// under --mem-limit): `mem-limit-op:`, formatted by the handler itself.
+static std::atomic<Operation *> memCurOp{nullptr};
+static std::atomic<uint64_t> memCurOpIndex{0};
+
+namespace {
+/// A fixed buffer the handler formats into (no allocation). Text written
+/// with putSafe keeps only printable ASCII other than `"` `\\` and space
+/// (others become `?`), so the text line is one token per field and the
+/// same bytes are valid inside a JSON string.
+struct RawLine {
+  char b[1024];
+  size_t n = 0;
+  void put(StringRef s) {
+    for (char c : s)
+      if (n < sizeof(b))
+        b[n++] = c;
+  }
+  void putSafe(StringRef s) {
+    for (char c : s)
+      if (n < sizeof(b))
+        b[n++] = (c > ' ' && c < 127 && c != '"' && c != '\\') ? c : '?';
+  }
+  void putNum(uint64_t v) {
+    char d[24];
+    int k = 0;
+    do
+      d[k++] = char('0' + v % 10);
+    while ((v /= 10) && k < 24);
+    while (k && n < sizeof(b))
+      b[n++] = d[--k];
+  }
+};
+
+/// The first source position (or else name) of `loc`, without allocating:
+/// looks through names, call sites (the callee) and fused locations (the
+/// first). fileLocOf's choice may differ for fused locations.
+void rawLoc(RawLine &out, Location loc) {
+  StringRef name;
+  for (unsigned depth = 0; depth < 16; ++depth) {
+    if (auto f = dyn_cast<FileLineColLoc>(loc)) {
+      StringRef file = f.getFilename().getValue();
+      if (file.size() > 160)
+        file = file.take_back(160);
+      out.putSafe(file);
+      out.put(":");
+      out.putNum(f.getLine());
+      out.put(":");
+      out.putNum(f.getColumn());
+      return;
+    }
+    if (auto nl = dyn_cast<NameLoc>(loc)) {
+      if (name.empty())
+        name = nl.getName().getValue();
+      loc = nl.getChildLoc();
+    } else if (auto cs = dyn_cast<CallSiteLoc>(loc)) {
+      loc = cs.getCallee();
+    } else if (auto fl = dyn_cast<FusedLoc>(loc)) {
+      if (fl.getLocations().empty())
+        break;
+      loc = fl.getLocations().front();
+    } else {
+      break;
+    }
+  }
+  if (name.empty())
+    out.put("-");
+  else
+    out.putSafe(name.take_front(160));
+}
+} // namespace
+
+/// `mem-limit-op: <name> ops=<n> at=<where>`: the op in progress when the
+/// limit hit (encode only), in the output format in effect.
+static void writeMemCurOp(int fd) {
+  Operation *op = memCurOp.load(std::memory_order_acquire);
+  if (!op)
+    return;
+  RawLine t;
+  t.put("mem-limit-op: ");
+  t.putSafe(op->getName().getStringRef());
+  t.put(" ops=");
+  t.putNum(memCurOpIndex.load(std::memory_order_relaxed));
+  t.put(" at=");
+  rawLoc(t, op->getLoc());
+  if (outFormat != sea::out::Format::Jsonl) {
+    t.put("\n");
+    (void)!::write(fd, t.b, t.n);
+    return;
+  }
+  // the record parseLine makes of the text line (jsonl-check)
+  RawLine j;
+  j.put("{\"kind\":\"stat\",\"key\":\"mem-limit-op\",\"value\":\"");
+  j.putSafe(op->getName().getStringRef());
+  j.put("\",\"ops\":");
+  j.putNum(memCurOpIndex.load(std::memory_order_relaxed));
+  j.put(",\"at\":\"");
+  rawLoc(j, op->getLoc());
+  j.put("\",\"text\":\"");
+  j.put(StringRef(t.b, t.n));
+  j.put("\"}\n");
+  (void)!::write(fd, j.b, j.n);
+}
+
+/// The memory fields of vc.phase end and progress events: rss-mb vm-mb
+/// (Linux only) and peak-rss-mb.
+static sea::log::Event &withMem(sea::log::Event &e) {
+  const sea::ProcMem m = sea::readProcMem();
+  if (m.hasCurrent)
+    e.kv("rss-mb", sea::ProcMem::mb(m.rssKB))
+        .kv("vm-mb", sea::ProcMem::mb(m.vmKB));
+  if (m.hasPeak)
+    e.kv("peak-rss-mb", sea::ProcMem::mb(m.peakRssKB));
+  return e;
+}
+static void memText(raw_ostream &os, const sea::ProcMem &m) {
+  if (m.hasCurrent)
+    os << " rss-mb=" << sea::ProcMem::mb(m.rssKB)
+       << " vm-mb=" << sea::ProcMem::mb(m.vmKB);
+  if (m.hasPeak)
+    os << " peak-rss-mb=" << sea::ProcMem::mb(m.peakRssKB);
+}
 
 namespace {
 /// A phase of the run: the start event is written when it is made; the end
 /// event is SEA_PHASE_END(phase) with the phase's sizes after it.
 /// \p run (encode only): the number of the VC run, 1, 2, ... (a fallback
 /// or a retry starts the VC again). The clock is read only when vc.phase
-/// is on.
+/// is on. Under --mem-limit the phase is noted for the handler.
 struct Phase {
   const char *name;
   std::chrono::steady_clock::time_point t0;
-  explicit Phase(const char *name) : name(name) {
+  explicit Phase(const char *name, unsigned run = 0) : name(name) {
+    if (memLimit) {
+      std::string t = std::string("mem-limit-phase: ") + name;
+      if (run)
+        t += " run=" + std::to_string(run);
+      memPhaseNote.set(t);
+      memProgressNote.clear();
+    }
     if (!logPhase.on(sea::log::Flow))
       return;
     t0 = std::chrono::steady_clock::now();
-    SEA_LOG(logPhase, sea::log::Flow).msg("start").kv("phase", name);
-  }
-  Phase(const char *name, unsigned run) : name(name) {
-    if (!logPhase.on(sea::log::Flow))
-      return;
-    t0 = std::chrono::steady_clock::now();
-    SEA_LOG(logPhase, sea::log::Flow)
-        .msg("start")
-        .kv("phase", name)
-        .kv("run", run);
+    if (run)
+      SEA_LOG(logPhase, sea::log::Flow)
+          .msg("start")
+          .kv("phase", name)
+          .kv("run", run);
+    else
+      SEA_LOG(logPhase, sea::log::Flow).msg("start").kv("phase", name);
   }
   double seconds() const {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
@@ -1013,13 +1203,136 @@ struct Phase {
 };
 } // namespace
 
-/// The end event of phase P; its arguments (sizes) are evaluated only when
-/// vc.phase is on.
+/// The end event of phase P: the time, the memory (withMem), then the
+/// sizes the caller adds; evaluated only when vc.phase is on.
 #define SEA_PHASE_END(P)                                                       \
-  SEA_LOG(logPhase, sea::log::Flow)                                            \
-      .msg("end")                                                              \
-      .kv("phase", (P).name)                                                   \
-      .kv("time", (P).seconds())
+  !logPhase.on(sea::log::Flow)                                                 \
+      ? (void)0                                                                \
+      : ::sea::log::Voidify() &                                                \
+            withMem(::sea::log::Event(logPhase, sea::log::Flow)                \
+                        .msg("end")                                            \
+                        .kv("phase", (P).name)                                 \
+                        .kv("time", (P).seconds()))
+
+static void memLimitHit();
+
+namespace {
+/// Progress inside encode (VCGen::setProgress), on when vc.phase is on or
+/// under --mem-limit: a `vc.phase progress` event (vc.phase on) and the
+/// handler's progress note (--mem-limit) at each tick, every
+/// --progress-interval seconds (0: after every block). Between ticks it
+/// keeps the op that took the longest and the op that made the most Expr
+/// nodes so far: one op (a load the SeaM rewriter reads through a long
+/// store chain) can take most of the phase, and no tick fires inside it.
+class EncodeMeter {
+  using Clock = std::chrono::steady_clock;
+
+public:
+  EncodeMeter(expr::ExprFactory &efac, unsigned run)
+      : efac(efac), run(run), t0(Clock::now()), lastTick(t0) {}
+
+  ~EncodeMeter() { memCurOp.store(nullptr, std::memory_order_release); }
+
+  void operator()(const sea::EncodeProgress &p) {
+    if (memLimit) {
+      memCurOpIndex.store(p.ops, std::memory_order_relaxed);
+      memCurOp.store(p.op, std::memory_order_release);
+      if (memLimitPlant && p.op && p.ops == memLimitPlant)
+        memLimitHit();
+    }
+    const Clock::time_point now = Clock::now();
+    const uint64_t nodes = efac.nodesMade();
+    if (prevOp) {
+      const double d = std::chrono::duration<double>(now - prevStart).count();
+      if (d > slowest.amount)
+        slowest = {d, prevOp};
+      const uint64_t dn = nodes - prevNodes;
+      if (double(dn) > biggest.amount)
+        biggest = {double(dn), prevOp};
+    }
+    prevOp = p.op;
+    prevStart = now;
+    prevNodes = nodes;
+    const bool due =
+        progressInterval <= 0
+            ? p.op == nullptr
+            : std::chrono::duration<double>(now - lastTick).count() >=
+                  progressInterval;
+    if (!due)
+      return;
+    lastTick = now;
+    tick(p, std::chrono::duration<double>(now - t0).count(), nodes);
+  }
+
+private:
+  struct Top {
+    double amount = 0;
+    Operation *op = nullptr;
+  };
+  static std::string where(Operation *op) {
+    // the source position, else the location's name (a SeaHorn export's
+    // loc("sm460")), else -
+    std::string t = "-";
+    if (std::optional<FileLineColLoc> fl = sea::fileLocOf(op->getLoc()))
+      t = sea::fileLocText(*fl);
+    else if (std::optional<std::string> n = sea::locNameOf(op->getLoc()))
+      t = *n;
+    if (t.size() > 160) // the handler's note has a fixed size
+      t = "..." + t.substr(t.size() - 157);
+    return t;
+  }
+
+  void tick(const sea::EncodeProgress &p, double secs, uint64_t nodes) {
+    const sea::ProcMem m = sea::readProcMem();
+    std::string s;
+    raw_string_ostream os(s);
+    os << "time=" << format("%.3f", secs) << " blocks=" << p.blocks
+       << " blocks-total=" << p.blocksTotal << " ops=" << p.ops
+       << " ops-total=" << p.opsTotal << " nodes-made=" << nodes;
+    memText(os, m);
+    if (slowest.op)
+      os << " slowest-op=" << slowest.op->getName().getStringRef()
+         << " slowest-op-time=" << format("%.3f", slowest.amount)
+         << " slowest-op-at=" << sea::log::textValue(where(slowest.op));
+    if (biggest.op)
+      os << " biggest-op=" << biggest.op->getName().getStringRef()
+         << " biggest-op-nodes=" << uint64_t(biggest.amount)
+         << " biggest-op-at=" << sea::log::textValue(where(biggest.op));
+    // the same fields, in the same order, in both
+    if (logPhase.on(sea::log::Flow)) {
+      sea::log::Event e(logPhase, sea::log::Flow);
+      e.msg("progress")
+          .kv("phase", "encode")
+          .kv("run", run)
+          .kv("time", secs)
+          .kv("blocks", p.blocks)
+          .kv("blocks-total", p.blocksTotal)
+          .kv("ops", p.ops)
+          .kv("ops-total", p.opsTotal)
+          .kv("nodes-made", nodes);
+      withMem(e);
+      if (slowest.op)
+        e.kv("slowest-op", slowest.op->getName().getStringRef())
+            .kv("slowest-op-time", slowest.amount)
+            .kv("slowest-op-at", where(slowest.op));
+      if (biggest.op)
+        e.kv("biggest-op", biggest.op->getName().getStringRef())
+            .kv("biggest-op-nodes", uint64_t(biggest.amount))
+            .kv("biggest-op-at", where(biggest.op));
+    }
+    if (memLimit) {
+      memProgressNote.set("mem-limit-progress: " + s);
+    }
+  }
+
+  expr::ExprFactory &efac;
+  unsigned run;
+  Clock::time_point t0, lastTick, prevStart;
+  Operation *prevOp = nullptr;
+  uint64_t prevNodes = 0;
+  Top slowest, biggest;
+};
+} // namespace
 
 static uint64_t countOps(Operation *op) {
   uint64_t n = 0;
@@ -1040,6 +1353,10 @@ static void memLimitHit() {
     (void)!::write(1, jmsg, sizeof(jmsg) - 1);
   else
     (void)!::write(1, msg, sizeof(msg) - 1);
+  // where: the phase in progress, and the last progress tick of encode
+  memPhaseNote.write(1);
+  memProgressNote.write(1);
+  writeMemCurOp(1);
   static const char err[] =
       "Error: memory limit (--mem-limit) hit [vc.mem-limit]\n";
   (void)!::write(2, err, sizeof(err) - 1);
@@ -1426,7 +1743,8 @@ TYPICAL:
   sea-vc p.mlir --print-refs=strong  # keep every printed value alive
                                  #   through the lowering (PRINTS)
   sea-vc p.mlir --progress       # = --log=vc.phase: the start and end
-                                 #   (time, sizes) of each phase on stderr
+                                 #   (time, memory, sizes) of each phase on
+                                 #   stderr; progress inside encode
   sea-vc p.mlir '--log=*:1'      # the whole flow: phases, passes, solver
                                  #   calls (LOGS)
   sea-vc p.mlir --config=seam    # options from a profile (CONFIG below);
@@ -1984,6 +2302,21 @@ OUTPUT (stdout, `key: value` lines):
                                   Yices exits on its own out-of-memory
                                   (status 16, "Out of memory"), and GMP
                                   aborts)
+  mem-limit-phase: <phase> [run=<n>]   (after mem-limit: hit: the phase
+                                  running, the last vc.phase start; none:
+                                  before the first phase; solve: the
+                                  solver's own limit)
+  mem-limit-progress: time= blocks= blocks-total= ops= ops-total=
+      nodes-made= [rss-mb= vm-mb=] peak-rss-mb= [slowest-op=
+      slowest-op-time= slowest-op-at=] [biggest-op= biggest-op-nodes=
+      biggest-op-at=]             (a hit in encode, after a progress tick:
+                                  the counters of the last tick, see
+                                  PROGRESS; up to --progress-interval old)
+  mem-limit-op: <op> ops=<n> at=<where>   (a hit in encode: the op being
+                                  encoded, n-th in encoding order; where:
+                                  file:line:col, else the location name,
+                                  else -; bytes other than printable
+                                  ASCII, " \ and space shown as ?)
   nondet: site=<n> callee=<f> width=<w> value=<unsigned>   (sat: from the model)
   memread: site=<n> addr=<a> width=<w> value=<v> [obj=&<o>[<off>]]
                                   (sat: cells from the model; obj: the
@@ -2356,11 +2689,26 @@ parallel to path of call-site arrays, [] for an entry not inlined).
 PROGRESS (--progress = --log=vc.phase, --progress=false = vc.phase:0; on
 stderr, or the log file; each line flushed as it is written):
 `log: vc.phase start phase=<name>` at the start of each phase and
-`log: vc.phase end phase=<name> time=<s> <sizes>` at its end; phases:
-lower, encode, simplify (with the rewriter's normalization), solver-term,
-ackermann, solve, replay (sat only). A killed run's last start line names
-the phase it was in. A run that restarts (the vc.seam-inb-violated
-fallback, the --ack-stride retry) repeats them from encode.
+`log: vc.phase end phase=<name> time=<s> <memory> <sizes>` at its end;
+phases: lower, encode, simplify (with the rewriter's normalization),
+solver-term, ackermann, solve, replay (sat only). A killed run's last
+start line names the phase it was in. A run that restarts (the
+vc.seam-inb-violated fallback, the --ack-stride retry) repeats them from
+encode. <memory>: rss-mb vm-mb (now; Linux only, else omitted)
+peak-rss-mb (so far), in MB; vm-mb is what --mem-limit bounds.
+Inside encode, every --progress-interval=<s> seconds (default 10,
+untuned; 0: after every block; checked before each op and after each
+block, so never inside one op):
+`log: vc.phase progress phase=encode run=<n> time=<s> blocks=<d>
+blocks-total=<n> ops=<d> ops-total=<n> nodes-made=<n> <memory>
+[slowest-op=<op> slowest-op-time=<s> slowest-op-at=<where>]
+[biggest-op=<op> biggest-op-nodes=<n> biggest-op-at=<where>]`: blocks
+encoded of those reachable; ops whose encoding started (no terminators);
+the op that took longest and the one that made the most Expr nodes so far
+(SeaM's load / store rewriting is part of its op; block joins are in no
+op). One op can dominate the phase: these fields name it once it ends.
+Under --mem-limit the counters are kept without the log, for the
+mem-limit-* lines of a hit (OUTPUT FORMATS).
 
 DIAGNOSTICS (stderr): "Warning: ... [kind]" (yellow) for incomplete or
 approximate handling, once per kind; repeats are counted and summarized at
@@ -2373,7 +2721,8 @@ flow, 2 object, 3 detail; 0 off); --log=help lists the tags. One line per
 event: `log: <tag> [<msg>] k=v ... [at <loc>]`; under --format=jsonl
 {"log":"<tag>","level":L,...,"text":"<the text line>"}.
 Level-1 (flow) tags, `--log=*:1` for all:
-  vc.phase    start phase=<p> / end phase=<p> time=<s> + sizes: lower
+  vc.phase    start phase=<p> / end phase=<p> time=<s> rss-mb vm-mb
+              peak-rss-mb + sizes (progress: PROGRESS): lower
               ops-before ops-after; encode nodes-made sides guarantees
               (its start: run=<n>, 2+ after a fallback or retry);
               simplify, solver-term nodes-made; ackermann on arrays pairs
@@ -3011,7 +3360,10 @@ int main(int argc, char **argv) {
                 "(use exact or off)");
   if (reach && reachRlimit && backend != Backend::Z3)
     return fail("--reach-rlimit is a z3 limit (--solver=z3)");
+  if (memLimitPlant && !memLimit)
+    return fail("--mem-limit-plant needs --mem-limit");
   if (memLimit) {
+    memPhaseNote.set("mem-limit-phase: none");
     rlim_t bytes = rlim_t(memLimit) << 30;
     struct rlimit rl;
     if (getrlimit(RLIMIT_AS, &rl) == 0 &&
@@ -3899,6 +4251,12 @@ int main(int argc, char **argv) {
     vcgen.setJoinCases(vcJoinCases, {vcCasesReorder, vcCasesDropDefault});
     lap("setup");
     Phase encodePhase("encode", vcRuns);
+    std::optional<EncodeMeter> meter;
+    if (logPhase.on(sea::log::Flow) || memLimit) {
+      meter.emplace(efac, vcRuns);
+      vcgen.setProgress(
+          [&meter](const sea::EncodeProgress &p) { (*meter)(p); });
+    }
     if (failed(vcgen.genVc(program, ctx)))
       return 1;
     lap("encode");
@@ -5717,6 +6075,8 @@ int main(int argc, char **argv) {
       if (memHit) {
         vout() << "mem-limit: hit\n";
         brunchStat(vout(), "mem-limit", "hit");
+        // the solver's own limit: in solve (the new-handler's note line)
+        vout() << "mem-limit-phase: solve\n";
       }
       // where to go next: the split targets, when the normalized query
       // has open alias questions to attribute, or else Ackermann

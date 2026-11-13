@@ -53,7 +53,14 @@ timeout 900 sea-vc job.mlir --lower --seam --widen-memory=4 \
   finish shows where it is. `'--log=*:1'` adds the passes of the lowering
   and the solver calls ([Logging](../reference/logging.md)).
 - A limit that is hit gives `result: unknown` and exit status 3, with
-  `solve-timeout: true` or `mem-limit: hit`.
+  `solve-timeout: true` or `mem-limit: hit`. After `mem-limit: hit`,
+  `mem-limit-phase:` names the phase, and a hit while encoding adds
+  `mem-limit-progress:` (the counters of the last progress tick, with the
+  slowest operation and the one that made the most terms so far) and
+  `mem-limit-op:` (the operation being encoded, with its source position).
+- The end of each phase has the memory (`rss-mb`, `vm-mb`, `peak-rss-mb`);
+  inside `encode`, `--progress` adds a `vc.phase progress` line every
+  `--progress-interval` seconds (default 10).
 
 On a shared machine, run a few jobs in parallel at most.
 

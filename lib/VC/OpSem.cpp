@@ -594,6 +594,8 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
   };
   for (Operation &op : b.without_terminator()) {
     runDefHook();
+    if (ctx.opHook)
+      ctx.opHook(op);
     // prints (weak or strong) encode nothing: no term, no side constraint
     // (docs/design/Print.md); their operands cost what their defs cost
     if (isPrintOp(&op))

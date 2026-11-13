@@ -11,6 +11,7 @@
 #include "mlir/IR/RegionGraphTraits.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringMap.h"
 
 #include <chrono>
@@ -250,6 +251,26 @@ LogicalResult VCGen::genVc(ProgramOp program, OpSemContext &ctx) {
   auto secondsSince = [](Clock::time_point t) {
     return std::chrono::duration<double>(Clock::now() - t).count();
   };
+  // -- progress (setProgress): count the work, report through the op hook
+  EncodeProgress prog;
+  std::function<void(Operation &)> savedOpHook;
+  if (progress) {
+    for (Block *bb : rpot) {
+      ++prog.blocksTotal;
+      prog.opsTotal += std::distance(bb->without_terminator().begin(),
+                                     bb->without_terminator().end());
+    }
+    savedOpHook = std::move(ctx.opHook);
+    ctx.opHook = [this, &prog](Operation &op) {
+      ++prog.ops;
+      prog.op = &op;
+      progress(prog);
+    };
+  }
+  llvm::scope_exit restoreOpHook([&] {
+    if (progress)
+      ctx.opHook = std::move(savedOpHook);
+  });
   bool isEntry = true;
   for (Block *bb : rpot) {
     Expr bbV;
@@ -274,6 +295,11 @@ LogicalResult VCGen::genVc(ProgramOp program, OpSemContext &ctx) {
     }
     isEntry = false;
     guards[bb] = bbV;
+    if (progress) {
+      ++prog.blocks;
+      prog.op = nullptr;
+      progress(prog);
+    }
     // -- reachability (setReach): neither end of a path constrains the
     // -- blocks before it
     if (reach)

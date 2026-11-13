@@ -67,6 +67,9 @@ public:
   /// creates it; the result is the block's guard (case splitting). Null:
   /// none.
   std::function<expr::Expr(mlir::Block *b, expr::Expr guard)> guardHook;
+  /// Called by SeaOpSem::exec before each op of a block (the terminator
+  /// excluded) is encoded: progress reports (VCGen::setProgress). Null: none.
+  std::function<void(mlir::Operation &op)> opHook;
 
   OpSemContext &pc(expr::Expr cond) {
     pathCond = cond;

@@ -19,7 +19,7 @@ sorted, with the highest level each emits and a one-line description:
 $ sea-vc --log=help
 log tags (--log=<pattern>[:<level>]; level 1 flow, 2 object, 3 detail; docs/reference/logging.md):
   lower.pass     1  each pass of a pass manager sea-vc runs (--lower, --sink-assumes, --print-refs): ops before and after, time
-  vc.phase       1  the start and end of each sea-vc phase (lower, encode, simplify, solver-term, ackermann, solve, replay); the end with time and sizes
+  vc.phase       1  the start and end of each sea-vc phase (lower, encode, simplify, solver-term, ackermann, solve, replay, replay-original); the end with time, memory and sizes; progress inside encode
   vc.reach       2  each sea-vc --reach query: target, answer, solve and replay time; each target a run decided
   vc.solve       1  each solver call of the verdict: backend, result, time, Expr nodes made so far
   vc.store-read  3  a SymStore key read before any write (its initial value made)
@@ -48,7 +48,7 @@ To see what a solver receives, use `--smt2`, not a log.
 
 | Tag | Level | Tool | Event |
 |---|---|---|---|
-| `vc.phase` | 1 | `sea-vc` | the start and end of each phase |
+| `vc.phase` | 1 | `sea-vc` | the start and end of each phase; progress inside encode |
 | `lower.pass` | 1 | `sea-vc` | one pass run |
 | `lower.box-all` | 1, 2 | `sea-vc`, `sea-opt` | `sea-lower-box-all`: its counters per run, refusals by reason (1); each op lowered, expanded, empty or dead (2) |
 | `lower.expand-memmove` | 1, 2 | `sea-vc`, `sea-opt` | `sea-expand-small-memmove`: its counters per run (1); each memmove expanded (bytes) or kept (reason) (2) |
@@ -71,24 +71,29 @@ log: vc.phase start phase=lower
 log: lower.pass pass=sea-apply-tracking on=sea.program program=@p ops-before=7 ops-after=7 time=0.000
 ...
 log: lower.pass pass=sea-split-critical-edges on=sea.program program=@p ops-before=7 ops-after=7 time=0.000
-log: vc.phase end phase=lower time=0.002 ops-before=8 ops-after=8
+log: vc.phase end phase=lower time=0.002 rss-mb=45 vm-mb=88 peak-rss-mb=45 ops-before=8 ops-after=8
 log: vc.phase start phase=encode run=1
-log: vc.phase end phase=encode time=0.000 nodes-made=37 sides=1 guarantees=1
+log: vc.phase end phase=encode time=0.000 rss-mb=45 vm-mb=88 peak-rss-mb=45 nodes-made=37 sides=1 guarantees=1
 log: vc.phase start phase=simplify
-log: vc.phase end phase=simplify time=0.000 nodes-made=40
+log: vc.phase end phase=simplify time=0.000 rss-mb=45 vm-mb=88 peak-rss-mb=45 nodes-made=40
 log: vc.phase start phase=solver-term
-log: vc.phase end phase=solver-term time=0.000 nodes-made=40
+log: vc.phase end phase=solver-term time=0.000 rss-mb=45 vm-mb=88 peak-rss-mb=45 nodes-made=40
 log: vc.phase start phase=ackermann
-log: vc.phase end phase=ackermann time=0.000 on=true arrays=0 pairs=0 nodes-made=40
+log: vc.phase end phase=ackermann time=0.000 rss-mb=45 vm-mb=88 peak-rss-mb=45 on=true arrays=0 pairs=0 nodes-made=40
 log: vc.phase start phase=solve
 log: vc.solve backend=z3 result=sat time=0.003 nodes-made=44
-log: vc.phase end phase=solve time=0.003
+log: vc.phase end phase=solve time=0.003 rss-mb=45 vm-mb=88 peak-rss-mb=45
 log: vc.phase start phase=replay
-log: vc.phase end phase=replay time=0.000 status=assert-failed checked=4 mismatches=0 validated=true
+log: vc.phase end phase=replay time=0.000 rss-mb=45 vm-mb=88 peak-rss-mb=45 status=assert-failed checked=4 mismatches=0 validated=true
 ```
 
 `vc.phase`: `start phase=<p>` when phase `<p>` starts, `end phase=<p>
-time=<seconds>` and the phase's sizes when it ends. The phases, in order:
+time=<seconds>`, the memory of the process and the phase's sizes when it
+ends. The memory, in MB: `rss-mb` (resident now), `vm-mb` (address space
+now, what `--mem-limit` bounds) and `peak-rss-mb` (the peak resident size
+of the process so far). `rss-mb` and `vm-mb` are read from
+`/proc/self/statm` (Linux only; elsewhere they are omitted), `peak-rss-mb`
+from `getrusage`. The phases, in order:
 
 | Phase | When | Sizes at its end |
 |---|---|---|
@@ -108,6 +113,35 @@ query's DAG size (`--dag-stats`). A run that starts again (a fallback,
 numbers the runs: `run=1`, `run=2`, ... A phase that fails or is killed has a start and no end: the last
 start line names the phase a killed run was in. Every event is flushed as
 it is written.
+
+`progress phase=encode`: inside `encode`, one event every
+`--progress-interval` seconds (default 10, not tuned; checked before each
+operation and after each block, so no event fires while one operation is
+being encoded), or with `--progress-interval=0` one after every block.
+Fields: `run`, `time` (since the phase started), `blocks` /
+`blocks-total` (blocks encoded, of the blocks reachable from the entry),
+`ops` / `ops-total` (operations whose encoding started, terminators not
+counted), `nodes-made`, the memory as above, and, so far in this run, the
+operation that took longest (`slowest-op`, `slowest-op-time`,
+`slowest-op-at`) and the one that made the most terms (`biggest-op`,
+`biggest-op-nodes`, `biggest-op-at`). An operation's time and terms include
+the SeaM rewriting of its loads and stores, which happens while it is
+encoded; the joins of a block (its guard, edges and block arguments) are
+counted in no operation. `-at` is the operation's source position
+(`file:line:col`), else its location name, else `-`. One operation can
+take most of the phase (a load read through a long chain of stores): the
+`slowest-op` and `biggest-op` fields name it once it is done.
+
+```text
+$ sea-vc job.mlir --lower --seam --vcgen-only --progress --progress-interval=5
+...
+log: vc.phase start phase=encode run=1
+log: vc.phase progress phase=encode run=1 time=6.631 blocks=197 blocks-total=611 ops=8863 ops-total=11468 nodes-made=1565526 rss-mb=324 vm-mb=370 peak-rss-mb=324 slowest-op=sea.load slowest-op-time=1.761 slowest-op-at=conn.h:199:25 biggest-op=sea.load biggest-op-nodes=483020 biggest-op-at=conn.h:199:25
+```
+
+Under `--mem-limit` the same counters are kept (with no events unless
+`vc.phase` is on) for the lines a hit prints
+([Output formats](output-formats.md)).
 
 `--progress` is the same as `--log=vc.phase`, and `--progress=false` the
 same as `--log=vc.phase:0`, at their place among the `--log` entries.
