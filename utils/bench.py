@@ -96,7 +96,7 @@ SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SE
     FAILS (exit 1) on: verdict != expected (sat/unsat jobs; timeout/unknown counts), replay-mismatch (rc 2),
     lowering-mismatch (rc 6), original-memory-error (rc 4 under --replay-original) on a gated job,
     replay-impossible (a sat whose model cannot be replayed) unless the job has `replay: impossible`,
-    error / inb-violation / memout on a gated job, sat vs unsat between two configs (DISAGREE-SAT-UNSAT),
+    error / inb-violation on a gated job (unknown-ok too; memout there is allowed), sat vs unsat between two configs (DISAGREE-SAT-UNSAT),
     and (`FAIL: counter ...`, counted apart as counter-failures) a solved job of config `default` whose
     counter breaks its bound or is missing from the output (--no-counters: skip). --tag T: only jobs tagged T
     (`canary`: the small cross-family set, `just bench-canary`).

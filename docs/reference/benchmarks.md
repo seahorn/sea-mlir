@@ -139,7 +139,8 @@ The gate fails (exit status 1) on:
 - a replay mismatch (`sea-vc` exit status 2);
 - a `sat` whose model cannot be replayed (`replay-impossible`) on a job
   without `replay: impossible`;
-- an error, an in-bounds violation or a memory-out on a gated job;
+- an error or an in-bounds violation on a gated job, `unknown-ok` jobs
+  included (a memory-out or timeout there is an allowed unknown);
 - two configurations that answer `sat` and `unsat` on the same job
   (`DISAGREE-SAT-UNSAT`);
 - a counter outside its bound (`FAIL: counter ...`).
