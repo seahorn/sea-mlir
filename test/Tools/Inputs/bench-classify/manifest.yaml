@@ -1,0 +1,18 @@
+# bench-replay.test: jobs for a fake sea-vc (Inputs/fake-sea-vc.py); each
+# .mlir is the script of what the fake prints and how it ends.
+family: fam
+defaults: {args: [], timeout: 60, mem: 4096}
+jobs:
+  abort-after-sat: {expected: sat, tier: smoke}
+  segv-after-sat: {expected: unknown-ok, tier: smoke}
+  rc16: {expected: unknown-ok, tier: smoke}
+  badalloc-after-sat: {expected: unknown-ok, tier: smoke}
+  memlimit: {expected: unknown-ok, tier: smoke}
+  memlimit-after-sat: {expected: unknown-ok, tier: smoke}
+  split: {expected: unsat, tier: smoke}
+  split-jsonl: {expected: unsat, tier: smoke}
+  jsonl: {expected: unsat, tier: smoke, counters: {vc.box-all.expanded: {exact: 1}}}
+  replayed: {expected: sat, tier: smoke, replay: impossible}
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

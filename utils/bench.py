@@ -62,15 +62,25 @@ OUTPUT of run: stats.csv (job config rep wall cpu status verdict + every BRUNCH_
   verdict: sat unsat unknown timeout memout error inb-violation (rc 4) replay-mismatch (rc 2)
   lowering-mismatch (rc 6: --replay-original, the input program does not fail the lowered sat's assertion),
   original-memory-error (rc 4 with replay.original match=no: the input program makes a memory-safety violation).
+  Classified by what sea-vc printed: the verdict is the last `result:` line of stdout (text or --format=jsonl;
+  a split's parts and BRUNCH_STAT result do not count; column `result`): rc 0/3 give it (rc 3 with
+  `result: unknown` after a mem-limit hit is unknown, also after an earlier sat; no `result:` line: error).
+  rc 1 after `result: sat` with error vc.replay-impossible (the in-place
+  interpreter cannot run the model: a memory update without `inplace`) is verdict sat, column replay=impossible;
+  any other rc 1 after a verdict is error; memout needs bad_alloc / out of memory, or rc 16 / abort / segv
+  with no verdict printed. A timeout is a timeout even after a printed verdict (stats `result` keeps it).
 compare prints `key: value` lines; verdict disagreements first, `DISAGREE-SAT-UNSAT` is a soundness bug.
 --no-record on gate: no gate record ($SEA_BENCH_HOME/gates); results and logs stay in $SEA_BENCH_HOME/results (attest reads them).
 SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SEA_BENCH_SUITES (colon-separated)
   or bench/work/<name>/ (gitignored; `bench.py connect` / `just bench-connect` fills it from bench/sources.yaml,
   overlaid by bench/sources.local.yaml and $SEA_BENCH_SOURCE_<NAME>; local path -> symlink, URL -> clone / pull).
   A family is <root>/<family>/{manifest.yaml, <job>.mlir}; manifest: defaults {args, timeout, mem},
-  jobs.<job> {expected sat|unsat|unknown-ok, tier smoke|quick|full|hard, time (s), args, tags, export, counters}.
+  jobs.<job> {expected sat|unsat|unknown-ok, tier smoke|quick|full|hard, time (s), args, tags, export, counters,
+  replay: impossible (the only value: a sat of this job may end in vc.replay-impossible)}.
   Counter expectations (completeness): counters: {<stat>: {max: N | min: N | exact: N, why: text, seeded: stamp}};
-  <stat> = a BRUNCH_STAT key or a `key: value` stdout line of sea-vc (seam.rule.* needs --seam-stats in args).
+  <stat> = a BRUNCH_STAT key or a `key: value` stdout line of sea-vc (seam.rule.* needs --seam-stats in args),
+  or <line>.<field> for a `<line>: k=v k=v ...` line (vc.box-all.expanded, vc.expand-memmove.kept-over-k: the
+  lowering's form; a job without the line has the counter missing). An exact key match wins.
   Effective = defaults.counters, then each counter-rules entry {jobs: REGEX over the job name, counters, why}
   that matches, then the job's own (a null value removes an inherited bound). Checked on config `default` only.
   Tiers: smoke <5 s, quick <60 s, full <900 s, hard (tracked, not gated); a tier gate runs it and the lower ones.
@@ -85,11 +95,13 @@ SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SE
     off): a sat is also replayed on the program before the lowering.
     FAILS (exit 1) on: verdict != expected (sat/unsat jobs; timeout/unknown counts), replay-mismatch (rc 2),
     lowering-mismatch (rc 6), original-memory-error (rc 4 under --replay-original) on a gated job,
-    error / inb-violation / memout on a gated job, sat vs unsat between two configs (DISAGREE-SAT-UNSAT),
+    replay-impossible (a sat whose model cannot be replayed) unless the job has `replay: impossible`,
+    error / inb-violation on a gated job (unknown-ok too; memout there is allowed), sat vs unsat between two configs (DISAGREE-SAT-UNSAT),
     and (`FAIL: counter ...`, counted apart as counter-failures) a solved job of config `default` whose
     counter breaks its bound or is missing from the output (--no-counters: skip). --tag T: only jobs tagged T
     (`canary`: the small cross-family set, `just bench-canary`).
-    Reports (no failure): `slow:` wall > F x the manifest time (default 2, and +1 s), `solved:` an unknown-ok job solved.
+    Reports (no failure): `slow:` wall > F x the manifest time (default 2, and +1 s), `solved:` an unknown-ok job solved,
+    `replayed:` a `replay: impossible` job whose sat replayed (the field is stale); `replay-impossible: N allowed=M`.
     Writes logs to $SEA_BENCH_HOME/results/<stamp>-gate-<tier>/ and appends the record to
     $SEA_BENCH_HOME/gates/<date>-<commit>.yaml. Output: `key: value` lines, `FAIL:` per failure, `gate: pass|fail`.
   gate / establish: --par 4 by default; --min-free-gb and --max-load tune when jobs start (`wait:` line);
@@ -101,6 +113,7 @@ SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SE
     --record-counters: for each solved job and KEY without a deliberate bound, writes the observed value as
     {max: value, seeded: <date> <sea-vc sha>} (replacing an older seeded bound); a deliberate bound (no
     `seeded`) is never changed: a run that breaks it prints COUNTER-OVER. --counters-only: only that.
+    A sat that cannot be replayed prints `replay-impossible:`; establish never writes `replay` (curation).
 """
 
 
@@ -319,6 +332,32 @@ def git_state():
     }
 
 
+def as_text(out):
+    """sea-vc stdout as text: a --format=jsonl record becomes its `text` (the text format's rendering)."""
+    if "{" not in out:
+        return out
+    lines = []
+    for line in out.splitlines():
+        if line.startswith("{"):
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                rec = None
+            if isinstance(rec, dict) and isinstance(rec.get("text"), str):
+                lines.append(rec["text"])
+                continue
+        lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
+def final_result(out):
+    """The verdict sea-vc printed last: its final `result:` line. Not the BRUNCH_STAT result, which a split
+    prints per part (the split's own `result:` has none), and which a mem-limit hit after the verdict
+    (`result: unknown`, rc 3) does not follow. None if the run printed no verdict."""
+    m = re.findall(r"^result: (\S+)", out, re.M)
+    return m[-1] if m else None
+
+
 def parse_stats(text, stats):
     for line in text.splitlines():
         if line.startswith("BRUNCH_STAT "):
@@ -359,7 +398,7 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
     wall = time.monotonic() - t
     rc = os.waitstatus_to_exitcode(status)
     stats = {}
-    out, err = open(base + ".out").read(), open(base + ".err").read()
+    out, err = as_text(open(base + ".out").read()), open(base + ".err").read()
     parse_stats(out, stats)
     parse_stats(err, stats)
     # --replay-original: yes | no | undetermined | skipped (the first line)
@@ -367,10 +406,21 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
         r"^replay\.original: (?:status=\S+ at=\S+ match=(\S+)|(skipped))", out, re.M
     )
     replay_original = (m.group(1) or m.group(2)) if m else None
+    # classify by what sea-vc printed, not by the exit code alone: a run that
+    # printed a verdict and then exited 1 ended in an error after its answer
+    # (never a memout); a resource outcome needs evidence of one
+    printed = final_result(out) or stats.get("result")
+    if printed is not None:
+        stats["result"] = printed  # the run's verdict, not a split part's
+    replay = None  # `impossible`: sat whose model the interpreter cannot run
+    oom = (
+        "bad_alloc" in err
+        or re.search(r"out of memory|cannot allocate memory", err, re.I) is not None
+    )
     if killed or rc == -signal.SIGXCPU or rc == -signal.SIGKILL:
         verdict = "timeout"
     elif rc in (0, 3):
-        verdict = stats.get("result", "error")
+        verdict = printed or "error"
     elif rc == 4 and replay_original == "no":
         # --replay-original: the input program makes a memory-safety
         # violation and fails no assertion of the lowered sat
@@ -381,11 +431,14 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
         verdict = "replay-mismatch"
     elif rc == 6:
         verdict = "lowering-mismatch"
-    elif (
-        "bad_alloc" in err
-        or "memory" in err.lower()
-        or rc in (-signal.SIGABRT, -signal.SIGSEGV)
-    ):
+    elif rc == 1 and printed == "sat" and "vc.replay-impossible" in err + out:
+        # sat with an exact VC whose model the in-place interpreter cannot run
+        # (a memory update without `inplace`, docs/design/Memory.md): the
+        # verdict stands, the replay is impossible (manifest `replay: impossible`)
+        verdict, replay = "sat", "impossible"
+    elif oom or (
+        printed is None and rc in (16, -signal.SIGABRT, -signal.SIGSEGV)
+    ):  # 16: Yices' own out-of-memory exit; an abort / segv under RLIMIT_AS
         verdict = "memout"
     else:
         verdict = "error"
@@ -398,6 +451,7 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
         "status": rc,
         "verdict": verdict,
         "replay_original": replay_original,
+        "replay": replay,
         "maxrss_mb": round(ru.ru_maxrss / 1024),
         "log": base,
     }
@@ -405,6 +459,11 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
         row.setdefault(k, v)
     row["status"] = rc  # sea-vc's own `status` stat is the same number
     return row
+
+
+def vlabel(r):
+    """A run's verdict for the progress lines: `sat replay=impossible` for a sat that cannot be replayed."""
+    return r["verdict"] + (f" replay={r['replay']}" if r.get("replay") else "")
 
 
 def cmd_run(a):
@@ -477,7 +536,7 @@ def cmd_run(a):
             rows.append(row)
             jl.write(json.dumps(row) + "\n")
             jl.flush()
-        print(f"{c} {j} rep={r} {row['verdict']} {row['wall']}s", flush=True)
+        print(f"{c} {j} rep={r} {vlabel(row)} {row['wall']}s", flush=True)
 
     try:
         with cf.ThreadPoolExecutor(a.par) as ex:
@@ -805,18 +864,26 @@ def job_counters(m, j, v):
 
 
 def observed_counter(row, key):
-    """KEY's value in a run: its BRUNCH_STAT, else a `key: value` line of the run's stdout; None if absent."""
+    """KEY's value in a run: its BRUNCH_STAT, else a `key: value` line of the run's stdout, else (KEY =
+    <line>.<field>) the `field=value` entry of a `<line>: k=v k=v ...` line (`vc.box-all.expanded`:
+    the lowering's form); None if absent or not a number."""
     x = row.get(key)
     if x is None and row.get("log"):
         try:
-            mm = re.search(
-                r"^" + re.escape(key) + r": (\S+)",
-                open(row["log"] + ".out").read(),
-                re.M,
-            )
-            x = mm.group(1) if mm else None
+            text = as_text(open(row["log"] + ".out").read())
         except OSError:
-            pass
+            text = ""
+        mm = re.search(r"^" + re.escape(key) + r": (\S+)", text, re.M)
+        if mm:
+            x = mm.group(1)
+        elif "." in key:
+            line, field = key.rsplit(".", 1)
+            mm = re.search(r"^" + re.escape(line) + r": (.*)$", text, re.M)
+            for kv in mm.group(1).split() if mm else []:
+                k, eq, val = kv.partition("=")
+                if eq and k == field:
+                    x = val
+                    break
     return num(x)
 
 
@@ -878,6 +945,19 @@ def suite_tasks(sels, tiers, jobs_re, tag=None):
             ):
                 out.append((sn, fam, d, m, j, v))
     return out
+
+
+def check_replay_fields(tasks):
+    """The manifest field `replay` takes one value, `impossible`: anything else is an error, not a default."""
+    bad = [
+        f"{sn}/{fam}/{j}: replay: {v['replay']!r}"
+        for sn, fam, _, _, j, v in tasks
+        if v.get("replay") not in (None, "impossible")
+    ]
+    if bad:
+        sys.exit(
+            "bench: manifest field `replay` must be `impossible`: " + "; ".join(bad)
+        )
 
 
 def mem_available_gb():
@@ -959,6 +1039,7 @@ def run_suite(
             recorded=v.get("time"),
             timeout=to,
             counters=job_counters(m, j, v),
+            replay_expected=v.get("replay"),
         )
         with lock:
             rows.append(row)
@@ -1012,6 +1093,7 @@ def cmd_gate(a):
     tiers = TIERS[: TIERS.index(a.tier) + 1]
     cfgs = [c for c in a.config.split(",") if c]
     tasks = suite_tasks(a.suite, tiers, a.jobs, a.tag)
+    check_replay_fields(tasks)
     if not tasks:
         sys.exit(
             "bench: no jobs (connect suites with `bench.py connect`, or check the tier / --suite / --jobs)"
@@ -1043,9 +1125,7 @@ def cmd_gate(a):
 
     def done(r):
         if a.verbose:
-            print(
-                f"run: {r['config']} {r['job']} {r['verdict']} {r['wall']}s", flush=True
-            )
+            print(f"run: {r['config']} {r['job']} {vlabel(r)} {r['wall']}s", flush=True)
 
     t0 = time.monotonic()
     rows = run_suite(
@@ -1059,7 +1139,7 @@ def cmd_gate(a):
         extra_args=["--replay-original"] if replay_orig else [],
     )
     write_csv(outdir, rows)
-    fails, slow, solved, cfails = [], [], [], []
+    fails, slow, solved, cfails, replayed = [], [], [], [], []
     nbounds = 0
     by_job = {}
     for r in sorted(rows, key=lambda r: (r["job"], r["config"])):
@@ -1071,6 +1151,13 @@ def cmd_gate(a):
         elif exp in SOLVED and v != exp:
             fails.append(
                 f"{'WRONG' if v in SOLVED else 'unsolved'} {key} verdict={v} expected={exp}"
+            )
+        elif (
+            r.get("replay") == "impossible" and r.get("replay_expected") != "impossible"
+        ):
+            fails.append(
+                f"replay-impossible {key} verdict={v} expected={exp}"
+                " (the sat model cannot be replayed; manifest `replay: impossible` allows it)"
             )
         elif exp == "unknown-ok" and v in SOLVED:
             solved.append(f"{key} verdict={v}")
@@ -1105,6 +1192,12 @@ def cmd_gate(a):
                         + (" (seeded)" if "seeded" in b else "")
                     )
         if (
+            r.get("replay_expected") == "impossible"
+            and v == "sat"
+            and r.get("replay") != "impossible"
+        ):
+            replayed.append(f"{key} verdict=sat (manifest replay: impossible)")
+        if (
             r["recorded"]
             and v in SOLVED
             and r["wall"] > a.slow * r["recorded"]
@@ -1129,6 +1222,8 @@ def cmd_gate(a):
         print(f"slow: {s_}")
     for s_ in solved:
         print(f"solved: {s_}")
+    for s_ in replayed:
+        print(f"replayed: {s_}")
     counts = {}
     for r in rows:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
@@ -1140,6 +1235,8 @@ def cmd_gate(a):
             f"replay-original: match={ro.count('yes')} undetermined={ro.count('undetermined')}"
             f" mismatch={ro.count('no')} skipped={ro.count('skipped')}"
         )
+    ri = [r.get("replay_expected") for r in rows if r.get("replay") == "impossible"]
+    print(f"replay-impossible: {len(ri)} allowed={ri.count('impossible')}")
     print(f"failures: {len(fails)}")
     print(f"counter-bounds: {nbounds}")
     print(f"counter-failures: {len(cfails)}")
@@ -1170,6 +1267,8 @@ def cmd_gate(a):
         "counter-failures": cfails,
         "slow": slow,
         "solved": solved,
+        "replay-impossible": len(ri),
+        "replayed": replayed,
         "results": outdir,
         "command": " ".join(shlex.quote(x) for x in sys.argv),
     }
@@ -1220,6 +1319,7 @@ def record_counters(keys, m, label, j, v, r, stamp):
 def cmd_establish(a):
     vc = find_vc(a)
     tasks = suite_tasks(a.sel, TIERS + [None], a.jobs)
+    check_replay_fields(tasks)
     stamp = datetime.datetime.now()
     outdir = os.path.join(
         HOME, "results", stamp.strftime("%Y-%m-%d_%H%M%S") + "-establish"
@@ -1250,7 +1350,7 @@ def cmd_establish(a):
             a,
             outdir,
             False,
-            lambda r: print(f"run: {r['job']} {r['verdict']} {r['wall']}s", flush=True),
+            lambda r: print(f"run: {r['job']} {vlabel(r)} {r['wall']}s", flush=True),
             prior,
         )
     write_csv(outdir, rows)
@@ -1286,6 +1386,11 @@ def cmd_establish(a):
                     v,
                     r,
                     f"{stamp:%Y-%m-%d} sea-vc {est['sea-vc-sha256'][:12]}",
+                )
+            if r.get("replay") == "impossible" and v.get("replay") != "impossible":
+                # deliberate: establish never writes `replay`; the gate fails until a curator does
+                print(
+                    f"replay-impossible: {sn}/{fam}/{j} (sat; the gate fails without `replay: impossible`)"
                 )
             if a.counters_only:
                 continue

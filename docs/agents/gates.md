@@ -117,7 +117,8 @@ gate: pass
 ```
 
 Without `--no-record`, each gate run appends a record to
-`bench/gates/<date>-<commit>.yaml`; commit it with the change it gates.
+`$SEA_BENCH_HOME/gates/<date>-<commit>.yaml` (default
+`~/.cache/sea-mlir-bench`); logs and results go to `$SEA_BENCH_HOME/results`.
 The gates run at most 4 jobs in parallel by default, with a 16 GB memory
 cap per job.
 

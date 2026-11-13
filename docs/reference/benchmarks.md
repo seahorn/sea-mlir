@@ -64,7 +64,14 @@ frag-reach-busy-K1:
   harness-expected: sat       # the harness author's expectation, if stated
   tags: [reach]               # proof | reach | mutant | blowup-regression | inb-regression | canary
   args: [--ptr-mode=address]  # appended to the family's default arguments
+  replay: impossible          # a sat of this job may not replay; the only value
 ```
+
+`replay: impossible` is for a `sat` job whose model the interpreter cannot
+run: the program updates memory without `inplace`, so `sea-vc` prints
+`result: sat`, then the error `vc.replay-impossible`, and exits with
+status 1. The verdict is `sat`; the gate fails on such a run unless the
+job carries the field.
 
 The family's `defaults` give the configuration the verdicts were
 established with: arguments, a timeout of 900 s, and a memory cap of
@@ -95,6 +102,11 @@ jobs:
   runs with `--brunch-stats`) or a `key: value` line of stdout. The
   `seam.rule.*` counts need `--seam-stats` in the job's `args`. A bound is
   `max`, `min` or `exact`.
+- A key `<line>.<field>` names one entry of a `<line>: k=v k=v ...` line,
+  such as `vc.box-all.expanded` or `vc.expand-memmove.kept-over-k`: the form
+  the lowering chose. A job whose output has no such line has the counter
+  missing. An exact key (`BRUNCH_STAT` or `key: value`) takes precedence,
+  and the first matching line counts.
 - The bounds of a job are `defaults.counters`, then each matching
   `counter-rules` entry in order, then the job's own `counters`. A key set
   to `null` removes an inherited bound.
@@ -125,16 +137,22 @@ The gate fails (exit status 1) on:
 - a verdict other than the expected one for a `sat` or `unsat` job
   (`WRONG` for a flipped verdict; a timeout, unknown or error counts too);
 - a replay mismatch (`sea-vc` exit status 2);
-- an error, an in-bounds violation or a memory-out on a gated job;
+- a `sat` whose model cannot be replayed (`replay-impossible`) on a job
+  without `replay: impossible`;
+- an error or an in-bounds violation on a gated job, `unknown-ok` jobs
+  included (a memory-out or timeout there is an allowed unknown);
 - two configurations that answer `sat` and `unsat` on the same job
   (`DISAGREE-SAT-UNSAT`);
 - a counter outside its bound (`FAIL: counter ...`).
 
 It reports without failing `slow:` (more than twice the manifest time and
-at least 1 s more) and `solved:` (an `unknown-ok` job that was solved).
+at least 1 s more), `solved:` (an `unknown-ok` job that was solved) and
+`replayed:` (a job with `replay: impossible` whose `sat` replayed: the
+field is stale).
 Logs go to a results directory, and the record of the run (date, tier,
 configurations, commits, sea-vc checksum, verdict counts, failures) is
-appended to `bench/gates/<date>-<commit>.yaml`.
+appended to `$SEA_BENCH_HOME/gates/<date>-<commit>.yaml` (none with
+`--no-record`).
 
 Before it starts a job, the gate waits until enough memory is free and
 the load is low enough (`--min-free-gb`, `--max-load`). It runs 4 jobs in
