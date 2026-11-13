@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-//===- ArithShape.hh - arithmetic nodes and their operands' shape -*- C++ -*-===//
+//===- ArithShape.hh - arithmetic nodes, operand shape ----------*- C++ -*-===//
 //
 // Shared by the reports on the arithmetic of a VC (sea-vc --arith-stats,
 // --split-candidates' arithmetic ranking, --ite-stats) and by the origin
