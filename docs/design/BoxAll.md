@@ -220,8 +220,8 @@ region ops; the polarity test reads the program as the front end wrote it.
 
 ### Expansion of small boxes
 
-`sea-vc --box-all-expand=K` (pass option `expand-max`; K <= 65536, else an
-error): a box whose upper bounds are all constants and whose trip count (the product over its
+`sea-vc --box-all-expand=K` (pass option `expand-max`; K <= 1024, a guard
+against a mistaken K well above the measured crossover; else an error): a box whose upper bounds are all constants and whose trip count (the product over its
 dimensions) is at most K is replaced by the body at every index,
 row-major, and-reduced (`and(and(b0, b1), b2)`...). The front end states
 the claim; the lowering picks the form. Expansion is exact in any

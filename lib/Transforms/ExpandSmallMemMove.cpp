@@ -26,8 +26,8 @@
 // power of 2 that divides both A and i (A at i = 0; none when that is 1).
 //
 // Contract.
-//   Accepts: any program; K <= kMaxExpandMemMoveBytes (the VC's limit of
-//     expanded cells), else an error (memmove.expand-limit). Runs after the
+//   Accepts: any program; K <= kMaxExpandMemMoveBytes (a guard against
+//     a mistaken K), else an error (memmove.expand-limit). Runs after the
 //     metadata lowerings, placement and widening in the VC lowering.
 //   Expands: sea.memmove with a constant length (a sea.const or a value
 //     the folders compute from constants) n <= K index units (bytes, for
@@ -129,8 +129,8 @@ void ExpandSmallMemMovePass::runOnOperation() {
   if (maxBytes > kMaxExpandMemMoveBytes) {
     diag::error("memmove.expand-limit",
                 "sea-expand-small-memmove: max-bytes " + Twine(maxBytes) +
-                    " is above the limit of expanded cells (" +
-                    Twine(kMaxExpandMemMoveBytes) + ")",
+                    " is above the limit (" + Twine(kMaxExpandMemMoveBytes) +
+                    ")",
                 program.getLoc());
     return signalPassFailure();
   }

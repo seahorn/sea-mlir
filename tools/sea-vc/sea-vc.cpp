@@ -134,7 +134,7 @@ static cl::opt<unsigned> expandMemMoveOpt(
              "units (bytes for byte-addressed memories) becomes loads of "
              "every source cell, then stores in address order "
              "(sea-expand-small-memmove; exact, overlap included; K <= "
-             "65536). Every memmove is kept with --ptr-companion; a "
+             "1024). Every memmove is kept with --ptr-companion; a "
              "fat-pointer companion memmove is expanded only with its data "
              "memmove. "
              "For --seam, whose memmove term (mcopy) leaves Ackermann "
@@ -1308,7 +1308,7 @@ INPUT FORM (checked; anything else is an error, never approximated):
   error box-all.use-<assume|branch|negation|select|print|value> (no
   unrolling fallback). A box of constant upper bounds (the op folders
   reduce them to one before sccp: sea.const, flag-free arithmetic on
-  constants) with at most K indices (--box-all-expand=K <= 65536, untuned
+  constants) with at most K indices (--box-all-expand=K <= 1024, untuned
   default 16) is expanded instead: the body at every index, and-reduced
   (same polarity rule). Prints vc.box-all: dead= empty= expand-max=
   expanded= guarded= lowered= nondets=. Use it for claims whose instances
@@ -2975,8 +2975,8 @@ int main(int argc, char **argv) {
                 " is above the limit (" + Twine(sea::kMaxBoxAllExpand) + ")");
   if (expandMemMoveOpt > sea::kMaxExpandMemMoveBytes)
     return fail("--expand-memmove=" + Twine(expandMemMoveOpt) +
-                " is above the limit of expanded cells (" +
-                Twine(sea::kMaxExpandMemMoveBytes) + ")");
+                " is above the limit (" + Twine(sea::kMaxExpandMemMoveBytes) +
+                ")");
   if ((!placeIn.empty() || !placeOut.empty()) && !lower)
     return fail("--place-in and --place-out need --lower");
   if (!placeIn.empty() && !placeOut.empty())

@@ -1,6 +1,6 @@
 // RUN: sea-vc %s --lower --seam | FileCheck %s --check-prefix=TERM
 // RUN: sea-vc %s --lower --seam --expand-memmove=4 | FileCheck %s
-// RUN: not sea-vc %s --lower --seam --expand-memmove=65537 2>&1 | FileCheck %s --check-prefix=CAP
+// RUN: not sea-vc %s --lower --seam --expand-memmove=1025 2>&1 | FileCheck %s --check-prefix=CAP
 // RUN: sed 's/%k1 = sea.icmp eq, %x1, %v1/%k1 = sea.icmp eq, %x1, %v0/' %s | sea-vc - --lower --seam --expand-memmove=4 | FileCheck %s --check-prefix=MUT
 
 // A row copy to a symbolic row: a 4-byte staging row written by two 2-byte
@@ -18,7 +18,7 @@
 // CHECK: vc.ackermann-constraints: 0
 // CHECK: result: unsat
 // MUT: result: sat
-// CAP: --expand-memmove=65537 is above the limit of expanded cells (65536)
+// CAP: --expand-memmove=1025 is above the limit (1024)
 // MUT: replay: assert-failed
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @row {

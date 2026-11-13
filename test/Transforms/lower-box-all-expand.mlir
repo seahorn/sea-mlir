@@ -1,8 +1,8 @@
 // RUN: sea-opt %s --sea-lower-box-all=expand-max=4 | FileCheck %s
 // RUN: sea-opt %s --sea-lower-box-all=expand-max=4 | sea-opt --sea-vc-lower | FileCheck %s --check-prefix=LOWERED
-// RUN: not sea-opt %s --sea-lower-box-all=expand-max=65537 2>&1 | FileCheck %s --check-prefix=LIMIT
-// RUN: not sea-vc %s --program=one --lower --box-all-expand=65537 2>&1 | FileCheck %s --check-prefix=LIMIT
-// LIMIT: is above the limit (65536)
+// RUN: not sea-opt %s --sea-lower-box-all=expand-max=1025 2>&1 | FileCheck %s --check-prefix=LIMIT
+// RUN: not sea-vc %s --program=one --lower --box-all-expand=1025 2>&1 | FileCheck %s --check-prefix=LIMIT
+// LIMIT: is above the limit (1024)
 // sea-lower-box-all{expand-max=K} (docs/design/BoxAll.md): a box whose
 // upper bounds are constants and whose trip count is at most K becomes the
 // body at every index, row-major, and-reduced; any other box gets one

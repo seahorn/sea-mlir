@@ -171,7 +171,8 @@ store that SeaM resolves at the byte offsets it knows: in
 `test/VC/expand-memmove-row.mlir` the residue goes to 0 with the same
 verdict. `inplace` stays on every store; `align` / `src_align` A gives
 the copy at offset i the largest power of 2 dividing A and i. K is at
-most 65536 (the VC's limit of expanded cells); a larger K is an error.
+most 1024, a guard against a mistaken K well above the measured
+crossover; a larger K is an error.
 
 The pass runs after the metadata lowerings, placement and widening.
 Kept, with a counter each (`vc.expand-memmove: k= expanded= bytes=

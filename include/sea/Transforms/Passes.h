@@ -113,10 +113,10 @@ inline constexpr llvm::StringLiteral kMemSetBoundAttr = "sea.memset_bound";
 /// (exact). \p ptrCompanion: keep every memmove (sea-vc --ptr-companion).
 std::unique_ptr<mlir::Pass>
 createExpandSmallMemMovePass(unsigned maxBytes, bool ptrCompanion = false);
-/// The largest max-bytes of sea-expand-small-memmove: the VC's limit of
-/// cells it expands a constant-length range op into (kMaxExpandedCells,
-/// lib/VC/OpSem.cpp).
-inline constexpr unsigned kMaxExpandMemMoveBytes = 1u << 16;
+/// The largest max-bytes of sea-expand-small-memmove: a guard against a
+/// mistaken K, well above the measured crossover (expansion pays only for
+/// short copies; docs/design/SeaM-memops.md).
+inline constexpr unsigned kMaxExpandMemMoveBytes = 1024;
 std::unique_ptr<mlir::Pass> createExpandSmallMemMovePass();
 /// On the sea.program after sea-expand-small-memmove: its counters (a
 /// dictionary of i64 attributes, the keys of `vc.expand-memmove`).
@@ -195,8 +195,10 @@ std::unique_ptr<mlir::Pass> createLowerBoxAllPass(unsigned expandMax);
 /// The default of expand-max (sea-vc --box-all-expand); untuned,
 /// docs/design/BoxAll.md.
 inline constexpr unsigned kBoxAllExpandDefault = 16;
-/// The largest expand-max (the indices of one expanded box).
-inline constexpr unsigned kMaxBoxAllExpand = 1u << 16;
+/// The largest expand-max (the indices of one expanded box): a guard
+/// against a mistaken K, well above the measured crossover
+/// (docs/design/BoxAll.md).
+inline constexpr unsigned kMaxBoxAllExpand = 1024;
 /// On the sea.program after sea-lower-box-all: its counters (i64
 /// attributes: lowered, guarded, expanded, expand-max, empty, dead,
 /// nondets; `vc.box-all`).
