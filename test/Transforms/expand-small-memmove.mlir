@@ -73,30 +73,49 @@ sea.program @kept {
 // -----
 
 // Keyed memory (fat-pointer companions): one whole cell per byte address,
-// copied cell by cell; a word layout is kept (the VC copies its words).
+// copied cell by cell, but only when its mirror (the first non-keyed
+// memmove after it in the block with the same addr, srcAddr and len) is
+// expanded. %k1 mirrors %b1 (expanded); %k2 mirrors %w1, a word layout
+// (kept, so %k2 too); %k3 has no mirror (kept).
+!b = !sea.mem<!sea.addr<64>, i8>
 !k = !sea.mem<!sea.addr<64>, i64, keyed>
 !w = !sea.mem<!sea.addr<64>, i32, aligned>
 // CHECK-LABEL: sea.program @layouts
+// CHECK-SAME: expanded = 2
+// CHECK-SAME: "kept-companion-mirror" = 2
 // CHECK-SAME: "kept-word-layout" = 1
 // CHECK: sea.load %{{.*}} -> i64
 // CHECK: sea.load %{{.*}} -> i64
 // CHECK: sea.store {{.*}} : !sea.mem<!sea.addr<64>, i64, keyed>, i64
 // CHECK: sea.store {{.*}} : !sea.mem<!sea.addr<64>, i64, keyed>, i64
+// CHECK: sea.store {{.*}} : !sea.mem<!sea.addr<64>, i8>, i8
+// CHECK: sea.store {{.*}} : !sea.mem<!sea.addr<64>, i8>, i8
+// CHECK: %[[K2:.*]] = sea.memmove {{.*}} : !sea.mem<!sea.addr<64>, i64, keyed>
 // CHECK: sea.memmove {{.*}} : !sea.mem<!sea.addr<64>, i32, aligned>
+// CHECK: sea.memmove %[[K2]]{{.*}} : !sea.mem<!sea.addr<64>, i64, keyed>
 sea.program @layouts {
-  %a = sea.segment "o" base 4096 : i64 size 16 : i64 align 8 kind "global" : !sea.addr<64>
+  %a = sea.segment "o" base 4096 : i64 size 32 : i64 align 8 kind "global" : !sea.addr<64>
   %k0 = sea.mem.nondet "k" [1] : !k
   %w0 = sea.mem.nondet "w" [2] : !w
+  %b0 = sea.mem.nondet "b" [3] : !b
   %two = sea.const 2 : i64
   %four = sea.const 4 : i64
   %eight = sea.const 8 : i64
+  %c16 = sea.const 16 : i64
   %d = sea.addr.add %a, %eight : !sea.addr<64>, i64
+  %e = sea.addr.add %a, %c16 : !sea.addr<64>, i64
   %k1 = sea.memmove %k0[%d], %k0[%a], %two inplace : !k
-  %w1 = sea.memmove %w0[%d], %w0[%a], %four inplace : !w
-  %x = sea.load %k1[%d] : !k -> i64
-  %y = sea.load %w1[%d] : !w -> i32
+  %b1 = sea.memmove %b0[%d], %b0[%a], %two inplace : !b
+  %k2 = sea.memmove %k1[%e], %k1[%a], %four inplace : !k
+  %w1 = sea.memmove %w0[%e], %w0[%a], %four inplace : !w
+  %k3 = sea.memmove %k2[%a], %k2[%e], %four inplace : !k
+  %x = sea.load %k3[%d] : !k -> i64
+  %y = sea.load %w1[%e] : !w -> i32
+  %z = sea.load %b1[%d] : !b -> i8
   %y64 = sea.zext %y : i32 to i64
-  %ok = sea.icmp eq, %x, %y64 : i64
+  %z64 = sea.zext %z : i8 to i64
+  %s = sea.add %y64, %z64 : i64
+  %ok = sea.icmp eq, %x, %s : i64
   sea.assert %ok
   sea.halt
 }

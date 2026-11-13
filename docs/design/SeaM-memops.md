@@ -158,30 +158,49 @@ read against each write of the source is an Ackermann residue pair.
 
 `sea-vc --lower --expand-memmove=K` runs `sea-expand-small-memmove`
 (`lib/Transforms/ExpandSmallMemMove.cpp`): a memmove whose length is a
-constant n <= K bytes becomes n loads of the source, all first and from
-the source version the op reads, then n stores in increasing address
-order. This is memmove exactly, overlap included (the loads precede every
-store); `test/VC/expand-memmove-equiv.mlir` proves it with z3 against
-the exact `MCOPY` term over symbolic, overlapping offsets, and
+constant n <= K index units (bytes, for byte-addressed memories; the
+counter `bytes=` counts the same units) becomes n loads of the source,
+all first and from the source version the op reads, then n stores in
+increasing address order. This is memmove exactly, overlap included (the
+loads precede every store); `test/VC/expand-memmove-equiv.mlir` proves it
+with z3 against the exact `MCOPY` term over symbolic, overlapping offsets
+(an interleaved load / store chain there is sat), and
 `test/Transforms/expand-small-memmove-run.mlir` runs both directions of
 overlap in the interpreter. Each copied byte is then an ordinary load and
 store that SeaM resolves at the byte offsets it knows: in
 `test/VC/expand-memmove-row.mlir` the residue goes to 0 with the same
 verdict. `inplace` stays on every store; `align` / `src_align` A gives
-the copy at offset i the largest power of 2 dividing A and i.
+the copy at offset i the largest power of 2 dividing A and i. K is at
+most 65536 (the VC's limit of expanded cells); a larger K is an error.
 
-The pass runs after the metadata lowerings, placement and widening, so a
-fat-pointer companion memmove (keyed memory, one cell per byte address)
-has the same length and the same decision. Kept, with a counter each
-(`vc.expand-memmove: k= expanded= bytes= kept-symbolic= kept-over-k=
-kept-word-layout= kept-abstract= kept-tracked=`): a symbolic length,
-n > K, a word layout (the VC copies whole words already), a pointer-indexed
-memory (pass run before placement: the abstract semantics has no bytes of
-a stored pointer), a `tracked` memmove (sea-lower-tracking has not run).
+The pass runs after the metadata lowerings, placement and widening.
+Kept, with a counter each (`vc.expand-memmove: k= expanded= bytes=
+kept-symbolic= kept-over-k= kept-word-layout= kept-abstract= kept-tracked=
+kept-companion-mirror= kept-ptr-companion=`):
+
+- a symbolic length; n > K;
+- a word layout (the VC copies whole words already);
+- a pointer-indexed memory (the pass run before placement: the abstract
+  semantics has no bytes of a stored pointer);
+- a `tracked` memmove (sea-lower-tracking has not run);
+- a keyed memmove (a fat-pointer companion: one cell per byte address)
+  whose mirror is not expanded. sea-lower-fat-pointers puts the offset and
+  size companion memmoves right before the data memmove, with its addr,
+  srcAddr and len operands; the mirror is the first non-keyed memmove
+  after the companion in its block with those operands. A companion is
+  expanded only when its mirror is, so the companions keep mirroring the
+  data (with `--widen-memory` the data memmove is a word copy and kept,
+  and so are its companions);
+- every memmove under `--ptr-companion` (not off): the VC's pointer
+  companion copies the stored pointers of a memmove as one term, and byte
+  stores would drop them (the A-PTRINT check would fail).
 
 Cost: one load and one store per byte, so the program grows linearly in
-K; the term is one node at any length. Whether expansion wins depends on
-whether the range tests stay open, so K is untuned and the default is 0
+K; the term is one node at any length. Measured on a row-copy program
+with a one-cell claim, element copies beat the memmove for short rows
+(8 elements: 0.21 s vs 0.5 s) and lose for long ones (32 elements: 2.3 s
+vs 1.7 s; 128 elements: 56 s vs 8.5 s): expansion pays for short copies
+(up to about 16 bytes measured). So K is untuned and the default is 0
 (off). memset is not expanded: the hit form of `MSET` is the value, with
 no read of another memory, so an open range test leaves no Ackermann
 residue (hypothesis; not measured). memhavoc's hit form reads its fresh

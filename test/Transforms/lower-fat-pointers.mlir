@@ -3,6 +3,8 @@
 // RUN: sea-opt %s --sea-lower-fat-pointers --sea-place-static | sea-run - --missing=zero | FileCheck %s --check-prefix=INT
 // RUN: sea-vc %s --lower | FileCheck %s --check-prefix=VC
 // RUN: sea-vc %s --lower --seam --seam-stats 2>&1 | FileCheck %s --check-prefix=COMP
+// RUN: sea-vc %s --lower --seam --seam-stats --expand-memmove=8 2>&1 | FileCheck %s --check-prefix=EXP
+// RUN: sea-vc %s --lower --seam --seam-stats --widen-memory=8 --expand-memmove=8 2>&1 | FileCheck %s --check-prefix=WIDEX
 
 // A pointer's offset and size travel with it through memory: stored,
 // copied by memmove, loaded back, then asked about. Offsets and sizes are
@@ -15,6 +17,17 @@
 // COMP-NOT: unmirrored
 // COMP: seam.rule.companion.access: 8
 // COMP-NOT: unmirrored
+// sea-expand-small-memmove (--expand-memmove) expands a companion memmove
+// only with its data memmove: all three (EXP), or none when widening makes
+// the data memmove a word copy, which is kept (WIDEX); none unmirrored.
+// EXP-NOT: unmirrored
+// EXP: vc.expand-memmove: k=8 expanded=3 bytes=24
+// EXP-NOT: unmirrored
+// EXP: result: unsat
+// WIDEX-NOT: unmirrored
+// WIDEX: vc.expand-memmove: k=8 expanded=0 {{.*}} kept-word-layout=1 {{.*}} kept-companion-mirror=2
+// WIDEX-NOT: unmirrored
+// WIDEX: result: unsat
 // LOW-NOT: sea.ptr.dereferenceable
 // LOW-NOT: sea.ptr.base
 // LOW: sea.memmove

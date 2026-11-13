@@ -109,8 +109,14 @@ std::unique_ptr<mlir::Pass> createExpandMemSetPass();
 /// under-approximation sea-vc reports (assume.memset-bound).
 inline constexpr llvm::StringLiteral kMemSetBoundAttr = "sea.memset_bound";
 /// sea-expand-small-memmove: a memmove of a constant length <= maxBytes
-/// as loads of every source cell, then stores in address order (exact).
-std::unique_ptr<mlir::Pass> createExpandSmallMemMovePass(unsigned maxBytes);
+/// index units as loads of every source cell, then stores in address order
+/// (exact). \p ptrCompanion: keep every memmove (sea-vc --ptr-companion).
+std::unique_ptr<mlir::Pass>
+createExpandSmallMemMovePass(unsigned maxBytes, bool ptrCompanion = false);
+/// The largest max-bytes of sea-expand-small-memmove: the VC's limit of
+/// cells it expands a constant-length range op into (kMaxExpandedCells,
+/// lib/VC/OpSem.cpp).
+inline constexpr unsigned kMaxExpandMemMoveBytes = 1u << 16;
 std::unique_ptr<mlir::Pass> createExpandSmallMemMovePass();
 /// On the sea.program after sea-expand-small-memmove: its counters (a
 /// dictionary of i64 attributes, the keys of `vc.expand-memmove`).
@@ -231,17 +237,16 @@ enum class RangeFoldMode { Off, Fold, Check };
 /// canonicalize; sea-vc --range-fold, default off).
 /// \p expandMemMove: sea-expand-small-memmove{max-bytes=K} after the
 /// metadata lowerings, placement and widening (sea-vc --expand-memmove,
-/// default 0: not run).
-void buildVCLoweringPipeline(mlir::OpPassManager &pm, bool abstract,
-                             bool nativeMulOverflow = false, bool fold = true,
-                             unsigned widenMemory = 0, bool expandMemSet = true,
-                             bool widenReport = false,
-                             bool keepByteWide = false, bool checkAlign = false,
-                             unsigned checkPtrIndex = 0, bool opt = true,
-                             bool memhavocNullNoop = true, unsigned disable = 0,
-                             const PlaceFiles &place = {},
-                             RangeFoldMode rangeFold = RangeFoldMode::Off,
-                             unsigned expandMemMove = 0);
+/// default 0: not run); \p ptrCompanion: its option ptr-companion (sea-vc
+/// --ptr-companion is not off: every memmove kept).
+void buildVCLoweringPipeline(
+    mlir::OpPassManager &pm, bool abstract, bool nativeMulOverflow = false,
+    bool fold = true, unsigned widenMemory = 0, bool expandMemSet = true,
+    bool widenReport = false, bool keepByteWide = false,
+    bool checkAlign = false, unsigned checkPtrIndex = 0, bool opt = true,
+    bool memhavocNullNoop = true, unsigned disable = 0,
+    const PlaceFiles &place = {}, RangeFoldMode rangeFold = RangeFoldMode::Off,
+    unsigned expandMemMove = 0, bool ptrCompanion = false);
 
 /// Attaches the `lower.pass` log (one level-1 event per pass run: ops
 /// before and after, time; lib/Transforms/PassLog.cpp) to \p pm. Costs a

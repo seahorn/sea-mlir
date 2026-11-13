@@ -29,6 +29,11 @@
 // FWD: replay: assert-failed
 // RUN: sea-vc %s --lower --lower-opt=false --program=overwritten --seam --ptr-companion=check 2>&1 | FileCheck %s --check-prefix=VIOL
 // RUN: sea-vc %s --lower --program=moved --seam --ptr-companion=check 2>&1 | FileCheck %s --check-prefix=HOLDS
+// With --expand-memmove the memmove of @moved is kept (byte stores would
+// drop the companion's copy of the stored pointer): the check still holds.
+// RUN: sea-vc %s --lower --program=moved --seam --ptr-companion=check --expand-memmove=8 2>&1 | FileCheck %s --check-prefix=HOLDS,KEEP
+// KEEP: vc.expand-memmove: k=8 expanded=0 {{.*}} kept-ptr-companion=1
+// KEEP: vc.ptr-companion: loads=1 stores=1 copies=1
 // ASSUME: seam.ptrint: assumed loads=1
 // ASSUME: result: unsat
 // VIOL: seam.ptrint: checked loads=1

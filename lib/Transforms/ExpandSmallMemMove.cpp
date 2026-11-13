@@ -26,19 +26,31 @@
 // power of 2 that divides both A and i (A at i = 0; none when that is 1).
 //
 // Contract.
-//   Accepts: any program. Runs after the metadata lowerings and placement
-//     in the VC lowering (fat-pointer companion memmoves are plain memmoves
-//     of the same length then, and get the same decision).
+//   Accepts: any program; K <= kMaxExpandMemMoveBytes (the VC's limit of
+//     expanded cells), else an error (memmove.expand-limit). Runs after the
+//     metadata lowerings, placement and widening in the VC lowering.
 //   Expands: sea.memmove with a constant length (a sea.const or a value
-//     the folders compute from constants) n <= K, on an address-indexed
-//     (placed) memory with the exact or keyed layout, without `tracked`.
+//     the folders compute from constants) n <= K index units (bytes, for
+//     byte-addressed memories), on an address-indexed (placed) memory
+//     with the exact layout, without `tracked`; and a keyed memmove (a
+//     fat-pointer companion) under the same conditions only if its mirror
+//     is expanded: the first non-keyed memmove after it in its block with
+//     the same addr, srcAddr and len operands (sea-lower-fat-pointers puts
+//     the offset and size companion memmoves right before the data
+//     memmove, with its operands). A companion copied whole beside a data
+//     memmove expanded into bytes, or the reverse (a word-layout data
+//     memmove kept), would no longer mirror it.
 //   Keeps (counted by reason): a symbolic length (`symbolic`), n > K
 //     (`over-k`), a word layout (`word-layout`: the VC copies its words
 //     itself), a pointer-indexed memory (`abstract`: before placement a
 //     pointer's bytes have no value, so the abstract interpreter refuses a
 //     byte load of a stored pointer that the memmove copies whole), a
 //     `tracked` memmove (`tracked`: sea-lower-tracking has not
-//     run; tracked stores per cell would mean the same, not done).
+//     run; tracked stores per cell would mean the same, not done), a
+//     keyed memmove without an expanded mirror (`companion-mirror`), and
+//     every memmove with option ptr-companion (`ptr-companion`: sea-vc
+//     --ptr-companion copies the stored pointers of a memmove as one term;
+//     byte stores would drop them).
 //   Reports: the counters (kExpandMemMoveStatsAttr on the program;
 //     sea-vc prints vc.expand-memmove) and the lower.expand-memmove log.
 //   Produces: no sea.memmove the pass expands (checked).
@@ -47,6 +59,7 @@
 
 #include "PassUtils.h"
 #include "sea/Dialect/Sea/SeaOps.h"
+#include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
 #include "sea/Transforms/Passes.h"
 
@@ -71,7 +84,10 @@ public:
   ExpandSmallMemMovePass() = default;
   ExpandSmallMemMovePass(const ExpandSmallMemMovePass &other)
       : PassWrapper(other) {}
-  explicit ExpandSmallMemMovePass(unsigned k) { maxBytes = k; }
+  ExpandSmallMemMovePass(unsigned k, bool companion) {
+    maxBytes = k;
+    ptrCompanion = companion;
+  }
 
   StringRef getArgument() const final { return "sea-expand-small-memmove"; }
   StringRef getDescription() const final {
@@ -84,8 +100,14 @@ public:
 
   Option<unsigned> maxBytes{
       *this, "max-bytes",
-      llvm::cl::desc("Largest constant length (bytes) expanded; 0: none"),
+      llvm::cl::desc("Largest constant length expanded, in index units "
+                     "(bytes for byte-addressed memories); 0: none"),
       llvm::cl::init(0)};
+  Option<bool> ptrCompanion{
+      *this, "ptr-companion",
+      llvm::cl::desc("Keep every memmove (sea-vc --ptr-companion: the VC "
+                     "copies the stored pointers of a memmove as a term)"),
+      llvm::cl::init(false)};
 };
 
 /// The promise of an access at base + i when base = 0 (mod a): the largest
@@ -104,33 +126,80 @@ static IntegerAttr alignAt(OpBuilder &b, IntegerAttr a, uint64_t i) {
 void ExpandSmallMemMovePass::runOnOperation() {
   ProgramOp program = getOperation();
   MLIRContext *ctx = &getContext();
+  if (maxBytes > kMaxExpandMemMoveBytes) {
+    diag::error("memmove.expand-limit",
+                "sea-expand-small-memmove: max-bytes " + Twine(maxBytes) +
+                    " is above the limit of expanded cells (" +
+                    Twine(kMaxExpandMemMoveBytes) + ")",
+                program.getLoc());
+    return signalPassFailure();
+  }
   struct Counts {
     uint64_t expanded = 0, bytes = 0, symbolic = 0, overK = 0, words = 0,
-             tracked = 0, abstract = 0;
+             tracked = 0, abstract = 0, companion = 0, mirror = 0;
   } n;
-  SmallVector<std::pair<MemMoveOp, uint64_t>> todo;
-  program.walk([&](MemMoveOp op) {
-    StringRef kept;
+  // The reason a memmove is kept, from its own operands (empty: it may be
+  // expanded).
+  auto ownReason = [&](MemMoveOp op) -> StringRef {
     std::optional<APInt> len = foldConstant(op.getLen());
+    if (ptrCompanion)
+      return ++n.companion, "ptr-companion";
     if (!len)
-      kept = "symbolic", ++n.symbolic;
-    else if (len->ugt(maxBytes))
-      kept = "over-k", ++n.overK;
-    else if (op.getMem().getType().isWordLayout())
-      kept = "word-layout", ++n.words;
-    else if (isa<PtrType>(op.getMem().getType().getIndex()))
-      kept = "abstract", ++n.abstract;
-    else if (op.getTracked())
-      kept = "tracked", ++n.tracked;
-    if (!kept.empty()) {
-      SEA_LOG(logExpandMemMove, log::Object)
-          .msg("kept")
-          .kv("reason", kept)
-          .at(op.getLoc());
-      return;
-    }
-    todo.push_back({op, len->getZExtValue()});
+      return ++n.symbolic, "symbolic";
+    if (len->ugt(maxBytes))
+      return ++n.overK, "over-k";
+    if (op.getMem().getType().isWordLayout())
+      return ++n.words, "word-layout";
+    if (isa<PtrType>(op.getMem().getType().getIndex()))
+      return ++n.abstract, "abstract";
+    if (op.getTracked())
+      return ++n.tracked, "tracked";
+    return {};
+  };
+  auto logKept = [&](MemMoveOp op, StringRef why) {
+    SEA_LOG(logExpandMemMove, log::Object)
+        .msg("kept")
+        .kv("reason", why)
+        .at(op.getLoc());
+  };
+  // data memmoves first, then the keyed ones by their mirrors
+  SmallVector<std::pair<MemMoveOp, uint64_t>> todo;
+  llvm::SmallPtrSet<Operation *, 16> expand;
+  SmallVector<MemMoveOp> keyed;
+  program.walk([&](MemMoveOp op) {
+    if (op.getMem().getType().isKeyed())
+      return keyed.push_back(op);
+    if (StringRef why = ownReason(op); !why.empty())
+      return logKept(op, why);
+    expand.insert(op);
+    todo.push_back({op, foldConstant(op.getLen())->getZExtValue()});
   });
+  auto mirrorOf = [](MemMoveOp op) -> MemMoveOp {
+    for (Operation *it = op->getNextNode(); it; it = it->getNextNode()) {
+      auto mv = dyn_cast<MemMoveOp>(it);
+      if (mv && !mv.getMem().getType().isKeyed() &&
+          mv.getAddr() == op.getAddr() && mv.getSrcAddr() == op.getSrcAddr() &&
+          mv.getLen() == op.getLen())
+        return mv;
+    }
+    return {};
+  };
+  for (MemMoveOp op : keyed) {
+    if (StringRef why = ownReason(op); !why.empty()) {
+      logKept(op, why);
+      continue;
+    }
+    MemMoveOp mirror = mirrorOf(op);
+    if (!mirror || !expand.contains(mirror)) {
+      ++n.mirror;
+      logKept(op, "companion-mirror");
+      continue;
+    }
+    todo.push_back({op, foldConstant(op.getLen())->getZExtValue()});
+  }
+  llvm::DenseSet<Operation *> expanded;
+  for (auto &[op, len] : todo)
+    expanded.insert(op);
 
   OpBuilder b(ctx);
   for (auto [op, len] : todo) {
@@ -170,7 +239,9 @@ void ExpandSmallMemMovePass::runOnOperation() {
                                     stat("kept-over-k", n.overK),
                                     stat("kept-word-layout", n.words),
                                     stat("kept-abstract", n.abstract),
-                                    stat("kept-tracked", n.tracked)};
+                                    stat("kept-tracked", n.tracked),
+                                    stat("kept-companion-mirror", n.mirror),
+                                    stat("kept-ptr-companion", n.companion)};
   program->setAttr(kExpandMemMoveStatsAttr, DictionaryAttr::get(ctx, stats));
   SEA_LOG(logExpandMemMove, log::Flow)
       .kv("k", static_cast<uint64_t>(maxBytes))
@@ -180,13 +251,13 @@ void ExpandSmallMemMovePass::runOnOperation() {
       .kv("kept-over-k", n.overK)
       .kv("kept-word-layout", n.words)
       .kv("kept-abstract", n.abstract)
-      .kv("kept-tracked", n.tracked);
+      .kv("kept-tracked", n.tracked)
+      .kv("kept-companion-mirror", n.mirror)
+      .kv("kept-ptr-companion", n.companion);
 
+  // every memmove decided for expansion is gone
   program.walk([&](MemMoveOp op) {
-    std::optional<APInt> len = foldConstant(op.getLen());
-    MemType t = op.getMem().getType();
-    if (len && len->ule(maxBytes) && !t.isWordLayout() &&
-        !isa<PtrType>(t.getIndex()) && !op.getTracked()) {
+    if (expanded.contains(op)) {
       (void)postconditionFailed("sea-expand-small-memmove",
                                 "a memmove it expands", op);
       signalPassFailure();
@@ -196,8 +267,9 @@ void ExpandSmallMemMovePass::runOnOperation() {
 
 } // namespace
 
-std::unique_ptr<Pass> createExpandSmallMemMovePass(unsigned maxBytes) {
-  return std::make_unique<ExpandSmallMemMovePass>(maxBytes);
+std::unique_ptr<Pass> createExpandSmallMemMovePass(unsigned maxBytes,
+                                                   bool ptrCompanion) {
+  return std::make_unique<ExpandSmallMemMovePass>(maxBytes, ptrCompanion);
 }
 std::unique_ptr<Pass> createExpandSmallMemMovePass() {
   return std::make_unique<ExpandSmallMemMovePass>();

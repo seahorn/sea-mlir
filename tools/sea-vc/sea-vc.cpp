@@ -130,9 +130,13 @@ static cl::opt<sea::RangeFoldMode> rangeFoldOpt(
 
 static cl::opt<unsigned> expandMemMoveOpt(
     "expand-memmove",
-    cl::desc("With --lower: a sea.memmove of a constant length <= K bytes "
-             "becomes loads of every source byte, then stores in address "
-             "order (sea-expand-small-memmove; exact, overlap included). "
+    cl::desc("With --lower: a sea.memmove of a constant length <= K index "
+             "units (bytes for byte-addressed memories) becomes loads of "
+             "every source cell, then stores in address order "
+             "(sea-expand-small-memmove; exact, overlap included; K <= "
+             "65536). Every memmove is kept with --ptr-companion; a "
+             "fat-pointer companion memmove is expanded only with its data "
+             "memmove. "
              "For --seam, whose memmove term (mcopy) leaves Ackermann "
              "residue when the range test is undecided; prints "
              "vc.expand-memmove. Untuned default: 0 (off)"),
@@ -1791,11 +1795,17 @@ TYPICAL:
                                  #   stores in address order (exact). For
                                  #   mcopy reads SeaM cannot decide (symbolic
                                  #   destination): Ackermann residue.
+                                 #   Pays for short copies (up to ~16
+                                 #   bytes measured), loses for long ones
+                                 #   (one load + store per byte).
                                  #   Untuned default: 0 (off). Prints
                                  #   vc.expand-memmove: k= expanded= bytes=
                                  #   kept-symbolic= kept-over-k=
                                  #   kept-word-layout= kept-abstract=
-                                 #   kept-tracked=
+                                 #   kept-tracked= kept-companion-mirror=
+                                 #   kept-ptr-companion= (K in index
+                                 #   units: bytes in byte memories; every
+                                 #   memmove kept with --ptr-companion)
   sea-vc p.mlir --seam --seam-stride  # R-STRIDE: store-map entries
                                  #   skipped for reads at promised GEP
                                  #   nodes whose offsets never reach them
@@ -2916,6 +2926,10 @@ int main(int argc, char **argv) {
     return fail("--range-fold needs --lower");
   if (expandMemMoveOpt && !lower)
     return fail("--expand-memmove needs --lower");
+  if (expandMemMoveOpt > sea::kMaxExpandMemMoveBytes)
+    return fail("--expand-memmove=" + Twine(expandMemMoveOpt) +
+                " is above the limit of expanded cells (" +
+                Twine(sea::kMaxExpandMemMoveBytes) + ")");
   if ((!placeIn.empty() || !placeOut.empty()) && !lower)
     return fail("--place-in and --place-out need --lower");
   if (!placeIn.empty() && !placeOut.empty())
@@ -3238,7 +3252,8 @@ int main(int argc, char **argv) {
         /*keepByteWide=*/seam && seamWide, checkAlign,
         checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt,
         memhavocNull == MemhavocNull::Noop, lowerDisableMask,
-        sea::PlaceFiles{placeIn, placeOut}, rangeFoldOpt, expandMemMoveOpt);
+        sea::PlaceFiles{placeIn, placeOut}, rangeFoldOpt, expandMemMoveOpt,
+        ptrCompanion != CompanionMode::Off);
     if (failed(configurePM(pm)) || failed(pm.run(*module)))
       return 1;
     SEA_PHASE_END(lowerPhase)
@@ -3314,7 +3329,8 @@ int main(int argc, char **argv) {
     os << "vc.expand-memmove:";
     for (StringRef key :
          {"k", "expanded", "bytes", "kept-symbolic", "kept-over-k",
-          "kept-word-layout", "kept-abstract", "kept-tracked"})
+          "kept-word-layout", "kept-abstract", "kept-tracked",
+          "kept-companion-mirror", "kept-ptr-companion"})
       if (auto i = d.getAs<IntegerAttr>(key))
         os << " " << key << "=" << i.getInt();
     os << "\n";
