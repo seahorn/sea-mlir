@@ -8,6 +8,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "ArithStats.h"
 #include "EqAudit.h"
 #include "sea/Dialect/Sea/SeaDialect.h"
 #include "sea/Dialect/Sea/SeaOps.h"
@@ -524,6 +525,17 @@ static cl::opt<bool> dagStats(
     "dag-stats",
     cl::desc("Print the size of the query as a DAG (vc.dag-size) and the "
              "distinct DAG nodes per operator (vc.dag-op: <op> <n>)"),
+    cl::init(false));
+
+static cl::opt<bool> arithStats(
+    "arith-stats",
+    cl::desc("Print the multiplications, divisions and remainders of the "
+             "query the solver gets, by operator, width and operand kind "
+             "(numeral, ite of numerals, ite with symbolic leaves, two "
+             "non-constant terms), with the distinct ite conditions, in "
+             "total (arith.total, arith.op) and per source location of the "
+             "sea op that made them (arith.loc; nodes made or rewritten by a "
+             "later stage: unattributed). Works with --vcgen-only"),
     cl::init(false));
 
 static cl::opt<bool> seamStats(
@@ -1757,8 +1769,11 @@ TYPICAL:
                                  #   targets before it)
   sea-vc p.mlir --vcgen-only     # generate and check the VC, print its
                                  #   statistics and result: none; no solver
-                                 #   (also not --seam-check / --eq-audit /
-                                 #   --x-read-table-check); not with --smt2
+                                 #   of the query; --eq-audit runs (its own
+                                 #   z3 checks); --seam-check and
+                                 #   --x-read-table-check do not (warning
+                                 #   vc.vcgen-only-check-skipped); not with
+                                 #   --smt2
   sea-vc p.mlir --print-refs=strong  # keep every printed value alive
                                  #   through the lowering (PRINTS)
   sea-vc p.mlir --progress       # = --log=vc.phase: the start and end
@@ -2177,9 +2192,25 @@ TYPICAL:
                                  #   each firing under P1-P3). Off: on vcc
                                  #   it slows the solver (PtrIndex.md 0c)
   sea-vc p.mlir --ack-dump-pairs=<f>  # with the lowering on: every lowered
-                                 #   read (`read <a> <k> <index>`) and every
-                                 #   constrained pair (`pair <a> <k> <l>`)
-                                 #   to <f>, for a census of undecided pairs
+                                 #   read (`read <a> <k> <index> loc=<l>`)
+                                 #   and every constrained pair (`pair <a>
+                                 #   <k> <l>`) to <f>, for a census of
+                                 #   undecided pairs; loc= (last field) the
+                                 #   loads the read came from, `;`-separated
+                                 #   (- for none: a select a later stage
+                                 #   made); split the line at its last
+                                 #   ` loc=`
+  sea-vc p.mlir --lower --seam --vcgen-only --arith-stats  # the products,
+                                 #   divisions and remainders of the query
+                                 #   the solver gets, by operand kind
+                                 #   (numeral, ite-num: an ite tree of
+                                 #   numerals, ite-sym: an ite tree with a
+                                 #   symbolic leaf, nonconst: two non-constant
+                                 #   terms) and per source location: a
+                                 #   product by a path-merged value (ite-*)
+                                 #   is cheap per path and can be a solver
+                                 #   cliff as one term (try --split on its
+                                 #   condition); see OUTPUT
   sea-vc p.mlir --vc-join=eq     # joins as fresh constants with guarded
                                  #   equalities (default ite: a block
                                  #   argument is ite over the incoming edges,
@@ -2300,6 +2331,30 @@ OUTPUT (stdout, `key: value` lines):
   vc.dag-size: <n>                (--dag-stats: distinct nodes of the query
                                   the solver gets; with --smt2 on stderr)
   vc.dag-op: <op> <n>             (--dag-stats: distinct nodes per operator)
+  arith.total: ops=<n> attributed=<n> unattributed=<n> locations=<n>
+               shared=<n>          (--arith-stats; with --smt2 on stderr:
+                                  the distinct bvmul / bvudiv / bvsdiv /
+                                  bvurem / bvsrem / bvsmod / mul-overflow
+                                  predicate nodes of the query the solver
+                                  gets; unattributed: made or rewritten by a
+                                  stage after the encoding (SeaM rules,
+                                  the boundary's expansions, e.g. address
+                                  arithmetic of ptr.index); shared: nodes
+                                  of several locations, counted at each)
+  arith.op: op=<op> width=<w> operands=numeral|ite-num|ite-sym|nonconst
+            count=<n> unattributed=<n>[ conds=<n> conds-max=<n>]
+                                  (per operator, operand width and kind:
+                                  an operand is a numeral; else an ite tree,
+                                  through extract / extensions, of numerals;
+                                  else one with a symbolic leaf; else two
+                                  non-constant terms. ite kinds: conds = the
+                                  distinct ite conditions of the group,
+                                  conds-max = the most of one node)
+  arith.loc: op=<op> width=<w> operands=<kind> count=<n>[ conds-max=<n>]
+             loc=<file:line:col>[ inlined-at=..][ name=..]
+                                  (per source location of the sea op that
+                                  made the node: mul / div / rem / umulo /
+                                  smulo / ptr.index; loc is the last field)
   result: sat|unsat|unknown|none  (none: --vcgen-only, --split-candidates)
   hint: split: open-aliases=<n>[ ackermann-constraints=<m>]; rerun with
                                   --split-candidates ...
@@ -3021,6 +3076,10 @@ Kinds and fields:
                 hardest_solve_time, check_unknown, check (on|off),
                 leaf_structural, [stopped]
   split-candidate name, loc, leaves, open_aliases
+  arith-total   ops, attributed, unattributed, locations, shared
+  arith-op      op, width, operands, count, unattributed, [conds, conds_max]
+  arith-loc     op, width, operands, count, [conds_max], loc [loc_inlined]
+                [loc_name] (--arith-stats)
   split-candidates open_aliases, leaves_candidates, bool_candidates,
                 bool_listed, bool_dropped, bool_values, reads,
                 same_object_open, memop_open, vc_time
@@ -4167,7 +4226,14 @@ int main(int argc, char **argv) {
     seamOpts.simplify = simplify;
     seamOpts.plantBug = plantBug;
     seamOpts.maxRuleCalls = seamRuleLimit;
+    // the sea op of each arithmetic node and select (--arith-stats,
+    // --ack-dump-pairs; sea/VC/Origins.h), followed through the stages
+    // below; declared before sem, which holds it
+    sea::ExprOrigins origins;
+    const bool originsOn = arithStats || !ackDumpPairs.empty();
     sea::SeaOpSem sem(efac, names, nativeMulOverflow, seam, &seamOpts);
+    if (originsOn)
+      sem.setOrigins(&origins);
     sem.setAddressMode(addressMode);
     sem.setPtrCompanion(companionMode != CompanionMode::Off,
                         companionMode == CompanionMode::Assume,
@@ -4369,6 +4435,21 @@ int main(int argc, char **argv) {
     sem.setTrailContext("query");
     query = sem.simplify(query);
     lap("simplify-query");
+    // the origins of the simplified terms: the rewriter caches every term
+    // with its normal form (simplify is on)
+    if (originsOn && sem.simplifies() && sem.seamRewriter()) {
+      const expr::RewriteCache &cache = sem.seamRewriter()->cache();
+      origins = origins.through([&](const expr::Expr &n) {
+        expr::Expr r = n;
+        for (unsigned hop = 0; hop < 16; ++hop) {
+          const expr::Expr *f = cache.find(r, 0);
+          if (!f || f->get() == r.get())
+            break;
+          r = *f;
+        }
+        return r;
+      });
+    }
     // the unknown hint counts its open alias questions (only then: a DAG
     // walk after the solver); a reference, the nodes are hash-consed
     expr::Expr hintQuery;
@@ -4672,6 +4753,8 @@ int main(int argc, char **argv) {
     std::unique_ptr<expr::xrt::Lowering> xlw;
     const bool xrtOn = !xReadTable.empty();
     uint64_t xrtDagStd = 0, xrtDagTranslated = 0;
+    // the origins follow the boundary along the structure it keeps
+    expr::Expr preBoundary = originsOn ? query : expr::Expr();
     Phase solverTermPhase("solver-term");
     if (xrtOn) {
       if (!sem.seam() || !sem.seamRewriter())
@@ -4794,6 +4877,10 @@ int main(int argc, char **argv) {
       lap("solver-term");
     }
     SEA_PHASE_END(solverTermPhase).kv("nodes-made", efac.nodesMade());
+    if (originsOn) {
+      origins = origins.along(preBoundary, query);
+      preBoundary = expr::Expr();
+    }
     if (failed(sea::verifyUniqueNames(query, clash)))
       return fail("two distinct VC constants are both named '" + clash + "'");
     lap("unique-names");
@@ -4866,8 +4953,17 @@ int main(int argc, char **argv) {
     }
     if (ackOn && !ackDumpPairs.empty())
       ack.recordPairs(true);
+    if (ackOn && originsOn)
+      ack.keepImages(true);
+    // the origins of the lowering's input (the reads' selects)
+    sea::ExprOrigins preAckOrigins;
     if (ackOn)
       query = ack.lower(query);
+    if (ackOn && originsOn) {
+      preAckOrigins = origins;
+      origins =
+          origins.through([&](const expr::Expr &n) { return ack.image(n); });
+    }
     if (ackOn && !ackDumpPairs.empty()) {
       std::error_code ec;
       llvm::raw_fd_ostream os(ackDumpPairs, ec);
@@ -4877,9 +4973,25 @@ int main(int argc, char **argv) {
       for (size_t a = 0; a < arrs.size(); ++a) {
         os << "array " << a << " "
            << *expr::op::bind::fname(arrs[a].array->first()) << "\n";
-        for (size_t k = 0; k < arrs[a].reads.size(); ++k)
+        for (size_t k = 0; k < arrs[a].reads.size(); ++k) {
+          // the index, then the loads the read came from (the distinct
+          // locations of the selects merged into it; - for none)
           os << "read " << a << " " << k << " " << *arrs[a].reads[k].index
-             << "\n";
+             << " loc=";
+          std::vector<std::string> ls;
+          for (const expr::Expr &sel : arrs[a].reads[k].selects)
+            for (mlir::Location l : preAckOrigins.of(sel.get())) {
+              std::string t = sea::formatLoc(l);
+              if (t.empty())
+                t = "-";
+              if (!llvm::is_contained(ls, t))
+                ls.push_back(t);
+            }
+          if (ls.empty())
+            os << "-";
+          llvm::interleave(ls, os, ";");
+          os << "\n";
+        }
       }
       for (const auto &p : ack.constrainedPairs())
         os << "pair " << p.array << " " << p.k << " " << p.l << "\n";
@@ -4901,7 +5013,10 @@ int main(int argc, char **argv) {
         return fail("--x-read-table: plain|flat|arrays|objack|mux");
       xlw = std::make_unique<expr::xrt::Lowering>(efac, sem.baseRegistry(),
                                                   *xtr, mode, xReadTableMux);
+      expr::Expr preLower = query;
       query = xlw->lower(query);
+      if (originsOn)
+        origins = origins.along(preLower, query);
       lap("xrt-lower");
     }
     SEA_PHASE_END(ackPhase)
@@ -4927,6 +5042,18 @@ int main(int argc, char **argv) {
       }
       for (const auto &[op, n] : perOp)
         os << "vc.dag-op: " << op << " " << n << "\n";
+    }
+    // the multiplications, divisions and remainders of what the solver
+    // gets, by operand shape and source location (tools/sea-vc/ArithStats.h)
+    if (arithStats) {
+      sea::ArithStats census(query, origins);
+      census.emit([&](const sea::out::Record &rec) {
+        // with --smt2 (text) the statistics go to stderr
+        if (smt2 && !gOut->jsonl())
+          errs() << rec.text << "\n";
+        else
+          gOut->emit(rec);
+      });
     }
     // the VC is generated: encoding, with --seam the rewriting of every load
     // and store, and the query
@@ -5903,8 +6030,15 @@ int main(int argc, char **argv) {
       splitPart.dag = expr::dagSize(query);
     }
     if (vcgenOnly) {
-      // the VC is generated and checked; no solver (and none of the checks
-      // that run one: --seam-check, --eq-audit, --x-read-table-check)
+      // the VC is generated and checked; no solver of the query (and none
+      // of the checks on the run's solver: --seam-check,
+      // --x-read-table-check). --eq-audit runs: its checks are its own z3
+      // instance with their own timeout, on terms of the VC only
+      runEqAudit();
+      if (checkOn || xReadTableCheck)
+        sea::diag::warn("vc.vcgen-only-check-skipped",
+                        "--vcgen-only: --seam-check and --x-read-table-check "
+                        "do not run (they come after a solve)");
       emitResult("none");
       brunchStat(vout(), "result", "none");
       return 0;

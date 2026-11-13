@@ -407,7 +407,7 @@ measurement and are not part of the supported configuration:
 | `--sink-assumes` | one assume of the path conjunction before the assert (SeaHorn's unified assumes, done exactly in sea-vc); a solver tradeoff: faster or slower depending on solver and seed |
 | `--yices-param=k=v`, `--yices-config=k=v`, `--yices-logic=L` | Yices search parameters and context; e.g. `--yices-param=random-seed=N`. Yices times vary widely with the seed: compare medians over several seeds |
 | `--x-read-table*` (hidden) | a prototype guarded read table |
-| `--eq-audit`, `--ack-dump-pairs`, `--seam-trail`, `--seam-trace`, `--dag-stats` | diagnostics of the encoding |
+| `--eq-audit`, `--ack-dump-pairs`, `--seam-trail`, `--seam-trace`, `--dag-stats`, `--arith-stats` | diagnostics of the encoding (`--arith-stats`: products, divisions and remainders of the query by operand shape and source location; `--ack-dump-pairs` read lines end with the loads' `loc=`) |
 
 The paranoid and check jobs (`--check-align`, `--check-ptr-index`,
 `--seam-check`) are off by default because they verify a different

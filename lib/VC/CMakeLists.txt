@@ -5,6 +5,7 @@ add_mlir_library(SeaVC
   JoinCases.cpp
   Names.cpp
   OpSem.cpp
+  Origins.cpp
   Reach.cpp
   Replay.cpp
   Split.cpp

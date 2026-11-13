@@ -60,7 +60,7 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--yices-param=<key=value>` | a Yices search parameter (repeatable), e.g. `random-seed=N`; Yices times vary widely with the seed, so compare medians over several seeds |
 | `--yices-config=<key=value>`, `--yices-logic=<logic>` | the Yices context configuration and logic |
 | `--smt2` | print the query as SMT-LIB and exit |
-| `--vcgen-only` | build and check the query, print its statistics and `result: none`; no solver |
+| `--vcgen-only` | build and check the query, print its statistics and `result: none`; no solver of the query (`--eq-audit` still runs its own checks; `--seam-check` and `--x-read-table-check` do not: warning `vc.vcgen-only-check-skipped`) |
 
 **Checks**
 
@@ -120,6 +120,7 @@ split: open-aliases=<n>; ...` line that points to it.
 | `--seam-stats` | print SeaM's rule counters |
 | `--brunch-stats` | also print `BRUNCH_STAT <key> <value>` lines |
 | `--dag-stats` | print the size of the query as a DAG |
+| `--arith-stats` | print the multiplications, divisions and remainders of the query the solver gets, by operator, width and operand kind (numeral, ite of numerals, ite with a symbolic leaf, two non-constant terms), and per source location of the sea op that made them (`arith.*` lines; works with `--vcgen-only`) |
 | `--progress` | log the start and end of each phase on stderr, or the log file (= `--log=vc.phase`); the end with the memory; progress lines inside `encode` |
 | `--progress-interval=<s>` | the `vc.phase progress` lines inside `encode`: one every `s` seconds (default 10, not tuned); `0`: one after every block ([Logging](logging.md)) |
 | `--print=lines|tree|off` | how the program's prints are shown in a replay |

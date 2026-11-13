@@ -24,6 +24,7 @@
 #include "sea/Expr/RewriteTrail.hh"
 #include "sea/VC/JoinCases.h"
 #include "sea/VC/Names.h"
+#include "sea/VC/Origins.h"
 #include "sea/VC/SymStore.hh"
 
 #include "llvm/ADT/SmallVector.h"
@@ -239,6 +240,13 @@ public:
 
   expr::ExprFactory &efac() const { return ef; }
 
+  /// The origin table (include/sea/VC/Origins.h): while set, every op
+  /// encoded adds the nodes it made to \p o with its location: the
+  /// arithmetic nodes (bvmul, bvudiv, bvsdiv, bvurem, bvsrem, the mul
+  /// overflow predicates) of mul / div / rem / umulo / smulo / ptr.index,
+  /// and the selects of a load. Null: off.
+  void setOrigins(ExprOrigins *o) { origins = o; }
+
   /// The rule trail (include/sea/Expr/RewriteTrail.hh): every rule
   /// firing of the rewriter is recorded in \p t, with the operation being
   /// encoded as its context. Null: off. No effect without a rewriter.
@@ -351,6 +359,12 @@ private:
   void trailAccess(const char *kind, uint64_t units);
   /// the op exec() is executing (the trail's context)
   mlir::Operation *curOp = nullptr;
+  /// setOrigins; the nodes already walked by noteOrigins
+  ExprOrigins *origins = nullptr;
+  llvm::DenseSet<const expr::ENode *> originWalked;
+  /// adds the nodes \p op made (its results' values, down to its operands'
+  /// values) to the origin table
+  void noteOrigins(mlir::Operation &op, OpSemContext &ctx);
 
   llvm::DenseMap<mlir::Operation *, expr::Expr> havocs;
   /// mkSymbReg's results (one Expr per value / block for the VC).

@@ -587,6 +587,8 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
   // op at many places)
   Operation *defined = nullptr;
   auto runDefHook = [&]() {
+    if (defined && origins)
+      noteOrigins(*defined, ctx);
     if (defined && ctx.defHook)
       for (Value r : defined->getResults())
         ctx.defHook(r);
@@ -892,6 +894,48 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
   runDefHook();
   settleKeyed(ctx);
   return success();
+}
+
+void SeaOpSem::noteOrigins(Operation &op, OpSemContext &ctx) {
+  const bool load = isa<LoadOp>(op);
+  if (!load &&
+      !isa<MulOp, UDivOp, SDivOp, URemOp, SRemOp, UMulOOp, SMulOOp, PtrIndexOp>(
+          op))
+    return;
+  auto target = [&](ENode *n) {
+    if (load)
+      return isOpX<SELECT>(n);
+    return isOpX<BMUL>(n) || isOpX<BUDIV>(n) || isOpX<BSDIV>(n) ||
+           isOpX<BUREM>(n) || isOpX<BSREM>(n) || isOpX<BSMOD>(n) ||
+           isOpX<UMUL_NO_OVERFLOW>(n) || isOpX<SMUL_NO_OVERFLOW>(n) ||
+           isOpX<SMUL_NO_UNDERFLOW>(n);
+  };
+  // the walk stops at the operands' values (made by other ops) and at the
+  // memory of a select / store (earlier memory versions)
+  llvm::DenseSet<const ENode *> stops, seen;
+  for (Value v : op.getOperands())
+    if (Expr e = lookup(v, ctx))
+      stops.insert(e.get());
+  std::vector<ENode *> stack;
+  for (Value r : op.getResults())
+    if (Expr e = lookup(r, ctx))
+      stack.push_back(e.get());
+  while (!stack.empty()) {
+    ENode *n = stack.back();
+    stack.pop_back();
+    if (stops.count(n) || !seen.insert(n).second)
+      continue;
+    if (target(n))
+      origins->add(Expr(n), op.getLoc());
+    // a node an earlier op walked: its kids are that op's
+    if (!originWalked.insert(n).second)
+      continue;
+    for (size_t i = 0; i < n->arity(); ++i) {
+      if (i == 0 && (isOpX<SELECT>(n) || isOpX<STORE>(n)))
+        continue;
+      stack.push_back(n->arg(i));
+    }
+  }
 }
 
 /// The mirror check of the companion exemption: a keyed access is exempt

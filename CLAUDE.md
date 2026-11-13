@@ -43,6 +43,9 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   MLIR names); `Replay.h` (model -> interpreter run, with validation);
   `Split.h` (case splitting of the VC at the definitions of chosen values
   / block guards, `sea-vc --split`, docs/design/Split.md);
+  `Origins.h` (Expr node -> location of the sea op that made it, recorded
+  by OpSem and followed through simplify / boundary / Ackermann: `sea-vc
+  --arith-stats`, `--ack-dump-pairs`; the census is `tools/sea-vc/ArithStats.h`);
   `sea/Expr/ExprMlir.hh` (Expr terminals holding mlir::Value / Block)
 - `lib/Transforms/` — passes: `sea-place-static` (abstract pointers ->
   constant addresses; each object is a `sea.segment`, whose result, the base
