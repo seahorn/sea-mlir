@@ -95,6 +95,14 @@ Expr SeaOpSem::solverTerm(Expr e, std::string &why) {
   return plainEraser->expand(e);
 }
 
+Expr SeaOpSem::erasedImage(const Expr &e) {
+  if (seamRw)
+    return seamRw->rules().erase(e);
+  if (!ptrSorted() || !plainEraser)
+    return Expr();
+  return plainEraser->expand(e);
+}
+
 bool SeaOpSem::hasPtrTerms(const Expr &e) {
   if (seamRw)
     return seamRw->hasPtrIndex(e);
@@ -902,9 +910,38 @@ void SeaOpSem::noteOrigins(Operation &op, OpSemContext &ctx) {
       !isa<MulOp, UDivOp, SDivOp, URemOp, SRemOp, UMulOOp, SMulOOp, PtrIndexOp>(
           op))
     return;
+  if (load) {
+    // the read structure of the result: ite branches, concat parts, extract
+    // and PTR_FROM_BITS down to the selects; any other operator ends the
+    // walk (a value the load forwards from a store is another op's term).
+    // A forwarded value that is itself a bare select (a load's result stored
+    // and loaded again) still gets this load's location too.
+    llvm::DenseSet<const ENode *> seen;
+    std::vector<ENode *> stack;
+    if (Expr e = lookup(op.getResult(0), ctx))
+      stack.push_back(e.get());
+    while (!stack.empty()) {
+      ENode *n = stack.back();
+      stack.pop_back();
+      if (!seen.insert(n).second)
+        continue;
+      if (isOpX<SELECT>(n)) {
+        origins->add(Expr(n), op.getLoc());
+      } else if (isOpX<ITE>(n)) {
+        stack.push_back(n->arg(1));
+        stack.push_back(n->arg(2));
+      } else if (isOpX<BCONCAT>(n)) {
+        for (size_t i = 0; i < n->arity(); ++i)
+          stack.push_back(n->arg(i));
+      } else if (isOpX<BEXTRACT>(n)) {
+        stack.push_back(n->arg(2));
+      } else if (isOpX<PTR_FROM_BITS>(n)) {
+        stack.push_back(n->arg(0));
+      }
+    }
+    return;
+  }
   auto target = [&](ENode *n) {
-    if (load)
-      return isOpX<SELECT>(n);
     return isOpX<BMUL>(n) || isOpX<BUDIV>(n) || isOpX<BSDIV>(n) ||
            isOpX<BUREM>(n) || isOpX<BSREM>(n) || isOpX<BSMOD>(n) ||
            isOpX<UMUL_NO_OVERFLOW>(n) || isOpX<SMUL_NO_OVERFLOW>(n) ||

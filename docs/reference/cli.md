@@ -60,7 +60,7 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--yices-param=<key=value>` | a Yices search parameter (repeatable), e.g. `random-seed=N`; Yices times vary widely with the seed, so compare medians over several seeds |
 | `--yices-config=<key=value>`, `--yices-logic=<logic>` | the Yices context configuration and logic |
 | `--smt2` | print the query as SMT-LIB and exit |
-| `--vcgen-only` | build and check the query, print its statistics and `result: none`; no solver of the query (`--eq-audit` still runs its own checks; `--seam-check` and `--x-read-table-check` do not: warning `vc.vcgen-only-check-skipped`) |
+| `--vcgen-only` | build and check the query, print its statistics and `result: none`; no solver of the query (`--eq-audit` still runs its own checks; `--vcgen-only` skips `--seam-check` and `--x-read-table-check`: warning `vc.vcgen-only-check-skipped`) |
 
 **Checks**
 

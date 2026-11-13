@@ -229,6 +229,10 @@ public:
   /// Null (with the error vc.memop-term-at-boundary) if a memory-operation
   /// term is in a position that is not read (MemOps.hh).
   expr::Expr solverTerm(expr::Expr e);
+  /// \p e with the pointer operators and sort erased (the last step of the
+  /// boundary), from the eraser's memo when the boundary saw \p e; for the
+  /// origin table (sea/VC/Origins.h). Null without an eraser.
+  expr::Expr erasedImage(const expr::Expr &e);
   /// solverTerm without the diagnostic: null and \p why on a refusal.
   expr::Expr solverTerm(expr::Expr e, std::string &why);
   /// the negated firing `lhs != rhs` of \p f as the solver gets it
@@ -244,7 +248,8 @@ public:
   /// encoded adds the nodes it made to \p o with its location: the
   /// arithmetic nodes (bvmul, bvudiv, bvsdiv, bvurem, bvsrem, the mul
   /// overflow predicates) of mul / div / rem / umulo / smulo / ptr.index,
-  /// and the selects of a load. Null: off.
+  /// and the selects of a load's read structure (ite branches, concat,
+  /// extract, PTR_FROM_BITS from its result). Null: off.
   void setOrigins(ExprOrigins *o) { origins = o; }
 
   /// The rule trail (include/sea/Expr/RewriteTrail.hh): every rule

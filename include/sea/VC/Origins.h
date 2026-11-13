@@ -16,9 +16,11 @@
 //    nodes (the rewriter's cache, the Ackermann memo);
 //  - along(pre, post): a stage that keeps the term structure where it does
 //    not translate (the boundary: store-map expansion, pointer erasure): the
-//    two roots are walked in step, and a node of post at the same position
-//    and with the same operator as a node of pre gets pre's locations; the
-//    walk stops where the operators or arities differ.
+//    two roots are walked in step, pairing a node of post with the node of
+//    pre at the same position when they have the same operator and arity
+//    (the walk stops where they differ). A pair gets pre's locations only
+//    when every kid of post is pre's kid itself, its pair, or its known
+//    image (the pointer erasure); else nothing: missing, not wrong.
 // A node rewritten into a different operator, or made by a stage (SeaM
 // rules, the boundary's expansions), has no origin: the reports count it as
 // unattributed. The table keeps its nodes alive.
@@ -55,7 +57,11 @@ public:
   through(llvm::function_ref<expr::Expr(const expr::Expr &)> img) const;
   /// the table of a structure-keeping stage that turned \p pre into \p post
   /// (see the file comment)
-  ExprOrigins along(const expr::Expr &pre, const expr::Expr &post) const;
+  /// \p kidImage (optional): the stage's image of a pre kid where it is
+  /// known without the walk (the boundary's pointer erasure), else null
+  ExprOrigins along(const expr::Expr &pre, const expr::Expr &post,
+                    llvm::function_ref<expr::Expr(const expr::Expr &)>
+                        kidImage = nullptr) const;
 
 private:
   llvm::DenseMap<const expr::ENode *, llvm::SmallVector<mlir::Location, 1>> map;

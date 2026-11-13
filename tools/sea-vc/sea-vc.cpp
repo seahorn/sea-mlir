@@ -1770,9 +1770,10 @@ TYPICAL:
   sea-vc p.mlir --vcgen-only     # generate and check the VC, print its
                                  #   statistics and result: none; no solver
                                  #   of the query; --eq-audit runs (its own
-                                 #   z3 checks); --seam-check and
-                                 #   --x-read-table-check do not (warning
-                                 #   vc.vcgen-only-check-skipped); not with
+                                 #   z3 checks); --vcgen-only skips
+                                 #   --seam-check and --x-read-table-check
+                                 #   (warning vc.vcgen-only-check-skipped);
+                                 #   not with
                                  #   --smt2
   sea-vc p.mlir --print-refs=strong  # keep every printed value alive
                                  #   through the lowering (PRINTS)
@@ -2203,10 +2204,11 @@ TYPICAL:
   sea-vc p.mlir --lower --seam --vcgen-only --arith-stats  # the products,
                                  #   divisions and remainders of the query
                                  #   the solver gets, by operand kind
-                                 #   (numeral, ite-num: an ite tree of
-                                 #   numerals, ite-sym: an ite tree with a
-                                 #   symbolic leaf, nonconst: two non-constant
-                                 #   terms) and per source location: a
+                                 #   (numeral: linear; ite-num / ite-sym: an
+                                 #   operand is path-merged, ite / concat of
+                                 #   ites, leaves numerals or not; nonconst:
+                                 #   two non-constant terms) and per source
+                                 #   location: a
                                  #   product by a path-merged value (ite-*)
                                  #   is cheap per path and can be a solver
                                  #   cliff as one term (try --split on its
@@ -2343,13 +2345,17 @@ OUTPUT (stdout, `key: value` lines):
                                   of several locations, counted at each)
   arith.op: op=<op> width=<w> operands=numeral|ite-num|ite-sym|nonconst
             count=<n> unattributed=<n>[ conds=<n> conds-max=<n>]
-                                  (per operator, operand width and kind:
-                                  an operand is a numeral; else an ite tree,
-                                  through extract / extensions, of numerals;
-                                  else one with a symbolic leaf; else two
-                                  non-constant terms. ite kinds: conds = the
-                                  distinct ite conditions of the group,
-                                  conds-max = the most of one node)
+                                  (per operator, operand width and kind,
+                                  numeral operands dropped first (n-ary
+                                  products): numeral = at most one operand
+                                  left; else ite-num = an operand is
+                                  path-merged (its value tree, through ite
+                                  branches, concat, extract, extensions,
+                                  bvneg, bvnot, holds an ite) with numeral
+                                  leaves only; else ite-sym = one is
+                                  path-merged; else nonconst. ite kinds:
+                                  conds = the distinct ite conditions of the
+                                  group, conds-max = the most of one node)
   arith.loc: op=<op> width=<w> operands=<kind> count=<n>[ conds-max=<n>]
              loc=<file:line:col>[ inlined-at=..][ name=..]
                                   (per source location of the sea op that
@@ -4878,7 +4884,9 @@ int main(int argc, char **argv) {
     }
     SEA_PHASE_END(solverTermPhase).kv("nodes-made", efac.nodesMade());
     if (originsOn) {
-      origins = origins.along(preBoundary, query);
+      origins = origins.along(preBoundary, query, [&](const expr::Expr &e) {
+        return sem.erasedImage(e);
+      });
       preBoundary = expr::Expr();
     }
     if (failed(sea::verifyUniqueNames(query, clash)))
@@ -6037,8 +6045,8 @@ int main(int argc, char **argv) {
       runEqAudit();
       if (checkOn || xReadTableCheck)
         sea::diag::warn("vc.vcgen-only-check-skipped",
-                        "--vcgen-only: --seam-check and --x-read-table-check "
-                        "do not run (they come after a solve)");
+                        "--seam-check and --x-read-table-check do not run: "
+                        "--vcgen-only skips them");
       emitResult("none");
       brunchStat(vout(), "result", "none");
       return 0;

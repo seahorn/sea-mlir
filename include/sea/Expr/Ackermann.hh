@@ -611,7 +611,8 @@ public:
             return m_arrays[a].reads[p->second].value;
           }
           Expr r = freshConstant(a);
-          m_arrays[a].reads.push_back(Read{idx, r, g->second, off, {}, true});
+          m_arrays[a].reads.push_back(
+              Read{idx, r, g->second, off, {}, true, {}});
           noteOrigins(m_arrays[a].reads.back(), n->arg(1), true);
           if (m_keepImages)
             m_arrays[a].reads.back().selects.push_back(Expr(n));
@@ -688,6 +689,8 @@ public:
   /// through the lowering (sea/VC/Origins.h). The nodes are kept alive.
   void keepImages(bool b) { m_keepImages = b; }
   /// The node lower() made of \p n (keepImages; null: not in its input).
+  /// \p n must be alive: the memo is keyed by node address (its keys are
+  /// kept alive, so a live \p n is never confused with a freed one).
   Expr image(const Expr &n) const {
     if (m_identity)
       return n;
