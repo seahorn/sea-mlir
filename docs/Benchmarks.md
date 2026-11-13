@@ -53,8 +53,19 @@ frag-reach-busy-K1:
   mutant: mut-bounds-1        # for tag mutant
   export: {...}               # how the .mlir was made (repo, commit, command, bound, patches)
   counters: {...}             # completeness bounds, below
+  replay: impossible          # a sat of this job may not replay (below); the only value
   sha256: ...
 ```
+
+`replay: impossible` is for a sat job whose model the interpreter cannot
+run: the program updates memory without `inplace`
+([In place](design/Memory.md#in-place-the-inplace-attribute)), so sea-vc
+prints `result: sat`, then error `vc.replay-impossible` and exits 1. The VC
+is exact and the verdict is sat, but the counterexample is not confirmed.
+bench.py records such a run as verdict `sat` with `replay=impossible` (the
+`replay` column of `stats.csv`); the gate fails on it (`FAIL:
+replay-impossible ...`) unless the job carries the field, and reports
+`replayed:` (no failure) when a job with the field replayed after all.
 
 ### Counter expectations (completeness)
 
@@ -82,6 +93,13 @@ jobs:
   `seam.rule-calls`, ...) or a `key: value` line of its stdout (the
   `seam.rule.*` counts need `--seam-stats` in the job's `args`). Values are
   numbers; a bound is `max`, `min` and / or `exact`.
+- A key `<line>.<field>` names one entry of a `<line>: k=v k=v ...` line:
+  `vc.box-all.expanded`, `vc.box-all.lowered`,
+  `vc.expand-memmove.kept-over-k`. These record the lowering's form (a box
+  expanded or lowered to a nondet index, a memmove expanded or kept), so a
+  bound such as `{exact: 1}` makes a silent switch of form visible. A job
+  whose lowering did not run prints no such line: the counter is missing.
+  An exact key (BRUNCH_STAT or `key: value` line) takes precedence.
 - The effective bounds of a job: `defaults.counters`, then each matching
   `counter-rules` entry in order, then the job's own `counters`; a key set to
   `null` removes an inherited bound.
@@ -154,6 +172,8 @@ The gate fails (exit 1) on
 - a verdict other than `expected` for a sat / unsat job (a flip is `WRONG`,
   a timeout / unknown / error is `unsolved`);
 - `replay-mismatch` (sea-vc rc 2: the model does not replay);
+- `replay-impossible` (a sat whose model the interpreter cannot run) on a
+  job without `replay: impossible`;
 - `lowering-mismatch` (sea-vc rc 6: the program before the lowering does
   not fail the assertion of the lowered program's `sat`);
 - `DISAGREE-SAT-UNSAT`: two configurations solve a job differently.

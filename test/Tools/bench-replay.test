@@ -1,0 +1,35 @@
+// bench.py classifies a run by what sea-vc printed: a sat whose model cannot
+// be replayed (rc 1, error vc.replay-impossible) is verdict sat with
+// replay=impossible, not a memout; the gate fails on it unless the job has
+// `replay: impossible`. Counter keys <line>.<field> bound one entry of a
+// `vc.box-all: k=v ...` line (the lowering's form).
+// RUN: rm -rf %t && mkdir -p %t/s1/fam %t/home/results
+// RUN: cp %S/Inputs/replay-impossible.mlir %t/s1/fam/ri.mlir
+// RUN: cp %S/../VC/box-all-bounds.mlir %t/s1/fam/box.mlir
+// RUN: cp %S/../VC/box-all-bounds.mlir %t/s1/fam/boxlow.mlir
+// RUN: printf "family: fam\ndefaults:\n  args: [--lower, --seam]\n  timeout: 60\n  mem: 4096\n  counters: {vc.box-all.expanded: {exact: 1, why: expanded form}}\ncounter-rules:\n- jobs: ^ri\$\n  counters: {vc.box-all.expanded: null}\njobs:\n  ri: {expected: sat, tier: smoke}\n  box: {expected: unsat, tier: smoke, args: [--program=expanded_out], counters: {vc.box-all.lowered: {exact: 0}}}\n  boxlow: {expected: unsat, tier: smoke, args: [--program=expanded_out, --box-all-expand=0]}\n" > %t/s1/fam/manifest.yaml
+// RUN: env SEA_BENCH_SUITES=%t/s1 SEA_BENCH_HOME=%t/home not python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %sea_vc --min-free-gb 0 --no-record | FileCheck %s --check-prefix=FAIL
+// FAIL: FAIL: replay-impossible s1.fam.ri config=default verdict=sat expected=sat
+// FAIL-NOT: FAIL: counter s1.fam.box
+// FAIL: FAIL: counter s1.fam.boxlow config=default vc.box-all.expanded=0 bound exact=1 why: expanded form
+// FAIL: verdicts: sat=1 unsat=2
+// FAIL: replay-impossible: 1 allowed=0
+// FAIL: failures: 1
+// FAIL: counter-bounds: 3
+// FAIL: counter-failures: 1
+// FAIL: gate: fail
+// The job allows it, the form bound is dropped where the lowering differs: pass.
+// RUN: sed -i -e 's/ri: {expected: sat,/ri: {expected: sat, replay: impossible,/' -e 's/--box-all-expand=0]}/--box-all-expand=0], counters: {vc.box-all.expanded: null, vc.box-all.lowered: {exact: 1}}}/' %t/s1/fam/manifest.yaml
+// RUN: env SEA_BENCH_SUITES=%t/s1 SEA_BENCH_HOME=%t/home python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %sea_vc --min-free-gb 0 --no-record -v | FileCheck %s --check-prefix=PASS
+// PASS: run: default s1.fam.ri sat replay=impossible
+// PASS: replay-impossible: 1 allowed=1
+// PASS: failures: 0
+// PASS: counter-bounds: 3
+// PASS: gate: pass
+// Any other value of `replay` is an error, not a default.
+// RUN: sed -i 's/replay: impossible/replay: maybe/' %t/s1/fam/manifest.yaml
+// RUN: env SEA_BENCH_SUITES=%t/s1 SEA_BENCH_HOME=%t/home not python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %sea_vc --min-free-gb 0 --no-record 2>&1 | FileCheck %s --check-prefix=BAD
+// BAD: bench: manifest field `replay` must be `impossible`: s1/fam/ri: replay: 'maybe'
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
