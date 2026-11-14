@@ -147,7 +147,8 @@ struct ReachRuns {
   /// to the solver
   unsigned inbViolated = 0;
   /// the deciding runs' uses of the interpreter's assumptions (each run
-  /// once, whole runs)
+  /// once, whole runs). Only uses() is meaningful here: runs() counts the
+  /// trial and the abstract run of one decision separately.
   assume::Ledger assumptions;
 };
 

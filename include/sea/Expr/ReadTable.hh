@@ -58,8 +58,9 @@
 namespace expr {
 namespace xrt {
 
-/// Each model record a ReadTable model reads back (inline: one tag for
-/// every includer).
+/// Each model record a ReadTable model reads back. The tag is in this header
+/// because the code that logs it is inline here (the ReadTable is header-only:
+/// no source file to hold it); inline: one tag for every includer.
 inline sea::log::Tag logModelRecord("xrt.model-record", 3,
                                     "a read record of the --x-read-table "
                                     "model (address, value, relevance)");
