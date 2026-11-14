@@ -9,7 +9,8 @@
 //
 //  z3          a default solver decides a small query; rlimit 1 makes a
 //              factoring query unknown (z3: resource limit), also when set
-//              later (setLimits); the seam-check setup (relevancy 0, one push)
+//              later (setLimits); timeoutMs 1 makes it unknown too; the
+//              seam-check setup (relevancy 0, one push)
 //              decides; memMB warns (limit-unsupported)
 //  optional    Yices and Bitwuzla: when not built, null and the error
 //              <prefix>solver-unavailable; when built, a solver, rlimit
@@ -81,6 +82,21 @@ void testZ3(Terms &T) {
     CHECK(s && s->reason_unknown().find("resource limit") != std::string::npos,
           "z3 rlimit reason: " << (s ? s->reason_unknown() : ""));
   }
+  // timeoutMs reaches z3: 1 ms does not decide the hard query (a limit that
+  // never reached z3 would let it run on), at construction and later
+  Limits tiny;
+  tiny.timeoutMs = 1;
+  {
+    auto s = sea::solver::makeSolver(T.efac, Backend::Z3, tiny);
+    CHECK(s && s->add(T.hard()) && s->check() == SolverResult::UNKNOWN,
+          "z3 timeout 1 ms");
+  }
+  {
+    auto s = sea::solver::makeSolver(T.efac, Backend::Z3);
+    CHECK(s && s->add(T.hard()), "z3 add");
+    sea::solver::setLimits(*s, tiny);
+    CHECK(s->check() == SolverResult::UNKNOWN, "z3 setLimits timeout 1 ms");
+  }
   {
     auto s = sea::solver::makeSolver(T.efac, Backend::Z3);
     CHECK(s && s->add(T.hard()), "z3 add");
@@ -91,6 +107,9 @@ void testZ3(Terms &T) {
     SolverConfig c;
     c.z3Relevancy0Push = true;
     auto s = sea::solver::makeSolver(T.efac, Backend::Z3, Limits(), c);
+    // relevancy 0 is not observable here: the Solver interface reads back no
+    // parameter value, and the answer does not depend on it; the check is
+    // that the setup is accepted and still decides
     CHECK(s && s->add(T.easy()) && s->check() == SolverResult::SAT,
           "z3 relevancy 0 + push");
   }
@@ -137,14 +156,18 @@ void testOptional(Terms &T, Backend b) {
   if (b == Backend::Yices) {
     SolverConfig bad = cfg;
     bad.yicesLogic = "NO_SUCH_LOGIC";
+    unsigned before = sea::diag::count("t.yices-config");
     CHECK(!sea::solver::makeSolver(T.efac, b, Limits(), bad),
           "yices bad logic: null");
-    CHECK(sea::diag::count("t.yices-config") == 1, "yices bad logic: error");
+    CHECK(sea::diag::count("t.yices-config") == before + 1,
+          "yices bad logic: error");
     bad = cfg;
     bad.yicesParams = {"no-such-param=1"};
+    before = sea::diag::count("t.yices-param");
     CHECK(!sea::solver::makeSolver(T.efac, b, Limits(), bad),
           "yices bad param: null");
-    CHECK(sea::diag::count("t.yices-param") == 1, "yices bad param: error");
+    CHECK(sea::diag::count("t.yices-param") == before + 1,
+          "yices bad param: error");
   }
   llvm::outs() << name << ": ok\n";
 }

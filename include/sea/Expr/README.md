@@ -28,7 +28,7 @@ sea-mlir uses Expr for SMT terms only. Changes from SeaHorn:
   the Yices backend and shared with it.
 - New: `Smt/SolverFactory.h`, where the tools make every solver (backend,
   limits: timeout, rlimit, memory; Yices configuration; the seam-check z3
-  setup). A backend not built is an error and a null solver; a limit the
+  setup). A backend not built is an error and a null solver; a nonzero limit the
   backend cannot apply is a warning.
 - `ExprToZ.def`: a failed conversion to z3 exits after reporting (SeaHorn
   only asserted, so release builds continued with a null term).

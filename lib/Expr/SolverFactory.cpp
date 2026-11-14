@@ -181,7 +181,9 @@ void setLimits(Solver &s, const Limits &limits, const SolverConfig &config) {
     return;
   case SolverKind::BITWUZLA:
     if (limits.timeoutMs || limits.rlimit || limits.memMB)
-      unsupported(config, "Bitwuzla", "post-construction");
+      sea::diag::warn(config.kindPrefix + "limit-unsupported",
+                      "Bitwuzla takes no limit after construction: its "
+                      "checks run without it");
     return;
   }
 }
