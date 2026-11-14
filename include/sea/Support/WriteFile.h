@@ -10,6 +10,16 @@
 // close) is reported, never a silently truncated file. On failure the
 // temporary is removed.
 //
+// The path "-" is stdout, and an existing target that is not a regular
+// file (/dev/stdout, /dev/stderr, a FIFO) is written directly, without a
+// temporary and a rename; the errors at open and at close are reported the
+// same way.
+//
+// Limits: the temporary name is fixed (`.<name>.tmp`), so two writers of
+// the same target race; the rename replaces a symlink target (it does not
+// write through it) and the new file does not keep the mode of an existing
+// one.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef SEA_SUPPORT_WRITEFILE_H

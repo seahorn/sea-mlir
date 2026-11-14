@@ -21,6 +21,10 @@
 // RUN: %{place}
 // RUN: FileCheck %s --check-prefix=OK-PLACE < %t/w.place
 // RUN: ls -a %t | FileCheck %s --check-prefix=NOTMP
+// The path "-" is stdout; a target that is not a regular file (here the
+// pipe behind /dev/stdout) is written directly, with no temporary.
+// RUN: sea-vc %{in} --ack-dump-pairs=- | FileCheck %s --check-prefix=OK-PAIRS
+// RUN: sea-vc %{in} --ack-dump-pairs=/dev/stdout | FileCheck %s --check-prefix=OK-PAIRS
 // OK-LOWERED: // sea-vc --print-lowered:
 // OK-LOWERED: sea.program @reads
 // OK-PAIRS: array 0
