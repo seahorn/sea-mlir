@@ -19,6 +19,11 @@ cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Debug \
 ninja -C build check-sea
 ```
 
+`check-sea` runs lit with `LLVM_LIT_ARGS`, default `-sv -j8` (a bounded
+default, not tuned; one worker per core otherwise). Override:
+`-DLLVM_LIT_ARGS="-sv -j<N>"`. An existing build dir keeps its cached value
+(configured without it: `-sv`); set `-DLLVM_LIT_ARGS` once.
+
 Also needs Boost (headers), GMP and z3 (`Z3_ROOT`). Yices 2 is optional
 (`-DSEA_ENABLE_YICES=AUTO|ON|OFF`, `YICES2_ROOT` if not system-wide; GPLv3:
 release binaries are built without it; tests that need it: `REQUIRES: yices`
@@ -131,6 +136,9 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   `utils/encoding-diff.py` — its complement: one sea-vc on two programs
   (two encodings of one job): identical / same-dag / equiv-parts / equiv /
   both-unsat / DIFF / unknown (`--agent`; both-unsat is not equivalence);
+  `utils/output-diff.py` — the gate of a refactoring that must not change
+  output: two builds of sea-vc / sea-run over a corpus x argument matrix,
+  text and jsonl, timings masked, stat and BRUNCH_STAT keys compared;
   `utils/bench.py` (`--agent`) — benchmarks: corpora, runs, and the suites
   in separate repositories (`just bench-connect`, `just bench-gate`,
   `docs/Benchmarks.md`); `utils/release-check.sh` (`just release-check`)
