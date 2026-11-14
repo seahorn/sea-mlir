@@ -65,5 +65,6 @@ Scope, build, assumptions and known issues: [docs/Release.md](docs/Release.md).
   Lean conformance checks of seam-lean ([docs/SeamExport.md](docs/SeamExport.md)).
 - `--version` for every tool; `sea-vc` prints `tool.version:` first.
 - Source tree only: `utils/bench.py` (benchmark suites in separate
-  repositories, tiers and gates), `utils/query-diff.py`, the fuzzers and
+  repositories, tiers and gates), `utils/query-diff.py`,
+  `utils/output-diff.py` (tool output of two builds), the fuzzers and
   semantic oracles; `just release-check`.

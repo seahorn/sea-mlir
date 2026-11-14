@@ -1,0 +1,62 @@
+// utils/output-diff.py: OLD and NEW builds over a corpus and a matrix. The
+// tests pin the per-job class, the key differences and the status only.
+RUN: rm -rf %t && split-file %s %t
+DEFINE: %{od} = %python %sea_src_root/utils/output-diff.py
+DEFINE: %{in} = %sea_src_root/test/VC/brunch-stats.mlir %sea_src_root/test/VC/abs.mlir
+// (matrix files: lit would substitute tool names in a RUN line)
+DEFINE: %{m} = --matrix %t/matrix
+
+// The masks and key lists without a build.
+RUN: %{od} --self-test | FileCheck %s --check-prefix=SELF
+SELF: self-test: pass
+
+// The same build as OLD and NEW: every job identical (timings masked).
+RUN: %{od} --old %sea_bin --new %sea_bin %{m} %{in} | FileCheck %s --check-prefix=SAME
+SAME-DAG: brunch-stats seam text identical
+SAME-DAG: brunch-stats seam jsonl identical
+SAME-DAG: abs run jsonl identical
+SAME: total: jobs=12 identical=12 diff=0 keys-diff=0 brunch-diff=0
+SAME: status: pass
+
+// A NEW sea-vc that appends one stat line: a DIFF naming the key, status 1;
+// sea-run (unchanged) stays identical.
+RUN: mkdir -p %t/new && ln -s %sea_bin/sea-run %t/new/sea-run
+RUN: sed 's|@BIN@|%sea_bin|' %t/wrap.sh > %t/new/sea-vc && chmod +x %t/new/sea-vc
+RUN: not %{od} --old %sea_bin --new %t/new %{m} %{in} | FileCheck %s --check-prefix=KEY
+KEY-DAG: brunch-stats seam text DIFF stdout keys=+extra.key
+KEY-DAG: brunch-stats plain jsonl DIFF stdout keys=+extra.key
+KEY-DAG: abs run text identical
+KEY: total: jobs=12 identical=4 diff=8 keys-diff=8 brunch-diff=0
+KEY: status: fail
+
+// A flag one build does not accept is refused before any job (both sides
+// would fail alike and compare identical).
+RUN: not %{od} --old %sea_bin --new %sea_bin --matrix %t/bad %{in} 2>&1 | FileCheck %s --check-prefix=FLAG
+FLAG: error: old: sea-vc does not accept --no-such-flag (entry x)
+
+// --quick drops the heavy entries of the built-in matrix.
+RUN: %{od} --quick --print-matrix | FileCheck %s --check-prefix=QUICK
+QUICK: matrix: seam-stats sea-vc: --lower --widen-memory=8 --seam --seam-stats --brunch-stats
+QUICK-NOT: eq-audit
+
+RUN: %{od} --agent | FileCheck %s --check-prefix=AGENT
+AGENT: STATUS:
+
+//--- matrix
+seam sea-vc: --lower --seam --seam-stats --brunch-stats
+plain sea-vc: --brunch-stats
+run sea-run: --missing=zero
+//--- bad
+x sea-vc: --no-such-flag
+//--- wrap.sh
+#!/bin/sh
+"@BIN@/sea-vc" "$@"
+rc=$?
+case " $* " in
+*--format=jsonl*) echo '{"kind":"stat","key":"extra.key","value":1,"text":"extra.key: 1"}' ;;
+*) echo 'extra.key: 1' ;;
+esac
+exit $rc
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -19,6 +19,7 @@ checks below test the verifier and its distribution.
 | benchmarks | do the applications keep their expected verdicts and counter bounds? | `just bench-smoke`, `just bench-canary`, `just bench-gate quick` |
 | query diff | does a change that must not change queries keep them? | `utils/query-diff.py` |
 | pass validation | does a lowering change keep which check sites can be reached? | `utils/cover-diff.py` |
+| output diff | does a refactoring keep what the tools print, stat keys included? | `utils/output-diff.py` |
 
 ## Lint
 
@@ -231,6 +232,63 @@ only, not equivalence), `DIFF`, `unknown`, `error`. Each pair prints
 `--rlimit` (deterministic) and a `--timeout` backstop. `--agent` prints
 the guide.
 
+## Output diff
+
+A refactoring that must not change what `sea-vc` and `sea-run` print (the
+timers, the statistics report, the solver construction) runs
+`utils/output-diff.py`: two builds over a corpus and an argument matrix,
+each entry in text and in jsonl output.
+
+```bash
+export SEA_BENCH_SUITES=bench/work/public      # or: just bench-connect
+python3 utils/output-diff.py --old <base>/bin --new <head>/bin --quick --par 2
+```
+
+`--old` and `--new` are bin directories holding `sea-vc` and `sea-run`.
+Without inputs the corpus is `$SEA_BENCH_SUITES/vcc` and the standalone
+programs of `test/VC` and `test/Interp` (a file with `// -----` or `//---`
+split markers is not standalone), except those `--exclude` matches (default
+`^VC/limits/`: the `--timeout` tests, which run for minutes without the
+flag); every input runs every entry. The
+built-in matrix (`--print-matrix`) holds the default encoding, `--seam`
+with `--seam-stats --brunch-stats`, `--mem=lambda`, `--x-read-table=mux`
+(with and without its premise checks), `--seam-words=auto --words-check`,
+`--eq-audit`, `--split-auto`, `--reach`, `--smt2`, and two `sea-run`
+entries (`--missing=zero`, `--fuzz=200 --seed=1`); each `sea-vc` run adds
+`--log=vc.phase,lower.pass,vc.solve` (`--vc-common`). The entries that run
+extra solver checks, the encodings without SeaM (`default`,
+`--mem=lambda`) and the read-table experiment (`xrt`), which take minutes
+on some vcc jobs, are `heavy`;
+`--quick` skips them. `--matrix FILE`
+or `--entry` replaces the matrix: one entry per line, `NAME TOOL [FLAGS]:
+ARGS`, with the flags `heavy`, `text` and `jsonl` (only that format).
+
+Before any job, every flag of the matrix must be an option of both builds
+(`--help-hidden`): a flag that one build does not know would make both
+sides fail alike, which compares identical.
+
+A job is `identical` when stdout, stderr and the exit status agree after
+masking, and the stat keys (`key: ...` lines, counted) and the BRUNCH_STAT
+keys agree. The masks are those of `utils/jsonl-check.py` (`<name>time
+<d.ddd>`, `time=`, `execs/s=`, `steps/s=`, `rss-mb=`, `vm-mb=`,
+`peak-rss-mb=`, `slowest-op=`), plus `<key>-mb <n>`, the `tool.version`
+line, the bin directory and the load address of each frame of a crash
+backtrace (it changes from run to run). In a JSON-object line (jsonl stdout, and the
+jsonl log events on stderr) every string field is masked as text, a
+decimal field whose name contains `time` and a number field whose name
+ends in `-mb` are masked, and so is the value of a stat record with such a
+key. The stdout of a `--smt2` job is compared unmasked. A `DIFF` line
+names what differs and the keys that moved (`keys=+added,-removed`,
+`brunch=...`), followed by the first differing lines; `--keep DIR` writes
+both sides' output.
+
+Each `entry:` line counts `rc-nonzero`, the jobs that failed alike on both
+sides: an entry whose jobs all fail checks nothing. The exit status is 1
+when a job is a `DIFF`, 2 on a timeout (`--timeout`, per run; NEW is not
+run after an OLD timeout), a run that
+could not start or a matrix flag a build refuses, and 0 when every job is
+identical. `--self-test` checks the masks and key lists without a build.
+
 ## Pass validation
 
 A change of the lowering (a fold, a pass, an optimization switched on)
@@ -421,6 +479,8 @@ for pull requests that have no second reviewer. Agents never merge.
   oracle) and fuzz.
 - The query or SeaM: lit, `fuzz-vc` and `fuzz-seam`, the benchmark canary
   and smoke gates.
+- A refactoring that must not change output: `utils/output-diff.py`
+  against the base build, and `utils/query-diff.py` for the queries.
 - Performance: the benchmark gate at the tier where the effect shows, with
   counters, and an explanation for any slowdown.
 - Every pull request: lint, and `just attest` on its last commit.

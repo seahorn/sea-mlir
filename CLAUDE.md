@@ -131,6 +131,9 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   `utils/encoding-diff.py` — its complement: one sea-vc on two programs
   (two encodings of one job): identical / same-dag / equiv-parts / equiv /
   both-unsat / DIFF / unknown (`--agent`; both-unsat is not equivalence);
+  `utils/output-diff.py` — the gate of a refactoring that must not change
+  output: two builds of sea-vc / sea-run over a corpus x argument matrix,
+  text and jsonl, timings masked, stat and BRUNCH_STAT keys compared;
   `utils/bench.py` (`--agent`) — benchmarks: corpora, runs, and the suites
   in separate repositories (`just bench-connect`, `just bench-gate`,
   `docs/Benchmarks.md`); `utils/release-check.sh` (`just release-check`)
