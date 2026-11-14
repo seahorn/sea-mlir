@@ -55,6 +55,9 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   `sea/Expr/ArithShape.hh` (the arithmetic nodes and their operands' value
   trees, shared by those reports and Origins);
   `sea/Expr/ExprMlir.hh` (Expr terminals holding mlir::Value / Block)
+- `include/sea/Support/WriteFile.h` — `writeFileAtomic`: every output file
+  is written whole (tmp + rename; `-` = stdout; a non-regular target is
+  written directly); a failed write is an error of the flag's kind
 - `lib/Transforms/` — passes: `sea-place-static` (abstract pointers ->
   constant addresses; each object is a `sea.segment`, whose result, the base
   address, replaces the object's uses: no folder, so sccp keeps it;

@@ -133,6 +133,15 @@ split: open-aliases=<n>; ...` line that points to it.
 | `--log-file=<path>` | append log events to a file instead of stderr |
 | `--mlir-print-ir-after-all`, `--mlir-timing`, ... | MLIR's pass-manager options, on the lowering pipeline; `--mlir-timing` also times sea-vc's phases ([Logging](logging.md)) |
 
+Output files (`--print-lowered`, `--place-out`, `--reach-programs`,
+`--ack-dump-pairs`, `--reach-witness`, `--split-smt2`) are written whole:
+to a temporary in the file's directory, then renamed. The path `-` is
+stdout, and an existing target that is not a regular file (`/dev/stdout`,
+a FIFO) is written directly. A write that fails (no such directory, a full
+disk) is an error of the flag's kind, and the run stops: `vc.print-lowered`,
+`place.out-file`, `vc.reach-programs`, `vc.ack-dump-pairs`,
+`vc.reach-witness`, `vc.split-smt2`.
+
 ## sea-run
 
 ```text

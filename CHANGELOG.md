@@ -58,6 +58,18 @@ Scope, build, assumptions and known issues: [docs/Release.md](docs/Release.md).
   events on stderr; level 1 traces the flow of a run (`vc.phase`,
   `lower.pass`, `vc.solve`).
 - Profiles (`--config`, LLVM config files), `--format=jsonl`, `--agent`.
+- Behaviour changes of the cleanup of the solver and output code:
+  - `--seam-check` on a build without Bitwuzla (`--solver=bitwuzla`) now
+    reports `vc.solver-unavailable` under `--smt2` and `--vcgen-only`; it was
+    skipped silently there.
+  - `--x-read-table-check-timeout=0` no longer sets z3's `timeout=0`: the
+    same behaviour (no timeout), no parameter set.
+  - Output files (`--print-lowered`, `--place-out`, `--reach-programs`,
+    `--ack-dump-pairs`, `--reach-witness`, `--split-smt2`) are written whole
+    (a temporary, then a rename; the path `-` is stdout, a target that is not
+    a regular file is written directly), and a failed write is an error of
+    its own kind: `vc.print-lowered`, `place.out-file`, `vc.reach-programs`,
+    `vc.ack-dump-pairs`, `vc.reach-witness`, `vc.split-smt2`.
 
 ### Tools and utilities
 - `sea-reduce` (mlir-reduce with sea patterns and the sea reduction tree)
