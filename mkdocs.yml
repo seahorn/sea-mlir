@@ -96,6 +96,9 @@ nav:
       - "Firedancer: HPACK": tutorials/firedancer.md
       - "Firedancer: transaction parsing": tutorials/txn-parse.md
       - "Firedancer: HTTP/2 flow control": tutorials/h2-flow-control.md
+      - z3:
+          - "A tableau pivot step, by argument": tutorials/z3-pivot.md
+          - "The pivot-step gate, for z3 developers": tutorials/z3-pivot-gate.md
   - For agents:
       - agents/index.md
       - Running the tools: agents/running.md
