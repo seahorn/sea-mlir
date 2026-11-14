@@ -14,7 +14,8 @@ the same harness. Their expected answers test the proof, not the code.
   the model: `replay: assert-failed` and `validate: ... mismatches=0`
   ([Counterexamples](counterexamples.md)).
 - An `unsat` holds under the assumptions the run reports, such as
-  `seam.inb: assumed`.
+  `assume.a-sep: seam=<n>` and `seam.premises: assumed`, and any
+  `seam.out-of-object:` line.
 - `unknown`, a timeout or a memory-limit stop never counts, for a proof or
   for a control.
 

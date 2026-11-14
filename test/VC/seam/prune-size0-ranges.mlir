@@ -21,20 +21,20 @@
 // RUN: sea-vc %s --lower --program=allnull --seam --seam-stats 2>&1 | FileCheck %s --check-prefix=ALL
 // RUN: sea-vc %s --lower --program=allnull --seam --seam-check --solver=z3 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: %if yices %{ sea-vc %s --lower --program=allnull --seam --seam-check --solver=yices 2>&1 | FileCheck %s --check-prefix=CHK %}
-// DST-NOT: vc.seam-inb-violated
-// DST: seam.inb: assumed
+// DST-NOT: seam.out-of-object
+// DST: seam.premises: assumed
 // DST-DAG: seam.rule.addr.prune-size0-range: {{[1-9]}}
 // DST-DAG: seam.rule.row.mcopy-skip: {{[1-9]}}
 // DST: result: unsat
-// SRC-NOT: vc.seam-inb-violated
-// SRC: seam.inb: assumed
+// SRC-NOT: seam.out-of-object
+// SRC: seam.premises: assumed
 // SRC-DAG: seam.rule.addr.prune-size0-range: {{[1-9]}}
 // SRC: result: unsat
-// ALL-NOT: vc.seam-inb-violated
-// ALL: seam.inb: assumed
+// ALL-NOT: seam.out-of-object
+// ALL: seam.premises: assumed
 // ALL-DAG: seam.rule.addr.prune-size0-noop: {{[1-9]}}
 // ALL: result: unsat
-// CHK-NOT: vc.seam-inb-violated
+// CHK-NOT: seam.out-of-object
 // CHK: result: unsat
 // CHK: seam-check: firings={{[1-9][0-9]*}} {{.*}} invalid=0 unknown=0 unexpressible=0
 !m = !sea.mem<!sea.ptr<64>, i8>

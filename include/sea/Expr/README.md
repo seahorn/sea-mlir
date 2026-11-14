@@ -66,7 +66,8 @@ by the rewriter's rules.
 compare, read over store / ite, ite and Boolean rules) as one config
 (`SeaMRewriteConfig`) and the per-VC driver `SeaMRewriter` (cache +
 counters). Each rule's comment names its thesis figure, its assumptions
-(`uses: A-INB`; only the compare of a ROW step uses it) and why its RW_n
+(`uses: A-SEP` / `A-NULL` / `A-NOWRAP`; only the compares of a ROW step,
+access addresses and the commutes of two stores use them) and why its RW_n
 suffices. Tests: `unittests/SeaMRules`
 (`test/Expr/seam-rules.test`), `test/VC/seam/`.
 

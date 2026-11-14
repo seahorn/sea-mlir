@@ -14,7 +14,7 @@
 // RUN: sea-vc %s --lower --widen-memory=4 --smt2 | FileCheck %s --check-prefix=PLAIN
 // RUN: sea-vc %s --lower --widen-memory=4 | FileCheck %s --check-prefix=VERDICT
 // RUN: sea-vc %s --lower --widen-memory=4 --seam | FileCheck %s --check-prefix=VERDICT
-// RUN: sea-vc %s --lower --widen-memory=4 --seam --seam-inb=0 | FileCheck %s --check-prefix=VERDICT
+// RUN: sea-vc %s --lower --widen-memory=4 --seam --seam-premises=0 | FileCheck %s --check-prefix=VERDICT
 // SMT-NOT: select
 // SMT-NOT: store
 // PLAIN: select

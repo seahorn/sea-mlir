@@ -6,10 +6,10 @@
 // --seam-arm=0 keeps the compare unknown and does not skip across bases, so
 // it is sat.
 // RUN: sea-vc %s --lower | FileCheck %s --check-prefix=SAT
-// RUN: sea-vc %s --lower --seam --seam-inb=0 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %s --lower --seam --seam-premises=0 | FileCheck %s --check-prefix=SAT
 // RUN: sea-vc %s --lower --seam 2>&1 | FileCheck %s --check-prefix=COUNT
 // RUN: sea-vc %s --lower --seam --seam-arm=0 | FileCheck %s --check-prefix=SAT
-// COUNT: seam.inb: assumed accesses=3 conditions=1
+// COUNT: seam.premises: assumed accesses=3 conditions=1
 // COUNT: result: unsat
 // SAT: result: sat
 !m = !sea.mem<!sea.ptr<64>, i8>

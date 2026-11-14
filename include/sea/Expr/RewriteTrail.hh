@@ -11,9 +11,9 @@
 // counters the rules bumped during that call, in order: the rule itself and
 // the reasons of the decisions it rests on, e.g. row.store-skip with
 // cmp.diff-base or arm.skip), the premises it used (Premise bits of
-// seam::Decision: bit 1 = A-INB), and the VC operation that triggered it
-// (the context: load / store / addr with the MLIR location and the access
-// size in address units, or side / query).
+// seam::Decision: bit 1 = A-SEP, 16 = A-NULL, 32 = A-NOWRAP), and the VC
+// operation that triggered it (the context: load / store / addr with the MLIR
+// location and the access size in address units, or side / query).
 //
 // Caching. A firing is recorded once, when the rule runs. A later visit of
 // the same term that takes the rewriter's cache is not a firing: it is
@@ -27,7 +27,8 @@
 //
 // Format (JSON lines; utils/seam-trail.py reads it):
 //   trail file:
-//     {"t":"run","run":R,"inb":B}                       a VC run starts
+//     {"t":"run","run":R,"premises":B}                  a VC run starts
+//                                                       (B: the premises on)
 //     {"t":"fire","run":R,"id":N,"rules":[...],"premises":[...],
 //      "op":"load","loc":"f.mlir:3:5","units":U,"lhs":I,"rhs":J
 //      [,"lhs_text":"...","rhs_text":"..."]}           a firing
@@ -73,7 +74,11 @@ public:
   /// Premise bits as names (mirrors seam::Premise).
   static void premiseNames(unsigned p, llvm::SmallVectorImpl<const char *> &o) {
     if (p & 1u)
-      o.push_back("A-INB");
+      o.push_back("A-SEP");
+    if (p & 16u)
+      o.push_back("A-NULL");
+    if (p & 32u)
+      o.push_back("A-NOWRAP");
     if (p & 2u)
       o.push_back("LAYOUT");
     if (p & 4u)
@@ -99,7 +104,7 @@ public:
   // ---- runs ----------------------------------------------------------------
   /// A new VC run (a new ExprFactory): ids of nodes restart, kept firings of
   /// the previous run are dropped.
-  void beginRun(bool inb) {
+  void beginRun(bool premises) {
     ++m_run;
     m_kept.clear();
     m_printed.clear();
@@ -115,7 +120,7 @@ public:
       j.object([&] {
         j.attribute("t", "run");
         j.attribute("run", m_run);
-        j.attribute("inb", inb);
+        j.attribute("premises", premises);
       });
       *m_out << "\n";
     }

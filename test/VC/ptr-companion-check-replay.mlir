@@ -16,10 +16,10 @@
 //  @fails: as @unstored, but the assertion fails on the integer arm: the
 //    replay fails it, and the guard is reported too.
 //  @both: both arms store a pointer: unsat, A-PTRINT holds.
-// RUN: sea-vc %s --program=unstored --seam --seam-inb=0 --ptr-companion=check --seam-check 2>&1 | FileCheck %s --check-prefix=UNST --implicit-check-not=Error
+// RUN: sea-vc %s --program=unstored --seam --seam-premises=0 --ptr-companion=check --seam-check 2>&1 | FileCheck %s --check-prefix=UNST --implicit-check-not=Error
 // RUN: sea-vc %s --program=overwritten --seam --ptr-companion=check 2>&1 | FileCheck %s --check-prefix=OVER --implicit-check-not=Error
-// RUN: sea-vc %s --program=fails --seam --seam-inb=0 --ptr-companion=check 2>&1 | FileCheck %s --check-prefix=FAILS --implicit-check-not=Error
-// RUN: sea-vc %s --program=both --seam --seam-inb=0 --ptr-companion=check 2>&1 | FileCheck %s --check-prefix=BOTH --implicit-check-not=Error
+// RUN: sea-vc %s --program=fails --seam --seam-premises=0 --ptr-companion=check 2>&1 | FileCheck %s --check-prefix=FAILS --implicit-check-not=Error
+// RUN: sea-vc %s --program=both --seam --seam-premises=0 --ptr-companion=check 2>&1 | FileCheck %s --check-prefix=BOTH --implicit-check-not=Error
 // RUN: sea-vc %s --program=overwritten --seam --ptr-companion=check --format=jsonl 2>&1 | FileCheck %s --check-prefix=JSON
 // RUN: sea-vc %s --program=overwritten --seam --ptr-companion=exact 2>&1 | FileCheck %s --check-prefix=EXACT --implicit-check-not=seam.ptrint-
 // UNST: seam.ptrint: checked loads=1

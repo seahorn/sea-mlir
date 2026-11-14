@@ -19,8 +19,10 @@ The main lines of `sea-vc`:
 | `object: name=obj.<id> order= kind= base= size= align=` | a placed object (with `--seam`); `obj.<id>` is its constant in the query |
 | `vc-time: <s>` | query generation, including the SeaM rewriting |
 | `vc.ackermann-constraints: <n>` | consistency constraints added for read-only arrays |
-| `seam.inb: assumed accesses=<n> conditions=<m>` | the in-bounds assumption was used for $n$ accesses; $m$ of them have a non-constant condition |
-| `seam.inb: off (fallback: an access leaves its object)` | the assumption was dropped after a static violation |
+| `assume.a-sep: seam=<n>`, `assume.a-null: seam=<n>`, `assume.a-nowrap: seam=<n>` | `--seam`: the rewrites that rest on each pointer premise (A-SEP: no cell accessed through two objects; A-NULL: no access through an object of size 0; A-NOWRAP: no access address wraps); 0: the answer does not use it |
+| `seam.premises: assumed accesses=<n> conditions=<m>` | the premises were on for $n$ accesses; $m$ of them have a non-constant in-bounds condition (what a bounds check would check) |
+| `seam.premises: off (fallback: an access leaves its object)` | `--seam-out-of-object=fallback`: the premises were dropped after a static out-of-object access |
+| `seam.out-of-object: accesses=<n> object=<a> shared=<s> unknown=<u> null=<z> gap=<g>` | $n$ accesses leave their object on every address alternative, by where they land, pairwise (`shared`: a gap cell out-of-object accesses through two provenances reach); the premises stay, so an `unsat` holds only if the `object`, `shared`, `unknown` and `null` ones do not execute (A-SEP or A-NULL fails if they do); `gap` ones keep A-SEP and A-NULL; `seam.out-of-object-at:` names the first 8 (`with=`: the other access of a shared pair) |
 | `assume.memset-bound: count=<n> bound=<K>` | $n$ symbolic-length memsets were bounded by $K$ |
 | `solve-time: <s>` | the solver's check |
 | `result: sat|unsat|unknown|none` | the verdict (`none`: `--vcgen-only`, `--split-candidates`) |
@@ -64,7 +66,7 @@ The main lines of `sea-vc`:
 | `seam.ptrint-violated: <where> addr= [obj=] bits= stored=` | `--ptr-companion=check`, `sat`: a split pointer load in the replay that reads bits other than the pointer last stored there |
 | `seam.ptrint-unstored: <where> addr= [obj=] bits=` | `--ptr-companion=check`, `sat`: a split pointer load from a cell no pointer was stored to |
 | `seam.ptrint-replay: loads= holds= violated= unstored=` | `--ptr-companion=check`, `sat`: the split pointer loads of the replay; the `sat` is confirmed if one fails |
-| `assume.a-inb: drop-fresh-memhavoc=<n>` | `--lower` of an abstract program dropped n memhavocs of fresh objects whose no-op rests on A-INB (also without `--seam` and with `--seam-inb=0`); a separate memory-safety check discharges it |
+| `assume.a-sep: drop-fresh-memhavoc=<n>` | `--lower` of an abstract program dropped n memhavocs of fresh objects whose no-op rests on A-SEP (also without `--seam` and with `--seam-premises=0`); a separate memory-safety check discharges it |
 | `assume.addr0-is-null: vc null-uses=<n>` | `--lower`: placement puts the null object at address 0, so the VC identifies null with address 0 (n: uses of its segment); a fact about the target, not discharged |
 | `assume.memhavoc-null-noop: vc sites=<n>` | `--lower`: memhavocs whose pointer may be null, guarded so that the VC runs them only when it is not (`--memhavoc-null=noop`) |
 | `assume.memhavoc-null-noop: uses=<n>` | after `replay.original:` (and in `sea-run`): memhavocs of the null pointer the run executed as no-ops, an open semantics decision (`--memhavoc-null`) |
@@ -133,7 +135,7 @@ a safety verdict.
   run leaves an object before the target. Under `--seam` every model is
   also run on the input program, whose accesses are checked against their
   objects, as for a counterexample (`vc.seam-inb-spurious`); the answer
-  rests on the in-bounds assumption, which that run breaks (exit status 4).
+  rests on the premises, which that run may break (exit status 4).
   `inb=undetermined`: that check could not decide (the run reads a nondet
   memory cell).
 - `witness`: with `--reach-witness=<dir>`, the run's `nondet:` and
@@ -141,8 +143,9 @@ a safety verdict.
   on which program: the lowered one (with `--lower`; `sea-opt
   --sea-vc-lower` with the same options) or the input program.
 - An unreachable check site means unsatisfiable preconditions before it,
-  or dead code. The `seam.inb` and `assume.*` lines are the assumptions
-  every answer rests on. The reach runs (the replays and the A-INB check)
+  or dead code. The `seam.premises` and `assume.*` lines are the
+  assumptions every answer rests on. The reach runs (the replays and the
+  in-bounds check)
   use the interpreter's options of the safety replays (`--addr0-is-null`,
   `--memhavoc-null`); after the summary, `assume.addr0-is-null: uses=<n>`
   and `assume.memhavoc-null-noop: uses=<n>` count the steps of all of them

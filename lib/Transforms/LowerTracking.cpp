@@ -27,7 +27,7 @@
 // construction: sea-lower-fat-pointers makes it p - off(p)), also for an
 // object of size 0 (null, malloc(0)), which holds no data byte but has a
 // shadow cell. So the shadow start is `sea.mem.const 0 shadow`: the VC reads
-// every memory that starts there as a shadow memory and applies no A-INB
+// every memory that starts there as a shadow memory and applies no premise
 // rule to it (a shadow access is not a program access; an application
 // bounds check says nothing about it); two different objects are two cells
 // because placement gives every object its own base (sea-place-static

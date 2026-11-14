@@ -8,8 +8,8 @@
 // CHECK: BRUNCH_STAT result unsat
 // CHECK: BRUNCH_STAT status 0
 // PLAIN-NOT: BRUNCH_STAT
-// SEAM: BRUNCH_STAT seam.inb assumed
-// SEAM: BRUNCH_STAT seam.inb-accesses {{[0-9]+}}
+// SEAM: BRUNCH_STAT seam.premises assumed
+// SEAM: BRUNCH_STAT seam.premises-accesses {{[0-9]+}}
 // SEAM: BRUNCH_STAT seam.rewrite-time {{[0-9.]+}}
 // SEAM: BRUNCH_STAT seam.rules-fired {{[0-9]+}}
 // SEAM: BRUNCH_STAT result unsat

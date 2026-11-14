@@ -2,14 +2,14 @@
 // bounds) follows, the pointer is reloaded from c and stored through. Plain:
 // n = 48 makes a+n = d, x = 9, sat (replayed). Under A-INB the rewriting skips
 // the store to b, the reload is a+n and the store through it is taken to stay
-// in a: --seam answers unsat, `seam.inb: assumed`. The answer is conditional
+// in a: --seam answers unsat, `seam.premises: assumed`. The answer is conditional
 // on A-INB, which sea-vc does not discharge (an earlier attempt that did, with
 // a second encoding, gave wrong answers on exactly this shape: a pointer
 // stored in memory and reloaded is unattributed in the encoding without
 // A-INB). The test pins the conditional nature.
 // RUN: sea-vc %s --lower --solver=z3 | FileCheck %s --check-prefix=PLAIN
 // RUN: %if yices %{ sea-vc %s --lower --solver=yices | FileCheck %s --check-prefix=PLAIN %}
-// RUN: sea-vc %s --lower --solver=z3 --seam --seam-inb=0 | FileCheck %s --check-prefix=NOINB
+// RUN: sea-vc %s --lower --solver=z3 --seam --seam-premises=0 | FileCheck %s --check-prefix=NOINB
 // RUN: sea-vc %s --lower --solver=z3 --seam 2>&1 | FileCheck %s --check-prefix=SEAM
 // RUN: %if yices %{ sea-vc %s --lower --solver=yices --seam 2>&1 | FileCheck %s --check-prefix=SEAM %}
 // RUN: sea-vc %s --lower --solver=z3 --seam --seam-arm=0 2>&1 | FileCheck %s --check-prefix=SEAM
@@ -23,12 +23,12 @@
 // RESOLVE: result: unsat
 // PLAIN: result: sat
 // PLAIN: replay: assert-failed
-// NOINB: seam.inb: off
+// NOINB: seam.premises: off
 // NOINB: result: sat
 // NOINB: replay: assert-failed
 // NOINB: validate: checked={{[0-9]+}} mismatches=0
-// SEAM-NOT: vc.seam-inb-violated
-// SEAM: seam.inb: assumed accesses={{[0-9]+}} conditions={{[1-9][0-9]*}}
+// SEAM-NOT: seam.out-of-object
+// SEAM: seam.premises: assumed accesses={{[0-9]+}} conditions={{[1-9][0-9]*}}
 // SEAM: result: unsat
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @ptrmem {

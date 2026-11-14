@@ -18,8 +18,9 @@
 //            Value    `BRUNCH_STAT <key> <value>`, the whole value
 //            Parts    a leading state word: `<key> <state>`; each k=v
 //                     token: `<key>-<k> <v>`; parenthesised notes left out
-//            Derived  the rule of sea-vc's SeaM block: Parts for seam.inb
-//                     and assume.*, else Value when the value is one
+//            Derived  the rule of sea-vc's SeaM block: Parts for
+//                     seam.premises, seam.out-of-object and assume.*,
+//                     else Value when the value is one
 //                     token, else none
 //
 // A report is pulled from the components of one run (their report()

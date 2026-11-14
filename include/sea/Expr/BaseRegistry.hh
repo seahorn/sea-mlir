@@ -57,8 +57,9 @@ public:
   /// An already registered object of nonzero size whose address range
   /// [base, base + size) overlaps the range of a new object (null if none, or
   /// if the new object has size 0: it has no addresses). Ranges are those of
-  /// the placement; A-INB needs them disjoint (the compare of two pointers
-  /// into different objects is false only if the objects share no address).
+  /// the placement; A-INB implies A-SEP only if they are disjoint (two
+  /// in-bounds accesses through different objects share no cell only if the
+  /// objects share no address).
   const ObjectBase *overlapping(const llvm::APInt &base,
                                 const llvm::APInt &size) const {
     if (size.isZero())
@@ -96,7 +97,7 @@ public:
   /// start term of a memory a tool made for metadata keyed by object
   /// identity (`sea.mem.const ... shadow`). Every memory term built over one
   /// (stores, store-maps, ites) is a shadow memory: its accesses are not
-  /// program accesses, so no A-INB rule applies to them
+  /// program accesses, so no premise rule (A-SEP, A-NULL) applies to them
   /// (seam::Rules::shadowMemory).
   void addShadowRoot(const Expr &root) { m_shadowRoots.insert(root); }
   bool isShadowRoot(const Expr &e) const { return m_shadowRoots.count(e); }
@@ -122,5 +123,61 @@ private:
   std::unordered_map<Expr, size_t> m_index;
   std::unordered_set<Expr> m_shadowRoots;
 };
+
+namespace seam {
+/// Where a static out-of-object access lands (seam::Rules::
+/// outOfObjectSpans, classified pairwise by SeaOpSem), worst first:
+///   Object   a span meets another placed object: A-SEP fails if the
+///            access executes;
+///   Shared   a span lands in a gap cell that an out-of-object access
+///            through another provenance also reaches (one of the two a
+///            write): A-SEP fails if both execute;
+///   Unknown  a span is not known (a symbolic offset or length, an ARM-only
+///            leaf), or a gap span another such access may reach;
+///   Null     through an object of size 0: A-NULL fails if it executes;
+///   Gap      every span lands in cells that no other flagged access reaches
+///            through another provenance (in-bounds accesses never do):
+///            A-NULL holds, A-SEP holds as far as the flagged accesses go,
+///            only the property A-INB fails.
+enum class Landing { Object, Shared, Unknown, Null, Gap };
+inline const char *landingName(Landing l) {
+  switch (l) {
+  case Landing::Object:
+    return "object";
+  case Landing::Shared:
+    return "shared";
+  case Landing::Unknown:
+    return "unknown";
+  case Landing::Null:
+    return "null";
+  case Landing::Gap:
+    return "gap";
+  }
+  return "?";
+}
+
+/// What the placement says about one static out-of-object access, before
+/// the pairwise step: per address leaf, whether its span meets another
+/// object, is unknown, or goes through an object of size 0, and the spans
+/// that land outside every object (gap spans, with their provenance).
+struct OutOfObjectSpans {
+  bool object = false, unknown = false, null = false;
+  /// [lo, hi) as integers, lo in [0, 2^w) (hi may pass 2^w); loDown /
+  /// hiDown: the same span one address space down (lo - 2^w, hi - 2^w),
+  /// so that a span that wraps is compared at both images.
+  struct Span {
+    const ObjectBase *base; ///< the provenance
+    mpz_class lo, hi, loDown, hiDown;
+  };
+  std::vector<Span> gaps;
+
+  /// Do two spans share a cell (modulo 2^w)?
+  static bool overlap(const Span &a, const Span &b) {
+    return (a.lo < b.hi && b.lo < a.hi) ||
+           (a.loDown < b.hi && b.lo < a.hiDown) ||
+           (b.loDown < a.hi && a.lo < b.hiDown);
+  }
+};
+} // namespace seam
 
 } // namespace expr

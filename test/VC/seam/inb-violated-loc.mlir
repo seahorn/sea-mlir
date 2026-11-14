@@ -1,12 +1,12 @@
-// vc.seam-inb-violated names the accesses behind the fallback: the store and
-// the load at a numeral offset 12 of an 8-byte object, with the location and
-// the check that failed; then the count. --lower-opt=false: canonicalize
-// would forward the stored value to the load.
+// seam.out-of-object-at names the static out-of-object accesses: the store
+// and the load at a numeral offset 12 of an 8-byte object, with the location,
+// the check that failed and where the access lands; then the count by class.
+// --lower-opt=false: canonicalize would forward the stored value to the load.
 // RUN: sea-vc %s --lower --lower-opt=false --seam 2>&1 | FileCheck %s
-// CHECK: vc.seam-inb-violated: at {{.*}}inb-violated-loc.mlir:[[@LINE+13]]:{{[0-9]+}} store: numeral offset outside: offset 12
-// CHECK: vc.seam-inb-violated: at {{.*}}inb-violated-loc.mlir:[[@LINE+13]]:{{[0-9]+}} load: numeral offset outside
-// CHECK: vc.seam-inb-violated-count: 2
-// CHECK: seam.inb: off
+// CHECK: seam.out-of-object-at: {{.*}}inb-violated-loc.mlir:[[@LINE+13]]:{{[0-9]+}} store: numeral offset outside: offset 12 {{.*}} lands=
+// CHECK: seam.out-of-object-at: {{.*}}inb-violated-loc.mlir:[[@LINE+13]]:{{[0-9]+}} load: numeral offset outside{{.*}} lands=
+// CHECK: seam.premises: assumed
+// CHECK: seam.out-of-object: accesses=2
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @oob {
   %z = sea.const 0 : i8

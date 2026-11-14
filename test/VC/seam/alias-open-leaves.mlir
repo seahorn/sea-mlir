@@ -1,11 +1,11 @@
 // The alias census (--seam-stats) classifies an open IS_OVERLAP by its leaf
 // pairs, not by the view of a whole ite pointer (an ite has none).
 // @loaded: a store through a loaded pointer p, a read at ite(c, A, B): two
-// pairs (p, A), (p, B), each one-unknown. @noinb (--seam-inb=0): a store at
+// pairs (p, A), (p, B), each one-unknown. @noinb (--seam-premises=0): a store at
 // B, a read at ite(c, A + k, A + j): two diff-object pairs, open because
 // A-INB is off. The view of the whole ite said both-unknown / one-unknown.
 // RUN: sea-vc %s --lower --program=loaded --seam --seam-stats --vcgen-only 2>&1 | FileCheck %s --check-prefix=LOADED
-// RUN: sea-vc %s --lower --program=noinb --seam --seam-inb=0 --seam-stats --vcgen-only 2>&1 | FileCheck %s --check-prefix=NOINB
+// RUN: sea-vc %s --lower --program=noinb --seam --seam-premises=0 --seam-stats --vcgen-only 2>&1 | FileCheck %s --check-prefix=NOINB
 // LOADED: seam.alias.open.all: 1
 // LOADED: seam.alias.open.one-unknown: 1
 // LOADED: seam.alias.open-pairs.all: 2

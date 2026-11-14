@@ -1,19 +1,20 @@
 // inb-ptrmem.mlir with n = 48 (a numeral): the access through the reloaded
-// pointer is a definite violation (offset 48 in a 16-byte object). That is
-// the static fallback, a sanity check and not a soundness claim: --seam warns
-// (vc.seam-inb-violated), answers without A-INB (`seam.inb: off`) and so gets
-// the plain answer, sat with a replayed counterexample.
+// pointer is a static out-of-object access (offset 48 in a 16-byte object,
+// landing in another object). --seam warns (vc.seam-out-of-object) and keeps
+// the premises; the access executes, so A-SEP fails and the unsat is
+// conditional on a broken premise. --seam-out-of-object=fallback (tested in
+// inb-static.mlir) would give the plain answer.
 // RUN: sea-vc %s --lower --solver=z3 | FileCheck %s --check-prefix=PLAIN
 // RUN: %if yices %{ sea-vc %s --lower --solver=yices | FileCheck %s --check-prefix=PLAIN %}
 // RUN: sea-vc %s --lower --solver=z3 --seam 2>&1 | FileCheck %s --check-prefix=SEAM
 // RUN: %if yices %{ sea-vc %s --lower --solver=yices --seam 2>&1 | FileCheck %s --check-prefix=SEAM %}
 // PLAIN: result: sat
 // PLAIN: replay: assert-failed
-// SEAM: Warning: an access leaves its object{{.*}}[vc.seam-inb-violated]
-// SEAM: seam.inb: off (fallback: an access leaves its object)
-// SEAM: result: sat
-// SEAM: replay: assert-failed
-// SEAM: validate: checked={{[0-9]+}} mismatches=0
+// SEAM: Warning: {{.*}}[vc.seam-out-of-object]
+// SEAM: seam.out-of-object-at: {{.*}} store: numeral offset outside: offset 48 {{.*}} lands=object
+// SEAM: seam.premises: assumed
+// SEAM: seam.out-of-object: accesses=1 object=1
+// SEAM: result: unsat
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @ptrmem48 {
   %z = sea.const 0 : i8

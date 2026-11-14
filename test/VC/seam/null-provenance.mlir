@@ -25,8 +25,8 @@
 // RUN: not sea-run %s --program=intzero --input=3=1 --missing=zero | FileCheck %s --check-prefix=NULL
 // UNSAT: result: unsat
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
-// STORED-NOT: vc.seam-inb-violated
-// STORED: seam.inb: assumed
+// STORED-NOT: seam.out-of-object
+// STORED: seam.premises: assumed
 // STORED-DAG: seam.rule.addr.prune-size0: {{[1-9]}}
 // STORED-DAG: seam.rule.cmp.diff-base: {{[1-9]}}
 // STORED: result: unsat

@@ -12,15 +12,17 @@ loads of i32 and of pointers, pointer compares and int casts of pointers, and
 asserts a pointer compare. Not an oracle (test/README.md): a second check of
 --seam against the plain VC.
 
-  --seam --seam-inb=0 is free of A-INB here only because the generator makes
-  no memhavoc: the lowering's dropped memhavocs (assume.a-inb) rest on A-INB
-  even without it, and a run that reports one is a problem.
+  --seam --seam-premises=0 is free of the premises here only because the
+  generator makes no memhavoc: the lowering's dropped memhavocs (assume.a-sep
+  drop-fresh-memhavoc) rest on A-SEP even without them, and a run that
+  reports one is a problem.
 
   --accesses=bases  every access is at an object's base: A-INB holds, so
-                    plain, --seam and --seam --seam-inb=0 must give the same
-                    verdict, and no run may fall back to no A-INB.
+                    plain, --seam and --seam --seam-premises=0 must give the same
+                    verdict, and no run may report a static out-of-object
+                    access.
   --accesses=any    an access may use any pointer, so it may leave its object
-                    (A-INB may fail): plain and --seam --seam-inb=0 must
+                    (A-INB may fail): plain and --seam --seam-premises=0 must
                     agree; --seam may differ (violating mode, below).
   --accesses=wide   like any, and the program always has pointers that are
                     sums over ites of 5-8 pointers (more leaves than the
@@ -38,7 +40,8 @@ asserts a pointer compare. Not an oracle (test/README.md): a second check of
                     (a 4-byte cell at an offset in [0, size - 4]), with a few
                     nondet offsets assumed in [0, size - 4] (the barriers and
                     the R-ABORT of Store-Map): A-INB holds, every variant
-                    agrees, and no run may fall back to no A-INB. The programs
+                    agrees, and no run may report a static out-of-object
+                    access. The programs
                     in which Store-Map (--seam-store-map, default on) groups
                     writes into store-maps, commutes writes across objects
                     and reads them back.
@@ -48,7 +51,7 @@ asserts a pointer compare. Not an oracle (test/README.md): a second check of
                     size + 8) and one store at offset `size` that surely does:
                     the deliberate-violation mode (violating). The surely
                     out-of-bounds store has a numeral offset, which --seam
-                    detects statically (fallbacks, counted).
+                    detects statically (out-of-object, counted).
   --accesses=circular
                     a potential circularity in the A-INB assumption: stores through an object plus an unconstrained
                     (or loosely bounded) nondet offset into zero-initialized
@@ -58,7 +61,7 @@ asserts a pointer compare. Not an oracle (test/README.md): a second check of
                     address, and sometimes a later store whose address comes
                     from the load. Under A-INB the load reads the old value and
                     the guard can remove the very executions that violate A-INB;
-                    plain and --seam --seam-inb=0 agree; --seam may differ
+                    plain and --seam --seam-premises=0 agree; --seam may differ
                     (violating mode).
   --accesses=ptrmem
                     the pointer-through-memory shape (review of the A-INB
@@ -85,7 +88,7 @@ asserts a pointer compare. Not an oracle (test/README.md): a second check of
                     CSE / canonicalize passes (--lower-opt=false). Every form
                     must give the reference's verdict and SeaM resolution
                     counters (FORM_KEYS: vc.ackermann-arrays / -reads /
-                    -constraints, seam.inb, seam.alias.open.all; one --seam
+                    -constraints, seam.premises, seam.alias.open.all; one --seam
                     run each). A difference is a failure; the reference and
                     the variant are kept with the commands and counters
                     (forms-<seed>-<i>-*.mlir, .txt). The memmoves as byte
@@ -103,12 +106,15 @@ each rule firing is a solver query `premise => lhs = rhs`. An invalid
 firing (exit 5) is a failure; the summary sums the seam-check counts
 (seam-check-<count>: <n>).
 Every run must exit 0 (a sat is confirmed by replay), except a --seam run in a
-violating mode (its answer is conditional on A-INB: it may be a sat that does
-not replay).
+violating mode (its answer is conditional on the premises: it may be a sat
+that does not replay).
 
-A-INB is assumed and reported, not discharged (docs/design/SeaM.md). In the
-in-bounds modes (bases, cells) every variant must agree with plain, and no run
-may fall back to no A-INB (the static check of numeral offsets). In the
+The premises of --seam (A-SEP, A-NULL, A-NOWRAP; A-INB implies them) are
+assumed and reported, not discharged (docs/design/SeaM.md). In the in-bounds
+modes (bases, cells) every variant must agree with plain, and no run may
+report a static out-of-object access (the static check of numeral offsets).
+A static out-of-object access keeps the premises (no fallback), so in the
+violating modes such a program answers conditionally. In the
 violating modes (any, wide, cells-violate, circular, ptrmem) --seam may give
 another verdict than plain: counted (seam-differs). When --seam says unsat and
 plain says sat, plain's counterexample must really leave an object: the
@@ -118,12 +124,17 @@ it stops with a memory access out of bounds; "oob-undetermined": it stops for
 another reason (the abstract interpreter has no address of a pointer:
 ptr.to_int / ptr.from_int); a run that reaches the end or the failed assertion
 without leaving an object is a failure (the counterexample is in bounds, so
---seam's unsat is wrong). Every --seam run has --seam-stats; the summary reports
+--seam's unsat is wrong; this tests bounds, not separation: a counterexample
+that leaves its object only into a gap keeps A-NULL, and A-SEP unless another
+provenance reaches the same cell; it is not flagged yet).
+Every --seam run has --seam-stats; the summary reports
 the counts of the final run of the seam variant, summed over the programs:
 wow.commute, smap.commute, the cross-base skips (cmp.diff-base,
-arm.skip-diff-base, row.smap-skip; cross-base-skips is their sum), premise.a-inb
-(the rewrites that depend on A-INB), the programs in which that run fell back to
-no A-INB (fallbacks), and the programs in which ARM decided a compare
+arm.skip-diff-base, row.smap-skip; cross-base-skips is their sum),
+premise.a-sep / premise.a-null (the rewrites that depend on each), the
+programs in which that run reported a static out-of-object access
+(out-of-object; their counters are left out), and the programs in which ARM
+decided a compare
 (arm-fired) and Store-Map made or read a store-map (smap-fired: the Store-Map
 construction alone, not a rule that survived into the final run: use the
 final-run counts for that).
@@ -228,8 +239,8 @@ def gen(rng, any_access, wide=False, cells=False, violate=False):
                 site[0] += 1
                 emit(f"{p} = sea.select {c}, {rng.choice(bases)}, {cur} : {PT}")
                 cur = p
-            # mostly inside the objects (an access that surely leaves one
-            # makes sea-vc run without A-INB: ARM then has nothing to do)
+            # mostly inside the objects (an access that surely leaves one is
+            # reported, and its program's counters are counted apart)
             o = (
                 const(
                     rng.choice(
@@ -1171,7 +1182,9 @@ COUNTERS = [
     "cmp.diff-base",
     "arm.skip-diff-base",
     "row.smap-skip",
-    "premise.a-inb",
+    "premise.a-sep",
+    "premise.a-null",
+    "premise.a-nowrap",
     "wide.hit",
     "wide.sub",
     "wide.skip",
@@ -1210,13 +1223,18 @@ def counter(out, name):
 
 
 def inb_state(out):
-    """What the answer says about A-INB: 'fallback' (the static check of numeral
-    offsets turned it off), 'off' (not asked: --seam-inb=0), 'assumed'."""
-    m = re.search(r"^seam\.inb: (off|assumed)(.*)$", out, re.M)
+    """What the answer says about the premises (A-SEP, A-NULL, A-NOWRAP):
+    'out-of-object' (the static check found an access with no alternative in
+    its object: reported, and the premises stay; or, with
+    --seam-out-of-object=fallback, they were turned off), 'off' (not asked:
+    --seam-premises=0), 'assumed'."""
+    m = re.search(r"^seam\.premises: (off|assumed)(.*)$", out, re.M)
     if not m:
         return "none"
+    if re.search(r"^seam\.out-of-object: ", out, re.M):
+        return "out-of-object"
     if m.group(1) == "off":
-        return "fallback" if "fallback" in m.group(2) else "off"
+        return "out-of-object" if "fallback" in m.group(2) else "off"
     return "assumed"
 
 
@@ -1262,7 +1280,7 @@ FORM_KEYS = [
     "vc.ackermann-arrays",
     "vc.ackermann-reads",
     "vc.ackermann-constraints",
-    "seam.inb",
+    "seam.premises",
     "seam.alias.open.all",
 ]
 
@@ -1477,11 +1495,11 @@ def main():
         ("seam", ["--seam"] + stats),
         ("seam-noarm", ["--seam", "--seam-arm=0"] + stats),
         ("seam-nosmap", ["--seam", "--seam-store-map=0"] + stats),
-        ("seam-inb0", ["--seam", "--seam-inb=0"] + stats),
+        ("seam-inb0", ["--seam", "--seam-premises=0"] + stats),
         # width terms (docs/design/SeaM-mixed-width.md): the i32 /
         # pointer accesses of byte memories stay whole
         ("seam-wide", ["--seam", "--seam-wide"] + stats),
-        ("seam-wide-inb0", ["--seam", "--seam-wide", "--seam-inb=0"] + stats),
+        ("seam-wide-inb0", ["--seam", "--seam-wide", "--seam-premises=0"] + stats),
         # initial words (docs/design/SeaM-initial-words.md): every
         # eligible initial memory as words, the word query checked
         # against the byte query (--words-check: exit 2 if they
@@ -1495,15 +1513,17 @@ def main():
             [
                 "--seam",
                 "--seam-wide",
-                "--seam-inb=0",
+                "--seam-premises=0",
                 "--seam-words=all",
                 "--words-check",
             ]
             + stats,
         ),
     ]
-    # the variants that assume A-INB
-    asks_inb = [n for n, f in variants if "--seam" in f and "--seam-inb=0" not in f]
+    # the variants that assume the premises
+    asks_inb = [
+        n for n, f in variants if "--seam" in f and "--seam-premises=0" not in f
+    ]
     bad = 0
     differs = 0
     oob = {True: 0, False: 0, None: 0}
@@ -1512,7 +1532,7 @@ def main():
     tally = {}
     totals = {c: 0 for c in COUNTERS}
     programs_with = {c: 0 for c in COUNTERS}
-    fallbacks = 0
+    out_of_object = 0
     global RUN_TIMEOUT
     RUN_TIMEOUT = args.run_timeout
     # the programs, generated in order (deterministic for a seed)
@@ -1556,8 +1576,8 @@ def main():
         )
         # the final run of the seam-check variant
         state = inb_state(out)
-        if state == "fallback":
-            fallbacks += 1
+        if state == "out-of-object":
+            out_of_object += 1
         else:
             for c in COUNTERS:
                 # the width-term counters from the seam-wide variant
@@ -1581,7 +1601,8 @@ def main():
                     check_totals[k] += int(kv.get(k, 0))
                 if int(kv.get("invalid", 0)):
                     problems.append(f"{n}: seam-check invalid firing")
-        # a --seam run of a violating mode answers conditionally on A-INB: it
+        # a --seam run of a violating mode answers conditionally on the
+        # premises (an access may leave its object): it
         # may differ from plain, and its sat may not replay: exit 4 when
         # sea-vc finds the abstract run leaving an object, exit 2 otherwise
         conditional = {n for n in asks_inb} if not in_bounds else set()
@@ -1592,15 +1613,20 @@ def main():
         unconditional = {n: v for n, v in verdicts.items() if n not in conditional}
         if len(set(unconditional.values())) > 1:
             problems.append("verdicts differ")
-        # the agreement of plain and --seam-inb=0 holds only without A-INB:
-        # no dropped memhavoc may rest on it (the generator makes none)
+        # the agreement of plain and --seam-premises=0 holds only without the
+        # premises: no dropped memhavoc may rest on A-SEP (the generator makes
+        # none)
         for n, r in res.items():
-            if re.search(r"^assume\.a-inb:", r[3], re.M):
-                problems.append(f"{n}: the lowering rests on A-INB (assume.a-inb)")
-        for name in asks_inb:
-            if in_bounds and inb_state(res[name][3]) == "fallback":
+            if re.search(r"^assume\.a-sep:.*drop-fresh-memhavoc=", r[3], re.M):
                 problems.append(
-                    f"{name} fell back to no A-INB: an access left its object"
+                    f"{n}: the lowering rests on A-SEP (assume.a-sep "
+                    "drop-fresh-memhavoc)"
+                )
+        for name in asks_inb:
+            if in_bounds and inb_state(res[name][3]) == "out-of-object":
+                problems.append(
+                    f"{name} reports a static out-of-object access: an access "
+                    "left its object"
                 )
         if conditional:
             if verdicts["seam"] != verdicts["plain"]:
@@ -1634,16 +1660,16 @@ def main():
         print(f"oob-undetermined: {oob[None]}")
     print(f"arm-fired: {fired}")
     print(f"smap-fired: {smap_fired}")
-    # the final run of the seam-check variant (a run that fell back has the
-    # counters of the encoding without A-INB: counted apart)
-    print("final-run counts, seam, programs that kept A-INB:")
+    # the final run of the seam-check variant (a run with a static
+    # out-of-object access: counted apart)
+    print("final-run counts, seam, programs without a static out-of-object access:")
     for c in COUNTERS:
         print(f"{c}: {totals[c]} (programs {programs_with[c]})")
     print(
         f"cross-base-skips: "
         f"{totals['cmp.diff-base'] + totals['arm.skip-diff-base'] + totals['row.smap-skip']}"
     )
-    print(f"fallbacks: {fallbacks}")
+    print(f"out-of-object: {out_of_object}")
     if args.seam_check:
         for k in check_keys:
             print(f"seam-check-{k}: {check_totals[k]}")

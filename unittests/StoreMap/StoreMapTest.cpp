@@ -11,7 +11,7 @@
 //  - the write rules of Fig. 6.4, each with the term it makes, its counter and
 //    soundness: SMAP-NEW, SMAP-HIT (and the collapse of an identical address),
 //    WOW-COMMUTE and WOSMAP-COMMUTE (by allocation order, A-INB only: with
-//    assumeInBounds off no commute and the result holds with no assumption),
+//    assumePremises off no commute and the result holds with no assumption),
 //    the barriers (no pointer view, symbolic offset, size-0 object);
 //  - the read rules of Fig. 6.5: R-HIT, R-MISS, R-SKIP, R-ABORT (symbolic
 //    offset, no view, A-INB off), and expandUnknownRow off;
@@ -183,7 +183,7 @@ struct Fixture {
 
   static SeaMOptions opts(bool inb = true, bool smap = true) {
     SeaMOptions o;
-    o.assumeInBounds = inb;
+    o.assumePremises = inb;
     o.storeMap = smap;
     return o;
   }

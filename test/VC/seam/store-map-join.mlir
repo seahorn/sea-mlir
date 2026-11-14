@@ -4,7 +4,7 @@
 // RUN: sea-vc %s --lower --lower-opt=false --seam --seam-stats | FileCheck %s --check-prefix=STATS
 // RUN: sea-vc %s --lower --seam | FileCheck %s --check-prefix=VERDICT
 // RUN: sea-vc %s --lower --seam --seam-store-map=0 | FileCheck %s --check-prefix=VERDICT
-// RUN: sea-vc %s --lower --seam --seam-inb=0 | FileCheck %s --check-prefix=VERDICT
+// RUN: sea-vc %s --lower --seam --seam-premises=0 | FileCheck %s --check-prefix=VERDICT
 // RUN: sea-vc %s --lower --seam --seam-row-expand=0 | FileCheck %s --check-prefix=VERDICT
 // RUN: sea-vc %s --lower | FileCheck %s --check-prefix=VERDICT
 // The side table: the second branch inserts into a list whose map moved to the first

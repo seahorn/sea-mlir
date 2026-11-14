@@ -3,7 +3,7 @@
 
 cmake_minimum_required(VERSION 3.20.0)
 # the release number (docs/Release.md); `git describe` is added at build time
-project(sea-mlir VERSION 0.1.1 LANGUAGES CXX C)
+project(sea-mlir VERSION 0.2.0 LANGUAGES CXX C)
 set(SEA_GIT_DESCRIBE "" CACHE STRING
   "override `git describe` in --version (builds outside a git checkout)")
 

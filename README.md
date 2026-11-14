@@ -101,8 +101,9 @@ sea-mlir checks itself in several independent ways:
 - 📐 **Lean:** machine-checked proofs of the foundations of the rewriting
   rules, and an independent review of how they match the code.
 
-Results are conditional on named assumptions, such as A-INB (every access
-stays in its object), and the output reports which ones a result used.
+Results are conditional on named assumptions, such as A-SEP (no memory
+cell is accessed through two different objects), and the output reports
+which ones a result used.
 See [Why trust it](docs/trust/index.md) and
 [Known limitations](docs/reference/limitations.md).
 

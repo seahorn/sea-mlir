@@ -1,7 +1,61 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
+A minor release: what a verdict rests on changes (docs/Release.md, "What
+a verdict rests on"): verdicts change for programs with a static
+out-of-object access.
+
+### Verdict basis: named pointer premises (`--seam`)
+- The encoding of `--seam` rests on three named premises instead of A-INB:
+  A-SEP (no memory cell is accessed through two different objects in one
+  execution), A-NULL (no access of positive width through an object of size
+  0, such as null) and A-NOWRAP (an access address does not wrap). The
+  query is the same as before for every program without a static
+  out-of-object access: A-INB's uses were exactly these premises. A-INB
+  implies all three and stays the property a bounds check discharges.
+  docs/design/SeaM.md, "Soundness stance".
+- **Verdict change.** A static out-of-object access (an access whose every
+  address alternative lies outside its object) no longer makes `sea-vc`
+  encode again without the assumption. It is reported, classified by where
+  it lands (another object; a gap cell that another provenance also
+  reaches, `shared`, since A-SEP is pairwise; unknown; null; a gap), and the
+  premises stay:
+  an unsat then holds for the executions that reach none of those accesses.
+  A program that does overflow into a neighbour can therefore change from
+  sat to unsat (conditional on a premise it breaks if the access executes);
+  programs whose flagged accesses sit on paths that never execute keep
+  their verdict and solve faster. `--seam-out-of-object=fallback` restores
+  the old rerun.
+- Output changes (consumers: `utils/query-diff.py`, whose summary line `inb:` is
+  now `premises:`, and `utils/fuzz-seam.py`
+  read the new lines; query-diff still reads `seam.inb:` of an older
+  binary):
+  - `seam.inb: assumed|off ...` is now `seam.premises: assumed|off ...`
+    (same fields; BRUNCH_STAT `seam.premises`, `-accesses`, `-conditions`).
+  - `assume.a-sep: seam=<n> [drop-fresh-memhavoc=<m>]`, `assume.a-null:
+    seam=<n>`, `assume.a-nowrap: seam=<n>`: the rewrites that rest on each
+    premise, on every `--seam` run. `assume.a-inb: drop-fresh-memhavoc=` is
+    now `assume.a-sep: drop-fresh-memhavoc=`.
+  - The warning `vc.seam-inb-violated` and the lines `vc.seam-inb-violated:
+    at ...` / `vc.seam-inb-violated-count:` are now the warning
+    `vc.seam-out-of-object`, `seam.out-of-object-at: <loc> <op>: <reason>
+    lands=<class> [with=<loc>]` and `seam.out-of-object: accesses= object=
+    shared= unknown= null= gap=`. `vc.seam-inb-fallback-conditional` is now
+    `vc.seam-fallback-conditional` (with the opt-in fallback only).
+  - Counters: `seam.rule.premise.a-inb` is split into `premise.a-sep`,
+    `premise.a-null`, `premise.a-nowrap`; `vc.ackermann-stride-a-inb-pairs`
+    into `-stride-a-null-pairs` and `-stride-a-nowrap-pairs`. The rule trail
+    (`--seam-trail`, `--seam-trace`, `sea-seam-export --firings`) names the
+    premises `A-SEP`, `A-NULL`, `A-NOWRAP` instead of `A-INB`, and its run
+    record says `"premises":<bool>` instead of `"inb":<bool>`.
+  - `sea-seam-export` schema 3 (premise names and the `sea_vc` command of
+    the lanes changed; lane names and the `ainb` key are unchanged).
+- Flags: `--seam-inb` is now `--seam-premises` (`=0`: no premise, as
+  before); new `--seam-out-of-object=report|fallback` (default report).
+
+### Other
+- Built as ISO C++17 without GNU extensions (`-std=c++17`), as LLVM is.
 - LLVM/MLIR pin moved to `302c842d6601` (the upstream base of an IREE LLVM
   integrate), from `93f05d753ad3`. The integer ranges of
   `sea.sdiv` / `sea.srem` add sea's values for a zero divisor (upstream now

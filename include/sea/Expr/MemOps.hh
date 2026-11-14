@@ -38,7 +38,7 @@
 //    select(mhavoc(M, H, d, n), j)   = ite((j - d) <u n, select(H, j),
 //    select(M, j))
 //  and stops at a memory with no term below it (select(M, j) is kept: the
-//  solver's array theory). No assumption (no A-INB), no address reasoning (no
+//  solver's array theory). No assumption (no premise), no address reasoning (no
 //  ARM, no compare decided), no dependence on what the rewriter did: a
 //  residual select over a term (--seam-row-expand=0, a rewrite stopped at its
 //  call limit) is an ordinary case. Memoized by node for terms and by

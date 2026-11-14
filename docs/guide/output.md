@@ -13,17 +13,23 @@ comes from the [HPACK decoder proof](../tutorials/firedancer.md):
 
 ```console
 $ sea-vc firedancer/hpack-huff-proof.mlir --lower --seam --widen-memory=4
-tool.version: sea-mlir 0.1.1 (...)
+tool.version: sea-mlir 0.2.0 (...)
 ...
-seam.inb: assumed accesses=51 conditions=9
+assume.a-sep: seam=0
+assume.a-null: seam=0
+assume.a-nowrap: seam=0
+assume.addr0-is-null: vc null-uses=1
+seam.premises: assumed accesses=51 conditions=9
 ...
 result: unsat
 ```
 
-The assertion holds under the reported in-bounds assumption. This is a
-conditional result, not an independent proof that the accesses stay in
-bounds. To use it, retain the assumption with the verdict and check that
-it matches the claim your harness is intended to establish.
+The assertion holds under the reported assumptions. Here no rewrite used a
+pointer premise (`seam=0` on each `assume.a-*` line), so this `unsat` does
+not depend on them. When one is above 0, the result is conditional: it is
+not an independent proof that the accesses respect the premise. To use it,
+retain the assumption lines with the verdict and check that they match the
+claim your harness is intended to establish.
 
 ## What to read first
 
@@ -34,12 +40,17 @@ it matches the claim your harness is intended to establish.
    ([exit codes](../reference/output-formats.md#exit-codes)). For `sat`,
    require a failing replay with no validation mismatches before treating
    it as a counterexample ([Counterexamples](counterexamples.md)).
-2. **The assumptions.** `seam.inb: assumed accesses=51 conditions=9` says
-   that the `unsat` holds for executions in which those 51 memory
-   accesses stay inside their objects. For 9 of them the in-bounds
-   condition was not constant. The other assumption lines are
+2. **The assumptions.** `assume.a-sep`, `assume.a-null` and
+   `assume.a-nowrap` count the rewrites that rest on each pointer premise
+   (no cell accessed through two objects; no access through null or another
+   object of size 0; no address wraps). `seam.premises: assumed
+   accesses=51 conditions=9` says the premises were on for 51 memory
+   accesses; for 9 of them the in-bounds condition, which a bounds check
+   would check, was not constant. The other assumption lines are
    `assume.memset-bound` (a memset of symbolic length was bounded),
-   `seam.inb: off (fallback: ...)` (the assumption was dropped), and
+   `seam.premises: off (fallback: ...)` (the premises were dropped),
+   `seam.out-of-object:` (accesses that leave their object on every path
+   alternative: the `unsat` holds only if they do not execute) and
    `seam.ptrint` (`--ptr-companion=assume`). An `unsat` reported without
    its assumption lines is incomplete.
 3. **Warnings on stderr.** `Warning: ... [kind]` names handling that is
@@ -55,7 +66,7 @@ encoding statistics. These help diagnose a result or compare configurations:
 
 ```console
 $ sea-vc firedancer/hpack-huff-proof.mlir --lower --seam --widen-memory=4
-tool.version: sea-mlir 0.1.1 (...)
+tool.version: sea-mlir 0.2.0 (...)
 vc.typecheck-time: 0.001
 program: @main
 vc.ptr-mode: opaque
@@ -72,7 +83,7 @@ vc.ackermann: on
 vc.ackermann-arrays: 2
 ...
 vc.ackermann-constraints: 2
-seam.inb: assumed accesses=51 conditions=9
+seam.premises: assumed accesses=51 conditions=9
 solve-time: 0.424
 result: unsat
 ```
@@ -102,11 +113,11 @@ NKI gather proof:
 $ sea-vc nki/gather-hw-N4D3K2-all-good.mlir --lower --seam --seam-stats
 ...
 vc.ackermann-constraints: 0
-seam.inb: assumed accesses=40 conditions=8
+seam.premises: assumed accesses=40 conditions=8
 ...
 seam.rule.cmp.diff-base: 26
 ...
-seam.rule.premise.a-inb: 26
+seam.rule.premise.a-sep: 26
 ...
 seam.rule.row.mcopy-hit: 20
 seam.rule.row.mcopy-skip: 36
@@ -115,10 +126,10 @@ result: unsat
 ```
 
 `cmp.diff-base` decided 26 address comparisons between different objects,
-and `premise.a-inb` counts the 26 rewrites that relied on the in-bounds
-assumption to do so. A rule that never fired has no line. Without a
-`seam.rule.premise.a-inb` line, no rewrite of the run used the in-bounds
-assumption.
+and `premise.a-sep` counts the 26 rewrites that relied on the separation
+premise to do so (also printed as `assume.a-sep: seam=26`). A rule that
+never fired has no line. Without a `seam.rule.premise.a-*` line, no
+rewrite of the run used that premise.
 
 Counters are deterministic; times are not. Compare counters first when two
 configurations or two versions behave differently. `sea-reduce-test` can

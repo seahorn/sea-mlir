@@ -6,20 +6,20 @@
 // 0, the assume holds for p == b too, and the assertion fails: --seam answers
 // sat (exit 2: the replay disagrees). The answer is conditional on A-INB (not discharged): this program
 // violates it, so the sat is not a counterexample of the program and it does
-// not replay (assume-blocked). The test pins that: plain / --seam-inb=0 answer unsat,
-// --seam sat with `seam.inb: assumed` and a failed replay, which sea-vc
+// not replay (assume-blocked). The test pins that: plain / --seam-premises=0 answer unsat,
+// --seam sat with `seam.premises: assumed` and a failed replay, which sea-vc
 // explains: the abstract program, run with the model's inputs, leaves an
 // object (exit 4, vc.seam-inb-spurious), not a VC bug (exit 2).
 // RUN: bash -c 'sea-vc %s --lower --solver=z3 --seam > /dev/null 2>&1; test $? -eq 4'
 // RUN: sea-vc %s --lower --solver=z3 | FileCheck %s --check-prefix=PLAIN
 // RUN: %if yices %{ sea-vc %s --lower --solver=yices | FileCheck %s --check-prefix=PLAIN %}
-// RUN: sea-vc %s --lower --solver=z3 --seam --seam-inb=0 | FileCheck %s --check-prefix=NOINB
+// RUN: sea-vc %s --lower --solver=z3 --seam --seam-premises=0 | FileCheck %s --check-prefix=NOINB
 // RUN: not sea-vc %s --lower --solver=z3 --seam 2>&1 | FileCheck %s --check-prefix=SEAM
 // RUN: %if yices %{ not sea-vc %s --lower --solver=yices --seam 2>&1 | FileCheck %s --check-prefix=SEAM %}
 // PLAIN: result: unsat
-// NOINB: seam.inb: off
+// NOINB: seam.premises: off
 // NOINB: result: unsat
-// SEAM: seam.inb: assumed accesses={{[0-9]+}} conditions={{[1-9][0-9]*}}
+// SEAM: seam.premises: assumed accesses={{[0-9]+}} conditions={{[1-9][0-9]*}}
 // SEAM: result: sat
 // SEAM: replay: assume-blocked
 // SEAM: seam.inb-violation: memory access out of bounds: offset 16 in heap.1 of size 16

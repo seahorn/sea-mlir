@@ -37,7 +37,7 @@ otherwise.
 
 ```console
 $ sea-seam-export smap.mlir --lane=seam --firings | jq -c '{schema, lane, sea_vc, ainb, rewrite, roots: (.roots|length), firings: (.firings|length)}'
-{"schema":2,"lane":"seam","sea_vc":"sea-vc --seam","ainb":true,"rewrite":true,"roots":13,"firings":4}
+{"schema":3,"lane":"seam","sea_vc":"sea-vc --seam","ainb":true,"rewrite":true,"roots":13,"firings":4}
 $ sea-seam-export smap.mlir --lane=seam --firings | jq -c '.firings[0] | {id, rules, premises, op}'
 {"id":0,"rules":["smap.new"],"premises":[],"op":"store"}
 ```
@@ -55,35 +55,36 @@ empty when no `sea-vc` run builds them.
 
 | lane | `sea_vc` | what |
 |---|---|---|
-| `memory-rules0` (default) | | the `--seam --seam-wide` encoding with the memory rules, simplification, the layout decision and A-INB off; the pointer rules run at accesses |
-| `seam-wide-inb0-simplify0-layout0` (`--rewrite`) | `sea-vc --seam --seam-wide --seam-inb=0 --seam-simplify=0 --seam-layout=0` | memory rules on |
+| `memory-rules0` (default) | | the `--seam --seam-wide` encoding with the memory rules, simplification, the layout decision and the premises off; the pointer rules run at accesses |
+| `seam-wide-inb0-simplify0-layout0` (`--rewrite`) | `sea-vc --seam --seam-wide --seam-premises=0 --seam-simplify=0 --seam-layout=0` | memory rules on |
 | `raw-wide` | | the `--seam --seam-wide` encoding before any rule |
 | `raw` | | the `--seam` encoding (byte accesses) before any rule |
-| `seam-wide-inb0` | `sea-vc --seam --seam-wide --seam-inb=0` | |
-| `seam-inb0` | `sea-vc --seam --seam-inb=0` | |
-| `seam-wide` | `sea-vc --seam --seam-wide` | under A-INB (`"ainb": true`) |
-| `seam` | `sea-vc --seam` | under A-INB (`"ainb": true`) |
+| `seam-wide-inb0` | `sea-vc --seam --seam-wide --seam-premises=0` | |
+| `seam-inb0` | `sea-vc --seam --seam-premises=0` | |
+| `seam-wide` | `sea-vc --seam --seam-wide` | under the premises (`"ainb": true`) |
+| `seam` | `sea-vc --seam` | under the premises (`"ainb": true`) |
 | `plain` | `sea-vc` | no SeaM and no rewriter |
 | `simplify` | `sea-vc --simplify` | no SeaM; the bit-vector and Boolean rules only |
 
 - Lanes without wide accesses (`raw`, `seam-inb0`, `seam`, `plain`,
   `simplify`) refuse a multi-byte access; `sea-vc --lower` would split it.
-- An A-INB lane is an error when the program statically violates A-INB;
-  `sea-vc` would run again without the assumption.
+- A premise lane is an error when the program has a static out-of-object
+  access (its firings would rest on a premise the program may break;
+  `sea-vc` reports it and keeps the premises).
 - In `plain` and `simplify`, an object is its placed address, not a
   variable `obj.<name>`.
 
-## Format (schema 2)
+## Format (schema 3)
 
 One JSON object with sorted keys:
 
 | key | value |
 |---|---|
-| `schema` | `2`. Additions keep the number; an incompatible change increments it |
+| `schema` | `3` (2 before the premises were renamed: `premises` values, `sea_vc` flags). Additions keep the number; an incompatible change increments it |
 | `lane`, `sea_vc` | the lane and its `sea-vc` command |
 | `ptr_mode` | `address` or `opaque` |
 | `address_bits` | $N$ |
-| `ainb` | whether A-INB was used |
+| `ainb` | whether the premises A-SEP, A-NULL, A-NOWRAP were used (the key keeps its name) |
 | `rewrite` | whether the memory rules ran |
 | `roots` | `[{name, location, operation, term}]`: every integer, address and memory result, in program order |
 | `side` | `[term]`: the side conditions, such as the layout `addr(obj.<name>) = base` |
@@ -129,7 +130,7 @@ in order:
 |---|---|
 | `id` | the firing's number in the run |
 | `rules` | the rule, then the decisions it rests on |
-| `premises` | the premise kinds used: `A-INB`, `LAYOUT`, `ALIGN`, `PTR-INDEX` |
+| `premises` | the premise kinds used: `A-SEP`, `A-NULL`, `A-NOWRAP`, `LAYOUT`, `ALIGN`, `PTR-INDEX` |
 | `op` | `load`, `store`, `addr`, or `side` / `query` for the final normalization |
 | `loc`, `units` | the location and access size, when present |
 | `lhs`, `rhs` | raw terms; `lhs` is the term the rule was given |
@@ -146,6 +147,6 @@ unsatisfiable.
 ## Fail closed
 
 An operator, sort or width that the format has no node for, a program
-that is not straight-line, an unknown lane, and an A-INB violation in an
-A-INB lane are each an error (`[validation.export]`, exit status 1,
+that is not straight-line, an unknown lane, and a static out-of-object access in a
+premise lane are each an error (`[validation.export]`, exit status 1,
 nothing on stdout). Nothing is skipped or approximated.

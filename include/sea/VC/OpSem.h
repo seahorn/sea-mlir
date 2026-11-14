@@ -29,6 +29,7 @@
 
 #include "llvm/ADT/SmallVector.h"
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -261,12 +262,13 @@ public:
   void setTrailContext(llvm::StringRef kind);
   /// the premise under which the firing \p f must be valid
   /// (`premise => lhs = rhs`): true for a firing without premises; for one
-  /// that uses A-INB, the layout (obj.k = base for every object) and the
-  /// in-bounds condition of each access address the rule relies on (
+  /// that uses A-SEP, A-NULL or A-NOWRAP, the layout (obj.k = base for every
+  /// object) and the in-bounds condition (A-INB, which implies the three) of
+  /// each access address the rule relies on (
   /// Rules::accessAddresses, at the access size of the firing's context);
   /// for one that uses LAYOUT only (a shadow memory), the layout.
   /// Null if the premise cannot be expressed (\p why says why). This states
-  /// what the rule claims to rest on; it does not discharge A-INB.
+  /// what the rule claims to rest on; it does not discharge a premise.
   expr::Expr firingPremise(const expr::RewriteTrail &trail,
                            const expr::RewriteTrail::Firing &f,
                            std::string &why);
@@ -319,17 +321,24 @@ public:
   expr::Expr toBool(expr::Expr bv1);
   expr::Expr fromBool(expr::Expr b);
 
-  /// A-INB bookkeeping (with SeaM): the accesses seen, the ones with an
-  /// address leaf that is definitely out of its object (numeral offset), and
-  /// the distinct accesses whose in-bounds condition is not constant. A-INB
-  /// itself is assumed, not checked.
+  /// In-bounds bookkeeping (with SeaM; A-INB is the property that implies
+  /// the premises A-SEP, A-NULL, A-NOWRAP): the accesses seen, the ones with
+  /// no alternative inside their object (static out-of-object accesses), and
+  /// the distinct accesses whose in-bounds condition is not constant (what a
+  /// bounds check would have to discharge). Nothing here is asserted.
   unsigned inbAccessCount() const { return inbAccesses; }
   unsigned inbStaticViolationCount() const { return inbStaticViolations; }
   unsigned inbConditionCount() const { return inbSeen.size(); }
-  /// The first kInbViolationNotes definite violations, as `<file:line:col>
-  /// <kind>: <reason>` (sea-vc prints them with vc.seam-inb-violated).
+  /// The static out-of-object accesses by where they land (seam::Landing),
+  /// classified pairwise over all of them (classifyOutOfObject): ask after
+  /// the encoding.
+  unsigned outOfObjectCount(expr::seam::Landing l);
+  /// The first kInbViolationNotes static out-of-object accesses, as
+  /// `<file:line:col> <kind>: <reason> lands=<class>[ with=<file:line:col>]`
+  /// (with: the access of another provenance a `shared` one meets; sea-vc
+  /// prints them as seam.out-of-object-at). Ask after the encoding.
   static constexpr unsigned kInbViolationNotes = 8;
-  const std::vector<std::string> &inbViolationNotes() const { return inbNotes; }
+  std::vector<std::string> inbViolationNotes();
   /// The SeaM rewriter (null without --seam).
   expr::SeaMRewriter *seamRewriter() { return seamRw.get(); }
   /// Positions in the side conditions of the sea.assume facts (the
@@ -384,11 +393,25 @@ private:
   /// registers a shadow memory start (BaseRegistry::addShadowRoot)
   void addShadowRoot(expr::Expr start);
   unsigned inbAccesses = 0, inbStaticViolations = 0;
-  std::vector<std::string> inbNotes;
-  /// counts a definite A-INB violation; notes the first ones (\p loc, the
-  /// access \p kind, the reason)
+  /// one static out-of-object access
+  struct OutOfObject {
+    std::string loc, kind;
+    std::string reason; ///< the first kInbViolationNotes only
+    bool write;         ///< not a load (a memmove's source counts as one)
+    expr::seam::OutOfObjectSpans spans;
+    expr::seam::Landing landing = expr::seam::Landing::Gap;
+    std::string with; ///< Shared: the location of the other access
+  };
+  std::vector<OutOfObject> oob;
+  bool oobClassified = false;
+  /// records a static out-of-object access (a definite A-INB violation)
+  /// with its placement facts \p spans (\p loc, the access \p kind, the
+  /// reason for the first ones)
   void noteInbViolation(mlir::Location loc, llvm::StringRef kind,
+                        expr::seam::OutOfObjectSpans spans,
                         llvm::function_ref<std::string()> reason);
+  /// the pairwise step: each access's Landing (seam::Landing)
+  void classifyOutOfObject();
   expr::ExprSet inbSeen;
   std::vector<size_t> assumeSides;
   /// sea.ptr.index (docs/design/PtrIndex.md): with

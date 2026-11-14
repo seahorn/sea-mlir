@@ -1,7 +1,7 @@
 // R-ABORT decides its entries with cmp.diff-base (A-INB): idx = ite(c, q, o+5)
 // has no pointer view; every entry o+0, o+1 is decided No, one leaf by A-INB.
 // RUN: sea-vc %s --lower --seam --seam-stats | FileCheck %s --check-prefix=STATS
-// RUN: sea-vc %s --lower --seam --seam-inb=0 --seam-stats | FileCheck %s --check-prefix=NOINB
+// RUN: sea-vc %s --lower --seam --seam-premises=0 --seam-stats | FileCheck %s --check-prefix=NOINB
 // RUN: sea-vc %s --lower --seam --seam-store-map=0 | FileCheck %s --check-prefix=VERDICT
 // RUN: sea-vc %s --lower | FileCheck %s --check-prefix=VERDICT
 // VERDICT: result: unsat

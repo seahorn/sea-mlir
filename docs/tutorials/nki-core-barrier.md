@@ -187,7 +187,7 @@ as an explicit assumption that the run reports.
   zero/zero pair above. A check that compares the written values would
   remove those reports; it is not implemented.
 - **Assumptions are part of the result.** The kernel trace assumes distinct,
-  in-range token indices. Address reasoning carries the same A-INB assumption
+  in-range token indices. Address reasoning carries the same pointer premises
   as the data-movement proofs. The run reports the assumptions.
 - **The model is the barrier structure, not the hardware.** The check shows
   whether barriers order the conflicting accesses. It does not model DMA

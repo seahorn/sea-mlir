@@ -38,10 +38,10 @@ recorded and reused:
 
 ```console
 $ sea-vc firedancer/step-mut-bounds-1.mlir --config=./fd-reasm.cfg --timeout=900 --mem-limit=16
-tool.version: sea-mlir 0.1.1 (...)
+tool.version: sea-mlir 0.2.0 (...)
 vc.config: .../fd-reasm.cfg
 ...
-seam.inb: assumed accesses=152 conditions=66
+seam.premises: assumed accesses=152 conditions=66
 ...
 result: sat
 ```
@@ -65,7 +65,7 @@ not recommended defaults. Syntax, lookup and errors are on the
 | `--solver=yices`, `--solver=bitwuzla` | z3 is the supported solver, but the fastest solver differs per workload. Try another before calling a job hard. |
 | `--seam-stats` | rule counters; the first thing to compare between two configurations |
 | `--vcgen-only` | query statistics without solving |
-| `--seam-inb=0` | SeaM without the in-bounds assumption, for measurement. It is slower, and it is not a way to discharge the assumption. |
+| `--seam-premises=0` | SeaM without the pointer premises (A-SEP, A-NULL, A-NOWRAP), for measurement. It is slower, and it is not a way to discharge them. |
 | `--seam-check` | checks every SeaM rewrite against its premises with the solver; an invalid rewrite gives exit status 5 |
 | `--check-align`, `--check-ptr-index` | separate jobs that assert every trusted `align` or pointer-arithmetic promise of the front end |
 | `--print-refs=strong` | keep every printed value alive through the lowering |

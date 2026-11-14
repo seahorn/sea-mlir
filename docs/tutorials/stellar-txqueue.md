@@ -385,6 +385,9 @@ SeaM uses the explicit A-INB premise that accesses stay within their live
 objects. The study does not discharge that premise universally or prove
 ownership and memory safety. The production-admission seed job completed
 after SeaM fell back without A-INB; the other 25 symbolic jobs used it.
+These runs predate 0.2.0. Since then SeaM's premises are A-SEP, A-NULL and
+A-NOWRAP, which A-INB implies, and a static out-of-object access is reported
+instead of turning them off ([what a verdict rests on](../reference/limitations.md)).
 
 ### Proof jobs, completion witnesses and mutations
 

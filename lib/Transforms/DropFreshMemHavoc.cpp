@@ -30,14 +30,15 @@
 //     after sea_tracking_on and expects them unmodified, as SeaHorn, whose
 //     memhavoc writes nothing).
 //   Produces: no memhavoc on a fresh object (by the rule above); the others
-//     unchanged. Premise A-INB: a drop is sound only if no access of
-//     another object lands in this one (after placement, objects share one
-//     memory) and the memhavoc stays in its object. The drops that rest
-//     on it (the chain passed an update, or the memhavoc's range is not
-//     provably in its object) are counted on the program
-//     (kDropFreshInbAttr); sea-vc reports them (assume.a-inb), also with
-//     --seam-inb=0. A separate memory-safety check of the program would
-//     discharge A-INB.
+//     unchanged. Premise A-SEP (no cell accessed through two provenances):
+//     a drop is sound only if no access through another object touches a
+//     cell this one's accesses touch (after placement, objects share one
+//     memory), the memhavoc's own range included. The drops that rest on it
+//     (the chain passed an update, or the memhavoc's range is not provably
+//     in its object) are counted on the program (kDropFreshInbAttr); sea-vc
+//     reports them (assume.a-sep), also with --seam-premises=0. A separate
+//     memory-safety (bounds) check of the program discharges A-INB, which
+//     implies A-SEP.
 //
 //===----------------------------------------------------------------------===//
 
@@ -274,12 +275,13 @@ void DropFreshMemHavocPass::runOnOperation() {
     }
     if (!allFresh)
       continue;
-    // A-INB: the drop is sound only if no access lands in the object from
-    // outside: an update the walk passed (another object's, or one before
-    // the allocation) must stay in its object, and so must the memhavoc
-    // itself (else it changed a neighbor). After placement objects share
-    // one memory. With no update and the range in the object, the
-    // object's cells are the initial memory's: unconstrained already.
+    // A-SEP: the drop is sound only if no access through another provenance
+    // touches the object's cells: an update the walk passed (another
+    // object's, or one before the allocation) must not, and the memhavoc's
+    // cells outside its object (if any) are touched by no other provenance.
+    // After placement objects share one memory. With no update and the range in
+    // the object, the object's cells are the initial memory's: unconstrained
+    // already.
     if (hasUpdate(op.getMem()) || !rangeInObject(op))
       ++inbDrops;
     op.getResult().replaceAllUsesWith(op.getMem());

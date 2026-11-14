@@ -25,7 +25,7 @@
 // RUN: sea-vc %s --lower --program=sub --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --program=cross --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // CHECK-NOT: seam.alias.open
-// CROSS: seam.rule.premise.a-inb: {{[1-9]}}
+// CROSS: seam.rule.premise.a-sep: {{[1-9]}}
 // CHECK-NOT: seam.rule.wide.expand-write
 // MIXED: seam.rule.wide.ite-leaf-hit: 2
 // MIXED: seam.rule.wide.ite-leaf-skip: 2

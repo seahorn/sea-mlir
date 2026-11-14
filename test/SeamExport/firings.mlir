@@ -14,9 +14,9 @@
 // RUN: not sea-seam-export %s --lane=raw --firings 2>&1 | FileCheck %s --check-prefix=NORULES
 // Without --firings: no firing keys.
 // RUN: sea-seam-export %s --lane=seam | FileCheck %s --check-prefix=OFF
-// INB: header: schema=2 lane={{seam|seam-wide}} sea_vc='sea-vc --seam{{( --seam-wide)?}}' ainb=true
-// NOINB: header: schema=2 lane=seam-wide-inb0 sea_vc='sea-vc --seam --seam-wide --seam-inb=0' ainb=false
-// INB: firing 0 rules=row.store-skip,cmp.diff-base premises=A-INB op=load units=1
+// INB: header: schema=3 lane={{seam|seam-wide}} sea_vc='sea-vc --seam{{( --seam-wide)?}}' ainb=true
+// NOINB: header: schema=3 lane=seam-wide-inb0 sea_vc='sea-vc --seam --seam-wide --seam-premises=0' ainb=false
+// INB: firing 0 rules=row.store-skip,cmp.diff-base premises=A-SEP op=load units=1
 // INB-NEXT: lhs: select(store(store(constMem(0), obj.a, toBits(fromBits(nd.0_0))), index(obj.b, nd.1_0*1, c=0, K=0, plain), 5), obj.a)
 // INB-NEXT: rhs: select(store(constMem(0), obj.a, toBits(fromBits(nd.0_0))), obj.a)
 // INB-NEXT: premise: and(eq(addr(obj.a), 16), eq(addr(obj.b), 32), true, ule(nd.1_0, 3))

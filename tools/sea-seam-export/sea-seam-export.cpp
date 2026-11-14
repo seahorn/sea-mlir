@@ -49,11 +49,14 @@ struct Lane {
 const Lane kLanes[] = {
     {"memory-rules0", "",
      "the --seam --seam-wide encoding with the memory rules, simplification, "
-     "the layout decision and A-INB off; the pointer rules run (default)",
+     "the layout decision and the premises off; the pointer rules run "
+     "(default)",
      true, true, false, false, false, true, false},
     {"seam-wide-inb0-simplify0-layout0",
-     "sea-vc --seam --seam-wide --seam-inb=0 --seam-simplify=0 --seam-layout=0",
-     "SeaM with the memory rules, no A-INB, no simplification (--rewrite)",
+     "sea-vc --seam --seam-wide --seam-premises=0 --seam-simplify=0 "
+     "--seam-layout=0",
+     "SeaM with the memory rules, no premises, no simplification "
+     "(--rewrite)",
      true, true, false, false, true, true, false},
     {"raw-wide", "",
      "the --seam --seam-wide encoding before any rule: terms as OpSem builds "
@@ -61,22 +64,23 @@ const Lane kLanes[] = {
      true, true, false, false, false, false, false},
     {"raw", "", "the --seam encoding (byte accesses) before any rule", true,
      false, false, false, false, false, false},
-    {"seam-wide-inb0", "sea-vc --seam --seam-wide --seam-inb=0",
-     "SeaM, wide accesses, no A-INB, simplification on", true, true, false,
+    {"seam-wide-inb0", "sea-vc --seam --seam-wide --seam-premises=0",
+     "SeaM, wide accesses, no premises, simplification on", true, true, false,
      true, true, true, true},
-    {"seam-inb0-pull-concat", "sea-vc --seam --seam-inb=0 --seam-pull-concat=4",
+    {"seam-inb0-pull-concat",
+     "sea-vc --seam --seam-premises=0 --seam-pull-concat=4",
      "seam-inb0 with split (byte) pointer loads resolved: at most 4 pulls "
      "per load (ptr.load-resolve-concat)",
      true, false, false, true, true, true, true, 4},
-    {"seam-inb0", "sea-vc --seam --seam-inb=0",
-     "SeaM, byte accesses, no A-INB, simplification on", true, false, false,
+    {"seam-inb0", "sea-vc --seam --seam-premises=0",
+     "SeaM, byte accesses, no premises, simplification on", true, false, false,
      true, true, true, true},
     {"seam-wide", "sea-vc --seam --seam-wide",
-     "SeaM, wide accesses, under A-INB (ainb: true)", true, true, true, true,
-     true, true, true},
+     "SeaM, wide accesses, under the premises (ainb: true)", true, true, true,
+     true, true, true, true},
     {"seam", "sea-vc --seam",
-     "SeaM as sea-vc --seam runs it, under A-INB (ainb: true)", true, false,
-     true, true, true, true, true},
+     "SeaM as sea-vc --seam runs it, under the premises (ainb: true)", true,
+     false, true, true, true, true, true},
     {"plain", "sea-vc",
      "no SeaM, no rewriter: the boundary is PtrIndexExpander's arithmetic",
      false, false, false, false, false, false, false},
@@ -143,18 +147,18 @@ Pointer mode: address if the program has sea.addr.from_int, else opaque
 LANES (--lane=<name>; then the sea-vc command whose VC terms the lane
 builds, the "sea_vc" key; "-": no sea-vc run builds them):
   memory-rules0 (default)  -  SeaM wide encoding, memory rules /
-        simplification / layout decision / A-INB off; pointer rules run
+        simplification / layout decision / premises off; pointer rules run
   seam-wide-inb0-simplify0-layout0 (= --rewrite)
-        sea-vc --seam --seam-wide --seam-inb=0 --seam-simplify=0 --seam-layout=0
+        sea-vc --seam --seam-wide --seam-premises=0 --seam-simplify=0 --seam-layout=0
   raw-wide   -  the --seam --seam-wide encoding before any rule
   raw        -  the --seam encoding (byte accesses) before any rule
-  seam-wide-inb0   sea-vc --seam --seam-wide --seam-inb=0
-  seam-inb0        sea-vc --seam --seam-inb=0
+  seam-wide-inb0   sea-vc --seam --seam-wide --seam-premises=0
+  seam-inb0        sea-vc --seam --seam-premises=0
   seam-inb0-pull-concat
-        sea-vc --seam --seam-inb=0 --seam-pull-concat=4 (split pointer
+        sea-vc --seam --seam-premises=0 --seam-pull-concat=4 (split pointer
         loads resolved; the lane where ptr.load-resolve-concat can fire)
-  seam-wide        sea-vc --seam --seam-wide   (A-INB: "ainb": true)
-  seam             sea-vc --seam               (A-INB: "ainb": true)
+  seam-wide        sea-vc --seam --seam-wide   (premises: "ainb": true)
+  seam             sea-vc --seam               (premises: "ainb": true)
   plain            sea-vc (no --seam): boundary = PtrIndexExpander
   simplify         sea-vc --simplify (bit-vector rules only)
 Lanes without wide accesses (raw, seam-inb0, seam-inb0-pull-concat, seam,
@@ -162,16 +166,19 @@ plain, simplify) refuse
 a multi-byte access (vc.wide-access): sea-vc --lower would split it.
 Lanes with simplification also normalize the roots, probes and side
 conditions with SeaOpSem::simplify, as sea-vc normalizes its query.
-An A-INB lane whose program statically violates A-INB is an error (sea-vc
-would rerun without A-INB).
+A premise lane ("ainb": true; the key keeps its name: the premises A-SEP,
+A-NULL, A-NOWRAP are on, all implied by A-INB) whose program has a static
+out-of-object access is an error (sea-vc reports it and keeps the
+premises; the firings would rest on a premise the program may break).
 
 OPTIONS: --lane=<name>, --rewrite (old name of the second lane),
 --firings (rule firings; needs a lane with rules), --address-bits=<n>
 (default 8), --version, --help.
 
-OUTPUT (stdout, one JSON document, schema 2; keys sorted):
-  schema 2 | lane | sea_vc (command, "" if none) | ptr_mode address|opaque
-  address_bits | ainb (A-INB used) | rewrite (memory rules on)
+OUTPUT (stdout, one JSON document, schema 3; keys sorted):
+  schema 3 | lane | sea_vc (command, "" if none) | ptr_mode address|opaque
+  address_bits | ainb (the premises A-SEP, A-NULL, A-NOWRAP used) |
+  rewrite (memory rules on)
   roots: [{name, location, operation, term}]  every iN / addr / memory result
   side: [term]          side conditions (layout equations obj = base, ...)
   sources: [{site, term} | {fixed, term}]  nondet / mem.nondet / memhavoc
@@ -189,7 +196,8 @@ an incompatible change bumps schema.
 FIRINGS (--firings; the rewrite trail, include/sea/Expr/RewriteTrail.hh):
 one record per rule call that changed its term, in order. rules: the rule
 and the decisions it rests on (row.store-skip,cmp.diff-base); premises:
-kinds used (A-INB, LAYOUT, ALIGN, PTR-INDEX); op: load|store|addr (the
+kinds used (A-SEP, A-NULL, A-NOWRAP, LAYOUT, ALIGN, PTR-INDEX); op:
+load|store|addr (the
 VC operation; loc, units = access size) or side|query (the final
 normalization); lhs (kids already rewritten) and rhs as raw terms;
 premise: SeaOpSem::firingPremise, the statement sea-vc --seam-check
@@ -464,7 +472,7 @@ int main(int argc, char **argv) {
   ExprFactory ef;
   sea::ValueNames names(p);
   expr::SeaMOptions opts;
-  opts.assumeInBounds = lane->inb;
+  opts.assumePremises = lane->inb;
   opts.memoryRules = lane->memoryRules;
   opts.simplify = lane->simplify;
   opts.wideAccess = lane->wide;
@@ -489,8 +497,8 @@ int main(int argc, char **argv) {
   if (failed(sem.exec(body, ctx)))
     return 1;
   if (lane->inb && sem.inbStaticViolationCount())
-    fail("the program statically violates A-INB (sea-vc would rerun "
-         "without it): use an inb0 lane");
+    fail("the program has a static out-of-object access (the premises "
+         "may not hold): use an inb0 lane");
   // the final normalization, as sea-vc runs it: side conditions, then the
   // registers (the query); identity without simplification
   if (sem.simplifies()) {
@@ -566,7 +574,7 @@ int main(int argc, char **argv) {
     erasedConditions.push_back(erasedEx.term(sem.solverTerm(e)));
   }
 
-  llvm::json::Object doc{{"schema", 2},
+  llvm::json::Object doc{{"schema", 3},
                          {"lane", lane->name},
                          {"sea_vc", lane->seaVc},
                          {"ptr_mode", addressMode ? "address" : "opaque"},

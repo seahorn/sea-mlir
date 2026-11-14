@@ -327,6 +327,11 @@ struct RuleRun {
     return rw.rewrite(t);
   }
   uint64_t get(const char *k) const { return rw.stats().get(k); }
+  /// the rewrites that rest on a named premise (A-SEP, A-NULL, A-NOWRAP)
+  uint64_t premises() const {
+    return get("premise.a-sep") + get("premise.a-null") +
+           get("premise.a-nowrap");
+  }
 };
 
 /// The premises a firing at select(T, j) states for A-INB (as firingPremise):
@@ -349,7 +354,7 @@ void testRules() {
     Expr t = mcopy(F.Md, F.Ms, F.add(F.oa, F.x), F.s, F.n);
     Expr j = F.add(F.ob, F.k);
     Expr r = R.read(t, j);
-    CHECK(R.get("row.mcopy-skip") == 1 && R.get("premise.a-inb") == 1,
+    CHECK(R.get("row.mcopy-skip") == 1 && R.get("premise.a-sep") == 1,
           "cross-object skip: " << str(r));
     CHECK(countOp<MEM_COPY>(r) == 0, "skip leaves the term");
     ExprVector prem = inbPremise(F, R.rw, t, j);
@@ -378,7 +383,7 @@ void testRules() {
     Expr t = mcopy(F.Md, F.Ms, F.add(F.oa, F.x), F.s, F.n);
     Expr r = R.read(t, j);
     CHECK(R.get("row.mcopy-skip") == 1 && R.get("arm.skip-diff-base") == 1 &&
-              R.get("premise.a-inb") == 1,
+              R.get("premise.a-sep") == 1,
           "ARM cross-object skip: " << str(r));
     ExprVector prem = inbPremise(F, R.rw, t, R.rewrite(j));
     CHECK(F.satisfiable(prem), "ARM skip premise satisfiable");
@@ -387,7 +392,7 @@ void testRules() {
   // no A-INB: no cross-object skip, the read stays exact
   {
     SeaMOptions o;
-    o.assumeInBounds = false;
+    o.assumePremises = false;
     RuleRun R(F, o);
     Expr t = mcopy(F.Md, F.Ms, F.add(F.oa, F.x), F.s, F.n);
     Expr j = F.add(F.ob, F.k);
@@ -403,7 +408,7 @@ void testRules() {
     Expr hit = R.read(t, F.at(F.oa, 2));
     Expr skip = R.read(t, F.at(F.oa, 3));
     CHECK(hit == F.v && R.get("row.mset-hit") == 1, "numeral hit");
-    CHECK(R.get("row.mset-skip") == 1 && R.get("premise.a-inb") == 0,
+    CHECK(R.get("row.mset-skip") == 1 && R.premises() == 0,
           "numeral skip, no premise");
     CHECK(F.equivalent(F.ref(t, F.at(F.oa, 3)), skip), "skip exact");
   }
@@ -436,7 +441,7 @@ void testRules() {
     Expr j = F.add(F.oa, mk<ITE>(F.c, F.num(1), F.num(2)));
     Expr t = op::array::memSet(F.Md, F.at(F.oa, 3), F.num(2), F.v);
     Expr r = R.read(t, j);
-    CHECK(countOp<MEM_SET>(r) == 0 && R.get("premise.a-inb") == 0,
+    CHECK(countOp<MEM_SET>(r) == 0 && R.premises() == 0,
           "ite index decided: " << str(r));
     CHECK(F.equivalent(F.ref(t, j), r), "ite index exact");
     Expr e = op::array::memSet(F.Md, F.d, F.num(0), F.v);
@@ -490,7 +495,7 @@ void testNull() {
     Expr j = F.add(F.ob, F.k);
     Expr r = R.read(t, j);
     CHECK(R.get("row.mset-skip") == 1 && R.get("cmp.size0-vacuous") == 1 &&
-              R.get("premise.a-inb") == 1,
+              R.get("premise.a-sep") == 1,
           "null destination: vacuous skip: " << str(r));
     ExprVector prem = inbPremise(F, R.rw, t, j);
     CHECK(F.satisfiable(prem), "null destination: premise satisfiable");
@@ -537,8 +542,7 @@ void testNull() {
     RuleRun R(F);
     Expr t = op::array::memSet(F.Md, F.add(F.on, F.x), F.num(0), F.v);
     Expr r = R.read(t, F.j);
-    CHECK(r == F.sel(F.Md, F.j) && R.get("mem.empty") == 1 &&
-              R.get("premise.a-inb") == 0,
+    CHECK(r == F.sel(F.Md, F.j) && R.get("mem.empty") == 1 && R.premises() == 0,
           "n = 0 through null: mem.empty");
     bool vio = false;
     CHECK(isOpX<TRUE>(
@@ -562,7 +566,7 @@ void testNull() {
   // without A-INB: nothing is vacuous, the read stays exact
   {
     SeaMOptions o;
-    o.assumeInBounds = false;
+    o.assumePremises = false;
     RuleRun R(F, o);
     Expr t = op::array::memSet(F.Md, F.add(F.on, F.x), F.n, F.v);
     Expr j = F.add(F.ob, F.k);
@@ -604,7 +608,7 @@ void testPruneSize0() {
     Expr r = R.rewrite(t);
     CHECK(r == op::array::memSet(F.Md, ax, F.n, F.v) &&
               R.get("addr.prune-size0-range") == 1 &&
-              R.get("premise.a-inb") == 1,
+              R.get("premise.a-null") == 1,
           "mixed destination: pruned: " << str(r));
     ExprVector prem = premise(R.rw, t);
     CHECK(prem.size() == F.layout.size() + 1, "mixed destination: one range");
@@ -707,7 +711,7 @@ void testPruneSize0() {
   // without A-INB, or with the option off: nothing pruned
   {
     SeaMOptions o;
-    o.assumeInBounds = false;
+    o.assumePremises = false;
     RuleRun R(F, o);
     Expr t = op::array::memSet(F.Md, mixed, F.n, F.v);
     CHECK(R.rewrite(t) == t, "no A-INB: range kept");
@@ -777,7 +781,7 @@ void testWide() {
     Expr t = wselect(wstore(F.Md, F.oa, v32), F.at(F.oa, 4), bv16);
     auto [r, st] = run(t);
     CHECK(r == wselect(F.Md, F.at(F.oa, 4), bv16) && st.get("wide.skip") == 1 &&
-              st.get("premise.a-inb") == 0,
+              st.get("premise.a-sep") + st.get("premise.a-null") == 0,
           "w-skip numerals, no premise: " << str(r));
     CHECK(F.equivalent(t, r), "w-skip numerals exact");
   }
@@ -798,7 +802,7 @@ void testWide() {
     RuleRun R(F);
     Expr r = R.rewrite(t);
     CHECK(r == wselect(F.Md, rb, bv16) && R.get("wide.skip") == 1 &&
-              R.get("premise.a-inb") == 1,
+              R.get("premise.a-sep") == 1,
           "w-skip across objects: " << str(r));
     ExprVector prem = F.layout;
     prem.push_back(spanPrem(R.rw, wa, 4));
@@ -813,7 +817,7 @@ void testWide() {
     weak.push_back(spanPrem(R.rw, rb, 2));
     CHECK(!F.equivalent(t, r, weak), "the writer's span premise is needed");
     SeaMOptions o;
-    o.assumeInBounds = false;
+    o.assumePremises = false;
     auto [r2, st2] = run(t, o);
     CHECK(st2.get("wide.skip") == 0 && st2.get("wide.split-read") == 1 &&
               F.equivalent(t, r2),
@@ -933,11 +937,11 @@ void testWideCongruent() {
   {
     Expr t = wselect(wstore(F.Md, i, v32), j, bv32);
     SeaMOptions o;
-    o.assumeInBounds = false; // exact: no assumption needed
+    o.assumePremises = false; // exact: no assumption needed
     RuleRun R(F, o);
     Expr r = R.rewrite(t);
     CHECK(R.get("wide.row-congruent") == 1 && R.get("wide.split-read") == 0 &&
-              R.get("premise.a-inb") == 0,
+              R.premises() == 0,
           "congruent starts: one word compare: " << str(r));
     CHECK(F.equivalent(t, r), "congruent: exact without premises");
   }
@@ -977,7 +981,7 @@ void testWideAligned() {
   Expr i = F.add(F.oa, F.x), j = F.add(F.ob, F.k); // no linear relation
   // (different objects would skip under A-INB: turn A-INB off to isolate)
   SeaMOptions o;
-  o.assumeInBounds = false;
+  o.assumePremises = false;
   {
     Expr t = wselect(wstore(F.Md, i, v32, 4), j, bv32, 4);
     RuleRun R(F, o);
@@ -1028,7 +1032,7 @@ void testWideByteIn() {
   Expr v32 = op::bv::bvConst(mkTerm<std::string>("b32", F.efac), 32);
   Expr v64 = op::bv::bvConst(mkTerm<std::string>("b64", F.efac), 64);
   SeaMOptions o;
-  o.assumeInBounds = false;
+  o.assumePremises = false;
   // one object at symbolic offsets (where the byte rules decide nothing)
   for (Expr v : {v32, v64}) {
     Expr t =

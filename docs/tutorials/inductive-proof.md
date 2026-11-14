@@ -98,7 +98,8 @@ requires additional work.
   map's own operations are a separate obligation.
 - **Valid keys.** Preparing a slot for a new stream inserts a valid key
   into the map (assumption E-KEY in the harness).
-- **In-bounds accesses** for the jobs that report `seam.inb: assumed`.
+- **The pointer premises** (A-SEP, A-NULL, A-NOWRAP; a bounds check
+  discharges them) for the jobs whose `assume.a-*` lines count rewrites.
   `step-inv-cancel` above does not rely on it.
 - **The base case**, checked natively.
 - **The pointer analysis of the export.** The invariant constrains a
@@ -161,29 +162,31 @@ The invariant after a cancel:
 
 ```console
 $ sea-vc firedancer/step-inv-cancel.mlir --lower --seam --widen-memory=4
-Warning: an access leaves its object (7 access(es) with no alternative inside its object: a numeral offset or an offset range wholly outside it, or an object of size 0 such as null): --seam's A-INB does not hold; running without it [vc.seam-inb-violated]
-tool.version: sea-mlir 0.1.1 (...)
+Warning: assume of constant false: the rest of the block cannot execute (folded to sea.unreachable); ... at loc("firedancer/harness/reasm_inv.h":91:10) [fold.assume-false]
+tool.version: sea-mlir 0.2.0 (...)
 ...
-vc.seam-inb-violated: at .../reasm_inv.h:92:7 load: numeral offset outside: offset 5 + 1 unit(s) > size 5 of object global.in_map
+assume.a-sep: seam=0
+assume.a-null: seam=0
+assume.a-nowrap: seam=0
 ...
-vc.seam-inb-violated: at .../reasm_inv.h:19:16 load: numeral offset outside: offset 304 + 4 unit(s) > size 304 of object global.ws
-...
-vc.seam-inb-violated-count: 7
-...
-vc.ackermann-constraints: 2252
-seam.inb: off (fallback: an access leaves its object)
-solve-time: 5.889
+seam.premises: assumed accesses=230 conditions=83
+solve-time: 9.134
 result: unsat
 ```
 
-This run shows a safeguard at work. The invariant loops over the 5 slots
-(`SLOT_CNT`), but SeaHorn unrolls every loop to the bound 8. Iterations 5
-to 7 are infeasible, yet they contain accesses past the end of `in_map`
-and `ws` at constant offsets. SeaM finds accesses that cannot be inside
-their object, so it does not assume that accesses stay in bounds, and runs
-again without that assumption (`seam.inb: off`). This `unsat` therefore
-rests on no in-bounds assumption. The report names the accesses; it cannot
-tell that their path is infeasible.
+The invariant loops over the 5 slots (`SLOT_CNT`), but SeaHorn unrolls
+every loop to the bound 8. Iterations 5 to 7 are infeasible: the lowering
+folds them away at the loop's exit test (`fold.assume-false`). No rewrite
+used a pointer premise (`seam=0` on each `assume.a-*` line), so this
+`unsat` rests on none.
+
+Before that fold, those iterations held accesses past the end of `in_map`
+and `ws` at constant offsets. An access that cannot be inside its object
+is reported (warning `vc.seam-out-of-object`, `seam.out-of-object:` with
+where each lands) and the premises stay: the `unsat` then holds only if
+those accesses do not execute. The report names the accesses; it cannot
+tell that their path is infeasible. (Before 0.2.0, sea-vc ran again
+without the assumption; `--seam-out-of-object=fallback` still does.)
 
 ### A mutant
 
@@ -194,7 +197,7 @@ checks the frame claim C4 alone:
 ```console
 $ sea-vc firedancer/step-mut-bounds-1.mlir --lower --seam --widen-memory=4
 ...
-seam.inb: assumed accesses=152 conditions=66
+seam.premises: assumed accesses=152 conditions=66
 solve-time: 0.896
 result: sat
 ...

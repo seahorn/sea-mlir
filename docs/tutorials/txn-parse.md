@@ -139,7 +139,7 @@ $ sea-vc firedancer/txn-pf-v1-mut-read.mlir --lower --seam --widen-memory=4
 vc-time: 0.614
 ...
 vc.ackermann-constraints: 12563
-seam.inb: assumed accesses=652 conditions=479
+seam.premises: assumed accesses=652 conditions=479
 solve-time: 79.656
 result: sat
 ...

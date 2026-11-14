@@ -16,7 +16,7 @@
 //    ROW step may use: a program compare of pointers into different objects is
 //    never decided, and an object of size 0 never counts as different): with
 //    the assumption switched off
-//    (SeaMOptions::assumeInBounds = false) cmp.diff-base does not fire and the
+//    (SeaMOptions::assumePremises = false) cmp.diff-base does not fire and the
 //    result is equivalent to the input with no assumption at all.
 // A seeded random test rewrites many small memory terms over three objects and
 // checks the same, plus that the result is a normal form (rewriting it again
@@ -239,7 +239,7 @@ struct Fixture {
     if (!usesInb)
       return;
     SeaMOptions noInb = P1();
-    noInb.assumeInBounds = false;
+    noInb.assumePremises = false;
     RewriteStats st2;
     Expr out2 = rewrite(in, noInb, st2);
     CHECK(st2.get("cmp.diff-base") == 0,
@@ -582,7 +582,7 @@ void testRow() {
   {
     // with A-INB off: ROW with the compare kept
     SeaMOptions off = P1();
-    off.assumeInBounds = false;
+    off.assumePremises = false;
     Expr e = F.sel(F.st(F.m, F.add({F.o1, F.x}), v), F.add({F.o2, F.y}));
     RewriteStats st;
     Expr out = F.rewrite(e, off, st);
@@ -619,7 +619,7 @@ void testRow() {
     CHECK(isOpX<FALSE>(rw.rules().inBounds(F.o0, 1, violated)) && violated,
           "size-0: the read is a definite violation");
     SeaMOptions noInb = P1();
-    noInb.assumeInBounds = false;
+    noInb.assumePremises = false;
     RewriteStats st2;
     Expr out2 = F.rewrite(in, noInb, st2);
     CHECK(out2 == mk<ITE>(F.ov(F.o3, F.o0), v, F.sel(F.m, F.o0)) &&
@@ -755,7 +755,7 @@ void testArm() {
     CHECK(F.equivalent(in, out, true), "arm off: unsound");
     // A-INB off: different bases are not separated; ARM never uses A-INB then
     SeaMOptions noInb = P1();
-    noInb.assumeInBounds = false;
+    noInb.assumePremises = false;
     RewriteStats st2;
     Expr out2 = run(in, noInb, st2);
     CHECK(st2.get("arm.skip") == 0 && st2.get("cmp.diff-base") == 0 &&
@@ -793,7 +793,7 @@ void testArm() {
     Expr in = F.sel(F.st(F.m, s1, v), F.add({F.o1, F.num(100)}));
     for (bool inb : {true, false}) {
       SeaMOptions o = P1();
-      o.assumeInBounds = inb;
+      o.assumePremises = inb;
       RewriteStats st;
       Expr out = run(in, o, st);
       CHECK(out == F.sel(F.m, F.add({F.o1, F.num(100)})),
@@ -867,7 +867,7 @@ void testArm() {
             "size-0: unsound under the premise");
     }
     SeaMOptions noInb = P1();
-    noInb.assumeInBounds = false;
+    noInb.assumePremises = false;
     RewriteStats st2;
     Expr out2 = run(in, noInb, st2);
     CHECK(st2.get("arm.skip") == 0, "size-0 object: no ARM skip without A-INB");
@@ -1006,17 +1006,17 @@ void testNull() {
     Expr out = F.rewrite(in, noPrune, st);
     CHECK(out == F.sel(F.m, idx), "mixed null read: skip: " << str(out));
     CHECK(st.get("cmp.size0-vacuous") > 0 && st.get("cmp.diff-base") > 0 &&
-              st.get("premise.a-inb") > 0,
-          "mixed null read: reasons");
+              st.get("premise.a-sep") > 0 && st.get("premise.a-null") == 0,
+          "mixed null read: reasons (A-SEP: two provenances)");
     seam::Decision d;
     CHECK(R.decideEq(sa, idx, d, true) == seam::Tri::No &&
-              d.uses(seam::PremAInb),
-          "decision: no, A-INB");
+              d.uses(seam::PremASep),
+          "decision: no, A-SEP");
     bool recorded = false;
     for (const auto &r : d.reasons)
       recorded = recorded || (std::string(r.rule) == "cmp.size0-vacuous" &&
-                              (r.premises & seam::PremAInb));
-    CHECK(recorded, "cmp.size0-vacuous recorded with A-INB in the Decision");
+                              (r.premises & seam::PremASep));
+    CHECK(recorded, "cmp.size0-vacuous recorded with A-SEP in the Decision");
     bool vio = false;
     Expr prem = mk<AND>(R.inBounds(idx, 1, vio), R.inBounds(sa, 1, vio));
     CHECK(!vio && F.satisfiable(prem), "premise satisfiable");
@@ -1030,7 +1030,7 @@ void testNull() {
           "leaf pair: cmp.size0-vacuous");
     // without A-INB: not decided, sound with no assumption
     SeaMOptions noInb = P1();
-    noInb.assumeInBounds = false;
+    noInb.assumePremises = false;
     RewriteStats st2;
     Expr out2 = F.rewrite(in, noInb, st2);
     CHECK(st2.get("cmp.size0-vacuous") == 0 &&
@@ -1041,8 +1041,24 @@ void testNull() {
     seam::Decision d2;
     CHECK(R.decidePair(F.add({F.nul, F.num(4)}), F.add({F.nul, F.num(8)}), d2,
                        true) == seam::Tri::No &&
-              !d2.uses(seam::PremAInb),
+              !d2.uses(seam::PremProgram),
           "null + 4 vs null + 8: same base, no premise");
+    // the size-0 decisions that A-SEP does not give: one size-0 base with
+    // symbolic offsets (A-NULL), a side without a pointer view (A-NULL);
+    // across two bases, A-SEP
+    seam::Decision d3;
+    CHECK(R.decidePair(F.add({F.nul, F.x}), F.add({F.nul, F.y}), d3, true) ==
+                  seam::Tri::No &&
+              d3.uses(seam::PremANull) && !d3.uses(seam::PremASep),
+          "null + x vs null + y: vacuous by A-NULL");
+    seam::Decision d4;
+    CHECK(R.decidePair(nz, F.var("abs"), d4, true) == seam::Tri::No &&
+              d4.uses(seam::PremANull) && !d4.uses(seam::PremASep),
+          "null + z vs a number: vacuous by A-NULL");
+    seam::Decision d5;
+    CHECK(R.decidePair(nz, ox, d5, true) == seam::Tri::No &&
+              d5.uses(seam::PremASep) && !d5.uses(seam::PremANull),
+          "null + z vs o1 + x: two provenances, A-SEP");
   }
   // program compares: never by layout or by size 0
   {
@@ -1068,7 +1084,7 @@ void testNull() {
   {
     Expr in = F.sel(F.st(F.m, ox, F.var("v")), nz);
     SeaMOptions noInb = P1();
-    noInb.assumeInBounds = false;
+    noInb.assumePremises = false;
     RewriteStats st;
     Expr out = F.rewrite(in, noInb, st);
     CHECK(isOpX<ITE>(out), "null + z vs o1 + x without A-INB: undecided");
@@ -1098,8 +1114,8 @@ void testPruneSize0() {
     RewriteStats st;
     Expr out = F.rewrite(in, P1(), st);
     CHECK(out == F.sel(F.m, ox) && st.get("addr.prune-size0") == 1 &&
-              st.get("premise.a-inb") == 1,
-          "load: null leaf pruned: " << str(out));
+              st.get("premise.a-null") == 1 && st.get("premise.a-sep") == 0,
+          "load: null leaf pruned (A-NULL): " << str(out));
     bool vio = false;
     Expr prem = R.inBounds(idx, 1, vio);
     CHECK(!vio && F.satisfiable(prem), "load: premise satisfiable");
@@ -1168,7 +1184,7 @@ void testPruneSize0() {
   // off without A-INB, and with the option off
   {
     SeaMOptions noInb = P1();
-    noInb.assumeInBounds = false;
+    noInb.assumePremises = false;
     RewriteStats st;
     Expr out = F.rewrite(F.sel(F.m, idx), noInb, st);
     CHECK(out == F.sel(F.m, idx) && st.get("addr.prune-size0") == 0,
@@ -1197,10 +1213,13 @@ void testShadow() {
   Expr S = F.mem("shadow");
   F.reg.addShadowRoot(S);
   Expr v = F.var("v"), w = F.var("w");
-  auto noAInb = [&](const RewriteStats &st, const char *name) {
-    CHECK(st.get("premise.a-inb") == 0 && st.get("cmp.diff-base") == 0 &&
+  auto noPremise = [&](const RewriteStats &st, const char *name) {
+    CHECK(st.get("premise.a-sep") + st.get("premise.a-null") +
+                      st.get("premise.a-nowrap") ==
+                  0 &&
+              st.get("cmp.diff-base") == 0 &&
               st.get("cmp.size0-vacuous") == 0 && st.get("arm.skip") == 0,
-          name << ": an A-INB rule fired in a shadow memory");
+          name << ": a premise rule fired in a shadow memory");
   };
   // distinct bases: skip by identity, valid given the layout only
   for (auto [i, j] : {std::pair<Expr, Expr>{F.o1, F.o2},
@@ -1213,12 +1232,12 @@ void testShadow() {
     CHECK(out == F.sel(S, j), "shadow skip " << str(in) << " -> " << str(out));
     CHECK(st.get("shadow.distinct-base") > 0 && st.get("premise.layout") > 0,
           "shadow skip: counters");
-    noAInb(st, "shadow skip");
+    noPremise(st, "shadow skip");
     CHECK(F.equivalentUnder(in, out, F.t), "shadow skip: valid under layout");
     CHECK(!F.equivalent(in, out, false), "shadow skip: needs the layout");
     // with A-INB off: the same (LAYOUT is not A-INB)
     SeaMOptions noInb = P1();
-    noInb.assumeInBounds = false;
+    noInb.assumePremises = false;
     RewriteStats st2;
     CHECK(F.rewrite(in, noInb, st2) == out, "shadow skip with A-INB off");
   }
@@ -1228,7 +1247,7 @@ void testShadow() {
     RewriteStats st;
     Expr out = F.rewrite(in, P1(), st);
     CHECK(out == F.sel(S, F.o1), "shadow mixed key: " << str(out));
-    noAInb(st, "shadow mixed key");
+    noPremise(st, "shadow mixed key");
     CHECK(F.equivalentUnder(in, out, F.t), "shadow mixed key: valid");
   }
   // the same key: a hit (premise-free)
@@ -1247,7 +1266,7 @@ void testShadow() {
     Expr out = F.rewrite(in, P1(), st);
     CHECK(out != F.sel(S, j) && st.get("shadow.distinct-base") == 0,
           "shadow undecided: " << str(in) << " -> " << str(out));
-    noAInb(st, "shadow undecided");
+    noPremise(st, "shadow undecided");
     CHECK(F.equivalent(in, out, false), "shadow undecided: premise-free");
   }
   // control: the same read in a data memory uses A-INB
@@ -1264,7 +1283,7 @@ void testShadow() {
     RewriteStats st;
     Expr out = F.rewrite(in, P1(), st);
     CHECK(out == F.sel(S, F.o2), "shadow join: " << str(out));
-    noAInb(st, "shadow join");
+    noPremise(st, "shadow join");
   }
   // WOW-COMMUTE by identity (LAYOUT), into allocation order
   {
@@ -1276,7 +1295,7 @@ void testShadow() {
           "shadow commute: " << str(out));
     CHECK(st.get("wow.commute") > 0 && st.get("premise.layout") > 0,
           "shadow commute: counters");
-    noAInb(st, "shadow commute");
+    noPremise(st, "shadow commute");
     CHECK(F.equivalentUnder(in, out, F.t), "shadow commute: valid");
     // equal numerals: no commute
     RewriteStats st2;
@@ -1288,7 +1307,7 @@ void testShadow() {
     SeaMRewriter rw(F.efac, F.reg, P1());
     seam::Decision d;
     CHECK(rw.rules().decidePair(F.o1, F.nul, d, false, true) == seam::Tri::No &&
-              d.uses(seam::PremLayout) && !d.uses(seam::PremAInb) &&
+              d.uses(seam::PremLayout) && !d.uses(seam::PremProgram) &&
               d.reasons.size() == 1 &&
               std::string(d.reasons[0].rule) == "shadow.distinct-base",
           "decision: shadow.distinct-base, LAYOUT");
@@ -1464,7 +1483,7 @@ void testRandom(unsigned count, bool big = false) {
       }
     }
     SeaMOptions noInb;
-    noInb.assumeInBounds = false;
+    noInb.assumePremises = false;
     RewriteStats st3;
     Expr o3 = F.rewrite(in, noInb, st3);
     if (getenv("SEAM_TEST_VERBOSE"))
@@ -1550,16 +1569,16 @@ void testProvenance() {
     CHECK(rules.decideEq(l, far, d, /*diffBase=*/true) == seam::Tri::No,
           "provenance: decided No");
     CHECK(hasReason(d, "cmp.same-base", seam::PremNone) &&
-              hasReason(d, "cmp.diff-base", seam::PremAInb) &&
+              hasReason(d, "cmp.diff-base", seam::PremASep) &&
               d.reasons.size() == 2,
           "provenance: both leaf pairs reported, " << d.reasons.size());
-    CHECK(d.premises == seam::PremAInb && d.uses(seam::PremAInb),
+    CHECK(d.premises == seam::PremASep && d.uses(seam::PremASep),
           "provenance: the premise of the second pair is not lost");
     // the order of the pairs does not matter
     seam::Decision d2;
     CHECK(rules.decideEq(mk<ITE>(F.a, other, near), far, d2, true) ==
                   seam::Tri::No &&
-              d2.premises == seam::PremAInb && d2.reasons.size() == 2,
+              d2.premises == seam::PremASep && d2.reasons.size() == 2,
           "provenance: pair order");
     // a program compare (diffBase false) does not decide the cross pair
     seam::Decision d3;
@@ -1580,7 +1599,7 @@ void testProvenance() {
               d5.premises == seam::PremNone,
           "provenance: refl");
   }
-  // the counters of the rewrite: every reason, and premise.a-inb once
+  // the counters of the rewrite: every reason, and premise.a-sep once
   {
     Expr l = mk<ITE>(F.a, near, other);
     Expr in = F.sel(F.st(F.m, l, v), far);
@@ -1590,20 +1609,20 @@ void testProvenance() {
     CHECK(st.get("row.store-skip") == 1 && st.get("cmp.same-base") >= 1 &&
               st.get("cmp.diff-base") >= 1,
           "provenance: every reason counted");
-    CHECK(st.get("premise.a-inb") == 1, "provenance: premise counted once");
+    CHECK(st.get("premise.a-sep") == 1, "provenance: premise counted once");
     CHECK(F.equivalent(in, out, true), "provenance rewrite: unsound");
     // same base only: no premise counted
     Expr in2 = F.sel(F.st(F.m, near, v), far);
     RewriteStats st2;
     Expr out2 = F.rewrite(in2, P1(), st2);
-    CHECK(out2 == F.sel(F.m, far) && st2.get("premise.a-inb") == 0,
+    CHECK(out2 == F.sel(F.m, far) && st2.get("premise.a-sep") == 0,
           "provenance: same-base skip uses no premise");
     // A-INB off: the cross pair is not decided, no premise
     SeaMOptions off = P1();
-    off.assumeInBounds = false;
+    off.assumePremises = false;
     RewriteStats st3;
     Expr out3 = F.rewrite(in, off, st3);
-    CHECK(st3.get("premise.a-inb") == 0 && st3.get("cmp.diff-base") == 0 &&
+    CHECK(st3.get("premise.a-sep") == 0 && st3.get("cmp.diff-base") == 0 &&
               F.equivalent(in, out3, false),
           "provenance: A-INB off, no premise");
   }
@@ -1616,9 +1635,25 @@ void testProvenance() {
     seam::Rules rules(F.efac, F.reg, stats, P1());
     seam::Decision d;
     CHECK(rules.decideEq(sum, F.add({F.o5, F.y}), d, true) == seam::Tri::No &&
-              hasReason(d, "arm.skip", seam::PremAInb) &&
-              d.premises == seam::PremAInb,
+              hasReason(d, "arm.skip", seam::PremASep) &&
+              d.premises == seam::PremASep,
           "provenance: ARM across bases uses A-INB");
+    // a size-0 provenance dropped by ARM (cmp.size0-vacuous): A-SEP when it
+    // faces only other bases, A-NULL when it faces the same size-0 base
+    Expr bigN = mk<ITE>(F.a, mk<ITE>(F.b, F.o1, F.nul),
+                        mk<ITE>(F.c, F.o3, mk<ITE>(F.b, F.o1, F.o4)));
+    Expr sumN = F.add({bigN, F.num(8)});
+    seam::Decision dS;
+    CHECK(rules.decideEq(sumN, F.add({F.o5, F.y}), dS, true) == seam::Tri::No &&
+              hasReason(dS, "cmp.size0-vacuous", seam::PremASep) &&
+              !dS.uses(seam::PremANull),
+          "provenance: ARM size-0 drop across bases uses A-SEP");
+    seam::Decision dN;
+    CHECK(rules.decideEq(sumN, F.add({F.nul, F.num(8)}), dN, true) ==
+                  seam::Tri::No &&
+              hasReason(dN, "cmp.size0-vacuous", seam::PremANull),
+          "provenance: ARM size-0 drop against the same size-0 base uses "
+          "A-NULL");
     Expr offs =
         mk<ITE>(F.a, mk<ITE>(F.b, F.num(4), F.num(8)),
                 mk<ITE>(F.c, F.num(12), mk<ITE>(F.b, F.num(16), F.num(20))));
@@ -1631,14 +1666,14 @@ void testProvenance() {
     RewriteStats st;
     Expr in = F.sel(F.st(F.m, sum, v), F.add({F.o5, F.y}));
     F.rewrite(in, P1(), st);
-    CHECK(st.get("arm.skip-diff-base") == 1 && st.get("premise.a-inb") == 1,
+    CHECK(st.get("arm.skip-diff-base") == 1 && st.get("premise.a-sep") == 1,
           "provenance: cross-base ARM skip counted");
     RewriteStats st2;
     F.rewrite(
         F.sel(F.st(F.m, F.add({F.o1, offs}), v), F.add({F.o1, F.num(100)})),
         P1(), st2);
     CHECK(st2.get("arm.skip") >= 1 && st2.get("arm.skip-diff-base") == 0 &&
-              st2.get("premise.a-inb") == 0,
+              st2.get("premise.a-sep") == 0,
           "provenance: same-base ARM skip uses no premise");
   }
   // the commutes of Store-Map name the premise
@@ -1649,7 +1684,7 @@ void testProvenance() {
     F.rewrite(chain, SeaMOptions(), st);
     CHECK(st.get("wow.commute") >= 1 &&
               st.get("wow.commute") + st.get("smap.commute") ==
-                  st.get("premise.a-inb"),
+                  st.get("premise.a-sep"),
           "provenance: commute counted as a premise use");
   }
 }

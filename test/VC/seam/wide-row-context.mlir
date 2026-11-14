@@ -12,7 +12,7 @@
 // CHECK: seam.alias.open.one-unknown: 1
 // CHECK: seam.alias.open-pairs.all: 1
 // CHECK: seam.rule.cmp.diff-base: {{[1-9]}}
-// CHECK: seam.rule.premise.a-inb: {{[1-9]}}
+// CHECK: seam.rule.premise.a-sep: {{[1-9]}}
 // CHECK: seam.rule.wide.row-aligned: 1
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
 !m = !sea.mem<!sea.ptr<64>, i8>

@@ -19,7 +19,7 @@
 // addresses mirrors them, so they are not exempt from A-INB (the
 // companion exemption needs a mirrored data access in the same block).
 // MIRROR: vc.seam-companion-unmirrored
-// MIRROR: seam.inb: assumed accesses=8
+// MIRROR: seam.premises: assumed accesses=8
 // MIRROR: seam.rule.companion.unmirrored: 8
 // @overwritten claims the store at p + 1 changed the cell at p: false, so
 // the assertion fails (sat, replayed and validated): the VC does not read

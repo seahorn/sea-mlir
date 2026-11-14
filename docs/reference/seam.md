@@ -55,15 +55,21 @@ $q$. SeaM decides the comparison when it can:
   overlap: the store is skipped. Address range maps extend this to offsets
   known only up to an interval. Neither uses an assumption.
 - **Different objects.** $p$ points into object $a$ and $q$ into object
-  $b \neq a$. Under the in-bounds assumption (A-INB: every access stays
-  inside its object) their footprints are disjoint, and the store is
-  skipped.
+  $b \neq a$. Under the separation premise (A-SEP: in one execution no
+  cell is accessed through two different objects) their footprints are
+  disjoint, and the store is skipped.
 - **Otherwise** the step stays an `ite`, and the solver decides it.
 
 Only the second case uses an assumption, and only for a comparison between
 two accesses. A comparison written in the program, such as `a + 16 == b`
 for one past the end of `a` against the start of `b`, is legal C. It is
-not an access and is never decided by A-INB.
+not an access and is never decided by a premise.
+
+The other premises are narrower. A-NULL: no access of positive width goes
+through an object of size 0, such as null; an address alternative there is
+dropped. A-NOWRAP: an access address, base plus offset, does not wrap; the
+stride rules use it. The property A-INB (every access stays inside its
+object) implies all three.
 
 ## Assumptions are reported
 
@@ -71,17 +77,23 @@ Every rule names the assumptions it uses, and every run reports what was
 assumed:
 
 ```text
-seam.inb: assumed accesses=437 conditions=0
+assume.a-sep: seam=<n>
+assume.a-null: seam=<n>
+assume.a-nowrap: seam=<n>
+seam.premises: assumed accesses=<n> conditions=<m>
 ```
 
-An `unsat` under `--seam` holds for the executions in which those
-accesses stay in their objects. `sea-vc` does not discharge A-INB; that
-takes a separate memory-safety check of the program. A `sat` that needs an
-out-of-bounds access does not replay, and `sea-vc` exits with status 4
-instead of reporting it. When an access can be shown statically to leave
-its object, SeaM drops the assumption and runs again without it
-(`seam.inb: off`). `--seam-check` checks each rewrite against its premises
-with the solver. It finds rewriting bugs; it does not discharge A-INB.
+An `unsat` under `--seam` holds for the executions that satisfy the
+premises with a count above 0. `sea-vc` does not discharge them; that
+takes a separate memory-safety check of the program (a bounds check
+discharges all three). A `sat` that needs an out-of-object access does not
+replay, and `sea-vc` exits with status 4 instead of reporting it. When an
+access can be shown statically to leave its object, `sea-vc` reports it
+(`seam.out-of-object:`, with where it lands: another object, a gap cell
+another provenance also reaches (`shared`), unknown, null, a gap) and keeps the premises: the `unsat` then holds only if that access
+does not execute. `--seam-out-of-object=fallback` runs again without the
+premises instead. `--seam-check` checks each rewrite against its premises
+with the solver. It finds rewriting bugs; it does not discharge a premise.
 
 ## Effect in practice
 

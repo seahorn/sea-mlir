@@ -23,8 +23,8 @@
 // RUN: sea-run %s --input=3=1,4=0 --missing=zero | FileCheck %s --check-prefix=N0
 // RUN: not sea-run %s --input=3=1,4=1 --missing=zero | FileCheck %s --check-prefix=N1
 // PLAIN: result: unsat
-// SEAM-NOT: vc.seam-inb-violated
-// SEAM: seam.inb: assumed
+// SEAM-NOT: seam.out-of-object
+// SEAM: seam.premises: assumed
 // SEAM-DAG: seam.rule.addr.prune-size0-range: {{[1-9]}}
 // SEAM-DAG: seam.rule.row.mset-skip: {{[1-9]}}
 // SEAM: result: unsat
@@ -32,7 +32,7 @@
 // NOPRUNE-DAG: seam.rule.cmp.size0-vacuous: {{[1-9]}}
 // NOPRUNE-DAG: seam.rule.row.mset-skip: {{[1-9]}}
 // NOPRUNE: result: unsat
-// CHK-NOT: vc.seam-inb-violated
+// CHK-NOT: seam.out-of-object
 // CHK: result: unsat
 // CHK: seam-check: firings={{[1-9][0-9]*}} {{.*}} invalid=0 unknown=0 unexpressible=0
 // N0: status: halted

@@ -1,4 +1,4 @@
-// sea-seam-export, lane seam-inb0-pull-concat (sea-vc --seam --seam-inb=0
+// sea-seam-export, lane seam-inb0-pull-concat (sea-vc --seam --seam-premises=0
 // --seam-pull-concat=4): a split pointer load whose bytes share an ite
 // condition. A pointer to x or the integer n is written byte by byte under
 // the same condition c and reloaded as two byte loads, so the reloaded
@@ -7,8 +7,8 @@
 // ptr.load-resolve-concat. Lane seam-inb0 (no pulls) leaves the concat.
 // RUN: sea-seam-export %s --address-bits=16 --lane=seam-inb0-pull-concat --firings | %python %S/Inputs/show.py | FileCheck %s --check-prefixes=CHECK,PULL
 // RUN: sea-seam-export %s --address-bits=16 --lane=seam-inb0 --firings | %python %S/Inputs/show.py | FileCheck %s --check-prefixes=CHECK,NOPULL
-// PULL: header: schema=2 lane=seam-inb0-pull-concat sea_vc='sea-vc --seam --seam-inb=0 --seam-pull-concat=4'
-// NOPULL: header: schema=2 lane=seam-inb0 sea_vc='sea-vc --seam --seam-inb=0'
+// PULL: header: schema=3 lane=seam-inb0-pull-concat sea_vc='sea-vc --seam --seam-premises=0 --seam-pull-concat=4'
+// NOPULL: header: schema=3 lane=seam-inb0 sea_vc='sea-vc --seam --seam-premises=0'
 // PULL: root %{{[0-9]+}} sea.addr.from_bits ptr: ite(eq(nd.1_0, 1), obj.x, fromBits(nd.2_0))
 // NOPULL: root %{{[0-9]+}} sea.addr.from_bits ptr: fromBits(concat(ite(
 // PULL: firing {{[0-9]+}} rules=ptr.load-resolve-concat premises=none op=query

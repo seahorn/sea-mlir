@@ -6,9 +6,9 @@
 // Without --lower: the access is refused (vc.wide-access), never a width
 // term. With --lower: sea-split-wide-access expands it into bytes; its offset
 // helper wraps offsets modulo 2^n, preserving the byte semantics.
-RUN: not sea-vc %S/Inputs/wide-oversized-false.mlir --seam --seam-wide --seam-inb=0 2>&1 | FileCheck %s --check-prefix=REFUSED
-RUN: sea-vc %S/Inputs/wide-oversized-false.mlir --lower --seam --seam-wide --seam-inb=0 2>&1 | FileCheck %s --check-prefix=SAT
-RUN: sea-vc %S/Inputs/wide-oversized-true.mlir --lower --seam --seam-wide --seam-inb=0 2>&1 | FileCheck %s --check-prefix=UNSAT
+RUN: not sea-vc %S/Inputs/wide-oversized-false.mlir --seam --seam-wide --seam-premises=0 2>&1 | FileCheck %s --check-prefix=REFUSED
+RUN: sea-vc %S/Inputs/wide-oversized-false.mlir --lower --seam --seam-wide --seam-premises=0 2>&1 | FileCheck %s --check-prefix=SAT
+RUN: sea-vc %S/Inputs/wide-oversized-true.mlir --lower --seam --seam-wide --seam-premises=0 2>&1 | FileCheck %s --check-prefix=UNSAT
 RUN: sea-vc %S/Inputs/wide-oversized-false.mlir --lower 2>&1 | FileCheck %s --check-prefix=SAT
 REFUSED: vc.wide-access
 REFUSED-NOT: result: unsat

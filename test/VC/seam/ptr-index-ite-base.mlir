@@ -9,7 +9,7 @@
 // over the ite) sees an unknown term and none is stated; five leaves, more
 // than maxPullLeaves, so the ite stays under the node (vcc
 // byte_cursor_advance lost one; docs/design/PtrIndex.md section 0a).
-// CHECK: seam.inb: assumed accesses=2 conditions=1
+// CHECK: seam.premises: assumed accesses=2 conditions=1
 // CHECK: result: unsat
 !pm = !sea.mem<!sea.ptr<64>, i8>
 sea.program @ite_base {

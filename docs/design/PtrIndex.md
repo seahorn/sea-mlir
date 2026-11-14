@@ -1,5 +1,11 @@
 # sea.ptr.index: pointer arithmetic as pointer arithmetic
 
+> Premise names (0.2.0): this document was written when the encoding rested
+> on A-INB. The encoding now names the premises it uses: A-SEP for
+> decisions across two objects, A-NULL for objects of size 0, A-NOWRAP for
+> the byte offset K of the stride rules (SeaM.md, "Soundness stance").
+> A-INB below names the stronger property that implies them.
+
 Status: stages 1, 2, 3a, 3b-i, 3b-ii step (a), and the Ackermann
 part of stage 4 are implemented (stage 1: the op; 2: the exporter;
 3a: the passes; 3b-i: the Expr operators and expander; 3b-ii (a):
@@ -197,7 +203,7 @@ the K-node `PTR_INDEX_NUSW(b, x_1, s_1, ..., c, K = k)`:
 - the boundary's WideExpander;
 - `op::ptr::withByteOffset`, which pushes k into ite leaves.
 
-Their firings and the size-0 ones are counted `stride-a-inb-pairs` and are
+Their firings and the size-0 ones are counted `stride-a-nowrap-pairs` / `stride-a-null-pairs` and are
 off without A-INB.
 
 **Soundness.**
@@ -650,9 +656,10 @@ not divide 2^n, S5):
 
 **Premises.**
 - `PremPtrIndex`: P1-P3 of every node involved.
-- `PremAInb`, unless K_1 = K_2 = 0 and u_1 = u_2 = 1 (a multi-byte
-  span can wrap even at K = 0, Q8). The span-in-space condition comes from
-  the A-INB of the parent access, a named, reported assumption (objects fit
+- `PremANoWrap` (A-NOWRAP; `PremAInb` before 0.2.0), unless K_1 = K_2 = 0
+  and u_1 = u_2 = 1 (a multi-byte span can wrap even at K = 0, Q8). The
+  span-in-space condition is A-NOWRAP of the parent access, implied by its
+  A-INB, a named, reported assumption (objects fit
   the space: SegmentOp::verify, 7e21123).
 - --seam-check reports "unexpressible" when that access has no pointer view
   (a loaded-pointer base). Today inBounds silently yields true for viewless
@@ -660,15 +667,15 @@ not divide 2^n, S5):
 
 So the flags-only case is exactly the 1-byte, K = 0 pair. Every other
 firing, including every W-SKIP of wide accesses and every Ackermann pair
-made by the expansion, counts `premise.a-inb`.
+made by the expansion, counts `premise.a-nowrap`.
 
 **Where it applies.**
 - SeaM: W-SKIP / row skip of a write and a read in one object (the span
   form); ROW compares of byte cells (the equality form). Never in program
   compares (section 1).
 - Ackermann: the pair loop, after the residue test. Counted in
-  `Ackermannizer::Stats` as `stride` and `stride-a-inb` pairs, printed as
-  `vc.ackermann-stride-pairs` / `vc.ackermann-stride-a-inb`. The
+  `Ackermannizer::Stats` as `stride` and `stride-a-null` / `stride-a-nowrap` pairs, printed as
+  `vc.ackermann-stride-pairs` / `vc.ackermann-stride-a-null-pairs` / `-a-nowrap-pairs`. The
   Ackermann header's "no A-INB" (Ackermann.hh:26-27) becomes "A-INB only
   for the stride rule, reported".
 

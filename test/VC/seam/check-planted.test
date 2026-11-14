@@ -13,7 +13,7 @@ SUB: seam-check-smt: (check-sat)
 SUB: seam-check: firings={{[0-9]+}} checked={{[0-9]+}} valid={{[0-9]+}} invalid=1 unknown=0 unexpressible=0
 SUB: [seam.check-invalid]
 SUB: BRUNCH_STAT status 5
-ROW: seam-check-invalid: id={{[0-9]+}} rules=row.store-hit,arm.skip,arm.skip-diff-base premises=A-INB op=load loc={{.*}}arm.mlir:{{[0-9:]+}}
+ROW: seam-check-invalid: id={{[0-9]+}} rules=row.store-hit,arm.skip,arm.skip-diff-base premises=A-SEP op=load loc={{.*}}arm.mlir:{{[0-9:]+}}
 ROW: seam-check-smt: (assert
 ROW: seam-check: {{.*}} invalid=1
 ROW: BRUNCH_STAT status 5

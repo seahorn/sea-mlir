@@ -9,13 +9,13 @@
 // RUN: sea-vc %s --lower --program holds | FileCheck %s --check-prefix=UNSAT
 // RUN: sea-vc %s --lower --program holds --seam --seam-stats | FileCheck %s --check-prefix=STATS --check-prefix=UNSAT
 // RUN: sea-vc %s --lower --program holds --seam --seam-store-map=0 | FileCheck %s --check-prefix=UNSAT
-// RUN: sea-vc %s --lower --program holds --seam --seam-inb=0 | FileCheck %s --check-prefix=UNSAT
+// RUN: sea-vc %s --lower --program holds --seam --seam-premises=0 | FileCheck %s --check-prefix=UNSAT
 // RUN: sea-vc %s --lower --program holds --seam --seam-row-expand=0 | FileCheck %s --check-prefix=UNSAT
 // RUN: sea-vc %s --lower --program holds --seam --smt2 | FileCheck %s --check-prefix=SMT
 // RUN: sea-vc %s --lower --program fails | FileCheck %s --check-prefix=SAT
 // RUN: sea-vc %s --lower --program fails --seam | FileCheck %s --check-prefix=SAT
 // RUN: sea-vc %s --lower --program fails --seam --seam-store-map=0 | FileCheck %s --check-prefix=SAT
-// RUN: sea-vc %s --lower --program fails --seam --seam-inb=0 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %s --lower --program fails --seam --seam-premises=0 | FileCheck %s --check-prefix=SAT
 // STATS-DAG: seam.rule.smap.new: 1
 // STATS-DAG: seam.rule.row.smap-abort: {{[1-9]}}
 // STATS-DAG: seam.rule.smap.expanded: 0

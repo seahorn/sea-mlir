@@ -13,9 +13,9 @@
 // RUN: sea-vc %s --lower --widen-memory=4 --seam --smt2 | FileCheck %s --check-prefix=SMT
 // RUN: sea-vc %s --lower --widen-memory=4 --seam | FileCheck %s --check-prefix=VERDICT
 // RUN: sea-vc %s --lower --widen-memory=4 --seam --seam-store-map=0 | FileCheck %s --check-prefix=VERDICT
-// RUN: sea-vc %s --lower --widen-memory=4 --seam --seam-inb=0 | FileCheck %s --check-prefix=VERDICT
+// RUN: sea-vc %s --lower --widen-memory=4 --seam --seam-premises=0 | FileCheck %s --check-prefix=VERDICT
 // RUN: sea-vc %s --lower --lower-opt=false --widen-memory=4 --seam --seam-store-map=0 --seam-stats | FileCheck %s --check-prefix=NOSMAP
-// RUN: sea-vc %s --lower --lower-opt=false --widen-memory=4 --seam --seam-inb=0 --seam-stats | FileCheck %s --check-prefix=NOINB
+// RUN: sea-vc %s --lower --lower-opt=false --widen-memory=4 --seam --seam-premises=0 --seam-stats | FileCheck %s --check-prefix=NOINB
 // RUN: not sea-vc %s --lower --seam-store-map=0 2>&1 | FileCheck %s --check-prefix=NOSEAM
 // VERDICT: result: unsat
 // STATS-DAG: seam.rule.smap.new: 1

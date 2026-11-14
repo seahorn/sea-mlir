@@ -2,7 +2,7 @@
 
 ## Scope
 
-- sea-mlir 0.1.1 is a research prototype. The text format of the dialect
+- sea-mlir 0.2.0 is a research prototype. The text format of the dialect
   and the command-line options can change between releases.
 - Linux on x86-64 is the only platform that is built and tested.
 - z3 is the supported solver. Yices 2 and Bitwuzla work and are
@@ -16,18 +16,20 @@
 
 ## Assumptions that are not discharged
 
-- The in-bounds assumption of SeaM (every access stays inside its object)
-  is reported but not discharged by sea-mlir. Discharging it takes a
-  separate memory-safety check of the program. `--seam-inb=0` builds the
-  VC without the assumption, more slowly; it is a measurement, not a
-  discharge, and the lowering's dropped memhavocs still rest on it
-  (`seam.inb: off (lowering: drop-fresh-memhavoc=<n> rests on A-INB)`).
+- The pointer premises of SeaM (A-SEP: no cell accessed through two
+  objects; A-NULL: no access through an object of size 0; A-NOWRAP: no
+  access address wraps) are reported but not discharged by sea-mlir.
+  Discharging them takes a separate memory-safety (bounds) check of the
+  program. `--seam-premises=0` builds the VC without them, more slowly; it
+  is a measurement, not a discharge, and the lowering's dropped memhavocs
+  still rest on A-SEP (`seam.premises: off (lowering:
+  drop-fresh-memhavoc=<n> rests on A-SEP)`).
 - Front-end annotations (`align`, and the no-wrap flags of pointer
   arithmetic) are trusted. `--check-align` and `--check-ptr-index` check
   them as separate jobs.
 - `--lower` of an abstract program removes memhavocs of fresh objects;
-  when one rests on A-INB (an access of another object could land in the
-  object after placement), it reports `assume.a-inb:
+  when one rests on A-SEP (an access of another object could land in the
+  object after placement), it reports `assume.a-sep:
   drop-fresh-memhavoc=<n>`, also without `--seam`. A separate
   memory-safety check of the program would discharge it; sea-mlir has
   none yet.
@@ -59,10 +61,20 @@
   encoding, SeaM rewriting) is not bounded by it, and large exports have
   needed tens of GB. Use an external `timeout` and `--mem-limit`; there is
   no memory limit by default.
-- When the static in-bounds check fails (`vc.seam-inb-violated`), `sea-vc`
-  warns, names the accesses, and runs again without the assumption. The
+- When the static in-bounds check finds an access that leaves its object
+  (`vc.seam-out-of-object`), `sea-vc` warns, names the accesses with where
+  they land, and keeps the premises: an `unsat` then holds only if those
+  accesses do not execute. The check cannot tell whether they do: an
   access it names can lie on an infeasible path, such as an iteration of
-  an unrolled loop that cannot execute.
+  an unrolled loop that cannot execute, or on a path that does execute.
+  `--seam-out-of-object=fallback` runs again without the premises.
+- A counterexample that leaves its object only into a gap between objects
+  keeps A-NULL, and keeps A-SEP unless another provenance reaches the same
+  cell (classified `shared`), but `sea-vc` still reports it as a
+  memory-safety error (exit 4): its replay check is of bounds, not of
+  separation.
+- `--seam-check` states every premise firing as the in-bounds conditions of
+  its accesses; checks stated per premise are an open follow-up.
 - `--ptr-mode=address` can be much slower on code that aligns pointers by
   integer arithmetic.
 

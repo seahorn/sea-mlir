@@ -601,7 +601,7 @@ operation that made it reachable. `deferred:` gives the number of
 violations in the run and the kind (`null`, `out-of-bounds`,
 `use-after-free`, `double-free`, `bad-free`) and location of the first.
 `sea-run` exits with 4 on `memory-error`, like `sea-vc`'s 4 (the in-bounds
-assumption A-INB does not hold), plus double free and bad free.
+property A-INB does not hold), plus double free and bad free.
 
 Under `--fuzz`, a memory-safety finding is a failure: its file is
 `failure-<trial>.txt`, it is replayed and printed as a plain run, and the

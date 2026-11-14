@@ -2,15 +2,15 @@
 // unconstrained), which the static check cannot see. --seam takes the access
 // to stay in a, skips it when reading b, and answers unsat where the plain VC
 // is sat: the documented conditional answer (A-INB assumed and reported, not
-// discharged). `seam.inb: assumed` says what the answer rests on.
+// discharged). `seam.premises: assumed` says what the answer rests on.
 // RUN: sea-vc %s --lower | FileCheck %s --check-prefix=PLAIN
-// RUN: sea-vc %s --lower --seam --seam-inb=0 | FileCheck %s --check-prefix=NOINB
+// RUN: sea-vc %s --lower --seam --seam-premises=0 | FileCheck %s --check-prefix=NOINB
 // RUN: sea-vc %s --lower --seam | FileCheck %s --check-prefix=SEAM
 // RUN: not sea-vc %s --lower --seam --seam-check-inb 2>&1 | FileCheck %s --check-prefix=GONE
 // PLAIN: result: sat
-// NOINB: seam.inb: off
+// NOINB: seam.premises: off
 // NOINB: result: sat
-// SEAM: seam.inb: assumed accesses={{[0-9]+}} conditions={{[1-9][0-9]*}}
+// SEAM: seam.premises: assumed accesses={{[0-9]+}} conditions={{[1-9][0-9]*}}
 // SEAM: result: unsat
 // GONE: Unknown command line argument '--seam-check-inb'
 !m = !sea.mem<!sea.ptr<64>, i8>

@@ -2,8 +2,8 @@
 // memmove / memset / memhavoc of a byte memory is one term (mcopy / mset /
 // mhavoc), whatever its length; sea-expand-memset does not run (no
 // memset.symbolic-bound, no bound on n). A read of b over the copy into a and
-// the memset of a is a cross-object skip (A-INB: the whole destination range,
-// premise.a-inb); the read of a at a + 1 over memset(a, 0, 8) is a hit; the
+// the memset of a is a cross-object skip (A-SEP: two provenances,
+// premise.a-sep); the read of a at a + 1 over memset(a, 0, 8) is a hit; the
 // read of a + k is undecided (one ite, one compare) over both terms.
 // No term reaches the solver (vc.dag-op has no mcopy / mset / mhavoc). With
 // the rewriting off or interrupted the boundary translates the reads by their
@@ -19,7 +19,7 @@
 // SEAM-DAG: seam.rule.row.mcopy-skip:
 // SEAM-DAG: seam.rule.row.mset-hit:
 // SEAM-DAG: seam.rule.row.mcopy:
-// SEAM-DAG: seam.rule.premise.a-inb:
+// SEAM-DAG: seam.rule.premise.a-sep:
 // SEAM-DAG: seam.rule.memop.translated: 0
 // DAG-NOT: vc.dag-op: m{{copy|set|havoc}}
 // DAG: result: unsat

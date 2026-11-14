@@ -1,27 +1,34 @@
-// sea-drop-fresh-memhavoc rests on A-INB: a store to another object, out
+// sea-drop-fresh-memhavoc rests on A-SEP: a store to another object, out
 // of its bounds, may land in the fresh object after placement, and then
-// the memhavoc was not a no-op. The drop is reported as A-INB reliance,
-// also without --seam and with --seam-inb=0 (discharged by a separate
+// the memhavoc was not a no-op. The drop is reported as A-SEP reliance,
+// also without --seam and with --seam-premises=0 (discharged by a separate
 // memory-safety check, not in sea-mlir yet).
 // RUN: split-file %s %t
 // RUN: sea-vc %t/oob.mlir --lower | FileCheck %s --check-prefix=OOB
-// OOB: assume.a-inb: drop-fresh-memhavoc=1
+// OOB: assume.a-sep: drop-fresh-memhavoc=1
 // OOB: result: unsat
-// RUN: sea-vc %t/oob.mlir --lower --seam --seam-inb=0 | FileCheck %s --check-prefix=INB0
-// INB0: seam.inb: off (lowering: drop-fresh-memhavoc=1 rests on A-INB)
-// The fallback without A-INB (a static violation) warns: the answer still
-// rests on it.
-// RUN: sea-vc %t/oob.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=FALLBACK
-// FALLBACK: [vc.seam-inb-fallback-conditional]
-// FALLBACK: seam.inb: off (fallback: {{.*}}) (lowering: drop-fresh-memhavoc=1 rests on A-INB)
+// RUN: sea-vc %t/oob.mlir --lower --seam --seam-premises=0 | FileCheck %s --check-prefix=INB0
+// INB0: seam.premises: off (lowering: drop-fresh-memhavoc=1 rests on A-SEP)
+// With --seam the out-of-object store (it lands in another object) is
+// reported and the premises stay; the model needs that store, so its
+// replay leaves an object: inconclusive, exit 4.
+// RUN: not sea-vc %t/oob.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=SEAM
+// SEAM: [vc.seam-out-of-object]
+// SEAM: seam.out-of-object: accesses=1 object=1
+// SEAM: [vc.seam-inb-spurious]
+// The opt-in fallback without the premises warns: the answer still rests
+// on A-SEP.
+// RUN: sea-vc %t/oob.mlir --lower --seam --seam-out-of-object=fallback 2>&1 | FileCheck %s --check-prefix=FALLBACK
+// FALLBACK: [vc.seam-fallback-conditional]
+// FALLBACK: seam.premises: off (fallback: {{.*}}) (lowering: drop-fresh-memhavoc=1 rests on A-SEP)
 // RUN: sea-vc %t/oob.mlir --lower --brunch-stats | FileCheck %s --check-prefix=BRUNCH
-// BRUNCH: BRUNCH_STAT assume.a-inb-drop-fresh-memhavoc 1
+// BRUNCH: BRUNCH_STAT assume.a-sep-drop-fresh-memhavoc 1
 // The abstract program shows the out-of-bounds store.
 // RUN: not sea-run %t/oob.mlir --input=2@heap.1+0=0 2>&1 | FileCheck %s --check-prefix=INTERP
 // INTERP: status: error
 // No update before the memhavoc and its range in the object: no reliance.
 // RUN: sea-vc %t/plain.mlir --lower | FileCheck %s --check-prefix=PLAIN
-// PLAIN-NOT: assume.a-inb
+// PLAIN-NOT: assume.a-sep
 // PLAIN: result: sat
 // REQUIRES: z3
 

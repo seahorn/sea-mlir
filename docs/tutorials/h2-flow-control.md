@@ -121,7 +121,7 @@ asserts the invariant again.
 $ sea-vc firedancer/h2fc-wu-conn-proof.mlir --lower --seam --widen-memory=4
 ...
 vc.ackermann-constraints: 0
-seam.inb: assumed accesses=437 conditions=0
+seam.premises: assumed accesses=437 conditions=0
 solve-time: 0.515
 result: unsat
 ```
