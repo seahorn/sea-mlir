@@ -124,7 +124,7 @@ struct CountedTrait {
     return a.v == b.v;
   }
   static size_t hash(const Counted &c) { return std::hash<int>()(c.v); }
-  static TerminalKind getKind() { return TerminalKind::UINT; }
+  static TerminalKind getKind() { return TerminalKind::TEST_ONLY; }
   static std::string name() { return "test::Counted"; }
   static Expr inferType(Expr exp, TypeChecker &) { return Expr(); }
 };
