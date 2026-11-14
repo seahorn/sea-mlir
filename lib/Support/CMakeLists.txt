@@ -2,13 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 add_mlir_library(SeaSupport
+  Assume.cpp
   BoostException.cpp
   Diag.cpp
   Log.cpp
   Output.cpp
   ProcMem.cpp
   SeaLog.cpp
+  Stats.cpp
+  Timer.cpp
   Version.cpp
+  WriteFile.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport

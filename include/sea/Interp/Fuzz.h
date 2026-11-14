@@ -25,6 +25,7 @@
 #define SEA_INTERP_FUZZ_H
 
 #include "sea/Interp/Interpreter.h"
+#include "sea/Support/Assume.h"
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/StringRef.h"
@@ -462,10 +463,9 @@ struct FuzzReport {
   /// blocked; most first, then program order.
   std::vector<std::pair<mlir::Operation *, uint64_t>> blocked;
   /// The named assumption and the open decision the trials rested on:
-  /// totals of RunResult::addr0IsNullUses / memhavocNullNoopUses, and the
-  /// runs with any.
-  uint64_t addr0IsNullUses = 0, addr0IsNullRuns = 0;
-  uint64_t memhavocNullNoopUses = 0, memhavocNullNoopRuns = 0;
+  /// each trial's RunResult uses (Ledger::useRun: totals and the runs with
+  /// any).
+  assume::Ledger assumptions;
   /// Parallel to FuzzOptions::reachTargets.
   std::vector<ReachHit> reachHits;
   /// The covered blocks, by id (position in the program body), ascending.

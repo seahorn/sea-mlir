@@ -15,7 +15,7 @@
 // over one edge is its value, as without the option: no cases term, not
 // counted.
 //
-// The counters (`cases.*` lines, print) measure where an n-ary join term
+// The counters (`cases.*` lines, report) measure where an n-ary join term
 // would matter: repeated values among the n values, the ones a sequential
 // merge of adjacent equal values folds (first-match semantics allows it
 // without exclusivity) and the ones only a reordering could fold (rotation of
@@ -44,13 +44,15 @@
 #include "sea/Expr/Expr.hh"
 
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/Support/raw_ostream.h"
 
 #include <array>
 #include <map>
 #include <string>
 
 namespace sea {
+namespace stats {
+class Report;
+} // namespace stats
 
 /// What a join defines: a non-memory block argument (`scalar`), a memory
 /// block argument, or a pointer companion.
@@ -84,8 +86,8 @@ public:
   expr::Expr reorder(expr::Expr c, Reorder r, JoinKind kind);
 
   /// The counters, one `cases.<name>: <total> scalar=<n> memory=<n>
-  /// companion=<n>` line each.
-  void print(llvm::raw_ostream &os) const;
+  /// companion=<n>` line each, added to \p r.
+  void report(stats::Report &r) const;
 
 private:
   using Count = std::array<uint64_t, 3>;

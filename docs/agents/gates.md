@@ -19,6 +19,7 @@ checks below test the verifier and its distribution.
 | benchmarks | do the applications keep their expected verdicts and counter bounds? | `just bench-smoke`, `just bench-canary`, `just bench-gate quick` |
 | query diff | does a change that must not change queries keep them? | `utils/query-diff.py` |
 | pass validation | does a lowering change keep which check sites can be reached? | `utils/cover-diff.py` |
+| output diff | does a refactoring keep what the tools print, stat keys included? | `utils/output-diff.py` |
 
 ## Lint
 
@@ -231,6 +232,87 @@ only, not equivalence), `DIFF`, `unknown`, `error`. Each pair prints
 `--rlimit` (deterministic) and a `--timeout` backstop. `--agent` prints
 the guide.
 
+## Output diff
+
+A refactoring that must not change what `sea-vc` and `sea-run` print (the
+timers, the statistics report, the solver construction) runs
+`utils/output-diff.py`: two builds over a corpus and an argument matrix,
+each entry in text and in jsonl output.
+
+```bash
+export SEA_BENCH_SUITES=bench/work/public      # or: just bench-connect
+python3 utils/output-diff.py --old <base>/bin --new <head>/bin --quick --par 2
+```
+
+`--old` and `--new` are bin directories holding `sea-vc` and `sea-run`.
+Without inputs the corpus is `$SEA_BENCH_SUITES/vcc` and the standalone
+programs of `test/VC` and `test/Interp` (a file with `// -----` or `//---`
+split markers is not standalone), except those `--exclude` matches (default
+`^VC/limits/`: the `--timeout` tests, which run for minutes without the
+flag); every input runs every entry. The
+built-in matrix (`--print-matrix`) holds the default encoding, `--seam`
+with `--seam-stats --brunch-stats`, `--mem=lambda`, `--x-read-table=mux`
+(with and without its premise checks), `--seam-words=auto --words-check`,
+`--eq-audit`, `--split-auto`, `--reach`, `--smt2`, and two `sea-run`
+entries (`--missing=zero`, `--fuzz=200 --seed=1`); each `sea-vc` run adds
+`--log=vc.phase,lower.pass,vc.solve` (`--vc-common`). The entries that run
+extra solver checks, the encodings without SeaM (`default`,
+`--mem=lambda`) and the read-table experiment (`xrt`), which take minutes
+on some vcc jobs, are `heavy`;
+`--quick` skips them for the inputs of `$SEA_BENCH_SUITES` (the bench
+corpus) only: the small programs of `test/VC` and `test/Interp` run every
+entry, heavy ones included. `--matrix FILE`
+or `--entry` replaces the matrix: one entry per line, `NAME TOOL [FLAGS]:
+ARGS`, with the flags `heavy`, `text` and `jsonl` (only that format).
+
+Before any job, every flag of the matrix must be an option of both builds
+(`--help-hidden`): a flag that one build does not know would make both
+sides fail alike, which compares identical.
+
+`--quick` also leaves out, for six named slow programs (`QUICK_SLOW` in
+`utils/output-diff.py`: `VC/split/int-leaves`, `VC/intrinsics-unsat` and four
+`VC/seam/Inputs` programs, 40 to 215 s each over the matrix), every entry but
+`seam-stats`, `smt2`, `run` and `fuzz`, and defaults `--timeout` to 30
+seconds (300 otherwise); a timeout still makes the status `incomplete`. Each
+excluded program is a `quick-excluded:` line, and the `skipped:` line counts
+the jobs left out. The full mode runs everything. The list was measured once
+(one side, text, `--timeout 30`); re-measure when the quick run
+over `test/VC` and `test/Interp` grows well past ten minutes.
+
+An input that is neither a directory nor a file is an error
+(`error: no input <path>`, status 2).
+
+A job is `identical` when stdout, stderr and the exit status agree after
+masking, and the stat keys (`key: ...` lines, counted) and the BRUNCH_STAT
+keys agree. The masks are those of `utils/jsonl-check.py` (`<name>time
+<d.ddd>`, `time=`, `execs/s=`, `steps/s=`, `rss-mb=`, `vm-mb=`,
+`peak-rss-mb=`, `slowest-op=`), plus `<key>-mb <n>`, the `tool.version`
+line, the bin directory and the load address of each frame of a crash
+backtrace (it changes from run to run). A masked number keeps its shape:
+the sign and the number of fraction digits (`0.061` becomes `T.3`, `-0.1`
+`-T.1`, an integer `T`), so `time=2` and `time=0.002` differ, and so do
+`0.061` and `0.061000`. In a JSON-object line (jsonl stdout, and the
+jsonl log events on stderr) every string field is masked as text, a
+decimal field whose name contains `time` and an integer field whose name
+ends in `-mb` or `_mb` are masked, and so is the value of a stat record
+with such a key. JSON types are kept (`3` and `"3"` differ); a line with a
+duplicate key is compared as text; the spacing between the tokens of a
+record is masked. The stdout of a `--smt2` job (the query) is compared
+unmasked; its stat lines are on stderr, which is compared as for any job,
+and its stat and BRUNCH_STAT key lists are taken from stderr. A `DIFF` line
+names what differs and the keys that moved (`keys=+added,-removed`,
+`brunch=...`), followed by the first differing lines; `--keep DIR` writes
+both sides' output.
+
+Each `entry:` line counts `rc-nonzero`, the jobs that failed alike on both
+sides. Partial failures are allowed and reported; an entry whose every job
+failed alike checks nothing, so an `entry: <name> all-failed` line follows
+and the status is `incomplete`. The exit status is 1
+when a job is a `DIFF`, 2 on an all-failed entry, a timeout (`--timeout`, per run; NEW is not
+run after an OLD timeout), a run that
+could not start or a matrix flag a build refuses, and 0 when every job is
+identical. `--self-test` checks the masks and key lists without a build.
+
 ## Pass validation
 
 A change of the lowering (a fold, a pass, an optimization switched on)
@@ -421,6 +503,8 @@ for pull requests that have no second reviewer. Agents never merge.
   oracle) and fuzz.
 - The query or SeaM: lit, `fuzz-vc` and `fuzz-seam`, the benchmark canary
   and smoke gates.
+- A refactoring that must not change output: `utils/output-diff.py`
+  against the base build, and `utils/query-diff.py` for the queries.
 - Performance: the benchmark gate at the tier where the effect shows, with
   counters, and an explanation for any slowdown.
 - Every pull request: lint, and `just attest` on its last commit.

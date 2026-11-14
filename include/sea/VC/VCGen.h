@@ -21,6 +21,7 @@
 #ifndef SEA_VC_VCGEN_H
 #define SEA_VC_VCGEN_H
 
+#include "sea/Support/Timer.h"
 #include "sea/VC/JoinCases.h"
 #include "sea/VC/OpSem.h"
 
@@ -75,8 +76,8 @@ public:
 
   /// Seconds spent so far executing the ops of the blocks (sem.exec), and in
   /// the block guards, edges and block arguments (computePathCondForBb).
-  double execSeconds() const { return execTime; }
-  double joinSeconds() const { return joinTime; }
+  double execSeconds() const { return execTimer.seconds(); }
+  double joinSeconds() const { return joinTimer.seconds(); }
 
   /// The object bases of the encoded program (SeaM; see SeaOpSem).
   const expr::BaseRegistry &baseRegistry() const { return sem.baseRegistry(); }
@@ -127,7 +128,7 @@ private:
   JoinEncoding join;
   bool reach = false;
   llvm::DenseMap<mlir::Block *, expr::Expr> guards;
-  double execTime = 0, joinTime = 0;
+  sea::Timer execTimer{"exec"}, joinTimer{"join"};
   std::unique_ptr<JoinCases> cases;
   std::function<void(const EncodeProgress &)> progress;
 };

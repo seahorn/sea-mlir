@@ -7,16 +7,17 @@
 
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
+#include "sea/Support/Stats.h"
+#include "sea/Support/Timer.h"
+#include "sea/Support/WriteFile.h"
 #include "sea/VC/Replay.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/Path.h"
 
 #include <algorithm>
-#include <chrono>
 #include <map>
 #include <optional>
 #include <set>
@@ -306,36 +307,33 @@ std::string replaysOn(const ReachOptions &options) {
 /// A corpus file of the run's inputs (sea-run --input-file).
 bool writeWitness(StringRef path, const ReachTarget &t, StringRef at,
                   const ReachOptions &options, const RunResult &run) {
-  std::error_code ec;
-  llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_Text);
-  if (ec) {
-    diag::error("vc.reach-witness",
-                "cannot write '" + path + "': " + ec.message());
-    return false;
-  }
-  os << "# sea-vc --reach: " << t.id << " op=" << t.opName << " at=" << at
-     << "\n";
-  os << "# " << replaysOn(options) << "\n";
-  for (const NondetRead &rd : run.reads) {
-    os << "nondet: site=" << rd.site << " callee=" << rd.callee
-       << " width=" << rd.value.getBitWidth() << " value=";
-    rd.value.print(os, /*isSigned=*/false);
-    os << "\n";
-  }
-  for (const CellRead &cr : run.cellReads) {
-    if (!cr.object.empty()) {
-      diag::error("vc.reach-witness",
-                  "a memory cell of an abstract memory in a witness (place "
-                  "the program first)");
-      return false;
+  auto body = [&](llvm::raw_ostream &os) -> LogicalResult {
+    os << "# sea-vc --reach: " << t.id << " op=" << t.opName << " at=" << at
+       << "\n";
+    os << "# " << replaysOn(options) << "\n";
+    for (const NondetRead &rd : run.reads) {
+      os << "nondet: site=" << rd.site << " callee=" << rd.callee
+         << " width=" << rd.value.getBitWidth() << " value=";
+      rd.value.print(os, /*isSigned=*/false);
+      os << "\n";
     }
-    os << "memread: site=" << memSiteOf(cr.siteOp) << " addr=";
-    cr.addr.print(os, /*isSigned=*/false);
-    os << " width=" << cr.value.getBitWidth() << " value=";
-    cr.value.print(os, /*isSigned=*/false);
-    os << "\n";
-  }
-  return true;
+    for (const CellRead &cr : run.cellReads) {
+      if (!cr.object.empty()) {
+        diag::error("vc.reach-witness",
+                    "a memory cell of an abstract memory in a witness (place "
+                    "the program first)");
+        return failure();
+      }
+      os << "memread: site=" << memSiteOf(cr.siteOp) << " addr=";
+      cr.addr.print(os, /*isSigned=*/false);
+      os << " width=" << cr.value.getBitWidth() << " value=";
+      cr.value.print(os, /*isSigned=*/false);
+      os << "\n";
+    }
+    return success();
+  };
+  return succeeded(
+      writeFileAtomic(path, body, "vc.reach-witness", "--reach-witness"));
 }
 
 } // namespace
@@ -420,12 +418,9 @@ FailureOr<ReachRuns> runReachRuns(ProgramOp program,
         .kv("by", d.by);
     // the assumptions a decision rests on: its run's, and its A-INB check's
     if (deciding.insert(h.trial).second) {
-      out.addr0Uses += h.addr0IsNullUses;
-      out.memhavocUses += h.memhavocNullNoopUses;
-      if (auto it = abstractRuns.find(h.trial); it != abstractRuns.end()) {
-        out.addr0Uses += it->second.r.addr0IsNullUses;
-        out.memhavocUses += it->second.r.memhavocNullNoopUses;
-      }
+      out.assumptions.useRun(h);
+      if (auto it = abstractRuns.find(h.trial); it != abstractRuns.end())
+        out.assumptions.useRun(it->second.r);
     }
     if (!h.seed.empty()) {
       d.witness = h.seed;
@@ -451,11 +446,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
              const VCGen &vcgen, Expr query, SeaOpSem &sem, OpSemContext &ctx,
              const ReachOptions &options, const ReachHooks &hooks,
              out::Emitter &out, const ReachRuns *runs) {
-  using Clock = std::chrono::steady_clock;
-  auto since = [](Clock::time_point t) {
-    return std::chrono::duration<double>(Clock::now() - t).count();
-  };
-  const auto start = Clock::now();
+  const Stopwatch start;
   // a guard the query does not mention would be unconstrained (a sat for
   // nothing): only the entry's may be absent (it executes on every run)
   ExprSet consts;
@@ -498,17 +489,15 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
   std::vector<bool> hitByRun(targets.size(), false);
   unsigned nReach = 0, nUnreach = 0, nUnknown = 0, queries = 0;
   // steps of the reach runs that rested on the interpreter's assumptions
-  uint64_t addr0Uses = 0, memhavocUses = 0;
+  assume::Ledger used;
   bool bug = false, memError = false, error = false;
   // what decided the targets: concrete runs, the CFG, the solver
   unsigned byRuns = 0, byCfg = 0, bySolver = 0, byModelRuns = 0;
-  if (runs) {
-    addr0Uses += runs->addr0Uses;
-    memhavocUses += runs->memhavocUses;
-  }
+  if (runs)
+    used.add(runs->assumptions);
   for (size_t i : order) {
     const ReachTarget &t = targets[i];
-    const auto t0 = Clock::now();
+    const Stopwatch t0;
     std::string at = formatLoc(t.loc);
     if (at.empty())
       at = "-";
@@ -610,7 +599,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
       solver::Solver &s = shared ? *shared : *own;
       ExprVector lits{g};
       ++queries;
-      const auto solveStart = Clock::now();
+      const Stopwatch solveStart;
       // a solver of its own: the guard is asserted and the check is a
       // plain one (z3 answers check-sat-assuming with its incremental
       // core, which can be much slower than its one-shot solver)
@@ -625,28 +614,25 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
           .kv("result", res == solver::SolverResult::SAT     ? "sat"
                         : res == solver::SolverResult::UNSAT ? "unsat"
                                                              : "unknown")
-          .kv("solve-time", since(solveStart));
+          .kv("solve-time", solveStart.seconds());
       if (res == solver::SolverResult::UNSAT) {
         v = Verdict::Unreachable;
       } else if (res == solver::SolverResult::SAT) {
         v = Verdict::Reachable;
-        const auto replayStart = Clock::now();
+        const Stopwatch replayStart;
         int rc = hooks.withModel(s, [&](solver::Model &m) {
           ReachReplay rp =
               replayToTarget(program, m, sem, ctx, index, t.op, options);
           mismatches = rp.mismatches;
-          addr0Uses += rp.run.addr0IsNullUses;
-          memhavocUses += rp.run.memhavocNullNoopUses;
+          used.useRun(rp.run);
           std::string inbMessage;
           std::optional<AbstractRun> abs;
           if (options.abstractProgram)
             abs = runAbstract(options.abstractProgram, rp.run, options);
           InbCheck inb =
               abs ? abs->check(t, *sites, inbMessage) : InbCheck::None;
-          if (abs) {
-            addr0Uses += abs->r.addr0IsNullUses;
-            memhavocUses += abs->r.memhavocNullNoopUses;
-          }
+          if (abs)
+            used.useRun(abs->r);
           // every target the run reaches before its turn is reachable
           // (the run is an execution; under --seam, the ones its input
           // program's run reaches inside every object)
@@ -730,7 +716,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
         SEA_LOG(logReach, log::Object)
             .kv("target", t.id)
             .kv("replay", replayStatus)
-            .kv("replay-time", since(replayStart));
+            .kv("replay-time", replayStart.seconds());
         if (rc) {
           // a rerun (sea-vc's retries) prints its own records; an error
           // prints the targets answered so far
@@ -739,7 +725,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
           return rc;
         }
       } else {
-        reason = hooks.reasonUnknown ? hooks.reasonUnknown(s, since(t0))
+        reason = hooks.reasonUnknown ? hooks.reasonUnknown(s, t0.seconds())
                                      : s.reason_unknown();
       }
     }
@@ -749,7 +735,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
     ++(v == Verdict::Reachable     ? nReach
        : v == Verdict::Unreachable ? nUnreach
                                    : nUnknown);
-    const double sec = since(t0);
+    const double sec = t0.seconds();
     rec.str("status", verdictName(v)).str("op", t.opName);
     raw_string_ostream os(rec.text);
     os << "reach: " << t.id << " " << verdictName(v) << " op=" << t.opName;
@@ -776,7 +762,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
       rec.str("witness", witness);
       os << " witness=" << witness;
     }
-    std::string secText = llvm::formatv("{0:f3}", sec).str();
+    std::string secText = secondsText(sec);
     rec.set("time", out::jtoken(secText));
     os << " time=" << secText << " at=" << at;
     addLocFields(rec, "at", t.loc);
@@ -797,7 +783,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
   out.lines() << "reach.summary: targets=" << targets.size()
               << " reachable=" << nReach << " unreachable=" << nUnreach
               << " unknown=" << nUnknown << " queries=" << queries
-              << " time=" << llvm::formatv("{0:f3}", since(start)).str();
+              << " time=" << secondsText(start.seconds());
   if (options.modelRuns)
     out.lines() << " model-runs=" << byModelRuns;
   out.lines() << "\n";
@@ -807,12 +793,12 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
                 << " cfg=" << byCfg << " unknown=" << nUnknown
                 << " trials=" << runs->trials << " seeds=" << runs->seedTrials
                 << " inb-violated=" << runs->inbViolated
-                << " time=" << llvm::formatv("{0:f3}", runs->seconds).str()
-                << "\n";
-  if (addr0Uses)
-    out.lines() << "assume.addr0-is-null: uses=" << addr0Uses << "\n";
-  if (memhavocUses)
-    out.lines() << "assume.memhavoc-null-noop: uses=" << memhavocUses << "\n";
+                << " time=" << secondsText(runs->seconds) << "\n";
+  {
+    stats::Report r;
+    used.report(r);
+    r.print(out.lines(), /*brunch=*/false);
+  }
   out.flush();
   if (error)
     return 1;

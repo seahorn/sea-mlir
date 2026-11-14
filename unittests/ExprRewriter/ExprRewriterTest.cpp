@@ -445,7 +445,11 @@ void testCounters() {
   // per-rule counters are readable and add up
   Run r = runFig71(8, Scheme::Midpoint, kDefault);
   llvm::outs() << "counters N=8:\n";
-  r.stats.print(llvm::outs(), "  ");
+  {
+    sea::stats::Report rep;
+    r.stats.report(rep, "  ");
+    rep.print(llvm::outs(), false);
+  }
   CHECK(r.stats.get("row.store") > 0, "counter row.store");
   CHECK(r.stats.get("row.ite") > 0, "counter row.ite");
   CHECK(r.stats.get("eq.bvnum") > 0, "counter eq.bvnum");

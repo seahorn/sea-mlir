@@ -50,6 +50,21 @@
 // SCOPE: result: sat
 // RUN: sea-vc %s --lower --mlir-timing 2>&1 | FileCheck %s --check-prefix=TIMING
 // TIMING: Execution time report
+// The phases nest under the root of --mlir-timing, the lowering's pass
+// timers under the lower phase (siblings are sorted by time: two checks).
+// RUN: sea-vc %s --lower --mlir-timing 2>&1 | FileCheck %s --check-prefix=TPHASE
+// TPHASE: Execution time report
+// TPHASE-DAG: {{^ +[0-9.]+ +\( *[0-9.]+%\)  encode$}}
+// TPHASE-DAG: {{^ +[0-9.]+ +\( *[0-9.]+%\)  solver-term$}}
+// TPHASE-DAG: {{^ +[0-9.]+ +\( *[0-9.]+%\)  ackermann$}}
+// TPHASE-DAG: {{^ +[0-9.]+ +\( *[0-9.]+%\)  solve$}}
+// TPHASE-DAG: {{^ +[0-9.]+ +\( *[0-9.]+%\)  replay$}}
+// RUN: sea-vc %s --lower --mlir-timing 2>&1 | FileCheck %s --check-prefix=TLOWER
+// TLOWER: {{^ +[0-9.]+ +\( *[0-9.]+%\)  lower$}}
+// TLOWER-NEXT: {{^ +[0-9.]+ +\( *[0-9.]+%\)    'sea.program' Pipeline$}}
+// Without --mlir-timing no report.
+// RUN: sea-vc %s --lower 2>&1 | FileCheck %s --check-prefix=NOTIMING
+// NOTIMING-NOT: Execution time report
 
 sea.program @main {
   %x = sea.nondet "nondet_u8" [0] : i8

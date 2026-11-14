@@ -11,11 +11,17 @@ set(CMAKE_BUILD_WITH_INSTALL_NAME_DIR ON)
 set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to conform to")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(LLVM_LIT_ARGS "-sv -j8" CACHE STRING "Default options for lit")
+get_property(LLVM_LIT_ARGS_CACHED CACHE LLVM_LIT_ARGS PROPERTY VALUE)
 find_package(MLIR REQUIRED CONFIG)
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
-set(LLVM_LIT_ARGS "-sv" CACHE STRING "Default options for lit")
+# LLVMConfig.cmake (find_package above) sets a normal LLVM_LIT_ARGS "-sv" that
+# shadows the cache entry, so -DLLVM_LIT_ARGS was lost on every re-configure.
+# Restore the cache value. Default "-sv -j8" (not one lit worker per core of a
+# shared machine); override with -DLLVM_LIT_ARGS=...
+set(LLVM_LIT_ARGS "${LLVM_LIT_ARGS_CACHED}")
 set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)
 set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/lib)
 set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})

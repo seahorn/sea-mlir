@@ -19,6 +19,7 @@
 #define SEA_YICES_STATUS(x) STATUS_##x
 #endif
 #include "sea/Support/Diag.h"
+#include "sea/Support/Log.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include <chrono>
@@ -33,6 +34,11 @@ using namespace expr;
 
 namespace sea {
 namespace solver {
+
+static log::Tag logConstArray(
+    "yices.const-array", 2,
+    "an assertion in which a const-array survives the select rewrite "
+    "(yices cannot assert it)");
 
 static void report_fatal_error(std::string const &s) {
   llvm::report_fatal_error(llvm::StringRef(s));
@@ -158,18 +164,17 @@ bool yices_solver_impl::add(expr::Expr exp) {
   exp = d_defs.add(exp);
   ExprMap rw_cache;
   exp = rewriteConstArraySelects(exp, rw_cache);
-  // -- debug aid: dump assertions in which a const-array survives the
+  // -- debug aid: the assertions in which a const-array survives the
   // -- rewrite (yices cannot assert them; see rewriteConstArraySelects)
-  if (std::getenv("SEA_DEBUG_DUMP_CONST_ARRAY")) {
+  if (logConstArray.on(log::Object)) {
     std::vector<Expr> matches;
     expr::filter(
         exp, [](Expr e) { return isOpX<CONST_ARRAY>(e); },
         std::back_inserter(matches));
-    if (!matches.empty()) {
-      llvm::errs() << "=== assertion with CONST_ARRAY (" << matches.size()
-                   << ") ===\n"
-                   << *exp << "\n";
-    }
+    if (!matches.empty())
+      SEA_LOG(logConstArray, log::Object)
+          .kv("const-arrays", matches.size())
+          .kv("assertion", *exp);
   }
   term_t yt = marshal_yices::encode_term(exp, get_cache());
   if (yt == NULL_TERM) {
@@ -355,7 +360,8 @@ yices_solver_impl::model_ref yices_solver_impl::get_model() {
 }
 
 void yices_solver_impl::to_smt_lib(raw_ostream &o) {
-  errs() << "Warning: yices::to_smt_lib is not implemented\n";
+  diag::warn("yices.smt2-unimplemented",
+             "yices::to_smt_lib is not implemented; nothing printed");
 }
 
 } // namespace solver

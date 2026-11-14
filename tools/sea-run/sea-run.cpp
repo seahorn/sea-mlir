@@ -23,9 +23,11 @@
 #include "sea/Interp/Interpreter.h"
 #include "sea/Interp/ParseInput.h"
 #include "sea/Interp/ReachTargets.h"
+#include "sea/Support/Assume.h"
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
 #include "sea/Support/Output.h"
+#include "sea/Support/Stats.h"
 #include "sea/Support/Version.h"
 #include "sea/Transforms/Passes.h"
 
@@ -1035,6 +1037,14 @@ static std::string locText(Location l) {
 
 static sea::out::Record statusRecord(const sea::RunResult &r);
 
+/// The `assume.<name>: uses=<n>` lines of \p used (no BRUNCH_STAT lines).
+static void printAssumptions(sea::out::Emitter &out,
+                             const sea::assume::Ledger &used) {
+  sea::stats::Report r;
+  used.report(r);
+  r.print(out.lines(), /*brunch=*/false);
+}
+
 /// The report of one run: program, its inputs, prints, status, steps.
 static void printRun(sea::out::Emitter &out, sea::ProgramOp program,
                      const sea::RunResult &r) {
@@ -1088,12 +1098,9 @@ static void printRun(sea::out::Emitter &out, sea::ProgramOp program,
   sea::printPrintRecords(out, r, printMode, printLocs);
   out.emit(statusRecord(r));
   out.emit(sea::out::parseLine("steps: " + std::to_string(r.steps)));
-  if (r.addr0IsNullUses)
-    out.emit(sea::out::parseLine("assume.addr0-is-null: uses=" +
-                                 std::to_string(r.addr0IsNullUses)));
-  if (r.memhavocNullNoopUses)
-    out.emit(sea::out::parseLine("assume.memhavoc-null-noop: uses=" +
-                                 std::to_string(r.memhavocNullNoopUses)));
+  sea::assume::Ledger used;
+  used.useRun(r);
+  printAssumptions(out, used);
 }
 
 /// One record: the status and where the run stopped (the status / at /
@@ -1252,7 +1259,7 @@ static int emitReach(sea::out::Emitter &out, ArrayRef<sea::ReachTarget> targets,
     if (std::error_code ec = sys::fs::create_directories(reachWitness))
       return fail("cannot create '" + reachWitness + "': " + ec.message());
   unsigned reached = 0, bySeed = 0, byTrial = 0, witnesses = 0;
-  uint64_t addr0 = 0, memhavoc = 0;
+  sea::assume::Ledger used; // of the deciding runs, each once
   std::set<uint64_t> deciding;
   for (auto [k, t] : llvm::enumerate(targets)) {
     const sea::ReachHit &h = hits[k];
@@ -1267,10 +1274,8 @@ static int emitReach(sea::out::Emitter &out, ArrayRef<sea::ReachTarget> targets,
        << " op=" << t.opName;
     if (h.trial) {
       ++reached;
-      if (deciding.insert(h.trial).second) {
-        addr0 += h.addr0IsNullUses;
-        memhavoc += h.memhavocNullNoopUses;
-      }
+      if (deciding.insert(h.trial).second)
+        used.useRun(h);
       std::string by = plain            ? "run"
                        : h.seed.empty() ? "trial:" + std::to_string(h.trial)
                                         : "seed:" + h.seed;
@@ -1287,10 +1292,8 @@ static int emitReach(sea::out::Emitter &out, ArrayRef<sea::ReachTarget> targets,
                 (inputFilename == "-" ? std::string("<program>")
                                       : inputFilename.getValue()) +
                 ", with sea-run <program> --input-file=<this file>"};
-        if (h.addr0IsNullUses || h.memhavocNullNoopUses)
-          header.push_back(
-              "assume: addr0-is-null=" + std::to_string(h.addr0IsNullUses) +
-              " memhavoc-null-noop=" + std::to_string(h.memhavocNullNoopUses));
+        if (sea::assume::Ledger hit; hit.useRun(h), hit.anyUse())
+          header.push_back("assume: " + hit.runFields(/*withRuns=*/false));
         std::string error;
         if (failed(sea::writeCorpusFile(path, header, h.input, error)))
           return fail(error);
@@ -1310,10 +1313,7 @@ static int emitReach(sea::out::Emitter &out, ArrayRef<sea::ReachTarget> targets,
     os << " by-seed=" << bySeed << " by-trial=" << byTrial
        << " witnesses=" << witnesses;
   os << "\n";
-  if (addr0)
-    out.lines() << "assume.addr0-is-null: uses=" << addr0 << "\n";
-  if (memhavoc)
-    out.lines() << "assume.memhavoc-null-noop: uses=" << memhavoc << "\n";
+  printAssumptions(out, used);
   return 0;
 }
 
@@ -1707,11 +1707,9 @@ static int runFuzz(sea::ProgramOp program) {
     os << "fuzz.blocked-before-assert-false: " << rep->blockedBeforeAssertFalse
        << " assumes=" << rep->assumesBeforeAssertFalse
        << " deferred=" << rep->blockedBeforeAssertFalseDeferred << "\n";
-  if (rep->addr0IsNullUses || rep->memhavocNullNoopUses)
-    os << "fuzz.assumptions: addr0-is-null=" << rep->addr0IsNullUses
-       << " addr0-is-null-runs=" << rep->addr0IsNullRuns
-       << " memhavoc-null-noop=" << rep->memhavocNullNoopUses
-       << " memhavoc-null-noop-runs=" << rep->memhavocNullNoopRuns << "\n";
+  if (rep->assumptions.anyUse())
+    os << "fuzz.assumptions: " << rep->assumptions.runFields(/*withRuns=*/true)
+       << "\n";
   os << "fuzz.coverage: blocks=" << rep->blocksHit
      << " blocks-total=" << rep->blocksTotal << " edges=" << rep->edgesHit
      << " assumes=" << rep->assumesPassed

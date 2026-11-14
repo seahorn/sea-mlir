@@ -1,0 +1,15 @@
+// The timers (sea/Support/Timer.h) on a fake clock: the printed form of a
+// duration, accumulation and counts, scopes with an early return and nested
+// into --mlir-timing, a run's timers in first-use order with their keys and
+// laps.
+RUN: sea-timer-test | FileCheck %s
+CHECK: text: ok
+CHECK: stopwatch: ok
+CHECK: timer: ok
+CHECK: scope: ok
+CHECK: group: ok
+CHECK: system: ok
+CHECK: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

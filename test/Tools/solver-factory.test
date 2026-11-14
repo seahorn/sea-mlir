@@ -1,0 +1,11 @@
+// The solver factory (sea/Expr/Smt/SolverFactory.h): limits each backend
+// honours, the warning for one it cannot, the error (and null solver) for a
+// backend this build lacks or a configuration Yices rejects.
+RUN: sea-solver-factory-test 2>&1 | FileCheck %s
+CHECK: z3: ok
+CHECK: yices: ok
+CHECK: bitwuzla: ok
+CHECK: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

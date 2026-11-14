@@ -1,0 +1,9 @@
+// --seam-check with Yices: its checks run without a time limit (only z3 and
+// Bitwuzla get --seam-check-timeout), and that is warned.
+REQUIRES: yices
+RUN: sea-vc %S/wide-splice.mlir --lower --program=edge0 --seam --seam-wide --seam-check --solver=yices 2>&1 | FileCheck %s
+CHECK: [seam.check-no-timeout]
+CHECK: seam-check: firings={{[0-9]+}} checked={{[0-9]+}} {{.*}}invalid=0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

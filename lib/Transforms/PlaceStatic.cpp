@@ -56,6 +56,7 @@
 #include "PassUtils.h"
 #include "sea/Dialect/Sea/SeaOps.h"
 #include "sea/Support/Diag.h"
+#include "sea/Support/WriteFile.h"
 #include "sea/Transforms/Passes.h"
 
 #include "mlir/IR/Builders.h"
@@ -525,31 +526,19 @@ LogicalResult PlaceStaticPass::placeFromFile(ProgramOp program, unsigned width,
 
 LogicalResult PlaceStaticPass::writeFile(ProgramOp program,
                                          ArrayRef<Object> objects) {
-  std::error_code ec;
-  llvm::raw_fd_ostream os(placeOut, ec, llvm::sys::fs::OF_Text);
-  if (ec) {
-    diag::error("place.out-file",
-                "sea-place-static: cannot write the placement file '" +
-                    placeOut + "': " + ec.message(),
-                program.getLoc());
-    return failure();
-  }
-  os << "# sea-place-static placement of @" << program.getSymName()
-     << ": one object per line\n";
-  for (const Object &o : objects)
-    os << "name=" << o.name << " kind=" << o.kind << " base=0x"
-       << llvm::utohexstr(o.base, /*LowerCase=*/true) << " size=" << o.room
-       << " align=" << o.align << "\n";
-  os.close();
-  if (os.has_error()) {
-    diag::error("place.out-file",
-                "sea-place-static: cannot write the placement file '" +
-                    placeOut + "': " + os.error().message(),
-                program.getLoc());
-    os.clear_error();
-    return failure();
-  }
-  return success();
+  return sea::writeFileAtomic(
+      placeOut,
+      [&](llvm::raw_ostream &os) {
+        os << "# sea-place-static placement of @" << program.getSymName()
+           << ": one object per line\n";
+        for (const Object &o : objects)
+          os << "name=" << o.name << " kind=" << o.kind << " base=0x"
+             << llvm::utohexstr(o.base, /*LowerCase=*/true)
+             << " size=" << o.room << " align=" << o.align << "\n";
+        return success();
+      },
+      "place.out-file", "sea-place-static: the placement file",
+      program.getLoc());
 }
 
 void PlaceStaticPass::runOnOperation() {

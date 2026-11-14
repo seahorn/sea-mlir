@@ -4,6 +4,9 @@
 // RUN: sea-run --version | FileCheck %s --check-prefix=TOOL -DNAME=run
 // RUN: sea-opt --version | FileCheck %s --check-prefix=TOOL -DNAME=opt
 // RUN: sea-reduce --version | FileCheck %s --check-prefix=TOOL -DNAME=reduce
+// RUN: sea-expr-eval --version | FileCheck %s --check-prefix=TOOL -DNAME=expr-eval
+// RUN: printf 'bin bvadd 8 200 100\n' | sea-expr-eval --solver=z3 2>%t.err | FileCheck %s --check-prefix=EVAL
+// RUN: FileCheck %s --check-prefix=EVALERR --input-file=%t.err
 // RUN: sea-vc %s | FileCheck %s --check-prefix=TEXT
 // RUN: sea-vc %s --format=jsonl | FileCheck %s --check-prefix=JSONL
 // RUN: sea-vc %s --smt2 2>&1 >/dev/null | FileCheck %s --check-prefix=SMT
@@ -15,6 +18,9 @@
 // VC-NEXT: bitwuzla
 // TOOL: sea-[[NAME]] (sea-mlir {{[0-9]+\.[0-9]+\.[0-9]+}} ({{.+}}))
 // TOOL-NEXT: LLVM/MLIR
+// EVAL: {{^}}44{{$}}
+// EVAL-NOT: tool.version
+// EVALERR: {{^}}tool.version: sea-mlir {{[0-9]+\.[0-9]+\.[0-9]+}} ({{.+}}){{$}}
 // TEXT: {{^}}tool.version: sea-mlir {{[0-9]+\.[0-9]+\.[0-9]+}} ({{.+}}){{$}}
 // TEXT: program: @p
 // SMT: {{^}}tool.version: sea-mlir

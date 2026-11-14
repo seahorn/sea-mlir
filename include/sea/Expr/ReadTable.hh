@@ -46,6 +46,8 @@
 #include "sea/Expr/SeaMRules.hh"
 #include "sea/Expr/Smt/Model.hh"
 #include "sea/Expr/TypeChecker.hh"
+#include "sea/Support/Log.h"
+#include "sea/Support/Stats.h"
 
 #include <map>
 #include <memory>
@@ -55,6 +57,13 @@
 
 namespace expr {
 namespace xrt {
+
+/// Each model record a ReadTable model reads back. The tag is in this header
+/// because the code that logs it is inline here (the ReadTable is header-only:
+/// no source file to hold it); inline: one tag for every includer.
+inline sea::log::Tag logModelRecord("xrt.model-record", 3,
+                                    "a read record of the --x-read-table "
+                                    "model (address, value, relevance)");
 
 struct IdLess {
   bool operator()(const ENode *a, const ENode *b) const {
@@ -354,6 +363,37 @@ public:
     for (auto &[w, s] : m_split)
       n += s->overCap();
     return n;
+  }
+
+  /// The lines of the translation (sea-vc `xrt.`): reads, leaves, terms
+  /// over the cap, R calls, stores, memops, leaf pairs, dead records by
+  /// kind.
+  void report(sea::stats::Report &r, llvm::StringRef prefix) const {
+    auto line = [&](const llvm::Twine &k) -> sea::stats::Line & {
+      return r.line((prefix + k).str());
+    };
+    const TranslatorStats &ts = m_stats;
+    line("reads").value(ts.reads);
+    line("read-leaves").value(ts.leafSum).kv("max", ts.leafMax);
+    line("over-cap").value(overCap());
+    line("r-calls").value(ts.rCalls).kv("memo", ts.rMemo);
+    line("stores").value(ts.stores).kv("leaf-pairs", ts.storePairs);
+    line("memops")
+        .value(ts.memops)
+        .kv("leaf-pairs", ts.memopPairs)
+        .kv("src-leaves", ts.srcLeaves)
+        .kv("src-unknown", ts.srcUnknown);
+    line("leaf-pairs")
+        .kv("same-object", ts.samePairs)
+        .kv("unknown", ts.unknownPairs)
+        .kv("decided", ts.decided)
+        .kv("other-memory", ts.other);
+    std::map<std::string, uint64_t> dk;
+    for (const Dead &d : m_deads)
+      dk[d.kind]++;
+    sea::stats::Line &dead = line("dead").value(m_deads.size());
+    for (auto &[k, n] : dk)
+      dead.kv(k, n);
   }
 
 private:
@@ -839,6 +879,38 @@ struct LowerStats {
   uint64_t muxObjects = 0, muxRecords = 0, muxCells = 0;
   std::map<std::string, uint64_t> perBucket; ///< records per bucket
   std::map<unsigned, uint64_t> eqWidths;     ///< equalities of the constraints
+
+  /// The lines of the lowering (sea-vc `xrt.`): records, records per
+  /// bucket, pairs, mux, the widths of the equalities.
+  void report(sea::stats::Report &r, llvm::StringRef prefix) const {
+    auto line = [&](const llvm::Twine &k) -> sea::stats::Line & {
+      return r.line((prefix + k).str());
+    };
+    line("records")
+        .value(records)
+        .kv("unknown", unknown)
+        .kv("unreached", unreached)
+        .kv("arrays", arrays);
+    for (auto &[b, n] : perBucket)
+      line("bucket").value(b).value(n);
+    line("pairs")
+        .value(pairs)
+        .kv("exact-drop", exactDrop)
+        .kv("guard-drop", guardDrop)
+        .kv("disjoint-drop", disjointDrop)
+        .kv("solver-array", arrayPairs)
+        .kv("mux", muxPairs)
+        .kv("constraints", constraints)
+        .note("offset=" + std::to_string(constraintsOff) +
+              " address=" + std::to_string(constraintsAddr));
+    line("mux")
+        .kv("objects", muxObjects)
+        .kv("cells", muxCells)
+        .kv("records", muxRecords);
+    sea::stats::Line &eq = line("eq-widths");
+    for (auto &[w, n] : eqWidths)
+      eq.value(std::to_string(w) + "x" + std::to_string(n));
+  }
 };
 
 /// One lowered record: its terms in the lowered vocabulary.
@@ -1207,9 +1279,11 @@ private:
       Expr vn =
           op::bv::bvnum(reducedValue(v), op::bv::widthBvNum(v), v->efac());
       bool rel = !isOpX<FALSE>(r);
-      if (getenv("XRT_DEBUG"))
-        llvm::errs() << "xrt.model-record: " << k << " addr=" << *i
-                     << " value=" << *v << " rel=" << *r << "\n";
+      SEA_LOG(logModelRecord, sea::log::Detail)
+          .kv("record", k)
+          .kv("addr", *i)
+          .kv("value", *v)
+          .kv("rel", *r);
       auto &tbl = rel ? f.cells : irr;
       if (rel)
         ++m_relevant;

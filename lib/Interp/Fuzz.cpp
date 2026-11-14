@@ -11,6 +11,8 @@
 
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
+#include "sea/Support/Timer.h"
+#include "sea/Support/WriteFile.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -23,7 +25,6 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <optional>
 #include <random>
@@ -96,37 +97,17 @@ std::string formatAssignment(const Assignment &a) {
   return std::to_string(a.site) + "@" + a.cell + "=" + a.value;
 }
 
-/// Writes `text` to `path` whole: to `.<name>.tmp` in the same directory,
-/// then renamed, so a reader of the directory (a peer's --fuzz-sync) sees
-/// the file complete or not at all.
+/// Writes `text` to `path` whole (writeFileAtomic): a reader of the
+/// directory (a peer's --fuzz-sync) sees the file complete or not at all.
 static LogicalResult writeWhole(StringRef path, StringRef text,
                                 std::string &error) {
-  llvm::SmallString<128> tmp = llvm::sys::path::parent_path(path);
-  llvm::sys::path::append(tmp,
-                          "." + llvm::sys::path::filename(path).str() + ".tmp");
-  {
-    std::error_code ec;
-    llvm::raw_fd_ostream os(tmp, ec, llvm::sys::fs::OF_Text);
-    if (ec) {
-      error = "cannot write '" + tmp.str().str() + "': " + ec.message();
-      return failure();
-    }
-    os << text;
-    os.close();
-    if (os.has_error()) {
-      error = "cannot write '" + tmp.str().str() + "': " + os.error().message();
-      os.clear_error();
-      llvm::sys::fs::remove(tmp);
-      return failure();
-    }
-  }
-  if (std::error_code ec = llvm::sys::fs::rename(tmp, path)) {
-    error = "cannot rename '" + tmp.str().str() + "' to '" + path.str() +
-            "': " + ec.message();
-    llvm::sys::fs::remove(tmp);
-    return failure();
-  }
-  return success();
+  return writeFileAtomic(
+      path,
+      [&](llvm::raw_ostream &os) {
+        os << text;
+        return success();
+      },
+      error);
 }
 
 LogicalResult writeCorpusFile(StringRef path,
@@ -981,9 +962,8 @@ private:
       os << "# replay with: sea-run --defer-memory-errors --input-file=<this "
             "file>\n";
     // what the run rested on (the replay needs the same options)
-    if (r.addr0IsNullUses || r.memhavocNullNoopUses)
-      os << "# assume: addr0-is-null=" << r.addr0IsNullUses
-         << " memhavoc-null-noop=" << r.memhavocNullNoopUses << "\n";
+    if (assume::Ledger used; used.useRun(r), used.anyUse())
+      os << "# assume: " << used.runFields(/*withRuns=*/false) << "\n";
     for (const Assignment &a : assignmentsOf(e))
       os << formatAssignment(a) << "\n";
     if (failed(writeWhole(path, text, error)))
@@ -1071,7 +1051,7 @@ private:
   llvm::DenseSet<uint64_t> paths;
   uint64_t failingTrials = 0;
   /// the run's start (failure times, progress)
-  std::chrono::steady_clock::time_point start;
+  Stopwatch start;
   llvm::DenseSet<Operation *> assumes;
   llvm::DenseMap<Operation *, uint64_t> blockedBy;
   /// FuzzOptions::reachTargets: op -> index; the targets the current run
@@ -1143,10 +1123,7 @@ LogicalResult Fuzzer::trial(Entry preset,
     h.memhavocNullNoopUses = r.memhavocNullNoopUses;
   }
   ++report.statusCount[static_cast<unsigned>(r.status)];
-  report.addr0IsNullUses += r.addr0IsNullUses;
-  report.addr0IsNullRuns += r.addr0IsNullUses != 0;
-  report.memhavocNullNoopUses += r.memhavocNullNoopUses;
-  report.memhavocNullNoopRuns += r.memhavocNullNoopUses != 0;
+  report.assumptions.useRun(r);
   if (r.deferredCount)
     ++report.deferredStatusCount[static_cast<unsigned>(r.status)];
   report.frontierSum += runFrontier;
@@ -1252,9 +1229,7 @@ LogicalResult Fuzzer::trial(Entry preset,
     f.message = r.message;
     f.input = assignmentsOf(source.used);
     f.count = 1;
-    f.seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-            .count();
+    f.seconds = start.seconds();
     if (!options.outDir.empty()) {
       FailureOr<std::string> p = write(failing       ? "failure"
                                        : memoryCheck ? "memory-check"
@@ -1437,12 +1412,8 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
       .kv("seconds", options.seconds)
       .kv("seed", options.seed)
       .kv("dictionary", options.dictionary ? dict.size() : 0);
-  start = std::chrono::steady_clock::now();
-  auto elapsed = [&] {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                         start)
-        .count();
-  };
+  start.restart();
+  auto elapsed = [&] { return start.seconds(); };
   auto budgetLeft = [&] {
     if (options.trials && report.trials >= options.trials)
       return false;

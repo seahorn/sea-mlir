@@ -376,6 +376,7 @@ name=global.s_allocator_static kind=global base=0x8048018 size=40 align=8
 units reserved (the allocation size, `max-symbolic-size` for a symbolic
 one) and `align` its alignment. A concrete program has no objects to place:
 the file has the comment only.
+A file that cannot be written is the error `place.out-file`.
 
 `--place-in=<file>` (`place-in=<file>`) places every object at the base the
 file gives it, instead of computing one. The pass still checks the bases

@@ -728,6 +728,18 @@ public:
   void push() { solver.push(); }
   void pop(unsigned n = 1) { solver.pop(n); }
   void reset() { solver.reset(); }
+
+  /// Makes z3 build the solver now: it does so at the first use, and reads
+  /// the global parameters (the default tactic, sat.euf) when it does.
+  /// Returns z3's message when that fails (an unknown tactic), else empty.
+  std::string init() {
+    Z3_solver_get_num_scopes(ctx, solver);
+    Z3_error_code code = Z3_get_error_code(ctx);
+    if (code == Z3_OK)
+      return std::string();
+    const char *msg = Z3_get_error_msg(ctx, code);
+    return msg ? msg : "z3 failed to build the solver";
+  }
 };
 
 template <typename Z>
@@ -850,7 +862,6 @@ public:
             out << "(_ BitVec " << bv::width(sort::arrayIndexTy(ty)) << ") ";
           } else {
             out << "UfoUnknownSort ";
-            llvm::errs() << "u1: " << *sort::arrayIndexTy(ty) << "\n";
           }
           if (isOpX<INT_TY>(sort::arrayValTy(ty)))
             out << "Int";
@@ -858,23 +869,18 @@ public:
             out << "(_ BitVec " << bv::width(sort::arrayValTy(ty)) << ") ";
           } else {
             out << "UfoUnknownSort";
-            llvm::errs() << "u2: " << *sort::arrayValTy(ty) << "\n";
           }
           out << ") ";
         } else if (isOpX<BVSORT>(ty)) {
           out << "(_ BitVec " << bv::width(ty) << ") ";
         } else {
           out << "UfoUnknownSort ";
-          llvm::errs() << "u3: " << *ty << "\n";
         }
       }
       out << "))\n";
     }
 
     for (const Expr &v : fp.getVars()) {
-      if (!bind::IsConst()(v)) {
-        std::cerr << "FP var not a constant: " << *v << "\n";
-      }
       assert(bind::IsConst()(v));
       out << "(declare-var " << fp.z3.toSmtLib(v) << " ";
       Expr ty = bind::declaredSort(v);
