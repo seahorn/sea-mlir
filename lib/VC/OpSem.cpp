@@ -773,9 +773,9 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
     // Intrinsics are expanded by a pass (sea-expand-intrinsics), not here;
     // mul overflow only if the solver lacks it.
     bool nativeMul = nativeMulOverflow && isa<UMulOOp, SMulOOp>(op);
-    if (!nativeMul && isa<UMinOp, UMaxOp, SMinOp, SMaxOp, BSwapOp, CtPopOp,
-                          FShlOp, FShrOp, UAddOOp, SAddOOp, USubOOp, SSubOOp,
-                          UMulOOp, SMulOOp, SDivOOp, NegOOp>(op)) {
+    if (!nativeMul && isa<UMinOp, UMaxOp, SMinOp, SMaxOp, AbsOp, BSwapOp,
+                          CtPopOp, FShlOp, FShrOp, UAddOOp, SAddOOp, USubOOp,
+                          SSubOOp, UMulOOp, SMulOOp, SDivOOp, NegOOp>(op)) {
       diag::error("vc.intrinsic",
                   op.getName().getStringRef() +
                       " is an intrinsic the VC does not encode for this "

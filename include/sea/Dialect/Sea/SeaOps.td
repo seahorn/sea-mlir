@@ -352,6 +352,28 @@ def Sea_CtPopOp : Sea_Op<"ctpop", [Pure, SameOperandsAndResultType]> {
   let hasFolder = 1;
 }
 
+def Sea_AbsOp : Sea_Op<"abs", [Pure, SameOperandsAndResultType]> {
+  let summary = "Absolute value (llvm.abs), optionally with a no-wrap promise";
+  let description = [{
+    The value is `ite(x <s 0, 0 - x, x)`: the minimal signed value is its
+    own absolute value (LLVM's result with `is_int_min_poison` false).
+
+    `nsw` is LLVM's `is_int_min_poison` true: the promise that the input
+    is not the minimal signed value, i.e. that `0 - x` does not overflow.
+    It is the `nsw` of add / sub / mul / shl (the promise, not the value):
+    the value is still the one above, the interpreter warns when the
+    promise is broken, `sea-wrap-flags` turns it into a sea.assume /
+    sea.assert of `x != INT_MIN` (or drops it), `sea-expand-intrinsics`
+    keeps it on the `sea.sub` of the expansion, and the op folds only
+    without it.
+  }];
+  let arguments = (ins Sea_BV:$input, UnitAttr:$nsw);
+  let results = (outs Sea_BV:$result);
+  let assemblyFormat = "$input (`nsw` $nsw^)? attr-dict `:` type($result)";
+  let hasVerifier = 1;
+  let hasFolder = 1;
+}
+
 class Sea_FunnelShiftOp<string mnemonic, string desc> :
     Sea_Op<mnemonic, [Pure, SameOperandsAndResultType]> {
   let summary = desc;

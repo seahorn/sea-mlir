@@ -17,8 +17,8 @@ z3 computes the expected result with `(simplify ...)` on the SMT-LIB term
 - with --sea-opt and --fold, the op folders (sea-opt --sccp): every case
   has constant operands, so every result must fold to a sea.const, whose
   value is compared (a result that does not fold is a mismatch).
-Intrinsic ops (min/max, bswap, ctpop, funnel shifts, overflow bits) are checked
-against reference terms that are their LLVM LangRef / SMT-LIB 2.7
+Intrinsic ops (min/max, abs, bswap, ctpop, funnel shifts, overflow bits) are
+checked against reference terms that are their LLVM LangRef / SMT-LIB 2.7
 definitions written in SMT-LIB 2.6 (wide arithmetic, shifts of the
 concatenation), deliberately not the formulas the expansion uses (z3 4.12
 has no bvuaddo & co). The VC encodes only mul overflow natively (z3, and
@@ -123,6 +123,14 @@ def ctpop_ref(a, w):
         return bits[0]
     terms = [f"((_ zero_extend {w - 1}) {t})" for t in bits]
     return "(bvadd " + " ".join(terms) + ")"
+
+
+def abs_ref(a, w):
+    """LangRef (is_int_min_poison false): the absolute value of the signed
+    reading, computed exactly in w+1 bits, then its low w bits (the
+    minimal signed value is its own result)."""
+    x = f"((_ sign_extend 1) {bv(a, w)})"
+    return f"((_ extract {w - 1} 0) (ite (bvslt {x} {bv(0, w + 1)}) (bvneg {x}) {x}))"
 
 
 def edge_values(w):
@@ -308,6 +316,7 @@ def build_cases(rng, nrandom):
             cases.append(
                 ("sea.ctpop", w, [(a, w)], f"{{0}} : i{w}", ctpop_ref(a, w), None)
             )
+            cases.append(("sea.abs", w, [(a, w)], f"{{0}} : i{w}", abs_ref(a, w), None))
             c = rng.getrandbits(1)
             b = rng.getrandbits(w)
             cases.append(

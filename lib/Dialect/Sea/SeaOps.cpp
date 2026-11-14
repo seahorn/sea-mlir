@@ -466,6 +466,14 @@ LogicalResult BSwapOp::verify() {
   return success();
 }
 
+// abs has one promise, nsw (is_int_min_poison); a stray nuw would reach
+// the passes that read promises by name (sea-wrap-flags)
+LogicalResult AbsOp::verify() {
+  if ((*this)->hasAttr("nuw"))
+    return emitOpError("has no nuw promise (only nsw: is_int_min_poison)");
+  return success();
+}
+
 LogicalResult ExtractOp::verify() {
   if (getLow() + widthOf(getResult()) > widthOf(getInput()))
     return emitOpError("extracted bits exceed the input");
@@ -739,6 +747,13 @@ SEA_WRAP_FOLDER(SubOp)
 SEA_WRAP_FOLDER(MulOp)
 SEA_WRAP_FOLDER(ShlOp)
 #undef SEA_WRAP_FOLDER
+
+// abs: its nsw (is_int_min_poison) is a promise like the others
+OpFoldResult AbsOp::fold(FoldAdaptor a) {
+  if (getNsw())
+    return {};
+  return foldByEval(*this, a.getOperands());
+}
 
 #define SEA_EVAL_FOLDER(Op)                                                    \
   OpFoldResult Op::fold(FoldAdaptor a) {                                       \

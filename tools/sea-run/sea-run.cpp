@@ -908,7 +908,7 @@ symbolic execution.
   (<pred> a b)         sea.icmp / addr.cmp / ptr.cmp: eq ne ult ule ugt
                        uge slt sle sgt sge, at the operands' width
   (<op> a ...)         an op whose value the rendering fully shows, IR
-                       name without `sea.`: arithmetic, bitwise, min/max,
+                       name without `sea.`: arithmetic, bitwise, min/max, abs,
                        overflow tests, concat, select, struct.create,
                        addr.* and ptr.add / ptr.diff / ptr.null; nsw/nuw
                        as .nsw/.nuw (add.nsw); width changes carry the

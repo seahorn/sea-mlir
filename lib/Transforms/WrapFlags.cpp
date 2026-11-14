@@ -3,16 +3,18 @@
 
 //===- WrapFlags.cpp - nsw / nuw promises into assumes or asserts -*- C++ -*-//
 //
-// add / sub / mul / shl may carry LLVM's nsw / nuw flags: promises that the
-// signed / unsigned result fits. Their value is always the wrapped one; this
-// pass decides what the promise means for verification:
+// add / sub / mul / shl may carry LLVM's nsw / nuw flags (abs: nsw only):
+// promises that the signed / unsigned result fits. Their value is always the
+// wrapped one; this pass decides what the promise means for verification:
 //   mode=assume  sea.assume "no overflow" (executions that break it are
 //                infeasible: LLVM's poison is assumed not to happen);
 //   mode=assert  sea.assert "no overflow" (overflow is checked);
 //   mode=drop    the promise is forgotten (SeaHorn's behavior).
 // In every mode the flags are removed. Overflow is expressed with the
 // overflow ops (sea.saddo, ...), which sea-expand-intrinsics lowers; shl
-// has no SMT-LIB overflow op and is checked by shifting back.
+// has no SMT-LIB overflow op and is checked by shifting back. sea.abs may
+// carry nsw (LLVM's is_int_min_poison): the promise that its negation does
+// not overflow, checked by sea.nego.
 //
 // Contract.
 //   Accepts: any program. Produces: no nsw / nuw attribute (checked); in
@@ -68,7 +70,10 @@ static Value shlOverflows(OpBuilder &b, Location loc, bool isSigned, Value x,
 /// 1 iff the op's signed (isSigned) or unsigned result overflows.
 static Value overflows(OpBuilder &b, Location loc, Operation *op,
                        bool isSigned) {
-  Value x = op->getOperand(0), y = op->getOperand(1);
+  Value x = op->getOperand(0);
+  if (isa<AbsOp>(op))
+    return NegOOp::create(b, loc, x);
+  Value y = op->getOperand(1);
   if (isa<AddOp>(op))
     return isSigned ? Value(SAddOOp::create(b, loc, x, y))
                     : Value(UAddOOp::create(b, loc, x, y));
@@ -89,7 +94,7 @@ void WrapFlagsPass::runOnOperation() {
   }
   OpBuilder b(&getContext());
   getOperation().walk([&](Operation *op) {
-    if (!isa<AddOp, SubOp, MulOp, ShlOp>(op))
+    if (!isa<AddOp, SubOp, MulOp, ShlOp, AbsOp>(op))
       return;
     for (StringRef flag : {"nsw", "nuw"}) {
       if (!op->hasAttr(flag))

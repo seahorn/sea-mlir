@@ -18,6 +18,55 @@ fill). There is no poison or undef.
 
 ## Operations
 
+### `sea.abs` (::sea::AbsOp)
+
+_Absolute value (llvm.abs), optionally with a no-wrap promise_
+
+Syntax:
+
+```
+operation ::= `sea.abs` $input (`nsw` $nsw^)? attr-dict `:` type($result)
+```
+
+The value is `ite(x <s 0, 0 - x, x)`: the minimal signed value is its
+own absolute value (LLVM's result with `is_int_min_poison` false).
+
+`nsw` is LLVM's `is_int_min_poison` true: the promise that the input
+is not the minimal signed value, i.e. that `0 - x` does not overflow.
+It is the `nsw` of add / sub / mul / shl (the promise, not the value):
+the value is still the one above, the interpreter warns when the
+promise is broken, `sea-wrap-flags` turns it into a sea.assume /
+sea.assert of `x != INT_MIN` (or drops it), `sea-expand-intrinsics`
+keeps it on the `sea.sub` of the expansion, and the op folds only
+without it.
+
+Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
+
+Interfaces: `ConditionallySpeculatable`, `InferTypeOpInterface`, `NoMemoryEffect (MemoryEffectOpInterface)`
+
+Effects: `MemoryEffects::Effect{}`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>nsw</code></td><td>::mlir::UnitAttr</td><td>unit attribute</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `input` | signless integer |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | signless integer |
+
+
+
 ### `sea.add` (::sea::AddOp)
 
 _Bit-vector `bvadd`, optionally with no-wrap promises_

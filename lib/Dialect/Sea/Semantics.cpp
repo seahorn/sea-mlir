@@ -170,6 +170,8 @@ std::optional<APInt> evalPureOp(Operation *op, ArrayRef<APInt> v) {
       .Case([&](SMaxOp) { return llvm::APIntOps::smax(v[0], v[1]); })
       .Case([&](BSwapOp) { return v[0].byteSwap(); })
       .Case([&](CtPopOp) { return APInt(v[0].getBitWidth(), v[0].popcount()); })
+      // INT_MIN is its own absolute value (the negation wraps)
+      .Case([&](AbsOp) { return v[0].abs(); })
       .Case([&](FShlOp) { return llvm::APIntOps::fshl(v[0], v[1], v[2]); })
       .Case([&](FShrOp) { return llvm::APIntOps::fshr(v[0], v[1], v[2]); })
       .Case([&](UAddOOp) { return overflows<&APInt::uadd_ov>(v[0], v[1]); })
@@ -200,6 +202,9 @@ std::optional<StringRef> brokenWrapPromise(Operation *op, ArrayRef<APInt> v) {
   } else if (isa<MulOp>(op)) {
     (void)v[0].smul_ov(v[1], sov);
     (void)v[0].umul_ov(v[1], uov);
+  } else if (isa<AbsOp>(op)) {
+    // nsw = LLVM's is_int_min_poison: 0 - x does not overflow
+    sov = v[0].isMinSignedValue();
   } else if (isa<ShlOp>(op)) {
     // LangRef: nuw (nsw) promises that no non-zero bits (no bits that
     // disagree with the sign) are shifted out; the shift by >= width is
