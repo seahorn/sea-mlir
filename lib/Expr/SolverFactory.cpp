@@ -18,6 +18,9 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 
+#include <optional>
+#include <z3.h>
+
 namespace sea::solver {
 
 const char *backendName(Backend b) {
@@ -80,6 +83,23 @@ void z3Limits(z3_solver_impl &z, const Limits &limits,
   z.get_solver().set(params);
 }
 
+/// A global z3 parameter set for the life of the guard, then restored
+class GlobalParam {
+  const char *m_name;
+  std::string m_old;
+  bool m_had = false;
+
+public:
+  GlobalParam(const char *name, const char *value) : m_name(name) {
+    Z3_string old = nullptr;
+    m_had = Z3_global_param_get(name, &old) && old;
+    if (m_had)
+      m_old = old;
+    Z3_global_param_set(name, value);
+  }
+  ~GlobalParam() { Z3_global_param_set(m_name, m_had ? m_old.c_str() : ""); }
+};
+
 #ifdef WITH_YICES2
 void yicesLimits(yices_solver_impl &y, const Limits &limits,
                  const SolverConfig &config) {
@@ -112,6 +132,22 @@ std::unique_ptr<Solver> makeSolver(expr::ExprFactory &efac, Backend backend,
   case Backend::Z3: {
     auto z = std::make_unique<z3_solver_impl>(efac);
     z3Limits(*z, limits, config, config.z3Relevancy0Push);
+    // the global parameters z3 reads when it builds the solver: for this
+    // solver only
+    if (!config.z3Tactic.empty() || config.z3SatEuf) {
+      std::optional<GlobalParam> tactic, euf;
+      if (!config.z3Tactic.empty())
+        tactic.emplace("tactic.default_tactic", config.z3Tactic.c_str());
+      if (config.z3SatEuf)
+        euf.emplace("sat.euf", "true");
+      std::string err = z->get_solver().init();
+      if (!err.empty()) {
+        sea::diag::error(config.kindPrefix + "z3-tactic",
+                         "z3 rejects --z3-tactic '" + config.z3Tactic +
+                             "': " + err);
+        return nullptr;
+      }
+    }
     // after the parameters, before anything is asserted
     if (config.z3Relevancy0Push)
       z->push();

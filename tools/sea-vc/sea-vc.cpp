@@ -381,8 +381,8 @@ static cl::opt<std::string> z3Tactic(
     cl::desc("z3's default tactic for the solver (global parameter "
              "tactic.default_tactic, as SeaHorn's --horn-bmc-tactic; e.g. "
              "smtfd, sat; a tactic ending in `sat)` or `sat` also sets "
-             "sat.euf=true, as SeaHorn). Applies to every z3 solver of the "
-             "run. default: z3's own"),
+             "sat.euf=true, as SeaHorn). Applies to the solver of the verdict "
+             "only, not to the auxiliary checks. default: z3's own"),
     cl::init("default"));
 
 static cl::list<std::string>
@@ -2102,11 +2102,13 @@ TYPICAL:
   sea-vc p.mlir --lower --seam --seam-trace=row.store-skip,cmp.*   # print
                                  #   the firings of those rules to stderr
                                  #   (`seam-trace:` lines; `all` = every one)
-  sea-vc p.mlir --z3-tactic=smtfd     # z3's default tactic (global
-                                 #   tactic.default_tactic, as SeaHorn's
-                                 #   --horn-bmc-tactic; `sat` / `...sat)` also
-                                 #   set sat.euf); --z3-param=key=value sets
-                                 #   any global z3 parameter. Prints
+  sea-vc p.mlir --z3-tactic=smtfd     # z3's default tactic for the solver
+                                 #   of the verdict (not for the auxiliary
+                                 #   checks; tactic.default_tactic, as
+                                 #   SeaHorn's --horn-bmc-tactic; `sat` /
+                                 #   `...sat)` also set sat.euf);
+                                 #   --z3-param=key=value sets any global
+                                 #   z3 parameter, for every solver. Prints
                                  #   solver.z3-tactic: <t>. A sat is still
                                  #   replayed through the interpreter
   sea-vc p.mlir --lower --widen-memory=8 --seam --z3-tactic=sls-smt --timeout=60
@@ -3647,13 +3649,6 @@ int main(int argc, char **argv) {
   sea::setVersionPrinter("sea-vc", printSolverVersions);
   cl::ParseCommandLineOptions(args.size(), args.data(),
                               "Verify a sea program with a VC\n");
-  // z3's global parameters (SeaHorn's BmcEngine: Bmc.cc:38-43), before any
-  // z3 solver exists
-  if (z3Tactic != "default") {
-    Z3_global_param_set("tactic.default_tactic", z3Tactic.c_str());
-    if (z3Tactic == "sat" || StringRef(z3Tactic).ends_with("sat)"))
-      Z3_global_param_set("sat.euf", "true");
-  }
   for (const std::string &kv :
        llvm::concat<std::string>(yicesParams, yicesConfig)) {
     auto [k, v] = StringRef(kv).split('=');
@@ -5565,14 +5560,22 @@ int main(int argc, char **argv) {
     auto makeSolver = [&](bool limits =
                               false) -> std::unique_ptr<sea::solver::Solver> {
       sea::solver::Limits l;
+      sea::solver::SolverConfig config = solverConfig;
       if (limits) {
+        // --z3-tactic: the solver of the verdict only (SeaHorn's BmcEngine,
+        // Bmc.cc:38-43, set it globally)
+        if (z3Tactic != "default") {
+          config.z3Tactic = z3Tactic;
+          config.z3SatEuf =
+              z3Tactic == "sat" || StringRef(z3Tactic).ends_with("sat)");
+        }
         l.timeoutMs = solveTimeout * 1000;
         // z3 and Yices: the process limit only (RLIMIT_AS; z3's global
         // memory_max_size, set at start-up)
         if (backend == Backend::Bitwuzla)
           l.memMB = uint64_t(memLimit) * 1024;
       }
-      return sea::solver::makeSolver(efac, backend, l, solverConfig);
+      return sea::solver::makeSolver(efac, backend, l, config);
     };
     // A-INB is assumed and reported, not checked. Definite violations (a
     // numeral offset outside the object) make the run start again without

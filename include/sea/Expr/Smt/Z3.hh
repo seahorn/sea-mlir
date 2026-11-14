@@ -728,6 +728,18 @@ public:
   void push() { solver.push(); }
   void pop(unsigned n = 1) { solver.pop(n); }
   void reset() { solver.reset(); }
+
+  /// Makes z3 build the solver now: it does so at the first use, and reads
+  /// the global parameters (the default tactic, sat.euf) when it does.
+  /// Returns z3's message when that fails (an unknown tactic), else empty.
+  std::string init() {
+    Z3_solver_get_num_scopes(ctx, solver);
+    Z3_error_code code = Z3_get_error_code(ctx);
+    if (code == Z3_OK)
+      return std::string();
+    const char *msg = Z3_get_error_msg(ctx, code);
+    return msg ? msg : "z3 failed to build the solver";
+  }
 };
 
 template <typename Z>

@@ -9,7 +9,8 @@
 // them as the backend can, and says when it cannot.
 //
 //   backend unavailable (not built) or configuration rejected (Yices'
-//     logic, config or params)          -> diag::error, null solver
+//     logic, config or params; z3's tactic: <kindPrefix>z3-tactic)          ->
+//     diag::error, null solver
 //   a nonzero limit the backend has no form for -> diag::warn
 //     (<kindPrefix>limit-unsupported), the solver runs without it
 //
@@ -61,12 +62,21 @@ struct Limits {
 /// backend; another backend does not read them.
 struct SolverConfig {
   /// diag kinds: <prefix>solver-unavailable, <prefix>yices-config,
-  /// <prefix>yices-param, <prefix>limit-unsupported (sea-vc: "vc.")
+  /// <prefix>yices-param, <prefix>z3-tactic, <prefix>limit-unsupported (sea-vc:
+  /// "vc.")
   std::string kindPrefix = "smt.";
   /// z3: relevancy 0 and one push before anything is asserted (sea-vc
   /// --seam-check's setup: the push makes z3 pick its incremental
   /// configuration; the solver is meant to be dropped, never popped)
   bool z3Relevancy0Push = false;
+  /// z3: the default tactic of this solver only (sea-vc --z3-tactic; empty:
+  /// z3's own). z3 reads it as a global parameter when it builds the solver:
+  /// the factory sets it, makes z3 build the solver, and restores the old
+  /// value, so no other solver sees it. Not applied by setLimits.
+  std::string z3Tactic;
+  /// z3: sat.euf=true for this solver only (the same way; SeaHorn sets it
+  /// with the `sat` tactic)
+  bool z3SatEuf = false;
   /// Yices: the logic of the context (empty: Yices' default)
   std::string yicesLogic;
   /// Yices: context configuration, `key=value` each

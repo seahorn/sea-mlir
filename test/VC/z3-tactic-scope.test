@@ -1,0 +1,15 @@
+--z3-tactic is the default tactic of the solver of the verdict only. An
+auxiliary check (here --eq-audit, which runs without a verdict under
+--vcgen-only) keeps z3's own: a tactic z3 rejects would make its checks
+unknown if it reached them (it did, when the tactic was a global parameter).
+RUN: sea-vc %S/seam/eq-audit.mlir --program=memset --lower --seam --eq-audit --vcgen-only --z3-tactic=nosuchtactic 2>&1 | FileCheck %s --check-prefix=AUX
+AUX: eq-audit: source=row-memop items=1 sampled=1 L0=0 L1=0 L2=1 undecided=0 unknown=0
+The verdict solver gets it (and reports a tactic z3 rejects):
+RUN: not sea-vc %S/seam/eq-audit.mlir --program=memset --lower --seam --z3-tactic=nosuchtactic 2>&1 | FileCheck %s --check-prefix=VERDICT
+VERDICT: Error: z3 rejects --z3-tactic 'nosuchtactic': {{.*}} [vc.z3-tactic]
+RUN: sea-vc %S/seam/eq-audit.mlir --program=memset --lower --seam --z3-tactic=smtfd 2>&1 | FileCheck %s --check-prefix=SAT
+SAT: solver.z3-tactic: smtfd
+SAT: result: sat
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -64,6 +64,8 @@ Scope, build, assumptions and known issues: [docs/Release.md](docs/Release.md).
     skipped silently there.
   - `--x-read-table-check-timeout=0` no longer sets z3's `timeout=0`: the
     same behaviour (no timeout), no parameter set.
+  - `--z3-tactic` applies to the solver of the verdict only, no longer to
+    the auxiliary checks; a tactic z3 rejects is the error `vc.z3-tactic`.
   - Output files (`--print-lowered`, `--place-out`, `--reach-programs`,
     `--ack-dump-pairs`, `--reach-witness`, `--split-smt2`) are written whole
     (a temporary, then a rename; the path `-` is stdout, a target that is not

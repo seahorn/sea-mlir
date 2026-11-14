@@ -56,7 +56,7 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--timeout=<s>` | wall-clock limit of the solver's check; does not bound query generation |
 | `--mem-limit=<GB>` | address-space limit of the process (`RLIMIT_AS`); a hit prints where it was (`mem-limit-phase:`, in encode also `mem-limit-progress:`, `mem-limit-op:`; [Output formats](output-formats.md)) |
 | `--z3-param=<key=value>` | a global z3 parameter (repeatable) |
-| `--z3-tactic=<tactic>` | z3's default tactic; `sls-smt` is z3's stochastic local search (see [Local search in the solver](fuzzing.md#local-search-in-the-solver)) |
+| `--z3-tactic=<tactic>` | z3's default tactic for the solver of the verdict (the auxiliary checks keep z3's own); `sls-smt` is z3's stochastic local search (see [Local search in the solver](fuzzing.md#local-search-in-the-solver)) |
 | `--yices-param=<key=value>` | a Yices search parameter (repeatable), e.g. `random-seed=N`; Yices times vary widely with the seed, so compare medians over several seeds |
 | `--yices-config=<key=value>`, `--yices-logic=<logic>` | the Yices context configuration and logic |
 | `--smt2` | print the query as SMT-LIB and exit |
