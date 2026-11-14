@@ -55,6 +55,7 @@ out-of-object access.
   before); new `--seam-out-of-object=report|fallback` (default report).
 
 ### Other
+- Built as ISO C++17 without GNU extensions (`-std=c++17`), as LLVM is.
 - LLVM/MLIR pin moved to `302c842d6601` (the upstream base of an IREE LLVM
   integrate), from `93f05d753ad3`. The integer ranges of
   `sea.sdiv` / `sea.srem` add sea's values for a zero divisor (upstream now
