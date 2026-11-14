@@ -20,10 +20,16 @@
 //          their policies.
 //  timers  time(Timer) and timers(TimerGroup) keys and "%.3f" values.
 //  mem     memFields: names, order, MiB rounding, unknown fields left out.
+//  assume  the assumption ledger (sea/Support/Assume.h): the assume.*
+//          lines of sea-vc's SeaM block, of a replay and of the run
+//          reports (text pinned to the output before the port), their
+//          BRUNCH_STAT keys (incl. assume.addr0-is-null-null-uses), none
+//          under Off, sums and runs, add(), runFields.
 //
 //===----------------------------------------------------------------------===//
 
 #include "sea/Support/Stats.h"
+#include "sea/Support/Assume.h"
 
 #include "llvm/Support/raw_ostream.h"
 
@@ -304,12 +310,71 @@ void testMem() {
 
 } // namespace
 
+void testAssume() {
+  using sea::assume::Ledger;
+  using sea::assume::Name;
+  // sea-vc's SeaM block: every VC line, in their order
+  Ledger vc;
+  vc.site(Name::MemhavocNullNoop, "sites", 2);
+  vc.site(Name::Addr0IsNull, "null-uses", 0);
+  vc.site(Name::AInb, "drop-fresh-memhavoc", 3);
+  vc.site(Name::MemsetBound, "count", 1);
+  vc.site(Name::MemsetBound, "bound", 64);
+  Rendered r = render(Brunch::Derived, [&](Report &rep) { vc.report(rep); });
+  CHECK(r.text == "assume.memset-bound: count=1 bound=64\n"
+                  "assume.a-inb: drop-fresh-memhavoc=3\n"
+                  "assume.addr0-is-null: vc null-uses=0\n"
+                  "assume.memhavoc-null-noop: vc sites=2\n",
+        r.text);
+  CHECK(r.brunch == "BRUNCH_STAT assume.memset-bound-count 1\n"
+                    "BRUNCH_STAT assume.memset-bound-bound 64\n"
+                    "BRUNCH_STAT assume.a-inb-drop-fresh-memhavoc 3\n"
+                    "BRUNCH_STAT assume.addr0-is-null vc\n"
+                    "BRUNCH_STAT assume.addr0-is-null-null-uses 0\n"
+                    "BRUNCH_STAT assume.memhavoc-null-noop vc\n"
+                    "BRUNCH_STAT assume.memhavoc-null-noop-sites 2\n",
+        r.brunch);
+  // a replay's uses: only the used ones; Parts keys; nothing under Off
+  struct Run {
+    uint64_t addr0IsNullUses, memhavocNullNoopUses;
+  };
+  Ledger used;
+  used.useRun(Run{5, 0});
+  Rendered u = render(Brunch::Parts, [&](Report &rep) { used.report(rep); });
+  CHECK(u.text == "assume.addr0-is-null: uses=5\n", u.text);
+  CHECK(u.brunch == "BRUNCH_STAT assume.addr0-is-null-uses 5\n", u.brunch);
+  Rendered off = render(Brunch::Off, [&](Report &rep) { used.report(rep); });
+  CHECK(off.text == u.text && off.brunch.empty(), off.brunch);
+  CHECK(Ledger().runFields(false) == "addr0-is-null=0 memhavoc-null-noop=0",
+        "runFields of nothing");
+  CHECK(!Ledger().anyUse() && used.anyUse(), "anyUse");
+  // sums: uses add, a run with uses counts once per name
+  Ledger all;
+  all.useRun(Run{2, 1});
+  all.useRun(Run{0, 4});
+  all.add(used);
+  CHECK(all.uses(Name::Addr0IsNull) == 7 && all.runs(Name::Addr0IsNull) == 2,
+        "addr0 sums");
+  CHECK(all.uses(Name::MemhavocNullNoop) == 5 &&
+            all.runs(Name::MemhavocNullNoop) == 2,
+        "memhavoc sums");
+  CHECK(all.runFields(true) == "addr0-is-null=7 addr0-is-null-runs=2 "
+                               "memhavoc-null-noop=5 memhavoc-null-noop-runs=2",
+        all.runFields(true));
+  Rendered a = render(Brunch::Off, [&](Report &rep) { all.report(rep); });
+  CHECK(a.text == "assume.addr0-is-null: uses=7\n"
+                  "assume.memhavoc-null-noop: uses=5\n",
+        a.text);
+  llvm::outs() << "assume: ok\n";
+}
+
 int main() {
   testForms();
   testRules();
   testOrder();
   testTimers();
   testMem();
+  testAssume();
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

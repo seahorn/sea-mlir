@@ -148,7 +148,7 @@ struct ReachRuns {
   unsigned inbViolated = 0;
   /// the deciding runs' uses of the interpreter's assumptions (each run
   /// once, whole runs)
-  uint64_t addr0Uses = 0, memhavocUses = 0;
+  assume::Ledger assumptions;
 };
 
 /// Runs the corpus and fuzz trials on `program` (in the reach form: after

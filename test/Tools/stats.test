@@ -1,12 +1,13 @@
 // The stat lines (sea/Support/Stats.h): the text and BRUNCH_STAT forms of
 // sea-vc's line shapes (pinned to the output before the port), the BRUNCH
-// rules, the block order, the memory fields.
+// rules, the block order, the memory fields, the assumption ledger.
 RUN: sea-stats-test | FileCheck %s
 CHECK: forms: ok
 CHECK: rules: ok
 CHECK: order: ok
 CHECK: timers: ok
 CHECK: mem: ok
+CHECK: assume: ok
 CHECK: failures: 0
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors

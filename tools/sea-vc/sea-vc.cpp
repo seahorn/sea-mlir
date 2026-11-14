@@ -26,6 +26,7 @@
 #include "sea/Expr/Smt/SolverFactory.h"
 #include "sea/Expr/Smt/Z3.hh"
 #include "sea/Interp/ParseInput.h"
+#include "sea/Support/Assume.h"
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
 #include "sea/Support/Output.h"
@@ -4502,12 +4503,10 @@ int main(int argc, char **argv) {
     }
     {
       // the assumptions the replay used: BRUNCH_STAT <key>-uses
+      sea::assume::Ledger used;
+      used.useRun(o.run);
       sea::stats::Report r(sea::stats::Brunch::Parts);
-      if (o.run.addr0IsNullUses)
-        r.line("assume.addr0-is-null").kv("uses", o.run.addr0IsNullUses);
-      if (o.run.memhavocNullNoopUses)
-        r.line("assume.memhavoc-null-noop")
-            .kv("uses", o.run.memhavocNullNoopUses);
+      used.report(r);
       r.printEach(vout(), brunchStats);
     }
     gOut->flush();
@@ -5735,23 +5734,27 @@ int main(int argc, char **argv) {
               .kv("std-boundary", xrtDagStd)
               .kv("translated", xrtDagTranslated);
       }
-      if (memsetBounds)
-        r.line("assume.memset-bound")
-            .kv("count", memsetBounds)
-            .kv("bound", memsetBoundK);
+      // the named assumptions of the VC (BRUNCH_STAT <key>-<field>)
+      sea::assume::Ledger vcAssumes;
+      using sea::assume::Name;
+      if (memsetBounds) {
+        vcAssumes.site(Name::MemsetBound, "count", memsetBounds);
+        vcAssumes.site(Name::MemsetBound, "bound", memsetBoundK);
+      }
       // A-INB, also without --seam: the lowering dropped memhavocs that
       // are no-ops only if no access lands in their object from outside
       if (dropFreshInb)
-        r.line("assume.a-inb").kv("drop-fresh-memhavoc", dropFreshInb);
+        vcAssumes.site(Name::AInb, "drop-fresh-memhavoc", dropFreshInb);
       // placement makes null address 0 (the segment "null"): every VC of a
       // lowered program identifies null with address 0 (a fact of the
       // target: no check discharges it)
       if (lower)
-        r.line("assume.addr0-is-null").value("vc").kv("null-uses", nullUses);
+        vcAssumes.site(Name::Addr0IsNull, "null-uses", nullUses);
       // the open decision memhavoc(null) = no-op, in the VC: the memhavocs
       // whose pointer may be null run only when it is not
       if (nullGuards)
-        r.line("assume.memhavoc-null-noop").value("vc").kv("sites", nullGuards);
+        vcAssumes.site(Name::MemhavocNullNoop, "sites", nullGuards);
+      vcAssumes.report(r);
       if (sem.seam()) {
         // the assumption the answer depends on, always visible
         if (inb)
@@ -6974,11 +6977,13 @@ int main(int argc, char **argv) {
       absOptions.addr0IsNull = addr0IsNull;
       absOptions.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
       sea::RunResult abs = sea::interpret(absProg, inputs, absOptions);
-      if (abs.addr0IsNullUses)
-        vout() << "assume.addr0-is-null: uses=" << abs.addr0IsNullUses << "\n";
-      if (abs.memhavocNullNoopUses)
-        vout() << "assume.memhavoc-null-noop: uses=" << abs.memhavocNullNoopUses
-               << "\n";
+      {
+        sea::assume::Ledger used;
+        used.useRun(abs);
+        sea::stats::Report r;
+        used.report(r);
+        r.print(vout(), /*brunch=*/false);
+      }
       if (sea::isOutOfObjectAccess(abs)) {
         vout() << "seam.inb-violation: " << abs.message << "\n";
         if (abs.at)

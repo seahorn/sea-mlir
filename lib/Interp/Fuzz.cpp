@@ -981,9 +981,8 @@ private:
       os << "# replay with: sea-run --defer-memory-errors --input-file=<this "
             "file>\n";
     // what the run rested on (the replay needs the same options)
-    if (r.addr0IsNullUses || r.memhavocNullNoopUses)
-      os << "# assume: addr0-is-null=" << r.addr0IsNullUses
-         << " memhavoc-null-noop=" << r.memhavocNullNoopUses << "\n";
+    if (assume::Ledger used; used.useRun(r), used.anyUse())
+      os << "# assume: " << used.runFields(/*withRuns=*/false) << "\n";
     for (const Assignment &a : assignmentsOf(e))
       os << formatAssignment(a) << "\n";
     if (failed(writeWhole(path, text, error)))
@@ -1143,10 +1142,7 @@ LogicalResult Fuzzer::trial(Entry preset,
     h.memhavocNullNoopUses = r.memhavocNullNoopUses;
   }
   ++report.statusCount[static_cast<unsigned>(r.status)];
-  report.addr0IsNullUses += r.addr0IsNullUses;
-  report.addr0IsNullRuns += r.addr0IsNullUses != 0;
-  report.memhavocNullNoopUses += r.memhavocNullNoopUses;
-  report.memhavocNullNoopRuns += r.memhavocNullNoopUses != 0;
+  report.assumptions.useRun(r);
   if (r.deferredCount)
     ++report.deferredStatusCount[static_cast<unsigned>(r.status)];
   report.frontierSum += runFrontier;

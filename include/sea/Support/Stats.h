@@ -142,6 +142,8 @@ public:
 
   const std::deque<Line> &lines() const { return all; }
   bool empty() const { return all.empty(); }
+  /// The BRUNCH_STAT rule of new lines.
+  Brunch brunchPolicy() const { return policy; }
 
 private:
   Brunch policy;

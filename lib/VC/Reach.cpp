@@ -7,6 +7,7 @@
 
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
+#include "sea/Support/Stats.h"
 #include "sea/Support/Timer.h"
 #include "sea/VC/Replay.h"
 
@@ -419,12 +420,9 @@ FailureOr<ReachRuns> runReachRuns(ProgramOp program,
         .kv("by", d.by);
     // the assumptions a decision rests on: its run's, and its A-INB check's
     if (deciding.insert(h.trial).second) {
-      out.addr0Uses += h.addr0IsNullUses;
-      out.memhavocUses += h.memhavocNullNoopUses;
-      if (auto it = abstractRuns.find(h.trial); it != abstractRuns.end()) {
-        out.addr0Uses += it->second.r.addr0IsNullUses;
-        out.memhavocUses += it->second.r.memhavocNullNoopUses;
-      }
+      out.assumptions.useRun(h);
+      if (auto it = abstractRuns.find(h.trial); it != abstractRuns.end())
+        out.assumptions.useRun(it->second.r);
     }
     if (!h.seed.empty()) {
       d.witness = h.seed;
@@ -493,14 +491,12 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
   std::vector<bool> hitByRun(targets.size(), false);
   unsigned nReach = 0, nUnreach = 0, nUnknown = 0, queries = 0;
   // steps of the reach runs that rested on the interpreter's assumptions
-  uint64_t addr0Uses = 0, memhavocUses = 0;
+  assume::Ledger used;
   bool bug = false, memError = false, error = false;
   // what decided the targets: concrete runs, the CFG, the solver
   unsigned byRuns = 0, byCfg = 0, bySolver = 0, byModelRuns = 0;
-  if (runs) {
-    addr0Uses += runs->addr0Uses;
-    memhavocUses += runs->memhavocUses;
-  }
+  if (runs)
+    used.add(runs->assumptions);
   for (size_t i : order) {
     const ReachTarget &t = targets[i];
     const Stopwatch t0;
@@ -630,18 +626,15 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
           ReachReplay rp =
               replayToTarget(program, m, sem, ctx, index, t.op, options);
           mismatches = rp.mismatches;
-          addr0Uses += rp.run.addr0IsNullUses;
-          memhavocUses += rp.run.memhavocNullNoopUses;
+          used.useRun(rp.run);
           std::string inbMessage;
           std::optional<AbstractRun> abs;
           if (options.abstractProgram)
             abs = runAbstract(options.abstractProgram, rp.run, options);
           InbCheck inb =
               abs ? abs->check(t, *sites, inbMessage) : InbCheck::None;
-          if (abs) {
-            addr0Uses += abs->r.addr0IsNullUses;
-            memhavocUses += abs->r.memhavocNullNoopUses;
-          }
+          if (abs)
+            used.useRun(abs->r);
           // every target the run reaches before its turn is reachable
           // (the run is an execution; under --seam, the ones its input
           // program's run reaches inside every object)
@@ -803,10 +796,11 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
                 << " trials=" << runs->trials << " seeds=" << runs->seedTrials
                 << " inb-violated=" << runs->inbViolated
                 << " time=" << secondsText(runs->seconds) << "\n";
-  if (addr0Uses)
-    out.lines() << "assume.addr0-is-null: uses=" << addr0Uses << "\n";
-  if (memhavocUses)
-    out.lines() << "assume.memhavoc-null-noop: uses=" << memhavocUses << "\n";
+  {
+    stats::Report r;
+    used.report(r);
+    r.print(out.lines(), /*brunch=*/false);
+  }
   out.flush();
   if (error)
     return 1;
