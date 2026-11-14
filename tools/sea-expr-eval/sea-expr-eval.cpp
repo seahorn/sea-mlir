@@ -31,7 +31,9 @@
 #include "sea/Expr/Smt/BitwuzlaSolverImpl.hh"
 #endif
 #include "sea/Expr/Smt/Z3SolverImpl.hh"
+#include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
+#include "sea/Support/Version.h"
 
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/CommandLine.h"
@@ -79,7 +81,8 @@ INPUT (one term per line, unsigned decimal values):
   cmp <=|distinct|bvult|...> <w> <a> <b>     (prints 0 or 1)
   zext|sext <w> <w2> <a>    trunc <w> <w2> <a>    ite <w> <c> <a> <b>
 
-OUTPUT: one unsigned decimal value per input line, in order.
+OUTPUT: one unsigned decimal value per input line, in order (stdout).
+stderr: `tool.version: ...` first, then diagnostics.
 STATUS CODES: 0 ok; 1 bad input or solver did not return sat.
 )";
 
@@ -191,11 +194,20 @@ struct TermBuilder {
 int main(int argc, char **argv) {
   InitLLVM y(argc, argv);
   sea::log::init(); // SEA_LOG / SEA_LOG_FILE, before --log
+  // Repeated warnings are summarized at exit, whatever the exit path.
+  struct Summary {
+    ~Summary() { sea::diag::printSummary(); }
+  } summary;
+  sea::setVersionPrinter("sea-expr-eval");
   cl::ParseCommandLineOptions(argc, argv, "Evaluate bv terms through Expr\n");
   if (agent) {
     outs() << agentGuide;
     return 0;
   }
+
+  // stdout carries only the values (utils/check-semantics.py parses it), so
+  // the version goes to stderr.
+  errs() << "tool.version: " << sea::versionString() << "\n";
 
   auto buf = MemoryBuffer::getFileOrSTDIN(inputFilename);
   if (!buf)
