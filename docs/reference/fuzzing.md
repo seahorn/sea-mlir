@@ -341,7 +341,7 @@ answers `sat` or `unknown`, never `unsat`, and an `unknown` is returned
 only when `--timeout` expires (exit status 3). Always give a `--timeout`;
 z3's resource limit does not reliably stop it. A seed is set in the
 tactic: `--z3-tactic='(using-params sls-smt :random_seed 3)'`; z3 rejects
-an unknown parameter name there with `result: unknown`. A `sat` is
+an unknown parameter name there with `vc.z3-tactic` (exit status 1). A `sat` is
 replayed in the interpreter like any other model.
 
 What to expect today: on small examples with bugs that the default solve

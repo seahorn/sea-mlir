@@ -387,8 +387,9 @@ static cl::opt<std::string> z3Tactic(
 
 static cl::opt<bool> z3PlantError(
     "z3-plant-error",
-    cl::desc("Testing only: make an invalid z3 API call when the first z3 "
-             "solver is made, as a z3 error of sea-vc's own would"),
+    cl::desc("Testing only: make an invalid z3 API call when every z3 "
+             "solver is made (the first exits), as a z3 error of sea-vc's "
+             "own would"),
     cl::init(false), cl::Hidden);
 
 static cl::list<std::string>
@@ -1426,6 +1427,27 @@ static uint64_t countOps(Operation *op) {
   writeMemCurOp(1);
   static const char err[] =
       "Error: memory limit (--mem-limit) hit [vc.mem-limit]\n";
+  (void)!::write(2, err, sizeof(err) - 1);
+  ::_exit(3);
+}
+
+/// z3 ran out of memory outside a check (its memory_max_size, or an
+/// allocation that failed): the outcome of a memory limit. Under --mem-limit
+/// that is memLimitHit's; else unknown, with the reason a check gives
+/// (memout). Writes without allocating.
+[[noreturn]] static void z3MemoutHit() {
+  if (memLimit)
+    memLimitHit();
+  outs().flush();
+  static const char msg[] = "result: unknown\n";
+  static const char jmsg[] = "{\"kind\":\"result\",\"value\":\"unknown\","
+                             "\"text\":\"result: unknown\"}\n";
+  if (outFormat == sea::out::Format::Jsonl)
+    (void)!::write(1, jmsg, sizeof(jmsg) - 1);
+  else
+    (void)!::write(1, msg, sizeof(msg) - 1);
+  static const char err[] =
+      "Warning: the solver returned unknown (memout) [vc.unknown]\n";
   (void)!::write(2, err, sizeof(err) - 1);
   ::_exit(3);
 }
@@ -3621,6 +3643,12 @@ int main(int argc, char **argv) {
       return 1;
     }
   }
+  sea::setZ3ErrorHooks(
+      [] {
+        if (gOut)
+          gOut->flush();
+      },
+      z3MemoutHit);
   for (const std::string &kv : z3Params) {
     auto [k, v] = StringRef(kv).split('=');
     if (k.empty() || v.empty()) {

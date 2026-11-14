@@ -136,8 +136,8 @@ std::unique_ptr<Solver> makeSolver(expr::ExprFactory &efac, Backend backend,
       plantZ3Error(z->get_context().raw_context());
     z3Limits(*z, limits, config, config.z3Relevancy0Push);
     // z3 reports a tactic it cannot parse on its own output only and goes on
-    // with its default: check it first (once; the solver's init() below
-    // reports a name z3 does not know)
+    // with its default: check it first (z3CheckTactic runs the check once
+    // per tactic, not per solver)
     if (!config.z3Tactic.empty()) {
       std::string terr;
       if (!z3CheckTactic(config.z3Tactic, terr)) {
@@ -155,13 +155,7 @@ std::unique_ptr<Solver> makeSolver(expr::ExprFactory &efac, Backend backend,
         tactic.emplace("tactic.default_tactic", config.z3Tactic.c_str());
       if (config.z3SatEuf)
         euf.emplace("sat.euf", "true");
-      std::string err = z->get_solver().init();
-      if (!err.empty()) {
-        sea::diag::error(config.kindPrefix + "z3-tactic",
-                         "z3 rejects --z3-tactic '" + config.z3Tactic +
-                             "': " + err);
-        return nullptr;
-      }
+      z->get_solver().init();
     }
     // after the parameters, before anything is asserted
     if (config.z3Relevancy0Push)
