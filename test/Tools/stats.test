@@ -1,0 +1,13 @@
+// The stat lines (sea/Support/Stats.h): the text and BRUNCH_STAT forms of
+// sea-vc's line shapes (pinned to the output before the port), the BRUNCH
+// rules, the block order, the memory fields.
+RUN: sea-stats-test | FileCheck %s
+CHECK: forms: ok
+CHECK: rules: ok
+CHECK: order: ok
+CHECK: timers: ok
+CHECK: mem: ok
+CHECK: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
