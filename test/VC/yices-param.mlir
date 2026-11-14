@@ -1,4 +1,5 @@
 // The Yices knobs choose how Yices searches, never what the verdict is.
+// REQUIRES: yices
 // RUN: sea-vc %s --program=bug --solver=yices --yices-param=random-seed=7 | FileCheck %s --check-prefix=SEED
 // RUN: sea-vc %s --program=bug --solver=yices --yices-logic=QF_BV --yices-config=mode=one-shot | FileCheck %s --check-prefix=LOGIC
 // RUN: sea-vc %s --program=safe --solver=yices --yices-param=random-seed=3,randomness=0.5 | FileCheck %s --check-prefix=SAFE

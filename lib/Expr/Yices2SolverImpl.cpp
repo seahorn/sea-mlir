@@ -355,7 +355,8 @@ yices_solver_impl::model_ref yices_solver_impl::get_model() {
 }
 
 void yices_solver_impl::to_smt_lib(raw_ostream &o) {
-  errs() << "Warning: yices::to_smt_lib is not implemented\n";
+  diag::warn("yices.smt2-unimplemented",
+             "yices::to_smt_lib is not implemented; nothing printed");
 }
 
 } // namespace solver

@@ -19,6 +19,11 @@ cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Debug \
 ninja -C build check-sea
 ```
 
+`check-sea` runs lit with `LLVM_LIT_ARGS`, default `-sv -j8` (a bounded
+default, not tuned; one worker per core otherwise). Override:
+`-DLLVM_LIT_ARGS="-sv -j<N>"`. An existing build dir keeps its cached value
+(configured without it: `-sv`); set `-DLLVM_LIT_ARGS` once.
+
 Also needs Boost (headers), GMP and z3 (`Z3_ROOT`). Yices 2 is optional
 (`-DSEA_ENABLE_YICES=AUTO|ON|OFF`, `YICES2_ROOT` if not system-wide; GPLv3:
 release binaries are built without it; tests that need it: `REQUIRES: yices`
@@ -113,7 +118,7 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   `utils/reduce-test.py`)
 - `unittests/` — plain-main C++ test drivers run by lit (`sea-expr-rewriter-test`,
   `sea-seam-rules-test`, `sea-addr-range-test`: ARM, `include/sea/Expr/AddrRangeMap.hh`,
-  `sea-store-map-test`: Store-Map, `include/sea/Expr/StoreMap.hh`, `sea-bv-rules-test`: the bit-vector / Boolean normalization rules, `include/sea/Expr/BvRules.hh`, `sea-log-test`: the log selection syntax and event text, `include/sea/Support/Log.h`). `sea-vc --seam`: SeaM, the object-aware rewriting of loads and
+  `sea-store-map-test`: Store-Map, `include/sea/Expr/StoreMap.hh`, `sea-bv-rules-test`: the bit-vector / Boolean normalization rules, `include/sea/Expr/BvRules.hh`, `sea-log-test`: the log selection syntax and event text, `include/sea/Support/Log.h`, `sea-timer-test`: the timers of the `*-time` keys, `include/sea/Support/Timer.h`). `sea-vc --seam`: SeaM, the object-aware rewriting of loads and
   stores in the VC (`include/sea/Expr/SeaMRules.hh`, `docs/design/SeaM.md`);
   `sea-vc --simplify` (default on under `--seam`, `--seam-simplify=0` off) runs the same rewriter with the rules of `BvRules.hh` over every VC term, side conditions and query included (valid over plain bit-vectors; also usable without `--seam`); `store-map` is an Expr operator the solvers do not know: memory values of the
   VC may hold it, and whatever goes to a solver or a model evaluation passes
@@ -131,6 +136,9 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   `utils/encoding-diff.py` — its complement: one sea-vc on two programs
   (two encodings of one job): identical / same-dag / equiv-parts / equiv /
   both-unsat / DIFF / unknown (`--agent`; both-unsat is not equivalence);
+  `utils/output-diff.py` — the gate of a refactoring that must not change
+  output: two builds of sea-vc / sea-run over a corpus x argument matrix,
+  text and jsonl, timings masked, stat and BRUNCH_STAT keys compared;
   `utils/bench.py` (`--agent`) — benchmarks: corpora, runs, and the suites
   in separate repositories (`just bench-connect`, `just bench-gate`,
   `docs/Benchmarks.md`); `utils/release-check.sh` (`just release-check`)

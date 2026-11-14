@@ -12,13 +12,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "sea/Support/Log.h"
+#include "sea/Support/Timer.h"
 #include "sea/Transforms/Passes.h"
 
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/PassInstrumentation.h"
 #include "mlir/Pass/PassManager.h"
 
-#include <chrono>
 #include <vector>
 
 using namespace mlir;
@@ -56,10 +56,9 @@ std::string programOf(Operation *op) {
 }
 
 class PassLog : public PassInstrumentation {
-  using Clock = std::chrono::steady_clock;
   struct Start {
     uint64_t ops;
-    Clock::time_point t0;
+    sea::Stopwatch time;
   };
   /// The runs in progress on this thread: before and after of one pass run
   /// on one thread, properly nested (a pass running a dynamic pipeline)
@@ -71,14 +70,14 @@ class PassLog : public PassInstrumentation {
   void runBeforePass(Pass *pass, Operation *op) override {
     if (!logPass.on(sea::log::Flow) || isAdaptor(pass))
       return;
-    stack().push_back({countOps(op), Clock::now()});
+    stack().push_back({countOps(op), sea::Stopwatch()});
   }
   void end(Pass *pass, Operation *op, bool failed) {
     if (!logPass.on(sea::log::Flow) || isAdaptor(pass) || stack().empty())
       return;
     Start s = stack().back();
     stack().pop_back();
-    double sec = std::chrono::duration<double>(Clock::now() - s.t0).count();
+    double sec = s.time.seconds();
     StringRef arg = pass->getArgument();
     SEA_LOG(logPass, sea::log::Flow)
         .msg(failed ? "failed" : "")
