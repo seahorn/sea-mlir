@@ -35,6 +35,11 @@ Line &Report::line(llvm::StringRef key) {
   return all.back();
 }
 
+void Report::append(const Report &o) {
+  for (const Line &l : o.all)
+    all.push_back(l);
+}
+
 Line &Report::time(const Timer &t) {
   return line((t.name() + "-time").str()).seconds(t.seconds());
 }
@@ -116,6 +121,14 @@ void Report::print(llvm::raw_ostream &os, bool brunch) const {
     return;
   for (const Line &l : all)
     renderLine(l, Pass::Brunch, os);
+}
+
+void Report::printEach(llvm::raw_ostream &os, bool brunch) const {
+  for (const Line &l : all) {
+    renderLine(l, Pass::Text, os);
+    if (brunch)
+      renderLine(l, Pass::Brunch, os);
+  }
 }
 
 std::string Report::text() const {

@@ -866,9 +866,23 @@ static cl::opt<bool> brunchStats(
     cl::desc("Also print BRUNCH_STAT <key> <value> lines (brunch's format)"),
     cl::init(false));
 
-static void brunchStat(raw_ostream &os, const Twine &key, const Twine &value) {
-  if (brunchStats)
-    os << "BRUNCH_STAT " << key << " " << value << "\n";
+/// The lines \p add adds to a report, on \p os (BRUNCH_STAT lines with
+/// --brunch-stats)
+static void printStats(raw_ostream &os,
+                       llvm::function_ref<void(sea::stats::Report &)> add) {
+  sea::stats::Report r;
+  add(r);
+  r.print(os, brunchStats);
+}
+/// The same on stdout.
+static void printStats(llvm::function_ref<void(sea::stats::Report &)> add) {
+  printStats(vout(), add);
+}
+
+/// The BRUNCH_STAT line of a verdict, \p v: the `result:` line is a
+/// record of its own (or a split part's `split.part-result:`)
+static void resultLine(sea::stats::Report &r, StringRef v) {
+  r.line("result").value(v).brunch(sea::stats::Brunch::Value).brunchOnly();
 }
 
 static cl::opt<unsigned> solveTimeout(
@@ -4044,13 +4058,15 @@ int main(int argc, char **argv) {
   // every program of the file)
   const unsigned foldAssumeFalse = sea::diag::count("fold.assume-false");
   const unsigned foldAssertFalse = sea::diag::count("fold.assert-false");
-  auto foldLines = [&](raw_ostream &os) {
+  auto foldLines = [&](sea::stats::Report &r) {
     if (foldAssumeFalse || foldAssertFalse)
-      os << "vc.fold: assume-false=" << foldAssumeFalse
-         << " assert-false=" << foldAssertFalse << "\n";
+      r.line("vc.fold")
+          .kv("assume-false", foldAssumeFalse)
+          .kv("assert-false", foldAssertFalse);
     if (staticallySafe)
-      os << "vc.statically-safe: no reachable sea.halt (every path is "
-            "blocked; the assertion cannot fail)\n";
+      r.line("vc.statically-safe")
+          .value("no reachable sea.halt")
+          .note("every path is blocked; the assertion cannot fail");
   };
   // the bounded expansions of symbolic memset / memmove lengths
   // (sea-expand-memset, without --seam): assume(n <= K), an
@@ -4069,38 +4085,34 @@ int main(int argc, char **argv) {
     nullGuards = n.getInt();
   // the memhavocs sea-drop-fresh-memhavoc dropped under A-INB
   // the counters of the lowering passes: sea-range-fold (--range-fold)
-  std::string lowerStatLines;
+  sea::stats::Report lowerStats; // no BRUNCH_STAT lines
   if (auto d =
           program->getAttrOfType<DictionaryAttr>(sea::kRangeFoldStatsAttr)) {
-    raw_string_ostream os(lowerStatLines);
-    os << "vc.range-fold: mode="
-       << (rangeFoldOpt == sea::RangeFoldMode::Check ? "check" : "on");
+    sea::stats::Line &l =
+        lowerStats.line("vc.range-fold")
+            .kv("mode",
+                rangeFoldOpt == sea::RangeFoldMode::Check ? "check" : "on");
     for (NamedAttribute a : d)
       if (auto i = dyn_cast<IntegerAttr>(a.getValue()))
-        os << " " << a.getName().getValue() << "=" << i.getInt();
-    os << "\n";
+        l.kv(a.getName().getValue(), i.getInt());
   }
   // sea-expand-small-memmove's counters (--expand-memmove)
   if (auto d = program->getAttrOfType<DictionaryAttr>(
           sea::kExpandMemMoveStatsAttr)) {
-    raw_string_ostream os(lowerStatLines);
-    os << "vc.expand-memmove:";
+    sea::stats::Line &l = lowerStats.line("vc.expand-memmove");
     for (StringRef key :
          {"k", "expanded", "bytes", "kept-symbolic", "kept-over-k",
           "kept-word-layout", "kept-abstract", "kept-tracked",
           "kept-companion-mirror", "kept-ptr-companion"})
       if (auto i = d.getAs<IntegerAttr>(key))
-        os << " " << key << "=" << i.getInt();
-    os << "\n";
+        l.kv(key, i.getInt());
   }
   // sea-lower-box-all's counters (a program with sea.box.all ops)
   if (auto d = program->getAttrOfType<DictionaryAttr>(sea::kBoxAllStatsAttr)) {
-    raw_string_ostream os(lowerStatLines);
-    os << "vc.box-all:";
+    sea::stats::Line &l = lowerStats.line("vc.box-all");
     for (NamedAttribute a : d)
       if (auto i = dyn_cast<IntegerAttr>(a.getValue()))
-        os << " " << a.getName().getValue() << "=" << i.getInt();
-    os << "\n";
+        l.kv(a.getName().getValue(), i.getInt());
   }
   uint64_t dropFreshInb = 0;
   if (auto n = program->getAttrOfType<IntegerAttr>(sea::kDropFreshInbAttr))
@@ -4432,18 +4444,15 @@ int main(int argc, char **argv) {
       }
       gOut->emit(rec);
     }
-    if (o.run.addr0IsNullUses) {
-      gOut->emit(sea::out::parseLine("assume.addr0-is-null: uses=" +
-                                     std::to_string(o.run.addr0IsNullUses)));
-      brunchStat(vout(), "assume.addr0-is-null-uses",
-                 Twine(o.run.addr0IsNullUses));
-    }
-    if (o.run.memhavocNullNoopUses) {
-      gOut->emit(
-          sea::out::parseLine("assume.memhavoc-null-noop: uses=" +
-                              std::to_string(o.run.memhavocNullNoopUses)));
-      brunchStat(vout(), "assume.memhavoc-null-noop-uses",
-                 Twine(o.run.memhavocNullNoopUses));
+    {
+      // the assumptions the replay used: BRUNCH_STAT <key>-uses
+      sea::stats::Report r(sea::stats::Brunch::Parts);
+      if (o.run.addr0IsNullUses)
+        r.line("assume.addr0-is-null").kv("uses", o.run.addr0IsNullUses);
+      if (o.run.memhavocNullNoopUses)
+        r.line("assume.memhavoc-null-noop")
+            .kv("uses", o.run.memhavocNullNoopUses);
+      r.printEach(vout(), brunchStats);
     }
     gOut->flush();
     if (match)
@@ -4861,17 +4870,42 @@ int main(int argc, char **argv) {
           stack.push_back(n->arg(i));
       }
     }
-    auto companionLine = [&](llvm::raw_ostream &os) {
-      if (sem.ptrCompanion())
-        os << "vc.ptr-companion: loads=" << sem.companionLoads()
-           << " stores=" << sem.companionStores()
-           << " copies=" << sem.companionCopies()
-           << " fresh=" << sem.companionFresh() << "\n"
-           << "vc.ptr-companion-arrays: " << companionArrays << "\n";
+    auto companionLines = [&](sea::stats::Report &r) {
+      if (sem.ptrCompanion()) {
+        r.line("vc.ptr-companion")
+            .kv("loads", sem.companionLoads())
+            .kv("stores", sem.companionStores())
+            .kv("copies", sem.companionCopies())
+            .kv("fresh", sem.companionFresh());
+        r.line("vc.ptr-companion-arrays").value(companionArrays);
+      }
       if (sem.companionAssumed())
-        os << "seam.ptrint: assumed loads=" << sem.companionAssumed() << "\n";
+        r.line("seam.ptrint")
+            .value("assumed")
+            .kv("loads", sem.companionAssumed());
       if (sem.ptrIntChecking())
-        os << "seam.ptrint: checked loads=" << sem.companionChecked() << "\n";
+        r.line("seam.ptrint")
+            .value("checked")
+            .kv("loads", sem.companionChecked());
+    };
+    // the VC's lines before the objects: BRUNCH_STAT for vc.ptr-mode,
+    // vc.int-to-ptr and vc.ptr-from-int-opaque only
+    auto vcLines = [&](sea::stats::Report &r) {
+      using sea::stats::Brunch;
+      r.line("vc.ptr-mode")
+          .value(addressMode ? "address" : "opaque")
+          .brunch(Brunch::Value);
+      r.line("vc.int-to-ptr").value(intToPtr).brunch(Brunch::Value);
+      r.line("vc.ptr-from-int-opaque")
+          .value(sem.ptrFromIntOpaque())
+          .brunch(Brunch::Value);
+      if (sinkAssumes)
+        r.line("vc.sink-assumes").value(sunkAssumes);
+      r.append(lowerStats);
+      foldLines(r);
+      companionLines(r);
+      if (vcgen.joinCases())
+        vcgen.joinCases()->report(r);
     };
     // --split-auto's pick run: the open alias questions
     std::vector<expr::ENode *> openOverlaps;
@@ -5106,9 +5140,12 @@ int main(int argc, char **argv) {
       splitOpenAliases = openOverlaps.size();
       splitPickSeconds = vcClock.seconds();
       if (!splitCandidatesOpt)
-        vout() << "split.auto: open-aliases=" << openOverlaps.size()
-               << " candidates=" << splitCandidates.size()
-               << " vc-time=" << llvm::format("%.3f", splitPickSeconds) << "\n";
+        printStats([&](sea::stats::Report &r) {
+          r.line("split.auto")
+              .kv("open-aliases", openOverlaps.size())
+              .kv("candidates", splitCandidates.size())
+              .kv("vc-time", sea::secondsText(splitPickSeconds));
+        });
       return 0;
     }
     // the layout (obj.k = <numeral>: unconditional side conditions of the
@@ -5565,10 +5602,14 @@ int main(int argc, char **argv) {
                   : expr::Expr(expr::mk<expr::EQ>(l.term, c.value));
         SR exact = unsatOf(
             expr::op::boolop::land(c.cond, expr::op::boolop::lneg(eq)), why2);
-        vout() << "split.check: level=" << i
-               << " target=" << splitTargets[l.target].name
-               << " cases=" << l.cases.size() << " exhaustive=" << word(ex)
-               << " exact=" << word(exact) << "\n";
+        printStats([&](sea::stats::Report &r) {
+          r.line("split.check")
+              .kv("level", i)
+              .kv("target", splitTargets[l.target].name)
+              .kv("cases", l.cases.size())
+              .kv("exhaustive", word(ex))
+              .kv("exact", word(exact));
+        });
         if (!why1.empty() || !why2.empty())
           sea::diag::warn("vc.split-check-unexpressible",
                           "--split-check: a check has no solver form: " + why1 +
@@ -5646,7 +5687,8 @@ int main(int argc, char **argv) {
       if (ec)
         return fail("--split-smt2: cannot write " + path + ": " + ec.message());
       ps->to_smt_lib(os);
-      vout() << "split.smt2: " << path << "\n";
+      printStats(
+          [&](sea::stats::Report &r) { r.line("split.smt2").value(path); });
     }
     // the SeaM counters: with --smt2 stdout is the query, so they go to stderr
     auto seamReport = [&](sea::stats::Report &r) {
@@ -5815,18 +5857,19 @@ int main(int argc, char **argv) {
       };
       run("row-store", stores, false);
       run("row-memop", memops, true);
-      raw_string_ostream os(auditReport);
-      audit.report(os, eqAuditShapes);
+      sea::stats::Report r;
+      audit.report(r, eqAuditShapes);
       // the pairs whose constraint the stride rule dropped are not audited
       // An audit under P3 is future work.
       if (ackOn && strideOn)
-        os << "eq-audit.ack-stride-dropped: " << ack.stats().stridePairs
-           << " (not audited)\n";
-      if (brunchStats)
-        audit.stats([&](const std::string &k, uint64_t v) {
-          os << "BRUNCH_STAT " << k << " " << v << "\n";
-        });
-      os << "eq-audit-time: " << llvm::format("%.3f", watch.seconds()) << "\n";
+        r.line("eq-audit.ack-stride-dropped")
+            .value(ack.stats().stridePairs)
+            .note("not audited");
+      // the counters: BRUNCH_STAT lines only, before the time
+      audit.counters(r);
+      r.line("eq-audit-time").seconds(watch.seconds());
+      raw_string_ostream os(auditReport);
+      r.printEach(os, brunchStats);
     };
     // every recorded firing (or a sample) as a validity query,
     // `premise => lhs = rhs`, on the solver of the run. Runs after the
@@ -5994,7 +6037,11 @@ int main(int argc, char **argv) {
     auto runXrtCheck = [&]() {
       if (!xlw || !xReadTableCheck)
         return;
-      raw_ostream &os = statOut();
+      // each line as soon as it is known (a later check may crash); no
+      // BRUNCH_STAT lines
+      auto put = [&](llvm::function_ref<void(sea::stats::Report &)> add) {
+        printStats(statOut(), add);
+      };
       expr::SeaMRewriter *rw = sem.seamRewriter();
       xtr->freeze();
       std::string why;
@@ -6024,7 +6071,9 @@ int main(int argc, char **argv) {
       }
       expr::Expr sides = tl(expr::mknary<expr::AND>(tt, cfg));
       if (!prem || !sides) {
-        os << "xrt.check: unexpressible (" << why << ")\n";
+        put([&](sea::stats::Report &rep) {
+          rep.line("xrt.check").value("unexpressible").note(why);
+        });
         return;
       }
       expr::ExprVector lay;
@@ -6056,14 +6105,17 @@ int main(int argc, char **argv) {
       // semantics, no table): for the context check only
       if (xReadTableCheckPremise.find('S') != std::string::npos)
         sides = sem.solverTerm(expr::mknary<expr::AND>(tt, side));
-      os << "xrt.check-premise: " << xReadTableCheckPremise << "\n";
+      put([&](sea::stats::Report &rep) {
+        rep.line("xrt.check-premise").value(xReadTableCheckPremise);
+      });
       cs->add(expr::mk<expr::AND>(sides, expr::mk<expr::AND>(prem, layout)));
       auto ctxRes = cs->check();
-      os << "xrt.check-context: "
-         << (ctxRes == sea::solver::SolverResult::SAT     ? "sat"
-             : ctxRes == sea::solver::SolverResult::UNSAT ? "unsat"
-                                                          : "unknown")
-         << "\n";
+      put([&](sea::stats::Report &rep) {
+        rep.line("xrt.check-context")
+            .value(ctxRes == sea::solver::SolverResult::SAT     ? "sat"
+                   : ctxRes == sea::solver::SolverResult::UNSAT ? "unsat"
+                                                                : "unknown");
+      });
       auto one = [&](expr::Expr ob, uint64_t &u, uint64_t &s, uint64_t &k) {
         cs->push();
         auto r = cs->add(ob) ? cs->check() : sea::solver::SolverResult::UNKNOWN;
@@ -6091,10 +6143,18 @@ int main(int argc, char **argv) {
                                  B.rel, expr::mk<expr::EQ>(A.addr, B.addr))),
                   u, s, k);
           if (r == sea::solver::SolverResult::SAT)
-            os << "xrt.check-omitted-sat: " << a << " " << b << "\n";
+            put([&, a = a, b = b](sea::stats::Report &rep) {
+              rep.line("xrt.check-omitted-sat").value(a).value(b);
+            });
         }
-        os << "xrt.check-omitted: total=" << n << " checked=" << m
-           << " unsat=" << u << " sat=" << s << " unknown=" << k << "\n";
+        put([&](sea::stats::Report &rep) {
+          rep.line("xrt.check-omitted")
+              .kv("total", n)
+              .kv("checked", m)
+              .kv("unsat", u)
+              .kv("sat", s)
+              .kv("unknown", k);
+        });
         // the same pairs without the address equality: how many are
         // exclusive by relevance alone (semantically, not syntactically)
         uint64_t u2 = 0, s2 = 0, k2 = 0;
@@ -6103,8 +6163,12 @@ int main(int argc, char **argv) {
           one(expr::mk<expr::AND>(xlw->low(a).rel, xlw->low(b).rel), u2, s2,
               k2);
         }
-        os << "xrt.check-omitted-relevance-only: unsat=" << u2 << " sat=" << s2
-           << " unknown=" << k2 << "\n";
+        put([&](sea::stats::Report &rep) {
+          rep.line("xrt.check-omitted-relevance-only")
+              .kv("unsat", u2)
+              .kv("sat", s2)
+              .kv("unknown", k2);
+        });
       }
       {
         const auto &ds = xtr->deads();
@@ -6118,11 +6182,19 @@ int main(int argc, char **argv) {
             continue;
           }
           if (one(xlw->lowerTerm(r), u, s, k) == sea::solver::SolverResult::SAT)
-            os << "xrt.check-dead-sat: " << *d.sym << " " << d.kind << "\n";
+            put([&](sea::stats::Report &rep) {
+              rep.line("xrt.check-dead-sat").value(*d.sym).value(d.kind);
+            });
         }
-        os << "xrt.check-dead: total=" << n << " checked=" << m
-           << " unsat=" << u << " sat=" << s << " unknown=" << k
-           << " unreached=" << unreached << "\n";
+        put([&](sea::stats::Report &rep) {
+          rep.line("xrt.check-dead")
+              .kv("total", n)
+              .kv("checked", m)
+              .kv("unsat", u)
+              .kv("sat", s)
+              .kv("unknown", k)
+              .kv("unreached", unreached);
+        });
       }
       {
         const auto &mr = xlw->muxRecords();
@@ -6139,8 +6211,14 @@ int main(int argc, char **argv) {
                                         w, efac)))),
               u, s, k);
         }
-        os << "xrt.check-mux-range: total=" << n << " checked=" << m
-           << " unsat=" << u << " sat=" << s << " unknown=" << k << "\n";
+        put([&](sea::stats::Report &rep) {
+          rep.line("xrt.check-mux-range")
+              .kv("total", n)
+              .kv("checked", m)
+              .kv("unsat", u)
+              .kv("sat", s)
+              .kv("unknown", k);
+        });
       }
       {
         // each lowered record: can it be relevant at all (under the premise)?
@@ -6159,13 +6237,19 @@ int main(int argc, char **argv) {
           auto &pb = perBucket[b];
           ++(r == sea::solver::SolverResult::UNSAT ? pb.first : pb.second);
         }
-        os << "xrt.check-record-relevant: unsat=" << u << " sat=" << s
-           << " unknown=" << k;
-        for (auto &[b, c] : perBucket)
-          os << " " << b << "=" << c.second << "/" << (c.first + c.second);
-        os << "\n";
+        put([&](sea::stats::Report &rep) {
+          sea::stats::Line &l = rep.line("xrt.check-record-relevant")
+                                    .kv("unsat", u)
+                                    .kv("sat", s)
+                                    .kv("unknown", k);
+          for (auto &[b, c] : perBucket)
+            l.kv(b, std::to_string(c.second) + "/" +
+                        std::to_string(c.first + c.second));
+        });
       }
-      os << "xrt.check-time: " << llvm::format("%.3f", watch.seconds()) << "\n";
+      put([&](sea::stats::Report &rep) {
+        rep.line("xrt.check-time").seconds(watch.seconds());
+      });
     };
     if (smt2) {
       // the block ids of each guard (kBlockIdsAttr), as SMT-LIB comments:
@@ -6200,16 +6284,12 @@ int main(int argc, char **argv) {
         blockIdLines(outs());
       }
       gOut->flush();
-      statOut() << "vc.ptr-mode: " << (addressMode ? "address" : "opaque")
-                << "\nvc.int-to-ptr: " << intToPtr << "\n"
-                << "vc.ptr-from-int-opaque: " << sem.ptrFromIntOpaque() << "\n";
-      if (sinkAssumes)
-        statOut() << "vc.sink-assumes: " << sunkAssumes << "\n";
-      statOut() << lowerStatLines;
-      foldLines(statOut());
-      companionLine(statOut());
-      if (vcgen.joinCases())
-        vcgen.joinCases()->print(statOut());
+      {
+        // no BRUNCH_STAT lines with --smt2 (as before the port)
+        sea::stats::Report r;
+        vcLines(r);
+        r.print(statOut(), false);
+      }
       printSeamStats(statOut());
       runSeamCheck();
       runEqAudit();
@@ -6221,7 +6301,9 @@ int main(int argc, char **argv) {
       // a part's answer (the verdict of a split comes after its parts)
       if (splitOn) {
         splitPart.result = v.str();
-        vout() << "split.part-result: " << v << "\n";
+        printStats([&](sea::stats::Report &r) {
+          r.line("split.part-result").value(v);
+        });
         return;
       }
       sea::out::Record rec("result");
@@ -6235,20 +6317,11 @@ int main(int argc, char **argv) {
       rec.text = ("program: @" + program.getSymName()).str();
       gOut->emit(rec);
     }
-    vout() << "vc.ptr-mode: " << (addressMode ? "address" : "opaque")
-           << "\nvc.int-to-ptr: " << intToPtr
-           << "\nvc.ptr-from-int-opaque: " << sem.ptrFromIntOpaque() << "\n";
-    if (sinkAssumes)
-      vout() << "vc.sink-assumes: " << sunkAssumes << "\n";
-    vout() << lowerStatLines;
-    foldLines(vout());
-    companionLine(vout());
-    if (vcgen.joinCases())
-      vcgen.joinCases()->print(vout());
-    brunchStat(vout(), "vc.ptr-mode", addressMode ? "address" : "opaque");
-    brunchStat(vout(), "vc.int-to-ptr", llvm::Twine(intToPtr));
-    brunchStat(vout(), "vc.ptr-from-int-opaque",
-               llvm::Twine(sem.ptrFromIntOpaque()));
+    {
+      sea::stats::Report r;
+      vcLines(r);
+      r.print(vout(), brunchStats);
+    }
     // the base registry (SeaM), in allocation order
     for (const expr::ObjectBase &o : vcgen.baseRegistry().objects()) {
       sea::out::Record rec("object");
@@ -6302,7 +6375,7 @@ int main(int argc, char **argv) {
                         "--seam-check and --x-read-table-check do not run: "
                         "--vcgen-only skips them");
       emitResult("none");
-      brunchStat(vout(), "result", "none");
+      printStats([](sea::stats::Report &r) { resultLine(r, "none"); });
       return 0;
     }
     runSeamCheck();
@@ -6447,29 +6520,33 @@ int main(int argc, char **argv) {
         .kv("nodes-made", efac.nodesMade());
     SEA_PHASE_END(solvePhase);
     splitPart.solveSeconds = solveSec;
-    std::string solveSeconds = sea::secondsText(solveSec);
-    vout() << "solve-time: " << solveSeconds << "\n";
-    if (backend == Backend::Z3 && z3Tactic != "default")
-      vout() << "solver.z3-tactic: " << z3Tactic << "\n";
-    if (backend == Backend::Yices) {
-      if (!yicesLogic.empty())
-        vout() << "solver.yices-logic: " << yicesLogic << "\n";
-      for (const std::string &kv : yicesConfig)
-        vout() << "solver.yices-config: " << kv << "\n";
-      for (const std::string &kv : yicesParams)
-        vout() << "solver.yices-param: " << kv << "\n";
+    {
+      // the solver's lines; BRUNCH_STAT solve-time only
+      sea::stats::Report r;
+      r.line("solve-time").seconds(solveSec).brunch(sea::stats::Brunch::Value);
+      if (backend == Backend::Z3 && z3Tactic != "default")
+        r.line("solver.z3-tactic").value(z3Tactic);
+      if (backend == Backend::Yices) {
+        if (!yicesLogic.empty())
+          r.line("solver.yices-logic").value(yicesLogic);
+        for (const std::string &kv : yicesConfig)
+          r.line("solver.yices-config").value(kv);
+        for (const std::string &kv : yicesParams)
+          r.line("solver.yices-param").value(kv);
+      }
+      r.print(vout(), brunchStats);
     }
-    brunchStat(vout(), "solve-time", solveSeconds);
     if (res == sea::solver::SolverResult::UNSAT) {
       emitResult("unsat");
+      sea::stats::Report r;
       if (sem.ptrIntChecking() && sem.companionChecked())
-        vout() << "seam.ptrint: holds\n";
-      brunchStat(vout(), "result", "unsat");
+        r.line("seam.ptrint").value("holds");
+      resultLine(r, "unsat");
+      r.print(vout(), brunchStats);
       return 0;
     }
     if (res != sea::solver::SolverResult::SAT) {
       emitResult("unknown");
-      brunchStat(vout(), "result", "unknown");
       // why, when a limit of the run explains it: the backend's reason
       // (z3, Yices' watchdog); else the time spent reached --timeout; for
       // Bitwuzla (complete for the VC's logics) an unknown under
@@ -6479,15 +6556,20 @@ int main(int argc, char **argv) {
           solveTimeout && (why == "timeout" || solveSec >= solveTimeout);
       const bool memHit = memLimit && !timedOut &&
                           (why == "memout" || backend == Backend::Bitwuzla);
-      if (timedOut) {
-        vout() << "solve-timeout: true\n";
-        brunchStat(vout(), "solve-timeout", "true");
-      }
-      if (memHit) {
-        vout() << "mem-limit: hit\n";
-        brunchStat(vout(), "mem-limit", "hit");
-        // the solver's own limit: in solve (the new-handler's note line)
-        vout() << "mem-limit-phase: solve\n";
+      {
+        // each line's BRUNCH_STAT line right after it
+        sea::stats::Report r;
+        resultLine(r, "unknown");
+        if (timedOut)
+          r.line("solve-timeout")
+              .value("true")
+              .brunch(sea::stats::Brunch::Value);
+        if (memHit) {
+          r.line("mem-limit").value("hit").brunch(sea::stats::Brunch::Value);
+          // the solver's own limit: in solve (the new-handler's note line)
+          r.line("mem-limit-phase").value("solve");
+        }
+        r.printEach(vout(), brunchStats);
       }
       // where to go next: the split targets, when the normalized query
       // has open alias questions to attribute, or else Ackermann
@@ -6540,11 +6622,12 @@ int main(int argc, char **argv) {
       for (size_t a = 0; a < ack.arrays().size(); ++a)
         (void)probe.function(a);
       if (probe.strideBroken()) {
-        vout() << "vc.ackermann-stride-broken: " << probe.strideBroken() << "\n"
-               << "vc.ackermann-stride-retry-solve-time: " << solveSeconds
-               << "\n";
-        brunchStat(vout(), "vc.ackermann-stride-retry-solve-time",
-                   solveSeconds);
+        sea::stats::Report r;
+        r.line("vc.ackermann-stride-broken").value(probe.strideBroken());
+        r.line("vc.ackermann-stride-retry-solve-time")
+            .seconds(solveSec)
+            .brunch(sea::stats::Brunch::Value);
+        r.print(vout(), brunchStats);
         sea::diag::warn("vc.ack-stride-promise-broken",
                         "the model breaks a GEP promise the stride rule "
                         "relied on (a wrapping offset: UB in LLVM); running "
@@ -6560,9 +6643,13 @@ int main(int argc, char **argv) {
       return kRetryExactCompanion;
     }
     emitResult("sat");
-    brunchStat(vout(), "result", "sat");
-    if (sem.ptrIntChecking() && sem.companionChecked())
-      vout() << "seam.ptrint: not discharged\n";
+    {
+      sea::stats::Report r;
+      resultLine(r, "sat");
+      if (sem.ptrIntChecking() && sem.companionChecked())
+        r.line("seam.ptrint").value("not discharged");
+      r.printEach(vout(), brunchStats);
+    }
 
     auto solverModel = solver->get_model();
     // the cells of the solver's arrays no constraint reads: defaults
@@ -7128,7 +7215,7 @@ int main(int argc, char **argv) {
       rec.str("value", "none");
       rec.text = "result: none";
       gOut->emit(rec);
-      brunchStat(vout(), "result", "none");
+      printStats([](sea::stats::Report &r) { resultLine(r, "none"); });
       gOut->flush();
       return 0;
     }();
@@ -7176,7 +7263,9 @@ int main(int argc, char **argv) {
           if (pick) {
             splitTargets.push_back({sea::SplitTarget::Kind::Leaves, pick->value,
                                     nullptr, pick->name, "auto"});
-            vout() << "split.auto-pick: " << pick->name << "\n";
+            printStats([&](sea::stats::Report &r) {
+              r.line("split.auto-pick").value(pick->name);
+            });
           }
         }
       }
@@ -7324,8 +7413,10 @@ int main(int argc, char **argv) {
                    " leaf-structural=" + std::to_string(nLeafStructural) +
                    (stopped ? " stopped=first-sat" : "");
         gOut->emit(rec);
-        for (const std::string &u : unknownParts)
-          vout() << "split.unknown-part: " << u << "\n";
+        printStats([&](sea::stats::Report &r) {
+          for (const std::string &u : unknownParts)
+            r.line("split.unknown-part").value(u);
+        });
       }
       sea::out::Record rec("result");
       rec.str("value", verdict);
@@ -7352,6 +7443,10 @@ int main(int argc, char **argv) {
     }
   }
   gOut->flush();
-  brunchStat(statOut(), "status", Twine(rc));
+  {
+    sea::stats::Report r;
+    r.line("status").value(rc).brunch(sea::stats::Brunch::Value).brunchOnly();
+    r.print(statOut(), brunchStats);
+  }
   return rc;
 }

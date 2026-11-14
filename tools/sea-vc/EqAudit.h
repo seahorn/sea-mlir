@@ -34,6 +34,7 @@
 #include "sea/Expr/BaseRegistry.hh"
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/Smt/Solver.hh"
+#include "sea/Support/Stats.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
@@ -93,39 +94,46 @@ public:
     m_src[source.str()].total = n;
   }
 
-  void report(llvm::raw_ostream &os, unsigned topShapes) const {
+  void report(stats::Report &r, unsigned topShapes) const {
     for (const auto &[name, src] : m_src) {
       uint64_t sampled = 0;
       for (uint64_t c : src.count)
         sampled += c;
-      os << "eq-audit: source=" << name << " items=" << src.total
-         << " sampled=" << sampled;
-      for (unsigned l = 0; l < NLevels; ++l)
-        os << " " << levelName(l) << "=" << src.count[l];
-      os << "\n";
-      for (unsigned l = 0; l < NLevels; ++l) {
+      stats::Line &l = r.line("eq-audit")
+                           .kv("source", name)
+                           .kv("items", src.total)
+                           .kv("sampled", sampled);
+      for (unsigned lv = 0; lv < NLevels; ++lv)
+        l.kv(levelName(lv), src.count[lv]);
+      for (unsigned lv = 0; lv < NLevels; ++lv) {
         std::vector<std::pair<uint64_t, const std::string *>> v;
-        for (const auto &[k, ce] : src.shapes[l])
+        for (const auto &[k, ce] : src.shapes[lv])
           v.push_back({ce.first, &k});
         std::sort(v.begin(), v.end(), [](auto &x, auto &y) {
           return x.first != y.first ? x.first > y.first : *x.second < *y.second;
         });
-        for (size_t i = 0; i < v.size() && i < topShapes; ++i)
-          os << "eq-audit-shape: source=" << name << " level=" << levelName(l)
-             << " count=" << v[i].first
-             << " example=" << src.shapes[l].at(*v[i].second).second
-             << " shape=" << *v[i].second << "\n"
-             << "eq-audit-example: " << src.texts[l].at(*v[i].second) << "\n";
+        for (size_t i = 0; i < v.size() && i < topShapes; ++i) {
+          r.line("eq-audit-shape")
+              .kv("source", name)
+              .kv("level", levelName(lv))
+              .kv("count", v[i].first)
+              .kv("example", src.shapes[lv].at(*v[i].second).second)
+              .kv("shape", *v[i].second);
+          r.line("eq-audit-example").value(src.texts[lv].at(*v[i].second));
+        }
       }
     }
   }
 
-  /// BRUNCH_STAT-style counters: eq-audit.<source>.<level> = count.
-  template <typename Fn>
-  void stats(Fn fn) const {
+  /// The counters as BRUNCH_STAT lines only (no text line):
+  /// eq-audit.<source>.<level> = count.
+  void counters(stats::Report &r) const {
     for (const auto &[name, src] : m_src)
       for (unsigned l = 0; l < NLevels; ++l)
-        fn("eq-audit." + name + "." + levelName(l), src.count[l]);
+        r.line("eq-audit." + name + "." + levelName(l))
+            .value(src.count[l])
+            .brunch(stats::Brunch::Value)
+            .brunchOnly();
   }
 
 private:

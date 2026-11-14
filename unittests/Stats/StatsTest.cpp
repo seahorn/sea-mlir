@@ -15,7 +15,9 @@
 //  rules   Off / Value / Parts / Derived on the same lines; brunchOnly; a
 //          per-line policy over the report's.
 //  order   print(): every text line, then every BRUNCH_STAT line; none
-//          without the flag.
+//          without the flag. printEach(): each line's text line, then its
+//          BRUNCH_STAT lines. append(): the lines of another report, with
+//          their policies.
 //  timers  time(Timer) and timers(TimerGroup) keys and "%.3f" values.
 //  mem     memFields: names, order, MiB rounding, unknown fields left out.
 //
@@ -223,6 +225,31 @@ void testOrder() {
         "order: '" << with << "'");
   CHECK(without == "a: 1\nb: x y\nc: 3\n", "no brunch: '" << without << "'");
   CHECK(r.lines().size() == 3 && r.lines()[1].key() == "b", "lines");
+  // printEach: interleaved; a brunchOnly line between text lines
+  Report e(Brunch::Off);
+  e.line("result").value("unknown").brunch(Brunch::Value).brunchOnly();
+  e.line("mem-limit").value("hit").brunch(Brunch::Value);
+  e.line("mem-limit-phase").value("solve");
+  std::string each, eachOff;
+  llvm::raw_string_ostream ew(each), ewo(eachOff);
+  e.printEach(ew, true);
+  e.printEach(ewo, false);
+  CHECK(each == "BRUNCH_STAT result unknown\nmem-limit: hit\n"
+                "BRUNCH_STAT mem-limit hit\nmem-limit-phase: solve\n",
+        "each: '" << each << "'");
+  CHECK(eachOff == "mem-limit: hit\nmem-limit-phase: solve\n",
+        "each, no brunch: '" << eachOff << "'");
+  // append: copies, policies kept, after the lines already there
+  Report a(Brunch::Value);
+  a.line("x").value(0);
+  a.append(e);
+  std::string app;
+  llvm::raw_string_ostream aw(app);
+  a.print(aw, true);
+  CHECK(app == "x: 0\nmem-limit: hit\nmem-limit-phase: solve\n"
+               "BRUNCH_STAT x 0\nBRUNCH_STAT result unknown\n"
+               "BRUNCH_STAT mem-limit hit\n",
+        "append: '" << app << "'");
   llvm::outs() << "order: ok\n";
 }
 

@@ -9,8 +9,10 @@
 //  Line    one stat line: a key and the tokens of its value (value, kv,
 //          note, seconds, text), and how it becomes BRUNCH_STAT lines.
 //  Report  the lines of one block, in order. print() writes the text
-//          lines, then (on request) the BRUNCH_STAT lines; both come from
-//          one function (renderLine), so they cannot drift.
+//          lines, then (on request) the BRUNCH_STAT lines; printEach()
+//          writes each line's text line, then its BRUNCH_STAT lines (the
+//          sites whose BRUNCH_STAT lines sit among the text lines). Both
+//          come from one function (renderLine), so they cannot drift.
 //  Brunch  how a line becomes BRUNCH_STAT lines:
 //            Off      none
 //            Value    `BRUNCH_STAT <key> <value>`, the whole value
@@ -122,6 +124,8 @@ public:
   /// A new line \p key, after the others. The reference stays valid for
   /// the life of the report.
   Line &line(llvm::StringRef key);
+  /// Copies of the lines of \p o, after the others.
+  void append(const Report &o);
   /// `<timer name>-time: <seconds>`.
   Line &time(const Timer &t);
   /// One line per timer of \p g, in first-use order: `<g.key(name)>:
@@ -130,6 +134,9 @@ public:
 
   /// Writes the text lines, then, with \p brunch, the BRUNCH_STAT lines.
   void print(llvm::raw_ostream &os, bool brunch) const;
+  /// Writes each line's text line, then, with \p brunch, its BRUNCH_STAT
+  /// lines.
+  void printEach(llvm::raw_ostream &os, bool brunch) const;
   /// The text lines (print without BRUNCH_STAT lines).
   std::string text() const;
 
