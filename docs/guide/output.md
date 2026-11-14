@@ -66,7 +66,7 @@ encoding statistics. These help diagnose a result or compare configurations:
 
 ```console
 $ sea-vc firedancer/hpack-huff-proof.mlir --lower --seam --widen-memory=4
-tool.version: sea-mlir 0.1.1 (...)
+tool.version: sea-mlir 0.2.0 (...)
 vc.typecheck-time: 0.001
 program: @main
 vc.ptr-mode: opaque

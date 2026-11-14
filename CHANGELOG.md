@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
-This is the 0.2.0 change of what a verdict rests on (docs/Release.md, "What
+A minor release: what a verdict rests on changes (docs/Release.md, "What
 a verdict rests on"): verdicts change for programs with a static
 out-of-object access.
 
