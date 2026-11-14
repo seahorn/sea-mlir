@@ -451,9 +451,10 @@ protected:
   }
 
   /** n-ary
-     iterator ranges over ENode* or Expr; read once. An iterator that
-     yields values (e.g. an Expr made on the fly) has them held here until
-     the node holds its own references.
+     iterator ranges over ENode* or Expr. Each element is dereferenced once
+     here; callers may dereference or traverse the range again. An iterator that
+     yields values (e.g. an Expr made on the fly) has them held here until the
+     node holds its own references.
   */
   template <typename iterator>
   ENode *mkNExpr(const Operator &op, iterator begin, iterator end) {
