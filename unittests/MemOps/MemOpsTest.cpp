@@ -35,6 +35,7 @@
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/SeaMRules.hh"
 #include "sea/Expr/Smt/Yices2SolverImpl.hh"
+#include "sea/Support/Log.h"
 #include <boost/functional/hash.hpp>
 
 #include "llvm/Support/raw_ostream.h"
@@ -1341,6 +1342,29 @@ void testIteOffset() {
 
 } // namespace
 
+/// The log tag yices.const-array: an assertion in which a const-array
+/// survives the select rewrite is logged (count and assertion), before
+/// yices refuses it (a fatal error: the reason for the log); one whose
+/// const-array selects are rewritten is not. Run alone (`const-array-log`).
+void testConstArrayLog() {
+  ExprFactory efac;
+  sea::log::select("yices.const-array:2", "sea-memops-test");
+  Expr isort = op::bv::bvsort(4, efac);
+  Expr zero = op::bv::bvnum(mpz_class(0UL), 8, efac);
+  Expr ca = op::array::constArray(isort, zero);
+  Expr i = op::bv::bvConst(mkTerm<std::string>("i", efac), 4);
+  Expr x = op::bv::bvConst(mkTerm<std::string>("x", efac), 8);
+  // rewritten: no event
+  sea::solver::yices_solver_impl sv(efac);
+  sv.add(mk<EQ>(op::array::select(ca, i), x));
+  CHECK(sv.check() == sea::solver::SolverResult::SAT, "select of const-array");
+  // a const-array that is no select's array: logged
+  Expr a = op::array::constArray(isort, x);
+  llvm::errs() << "const-array-log: unsupported assertion next\n";
+  sea::solver::yices_solver_impl sv2(efac);
+  sv2.add(mk<EQ>(a, ca));
+}
+
 int main(int argc, char **argv) {
   struct Test {
     const char *name;
@@ -1359,6 +1383,11 @@ int main(int argc, char **argv) {
                {"boundary", testBoundary},
                {"ptr-index", testPtrIndex},
                {"ite-offset", testIteOffset}};
+  // its own run: yices refuses the assertion after the event (fatal)
+  if (argc > 1 && llvm::StringRef(argv[1]) == "const-array-log") {
+    testConstArrayLog();
+    return 1;
+  }
   for (const Test &t : tests) {
     int before = failures;
     auto t0 = std::chrono::steady_clock::now();

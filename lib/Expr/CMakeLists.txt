@@ -23,6 +23,7 @@ add_mlir_library(SeaExpr
   ExprUtil.cpp
   ConstArrayDefs.cpp
   MarshalYices.cpp
+  SolverFactory.cpp
   TypeChecker.cpp
   Yices2ModelImpl.cpp
   Yices2SolverImpl.cpp

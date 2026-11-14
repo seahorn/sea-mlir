@@ -49,12 +49,29 @@ Scope, build, assumptions and known issues: [docs/Release.md](docs/Release.md).
   read-only arrays with the stride rule (`--ackermannize`, `--ack-stride`).
 - Assurance: the per-firing rule check (`--seam-check`), the rule trail
   (`--seam-trail`), `--eq-audit`, `--dag-stats`.
+- `--words-check-rlimit`, `--eq-audit-rlimit`, `--seam-check-rlimit`: z3
+  resource limit per auxiliary check (deterministic; unset by default, untuned
+  until a corpus sweep); an exhausted check is `unknown`, `reason=rlimit`.
 - Limits and progress: `--timeout`, `--mem-limit`, `--vcgen-only`,
   `--progress` (= `--log=vc.phase`).
 - Logs (`--log`, `SEA_LOG`; docs/reference/logging.md): tagged, leveled
   events on stderr; level 1 traces the flow of a run (`vc.phase`,
   `lower.pass`, `vc.solve`).
 - Profiles (`--config`, LLVM config files), `--format=jsonl`, `--agent`.
+- Behaviour changes of the cleanup of the solver and output code:
+  - `--seam-check` on a build without Bitwuzla (`--solver=bitwuzla`) now
+    reports `vc.solver-unavailable` under `--smt2` and `--vcgen-only`; it was
+    skipped silently there.
+  - `--x-read-table-check-timeout=0` no longer sets z3's `timeout=0`: the
+    same behaviour (no timeout), no parameter set.
+  - `--z3-tactic` applies to the solver of the verdict only, no longer to
+    the auxiliary checks; a tactic z3 rejects is the error `vc.z3-tactic`.
+  - Output files (`--print-lowered`, `--place-out`, `--reach-programs`,
+    `--ack-dump-pairs`, `--reach-witness`, `--split-smt2`) are written whole
+    (a temporary, then a rename; the path `-` is stdout, a target that is not
+    a regular file is written directly), and a failed write is an error of
+    its own kind: `vc.print-lowered`, `place.out-file`, `vc.reach-programs`,
+    `vc.ack-dump-pairs`, `vc.reach-witness`, `vc.split-smt2`.
 
 ### Tools and utilities
 - `sea-reduce` (mlir-reduce with sea patterns and the sea reduction tree)
@@ -65,5 +82,6 @@ Scope, build, assumptions and known issues: [docs/Release.md](docs/Release.md).
   Lean conformance checks of seam-lean ([docs/SeamExport.md](docs/SeamExport.md)).
 - `--version` for every tool; `sea-vc` prints `tool.version:` first.
 - Source tree only: `utils/bench.py` (benchmark suites in separate
-  repositories, tiers and gates), `utils/query-diff.py`, the fuzzers and
+  repositories, tiers and gates), `utils/query-diff.py`,
+  `utils/output-diff.py` (tool output of two builds), the fuzzers and
   semantic oracles; `just release-check`.

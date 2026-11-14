@@ -103,10 +103,10 @@
 #include "sea/Expr/MemOps.hh"
 #include "sea/Expr/StoreMap.hh"
 #include "sea/Expr/TypeChecker.hh"
+#include "sea/Support/Timer.h"
 
 #include "llvm/ADT/SmallVector.h"
 
-#include <chrono>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -5830,16 +5830,16 @@ class SeaMRewriter {
       m_stats.rules["wide.expanded-ite-offset-refused"] = refused;
   }
   /// time spent in rewrite(): the pre-processing of the thesis' Table 8.4
-  double m_rewriteSeconds = 0;
+  sea::Timer m_rewriteTimer{"rewrite"};
   /// time spent in simplify(): the final pass over the VC
-  double m_simplifySeconds = 0;
+  sea::Timer m_simplifyTimer{"simplify"};
 
-  Expr run(const Expr &e, double &seconds) {
-    auto t0 = std::chrono::steady_clock::now();
-    Expr res = m_rw.rewriteExpr(e);
-    seconds +=
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
-            .count();
+  Expr run(const Expr &e, sea::Timer &timer) {
+    Expr res;
+    {
+      sea::TimeScope scope(timer);
+      res = m_rw.rewriteExpr(e);
+    }
     if (!m_rw.aborted() && m_config.shouldCache(res))
       m_cache.insert(res, res, kFullDepth);
     // ARM work, as totals (the analysis counts it, not the rules)
@@ -5865,17 +5865,17 @@ public:
   /// The normal form of \p e. The result is cached as its own normal form
   /// (a term the next call meets as a kid, such as the memory of the last
   /// store, is not walked again).
-  Expr rewrite(const Expr &e) { return run(e, m_rewriteSeconds); }
+  Expr rewrite(const Expr &e) { return run(e, m_rewriteTimer); }
 
   /// The normal form of a term of the VC that is not a memory access (a side
   /// condition, the query), with the same cache and rules as rewrite(): the
   /// final normalization pass. Time is counted apart (simplifySeconds()).
-  Expr simplify(const Expr &e) { return run(e, m_simplifySeconds); }
+  Expr simplify(const Expr &e) { return run(e, m_simplifyTimer); }
 
   /// Seconds spent in rewrite() so far.
-  double rewriteSeconds() const { return m_rewriteSeconds; }
+  double rewriteSeconds() const { return m_rewriteTimer.seconds(); }
   /// Seconds spent in simplify() so far.
-  double simplifySeconds() const { return m_simplifySeconds; }
+  double simplifySeconds() const { return m_simplifyTimer.seconds(); }
 
   /// True once a store-map was made (smap.new): terms that went through this
   /// rewriter may contain one.

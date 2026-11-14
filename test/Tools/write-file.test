@@ -1,0 +1,45 @@
+// Output files are written whole (sea/Support/WriteFile.h): a write that
+// fails (here: into a directory that does not exist) is an error of the
+// file's kind, and the tool stops; a written file is complete and leaves
+// no temporary behind.
+// RUN: rm -rf %t && split-file %s %t
+// DEFINE: %{out} = %t/missing/w.place
+// DEFINE: %{place} = sea-opt --pass-pipeline='builtin.module(sea.program(sea-place-static{place-out=%{out}}))' %t/one.mlir -o /dev/null
+// DEFINE: %{in} = %S/../VC/ack-dump-pairs-loc.mlir --lower --lower-opt=false --seam --ackermannize=on --vcgen-only --program=reads
+
+// RUN: not sea-vc %{in} --print-lowered=%t/missing/low.mlir 2>&1 | FileCheck %s --check-prefix=LOWERED
+// LOWERED: Error: --print-lowered: cannot write '{{.*}}missing{{/|\\}}low.mlir': {{.*}} [vc.print-lowered]
+// RUN: not sea-vc %{in} --ack-dump-pairs=%t/missing/pairs.txt 2>&1 | FileCheck %s --check-prefix=PAIRS
+// PAIRS: Error: --ack-dump-pairs: cannot write '{{.*}}missing{{/|\\}}pairs.txt': {{.*}} [vc.ack-dump-pairs]
+// RUN: not sea-vc %S/../VC/split/guards.mlir --program=bug --split=^bb1 --split-smt2=%t/missing/q --vcgen-only 2>&1 | FileCheck %s --check-prefix=SPLIT
+// SPLIT: Error: --split-smt2: cannot write '{{.*}}missing{{/|\\}}q.part{{[0-9]+}}.smt2': {{.*}} [vc.split-smt2]
+// RUN: not %{place} 2>&1 | FileCheck %s --check-prefix=PLACE
+// PLACE: Error: sea-place-static: the placement file: cannot write '{{.*}}missing{{/|\\}}w.place': {{.*}} [place.out-file]
+
+// RUN: sea-vc %{in} --print-lowered=%t/low.mlir --ack-dump-pairs=%t/pairs.txt
+// RUN: FileCheck %s --check-prefix=OK-LOWERED < %t/low.mlir
+// RUN: FileCheck %s --check-prefix=OK-PAIRS < %t/pairs.txt
+// REDEFINE: %{out} = %t/w.place
+// RUN: %{place}
+// RUN: FileCheck %s --check-prefix=OK-PLACE < %t/w.place
+// RUN: ls -a %t | FileCheck %s --check-prefix=NOTMP
+// The path "-" is stdout; a target that is not a regular file (here the
+// pipe behind /dev/stdout) is written directly, with no temporary.
+// RUN: sea-vc %{in} --ack-dump-pairs=- | FileCheck %s --check-prefix=OK-PAIRS
+// RUN: sea-vc %{in} --ack-dump-pairs=/dev/stdout | FileCheck %s --check-prefix=OK-PAIRS
+// OK-LOWERED: // sea-vc --print-lowered:
+// OK-LOWERED: sea.program @reads
+// OK-PAIRS: array 0
+// OK-PLACE: # sea-place-static placement of @one
+// OK-PLACE-NEXT: name=stack.1 kind=stack
+// NOTMP-NOT: .tmp
+
+//--- one.mlir
+sea.program @one {
+  %n8 = sea.const 8 : i64
+  %a = sea.alloca %n8 align 8 [1] : i64 -> !sea.ptr<64>
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

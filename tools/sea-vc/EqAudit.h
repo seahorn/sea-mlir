@@ -34,10 +34,13 @@
 #include "sea/Expr/BaseRegistry.hh"
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/Smt/Solver.hh"
+#include "sea/Support/Stats.h"
+#include "sea/Support/Timer.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <functional>
 #include <map>
 #include <sstream>
 #include <string>
@@ -66,12 +69,20 @@ public:
           unsigned shapeDepth = 3)
       : m_solver(s), m_bases(bases), m_depth(shapeDepth) {}
 
+  /// With an rlimit: told, for an unknown check that took the given seconds,
+  /// whether it was the rlimit (counted as unknown-rlimit per source)
+  void setRlimitHit(std::function<bool(double)> f) {
+    m_rlimitHit = std::move(f);
+  }
+
   /// Audits \p it for \p source; returns its level.
   Level audit(llvm::StringRef source, const Item &it) {
     using namespace expr;
     Src &src = m_src[source.str()];
+    uint64_t before = m_rlimitUnknown;
     Level lvl = classify(it);
     ++src.count[lvl];
+    src.unknownRlimit += lvl == Unknown && m_rlimitUnknown > before;
     std::string key = shapeOf(it);
     auto &sh = src.shapes[lvl][key];
     if (sh.first++ == 0) {
@@ -93,45 +104,56 @@ public:
     m_src[source.str()].total = n;
   }
 
-  void report(llvm::raw_ostream &os, unsigned topShapes) const {
+  void report(stats::Report &r, unsigned topShapes) const {
     for (const auto &[name, src] : m_src) {
       uint64_t sampled = 0;
       for (uint64_t c : src.count)
         sampled += c;
-      os << "eq-audit: source=" << name << " items=" << src.total
-         << " sampled=" << sampled;
-      for (unsigned l = 0; l < NLevels; ++l)
-        os << " " << levelName(l) << "=" << src.count[l];
-      os << "\n";
-      for (unsigned l = 0; l < NLevels; ++l) {
+      stats::Line &l = r.line("eq-audit")
+                           .kv("source", name)
+                           .kv("items", src.total)
+                           .kv("sampled", sampled);
+      for (unsigned lv = 0; lv < NLevels; ++lv)
+        l.kv(levelName(lv), src.count[lv]);
+      if (m_rlimitHit)
+        l.kv("unknown-rlimit", src.unknownRlimit);
+      for (unsigned lv = 0; lv < NLevels; ++lv) {
         std::vector<std::pair<uint64_t, const std::string *>> v;
-        for (const auto &[k, ce] : src.shapes[l])
+        for (const auto &[k, ce] : src.shapes[lv])
           v.push_back({ce.first, &k});
         std::sort(v.begin(), v.end(), [](auto &x, auto &y) {
           return x.first != y.first ? x.first > y.first : *x.second < *y.second;
         });
-        for (size_t i = 0; i < v.size() && i < topShapes; ++i)
-          os << "eq-audit-shape: source=" << name << " level=" << levelName(l)
-             << " count=" << v[i].first
-             << " example=" << src.shapes[l].at(*v[i].second).second
-             << " shape=" << *v[i].second << "\n"
-             << "eq-audit-example: " << src.texts[l].at(*v[i].second) << "\n";
+        for (size_t i = 0; i < v.size() && i < topShapes; ++i) {
+          r.line("eq-audit-shape")
+              .kv("source", name)
+              .kv("level", levelName(lv))
+              .kv("count", v[i].first)
+              .kv("example", src.shapes[lv].at(*v[i].second).second)
+              .kv("shape", *v[i].second);
+          r.line("eq-audit-example").value(src.texts[lv].at(*v[i].second));
+        }
       }
     }
   }
 
-  /// BRUNCH_STAT-style counters: eq-audit.<source>.<level> = count.
-  template <typename Fn>
-  void stats(Fn fn) const {
+  /// The counters as BRUNCH_STAT lines only (no text line):
+  /// eq-audit.<source>.<level> = count.
+  void counters(stats::Report &r) const {
     for (const auto &[name, src] : m_src)
       for (unsigned l = 0; l < NLevels; ++l)
-        fn("eq-audit." + name + "." + levelName(l), src.count[l]);
+        r.line("eq-audit." + name + "." + levelName(l))
+            .value(src.count[l])
+            .brunch(stats::Brunch::Value)
+            .brunchOnly();
   }
 
 private:
   struct Src {
     uint64_t total = 0;
     uint64_t count[NLevels] = {};
+    /// items with a check that reached the rlimit
+    uint64_t unknownRlimit = 0;
     /// per level: shape -> (count, first example)
     std::map<std::string, std::pair<uint64_t, uint64_t>> shapes[NLevels];
     /// per level: shape -> the printed first example
@@ -140,11 +162,15 @@ private:
 
   sea::solver::SolverResult check(const expr::ExprVector &fs) {
     m_solver.push();
+    sea::Stopwatch watch;
     bool ok = true;
     for (const expr::Expr &f : fs)
       ok = ok && m_solver.add(f);
     sea::solver::SolverResult r =
         ok ? m_solver.check() : sea::solver::SolverResult::UNKNOWN;
+    if (r == sea::solver::SolverResult::UNKNOWN && m_rlimitHit &&
+        m_rlimitHit(watch.seconds()))
+      ++m_rlimitUnknown;
     m_solver.pop();
     return r;
   }
@@ -232,6 +258,8 @@ private:
   unsigned m_depth;
   size_t m_textMax = 600;
   std::map<std::string, Src> m_src;
+  std::function<bool(double)> m_rlimitHit;
+  uint64_t m_rlimitUnknown = 0;
 };
 
 } // namespace sea

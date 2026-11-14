@@ -56,7 +56,7 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--timeout=<s>` | wall-clock limit of the solver's check; does not bound query generation |
 | `--mem-limit=<GB>` | address-space limit of the process (`RLIMIT_AS`); a hit prints where it was (`mem-limit-phase:`, in encode also `mem-limit-progress:`, `mem-limit-op:`; [Output formats](output-formats.md)) |
 | `--z3-param=<key=value>` | a global z3 parameter (repeatable) |
-| `--z3-tactic=<tactic>` | z3's default tactic; `sls-smt` is z3's stochastic local search (see [Local search in the solver](fuzzing.md#local-search-in-the-solver)) |
+| `--z3-tactic=<tactic>` | z3's default tactic for the solver of the verdict (the auxiliary checks keep z3's own); `sls-smt` is z3's stochastic local search (see [Local search in the solver](fuzzing.md#local-search-in-the-solver)) |
 | `--yices-param=<key=value>` | a Yices search parameter (repeatable), e.g. `random-seed=N`; Yices times vary widely with the seed, so compare medians over several seeds |
 | `--yices-config=<key=value>`, `--yices-logic=<logic>` | the Yices context configuration and logic |
 | `--smt2` | print the query as SMT-LIB and exit |
@@ -67,6 +67,7 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | option | effect |
 |---|---|
 | `--seam-check[=<N>]` | check every SeaM rule firing (or $N$ of them) with the solver; exit 5 if one is invalid |
+| `--words-check-rlimit=<n>`, `--eq-audit-rlimit=<n>`, `--seam-check-rlimit=<n>` | z3 resource limit per auxiliary check; deterministic, unlike `--words-check-timeout`, `--eq-audit-timeout` and `--seam-check-timeout` (seconds, which stay). Default 0: unset. The default is untuned: it stays unset until a corpus sweep sets one. A check that exhausts it is `unknown`: `reason=rlimit` on `words.check` and `seam-check-unknown`, `unknown-rlimit=<items>` on `eq-audit`. Only z3 has an rlimit; with another backend `--seam-check-rlimit` warns (`vc.limit-unsupported`) and the checks run without it |
 | `--memhavoc-null=noop\|error` | `sea.memhavoc` of the null pointer: a no-op (default; in the lowering, `sea-guard-null-memhavoc` guards every memhavoc whose pointer may be null, `assume.memhavoc-null-noop: vc sites=<n>`, and in the replays, counted and warned) or a memory-safety error (no guard: the VC havocs from address 0) |
 | `--addr0-is-null=false` | the replays only, without the named assumption that address 0 is null (default on). The VC identifies null with address 0 either way (placement; `assume.addr0-is-null: vc`), and sea-vc warns `vc.addr0-is-null-off` |
 | `--replay-original` | with `--lower` or `--sink-assumes`, on `sat`: also run the input program before any pass on the model's inputs; exit 6 if it does not fail the same assertion ([Replay on the original program](output-formats.md#replay-on-the-original-program)) |
@@ -130,7 +131,16 @@ split: open-aliases=<n>; ...` line that points to it.
 | `--print-limit=<n>`, `--print-locs` | limit the print lines; add the location of each print |
 | `--log=<pattern>[:<level>],...` | select logs; `--log=help` lists the tags; `--log=warn.<kind>:2` prints every occurrence of a warning kind ([Logging](logging.md)) |
 | `--log-file=<path>` | append log events to a file instead of stderr |
-| `--mlir-print-ir-after-all`, `--mlir-timing`, ... | MLIR's pass-manager options, on the lowering pipeline |
+| `--mlir-print-ir-after-all`, `--mlir-timing`, ... | MLIR's pass-manager options, on the lowering pipeline; `--mlir-timing` also times sea-vc's phases ([Logging](logging.md)) |
+
+Output files (`--print-lowered`, `--place-out`, `--reach-programs`,
+`--ack-dump-pairs`, `--reach-witness`, `--split-smt2`) are written whole:
+to a temporary in the file's directory, then renamed. The path `-` is
+stdout, and an existing target that is not a regular file (`/dev/stdout`,
+a FIFO) is written directly. A write that fails (no such directory, a full
+disk) is an error of the flag's kind, and the run stops: `vc.print-lowered`,
+`place.out-file`, `vc.reach-programs`, `vc.ack-dump-pairs`,
+`vc.reach-witness`, `vc.split-smt2`.
 
 ## sea-run
 
