@@ -93,6 +93,8 @@ public:
   Stopwatch() : t0(wallNow()) {}
   void restart() { t0 = wallNow(); }
   double seconds() const { return secondsBetween(t0, wallNow()); }
+  /// The start time point (construction or the last restart()).
+  SteadyClock::time_point startTime() const { return t0; }
 
 private:
   SteadyClock::time_point t0;
@@ -180,6 +182,11 @@ public:
   /// `<name>-time`). \p cpu: timers made by the group record CPU time.
   explicit TimerGroup(std::string prefix = "", bool cpu = false)
       : keyPrefix(std::move(prefix)), withCpu(cpu) {}
+  /// As above, with the first lap starting at \p start (e.g. a
+  /// Stopwatch's startTime()) instead of at a new clock read.
+  TimerGroup(std::string prefix, SteadyClock::time_point start,
+             bool cpu = false)
+      : keyPrefix(std::move(prefix)), withCpu(cpu), lapStart(start) {}
   TimerGroup(const TimerGroup &) = delete;
   TimerGroup &operator=(const TimerGroup &) = delete;
 

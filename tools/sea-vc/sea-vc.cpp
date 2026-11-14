@@ -4019,6 +4019,8 @@ int main(int argc, char **argv) {
         memhavocNull == MemhavocNull::Noop, lowerDisableMask,
         sea::PlaceFiles{placeIn, placeOut}, rangeFoldOpt, expandMemMoveOpt,
         ptrCompanion != CompanionMode::Off, boxAllExpandOpt);
+    // pm keeps a reference to the phase's scope; SEA_PHASE_END resets it after
+    // pm.run, and the reference is not used after that
     if (failed(configurePM(pm, lowerPhase.timing())) || failed(pm.run(*module)))
       return 1;
     SEA_PHASE_END(lowerPhase)
@@ -4498,7 +4500,7 @@ int main(int argc, char **argv) {
     // Each name is lapped at most once per run (the three solver-term laps
     // are exclusive branches): the group would merge a repeated name into
     // one line, where a list of laps printed it twice.
-    sea::TimerGroup vcLaps("vc");
+    sea::TimerGroup vcLaps("vc", vcClock.startTime());
     auto lap = [&](const char *name) {
       assert(!vcLaps.find(name) && "a vc lap name used twice in one run");
       vcLaps.lap(name);

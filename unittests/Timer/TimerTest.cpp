@@ -205,6 +205,16 @@ void testGroup(sea::FakeClock &clk) {
   CHECK(cpu.find("a") && near(cpu.find("a")->cpuSeconds(), 0.75) &&
             cpu.find("a")->recordsCpu(),
         "CPU lap");
+  // a group started from a given time point charges the first lap from it
+  {
+    sea::Stopwatch w;
+    clk.advance(2.0);
+    sea::TimerGroup late("vc", w.startTime());
+    clk.advance(1.0);
+    late.lap("setup");
+    CHECK(late.find("setup") && near(late.find("setup")->seconds(), 3.0),
+          "first lap from the given start");
+  }
   llvm::outs() << "group: ok\n";
 }
 
