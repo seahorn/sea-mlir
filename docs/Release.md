@@ -230,7 +230,7 @@ short:
 | 1 | error (bad input, not in BMC form, unsupported op, replay impossible) |
 | 2 | sat, but the replay disagrees with the model (a value differs, or the run does not fail the property: `vc.replay-no-failure`): a bug (please report) |
 | 3 | unknown (including `--timeout`) |
-| 4 | `--seam`: sat that does not replay because the program leaves an object with the model's inputs. A-INB does not hold, the answer is inconclusive, and the program has a memory-safety error. |
+| 4 | `--seam`: sat that does not replay because the program leaves an object with the model's inputs. A-INB does not hold (A-SEP or A-NULL may not), the answer is inconclusive, and the program has a memory-safety error. |
 | 5 | `--seam-check`: an invalid rewrite. A bug, so do not trust the verdict. |
 | 6 | `--replay-original`: sat on the lowered program, but the original program does not fail the same assertion on the same inputs: the lowering changed the program (a bug, or a program that depends on placement). |
 
@@ -303,16 +303,37 @@ execution of the program that satisfies the assumptions below. `sea-vc`
 reports the assumptions it used. It discharges none of them unless one of
 the check jobs below is run.
 
-- **A-INB** (`--seam`, on by default under `--seam` as `--seam-inb=true`):
-  every access stays inside the object its pointer came from. Each run
-  reports it as `seam.inb: assumed accesses=<n> conditions=<m>`, and
-  `seam.rule.premise.a-inb` (`--seam-stats`) counts the rewrites that
-  depend on it. **A-INB is not discharged in this release.** That needs a
-  separate memory-safety (bounds) check of the program, which sea-mlir
-  does not provide yet. A sat that needs an out-of-bounds access does not
-  replay, and `sea-vc` exits 4. `--seam-inb=0` assumes nothing (it is
-  slower). `--seam-check-inb-premise` (off) is a partial check that SeaM's
-  decisions used only recorded A-INB conditions.
+- **Pointer premises** (`--seam`, on by default under `--seam` as
+  `--seam-premises=true`; since 0.2.0, before which the one premise was
+  A-INB):
+  - A-SEP: in one execution no memory cell is accessed through two
+    different objects (pairwise, every pair of accesses).
+  - A-NULL: no access of positive width goes through an object of size 0,
+    such as null.
+  - A-NOWRAP: an access address, base plus offset, does not wrap.
+
+  Each run reports them as `assume.a-sep: seam=<n>`, `assume.a-null:
+  seam=<n>` and `assume.a-nowrap: seam=<n>`, the rewrites that rest on each
+  (0: the answer does not use it), and `seam.premises: assumed
+  accesses=<n> conditions=<m>`. A-INB, "every access stays inside the
+  object its pointer came from", implies all three; it is a property, no
+  longer an encoding mode. **The premises are not discharged in this
+  release.** That needs a separate memory-safety (bounds) check of the
+  program, which sea-mlir does not provide yet; a null-dereference check
+  alone discharges A-NULL. A sat that needs an out-of-object access does
+  not replay, and `sea-vc` exits 4. `--seam-premises=0` assumes nothing (it
+  is slower). `--seam-check-inb-premise` (off) is a partial check that
+  SeaM's cross-object decisions used only recorded in-bounds conditions.
+- **Static out-of-object accesses** (since 0.2.0): an access whose every
+  address alternative lies outside its object is reported (warning
+  `vc.seam-out-of-object`, `seam.out-of-object: accesses=<n> object=<a>
+  unknown=<u> null=<z> gap=<g>`, by where each lands in the placement) and
+  the premises stay. The check is path-insensitive, so the access may sit
+  on a path that never executes. An `unsat` with `object`, `unknown` or
+  `null` above 0 holds only for the executions that reach none of those
+  accesses; if one is reached, A-SEP or A-NULL fails and the answer says
+  nothing. Before 0.2.0 such a run started again without the assumption;
+  `--seam-out-of-object=fallback` does that now.
 - **Front-end annotations are trusted.** They are named premises of the
   rewrites, not assumptions about the program:
   - ALIGN (`PremAlign`): the `align` of loads, stores, memset and memmove.
@@ -326,9 +347,9 @@ the check jobs below is run.
 - **Bounded memset**: a symbolic-length memset is expanded up to a bound,
   with an explicit assume. It is reported as `assume.memset-bound`.
 - **Dropped memhavocs**: `--lower` of an abstract program removes a
-  memhavoc of a fresh object (a no-op). That rests on A-INB when an access
+  memhavoc of a fresh object (a no-op). That rests on A-SEP when an access
   of another object, or the memhavoc itself, could reach the object after
-  placement; it is reported as `assume.a-inb: drop-fresh-memhavoc=<n>`,
+  placement; it is reported as `assume.a-sep: drop-fresh-memhavoc=<n>`,
   also without `--seam`; a separate memory-safety check of the program
   would discharge it (sea-mlir has none yet).
 - **Null at address 0** (`addr0-is-null`): placement puts null at address
@@ -337,7 +358,9 @@ the check jobs below is run.
 - **`--ptr-companion=assume`** (off by default) adds the A-PTRINT
   assumption, which is reported.
 - `--seam-check` checks each SeaM rewrite against its stated premises with
-  the solver. It finds rewriting bugs. It does not discharge A-INB.
+  the solver (a cross-object firing under the in-bounds conditions of its
+  accesses, A-INB, which implies the premises). It finds rewriting bugs. It
+  does not discharge a premise.
 
 ### Programs exported by SeaHorn: known issues
 
@@ -372,9 +395,11 @@ affected.
   encoding and SeaM rewriting) is not bounded by it. Use an external
   `timeout`, and set `--mem-limit=<GB>`: there is no memory cap by default,
   and large exports have reached tens of GB.
-- When the static A-INB check fails (`vc.seam-inb-violated`), `sea-vc`
-  warns, names the accesses and falls back to `seam.inb: off`. The access
-  it names can lie on an infeasible (unrolled) path.
+- A static out-of-object access (`vc.seam-out-of-object`) can lie on an
+  infeasible (unrolled, speculative) path; the report cannot tell. A
+  counterexample that leaves its object only into a gap between objects
+  keeps A-SEP but is still reported as a memory-safety error (exit 4): the
+  replay check is of bounds, not of separation.
 - `--ptr-mode=address` can be much slower on code that aligns pointers by
   integer arithmetic.
 - Release binaries do not include Yices (GPLv3; see
@@ -415,7 +440,8 @@ measurement and are not part of the supported configuration:
 | `--seam-leaf-split-partial` | R-LEAVES with undecided leaves: they stay one read at the ite of them (untuned) |
 | `--ptr-companion=exact\|check\|assume` | the pointer companion memory (PtrSort S6) |
 | `--seam-stride` | R-STRIDE in Store-Map |
-| `--seam-check-inb-premise` | the partial A-INB premise check (above) |
+| `--seam-check-inb-premise` | the partial in-bounds premise check (above) |
+| `--seam-out-of-object=fallback` | a static out-of-object access reruns without the premises (the behaviour before 0.2.0) |
 | `--mem=lambda` (+ `--lambda-*`) | SeaHorn's lambda memory encoding (a baseline) |
 | `--sink-assumes` | one assume of the path conjunction before the assert (SeaHorn's unified assumes, done exactly in sea-vc); a solver tradeoff: faster or slower depending on solver and seed |
 | `--yices-param=k=v`, `--yices-config=k=v`, `--yices-logic=L` | Yices search parameters and context; e.g. `--yices-param=random-seed=N`. Yices times vary widely with the seed: compare medians over several seeds |

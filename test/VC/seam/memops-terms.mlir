@@ -19,7 +19,7 @@
 // SEAM-DAG: seam.rule.row.mcopy-skip:
 // SEAM-DAG: seam.rule.row.mset-hit:
 // SEAM-DAG: seam.rule.row.mcopy:
-// SEAM-DAG: seam.rule.premise.a-inb:
+// SEAM-DAG: seam.rule.premise.a-sep:
 // SEAM-DAG: seam.rule.memop.translated: 0
 // DAG-NOT: vc.dag-op: m{{copy|set|havoc}}
 // DAG: result: unsat

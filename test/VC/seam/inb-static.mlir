@@ -1,17 +1,27 @@
-// A-INB (accesses stay in their objects) is assumed by --seam. Here a 4-byte
-// store goes into a 1-byte alloca and overwrites the neighbour b, so the
-// assertion on b fails (sat). The static check sees the access leave its
-// object (numeral offset): --seam warns and runs without the assumption,
-// instead of answering unsat.
+// A static out-of-object access keeps the premises (A-SEP, A-NULL,
+// A-NOWRAP): a 4-byte store goes into a 1-byte alloca and overwrites the
+// neighbour b, so the assertion on b fails (plain: sat). The static check
+// sees the access leave its object (numeral offset) and land in b: --seam
+// warns, reports where it lands, and answers under the premises, which
+// this access breaks when it executes: unsat, conditional on a premise the
+// program breaks (the expected answer of the default since 0.2.0).
+// --seam-out-of-object=fallback runs again without the premises: the plain
+// answer, sat with a replayed counterexample.
 // RUN: sea-vc %s --lower | FileCheck %s --check-prefix=PLAIN
 // RUN: sea-vc %s --lower --seam 2>&1 | FileCheck %s --check-prefix=SEAM
-// RUN: sea-vc %s --lower --seam --seam-inb=0 | FileCheck %s --check-prefix=NOINB
+// RUN: sea-vc %s --lower --seam --seam-out-of-object=fallback 2>&1 | FileCheck %s --check-prefix=FALLBACK
+// RUN: sea-vc %s --lower --seam --seam-premises=0 | FileCheck %s --check-prefix=NOINB
 // PLAIN: result: sat
-// SEAM: Warning: an access leaves its object{{.*}}[vc.seam-inb-violated]
-// SEAM: seam.inb: off (fallback: an access leaves its object)
-// SEAM: result: sat
-// SEAM: replay: assert-failed
-// NOINB: seam.inb: off
+// SEAM: Warning: {{.*}} leave their object{{.*}} the premises stay{{.*}}[vc.seam-out-of-object]
+// SEAM: seam.out-of-object-at: {{.*}}inb-static.mlir:{{[0-9:]+}} store: {{.*}} lands=object
+// SEAM: seam.premises: assumed
+// SEAM: seam.out-of-object: accesses={{[0-9]+}} object={{[1-9]}}
+// SEAM: result: unsat
+// FALLBACK: Warning: {{.*}}running without the premises{{.*}}[vc.seam-out-of-object]
+// FALLBACK: seam.premises: off (fallback: an access leaves its object)
+// FALLBACK: result: sat
+// FALLBACK: replay: assert-failed
+// NOINB: seam.premises: off
 // NOINB: result: sat
 sea.program @oob {
   %m = sea.mem.nondet "r" [0] : !sea.mem<!sea.ptr<32>, i8>

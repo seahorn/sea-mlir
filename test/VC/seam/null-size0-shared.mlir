@@ -29,8 +29,8 @@
 // UNSAT: result: unsat
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
 // INTERP-EQ: status: halted
-// ACC-NOT: vc.seam-inb-violated
-// ACC: seam.inb: assumed
+// ACC-NOT: seam.out-of-object
+// ACC: seam.premises: assumed
 // ACC-DAG: seam.rule.addr.prune-size0: {{[1-9]}}
 // ACC-DAG: seam.rule.cmp.diff-base: {{[1-9]}}
 // ACC: result: unsat

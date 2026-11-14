@@ -311,11 +311,11 @@ inline Expr ptrIndex(PtrOpKind kind, const Expr &b,
 /// whose every leaf is a flagged node gets k pushed into its leaves (exact).
 /// Null otherwise (the caller adds k with bvadd). Written for the bytes of
 /// an access at \p a (0 <= k < its width), where the stride rule's lemma
-/// holds under that access's A-INB; also for a program `ptr.add(node, k)`
+/// holds under that access's A-NOWRAP; also for a program `ptr.add(node, k)`
 /// (k signed), where it need not: in the Ackermann case the rule's firing
 /// never affects the verdict (PtrIndex.md 0b), only the rerun rate; R-STRIDE
-/// accepts a K != 0 only in the range where A-INB excludes a wrap
-/// (PtrIndex.md 0c).
+/// accepts a K != 0 only in a window (PtrIndex.md 0c) and rests on A-NOWRAP
+/// there.
 inline Expr withByteOffset(const Expr &a, const mpz_class &k) {
   if (isFlagged(a.get())) {
     ExprVector kids(a->args_begin(), a->args_end());

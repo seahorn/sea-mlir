@@ -57,8 +57,9 @@ public:
   /// An already registered object of nonzero size whose address range
   /// [base, base + size) overlaps the range of a new object (null if none, or
   /// if the new object has size 0: it has no addresses). Ranges are those of
-  /// the placement; A-INB needs them disjoint (the compare of two pointers
-  /// into different objects is false only if the objects share no address).
+  /// the placement; A-INB implies A-SEP only if they are disjoint (two
+  /// in-bounds accesses through different objects share no cell only if the
+  /// objects share no address).
   const ObjectBase *overlapping(const llvm::APInt &base,
                                 const llvm::APInt &size) const {
     if (size.isZero())
@@ -96,7 +97,7 @@ public:
   /// start term of a memory a tool made for metadata keyed by object
   /// identity (`sea.mem.const ... shadow`). Every memory term built over one
   /// (stores, store-maps, ites) is a shadow memory: its accesses are not
-  /// program accesses, so no A-INB rule applies to them
+  /// program accesses, so no premise rule (A-SEP, A-NULL) applies to them
   /// (seam::Rules::shadowMemory).
   void addShadowRoot(const Expr &root) { m_shadowRoots.insert(root); }
   bool isShadowRoot(const Expr &e) const { return m_shadowRoots.count(e); }
@@ -122,5 +123,27 @@ private:
   std::unordered_map<Expr, size_t> m_index;
   std::unordered_set<Expr> m_shadowRoots;
 };
+
+namespace seam {
+/// Where a static out-of-object access lands (seam::Rules::
+/// classifyOutOfObject), worst first: in another object (A-SEP fails if it
+/// executes), unknown (a symbolic offset or length), through an object of
+/// size 0 (A-NULL fails if it executes), in a gap of the layout (only the
+/// property A-INB fails).
+enum class Landing { Object, Unknown, Null, Gap };
+inline const char *landingName(Landing l) {
+  switch (l) {
+  case Landing::Object:
+    return "object";
+  case Landing::Unknown:
+    return "unknown";
+  case Landing::Null:
+    return "null";
+  case Landing::Gap:
+    return "gap";
+  }
+  return "?";
+}
+} // namespace seam
 
 } // namespace expr

@@ -37,7 +37,7 @@ An optimization is correct iff, for every firing t -> t',
     assumptions  =>  SMT(t) = SMT(t')
 
 where the assumptions are the explicit, named ones the firing states
-(A-INB, ...; see "Soundness stance"). This is the proof obligation for
+(A-SEP, A-NULL, A-NOWRAP, ...; see "Soundness stance"). This is the proof obligation for
 each rule schema and what `--seam-check` checks per firing. It is also why
 the translation must not apply optimizations: a
 wrong firing could otherwise translate to equal terms and pass the check.
@@ -52,97 +52,126 @@ the proof obligation above is unchanged: `SMT(t)` is the erased term.
 
 Conditional soundness (Conway,
 Dams, Namjoshi, Barrett, SAS 2008). Rules may rely on assumptions we do not
-model in the VC, as long as each one is checked separately or stated:
+model in the VC, as long as each one is checked separately or stated.
 
-- **A-INB (in bounds):** an access address that normalizes to `obj.k + off`
-  (a pointer into object k: `off` mentions no registered base) lies in object
-  k, `off + unit <= size_k` for the access unit. So the address of a store and
-  the address of a later read, pointers into different objects of nonzero
-  size, differ. It is a fact about the program: the rewriter assumes it, and
-  `sea-vc --seam` reports what it assumed (`seam.inb: assumed` line); it
-  does not check it ("A-INB: assumed and reported"). An access none of whose
-  alternatives can be in its object (a numeral offset outside it, an object
-  smaller than the access) is the one exception: it is seen while encoding,
-  and makes the run start again without the assumption (warning
-  `vc.seam-inb-violated`), a sanity check; an impossible alternative of an
-  ite address is only `false` in the access condition (guarded aggregation,
-  SeaM-null.md). A-INB is used only by the compare of a ROW step
-  (store address against read address), never by a compare in the program: a
-  compare is not an access, and `a + 16 == b` (one past the end of a against
-  the next object) is legal C. Objects of size 0 (null is one: SeaM-null.md)
-  are never "different" by base (in the SeaHorn layout they share a base with
-  a neighbour); an access of positive width is never in one, so a ROW pair
-  with one side in a size-0 object is vacuous under A-INB
-  (`cmp.size0-vacuous`), and a range in one is in bounds iff its length is
-  0. Registered objects
-  must be disjoint (`--seam` rejects overlapping or equally named segments).
-  The syntactic view is deliberate: `obj.a + (obj.b - obj.a)` from integer
-  casts is not a pointer into a, so it has no view, no rule decides anything
-  about it and nothing depends on A-INB for it. An offset whose value is only
-  known through memory (a loaded integer) has a view and is covered by the
-  access condition. The fat-pointer `sea.ptr.dereferenceable` checks are about
-  provenance and do not cover from_int pointers.
-- **A-NOWRAP:** legal offset arithmetic does not wrap (thesis Thm 1 relies
-  on it for ARM intervals). As implemented, ARM does not need it: offsets are
-  signed w-bit integers, interval addition checks the overflow flags and an
-  overflowing bound gives top, so every interval claims only "the value is
-  the base plus some integer in [l, h]", true of the bit-vector arithmetic
-  itself (`include/sea/Expr/AddrRangeMap.hh`, header comment). Two intervals
-  of one base (or two numbers) that do not meet are therefore different with
-  no assumption. Only the bases of two different objects are separated by
-  A-INB. The assumption stays named here because the thesis states it; the
-  tests check the no-assumption claim by evaluation at 8 bits (wraparound
+Terms. An access address that normalizes to `obj.k + off` (a pointer into
+object k: `off` mentions no registered base) is an access *through
+provenance k*. The syntactic view is deliberate: `obj.a + (obj.b - obj.a)`
+from integer casts is not a pointer into a, so it has no view, no rule
+decides anything about it and no premise is used for it. An offset whose
+value is only known through memory (a loaded integer) has a view. The
+fat-pointer `sea.ptr.dereferenceable` checks are about provenance and do not
+cover from_int pointers.
+
+The encoding of `sea-vc --seam` rests on three named premises about the
+program (v0.2.0; before, on the one premise A-INB):
+
+- **A-SEP (separation):** in one execution, no memory cell is accessed
+  through two different provenances. It is stated pairwise, for every pair of
+  accesses (write / write and write / read). So a store through a and a read
+  through b (a != b) touch different cells, whatever their offsets and sizes:
+  `cmp.diff-base`, `arm.skip` across bases, R-SKIP, the range tests of memory
+  operations across objects. WOW-COMMUTE / WOSMAP-COMMUTE need the write /
+  write pairs: an execution that writes a cell through b, then through a,
+  and reads it through a sees a's value, and the commuted term would put b's
+  write on top. The weaker "a write never reaches another object" is not
+  enough: a store through a past its end and a read through b before its
+  start can both land in the same cell of a gap between the objects.
+- **A-NULL:** no access of positive width (no range of positive length) is
+  made through an object of size 0 (null is one, SeaM-null.md; zero-sized
+  allocations). So an address alternative in such an object is dead
+  (`addr.prune-size0`), and a ROW pair with such a side is vacuous
+  (`cmp.size0-vacuous`). When the other side is a view of another base, the
+  pair is two provenances and A-SEP decides it already; the decision then
+  names A-SEP. A-NULL is needed only for a pair through one size-0 base with
+  symbolic offsets, a side without a view, and the pruning.
+- **A-NOWRAP:** an access address `obj.k + off`, read as an integer with
+  `off` signed, lies in `[0, 2^n)`: base plus offset does not wrap. The
+  stride rules use it for a byte offset K != 0 (R-STRIDE, `--seam-stride`,
+  only in the K window `b + size - 2^n <= K <= b` where in-bounds gives the
+  same, PtrIndex.md section 0c; the Ackermann stride relaxation for every K).
+  ARM does not need it: offsets are signed w-bit integers, interval addition
+  checks the overflow flags and an overflowing bound gives top, so every
+  interval claims only "the value is the base plus some integer in [l, h]",
+  true of the bit-vector arithmetic itself
+  (`include/sea/Expr/AddrRangeMap.hh`, header comment). Two intervals of one
+  base (or two numbers) that do not meet are therefore different with no
+  assumption; the tests check that by evaluation at 8 bits (wraparound
   included).
-- **ARM and A-INB.** An ARM entry (b, I) of an access address says: some leaf
-  of the term has provenance b (the base of the bvadd under the ites that
-  select it) and offset in I. A-INB for ARM is per provenance, like the
-  view-based one: that leaf lies in object b. So the access check also covers
-  the addresses ARM reads and the view does not (a sum over an ite with many
-  leaves): `Rules::inBounds` falls back to `armOutOfBounds` (an entry whose
-  interval is wholly outside its object or an object smaller than the
-  access: a definite violation, as a numeral offset is in the view case) and
-  to `armInBounds` (the per-leaf `ite(c, V - obj.a <= size_a - u, ...)`
-  condition, always built unless the whole map is inside its object, so it
-  counts in `seam.inb conditions=`). A-INB is assumed for cross-object
-  decisions (an unsat is wrong if an access leaves its object).
-  "In some object of the
-  map" would be wrong: a leaf of b that lands in the adjacent a would pass it.
-  A part ARM does not read as a pointer (an absolute number: a numeral, a
-  loaded value) may be anywhere and is never separated from a base.
 
-Every rule names the assumptions it uses (`// uses: A-INB`). A rule with no
-named assumption must be valid over plain bit-vectors and arrays. Every
-decision the rules make carries the assumptions it used, for all the leaf
+**A-INB (in bounds)** is a property, not a mode of the encoding: every access
+through provenance k lies in object k (`off + unit <= size_k`). With
+placement's disjoint objects (`--seam` rejects overlapping or equally named
+segments; placement refuses an object that wraps the space), A-INB implies
+all three premises. A bounds check of the program discharges A-INB, and with
+it the premises (below). Each premise is weaker than A-INB: a program that
+overflows into the padding after an object breaks A-INB and keeps A-SEP and
+A-NULL.
+
+The premises are used only by the compares of a ROW step (store address
+against read address), by access addresses (the pruning) and by the commutes
+of two stores, never by a compare in the program: a compare is not an
+access, and `a + 16 == b` (one past the end of a against the next object) is
+legal C. Objects of size 0 are never "different" by base in a program compare
+(in the SeaHorn layout they share a base with a neighbour). No rule replaces
+`obj.k` by its placed numeral inside SeaM, so an access address keeps its
+provenance; a step that substituted layout numerals into access addresses
+before the ROW compares would lose it (the layout rules `cmp.layout` and
+`mem.in-layout` run only without the premises).
+
+**ARM and provenance.** An ARM entry (b, I) of an access address says: some
+leaf of the term has provenance b (the base of the bvadd under the ites that
+select it) and offset in I. A-SEP separates two entries of different bases;
+an entry of a size-0 object is dropped before the test (`cmp.size0-vacuous`:
+A-SEP when the maps are disjoint with every base its own provenance, else
+A-NULL). The in-bounds check of the access (`Rules::inBounds`, the static
+report below) covers the addresses ARM reads and the view does not (a sum
+over an ite with many leaves): `armOutOfBounds` (an entry whose interval is
+wholly outside its object or an object smaller than the access) and
+`armInBounds` (the per-leaf condition, counted in `seam.premises
+conditions=`). A part ARM does not read as a pointer (an absolute number: a
+numeral, a loaded value) may be anywhere and is never separated from a base.
+
+Every rule names the premises it uses (`// uses: A-SEP`). A rule with no
+named premise must be valid over plain bit-vectors and arrays. Every
+decision the rules make carries the premises it used, for all the leaf
 pairs it looked at, not the first only (`seam::Decision`, SeaMRules.hh);
-`seam.rule.premise.a-inb` counts the rewrites of a run that depend on A-INB.
-Counterexamples are wanted only if they satisfy all assumptions; checks for
-the assumptions themselves stay in the program as assertions.
+`seam.rule.premise.a-sep`, `-a-null` and `-a-nowrap` count the rewrites of a
+run that depend on each. Counterexamples are wanted only if they satisfy all
+premises; checks for the premises themselves stay in the program as
+assertions.
 
-## A-INB: assumed and reported
+## The premises: assumed and reported
 
-`sea-vc --seam` does not discharge A-INB. The answer is conditional: an unsat
-holds for the executions in which every access stays in the object its pointer
-came from, and the output says so on every `--seam` run:
+`sea-vc --seam` does not discharge its premises. The answer is conditional:
+an unsat holds for the executions that satisfy A-SEP, A-NULL and A-NOWRAP,
+and the output says so on every `--seam` run:
 
-    seam.inb: assumed accesses=<n> conditions=<m>
+    assume.a-sep: seam=<n> [drop-fresh-memhavoc=<m>]
+    assume.a-null: seam=<n>
+    assume.a-nowrap: seam=<n>
+    seam.premises: assumed accesses=<n> conditions=<m>
 
-(`conditions` = accesses whose in-bounds condition is not constant, so the
-number of places the assumption is not obvious; `seam.inb: off` for
-`--seam-inb=0`, which assumes nothing, and `off (fallback: ...)`, below.)
-`seam.rule.premise.a-inb` counts the rewrites of the run that depend on it
-(0: the answer does not use A-INB). A sat is replayed as always. A sat that
-needs an out-of-bounds access does not replay; sea-vc then runs the abstract
-program (kept from before the lowering; every access checked against its
-object) with the model's nondet values. If that run leaves an object, the sat
-is an artifact of the violated assumption, not a VC bug: sea-vc prints
-`seam.inb-violation: <message>` and `seam.inb-violation-at: <loc>`, reports
-`vc.seam-inb-spurious` and exits 4 (inconclusive; the program has a
-memory-safety error). This is the spurious-counterexample case a CEGAR loop
-would refine on. Otherwise exit 2 as before. The run must be the model's
-execution: it gets the model's nondet values, and nondet memory cells are not
-given (the model has addresses, not object offsets), so a run that reads one
-stops and decides nothing (`seam.inb-violation: undetermined (...)`, exit 2
-stays). Mapping model cells to object offsets would widen it (TODO).
+(`seam=` = the rewrites that rest on the premise, 0: the answer does not use
+it; `accesses` = the program accesses the premises are about; `conditions` =
+accesses whose in-bounds condition is not constant, what a bounds check
+would check. `seam.premises: off` for `--seam-premises=0`, which assumes
+nothing, and `off (fallback: ...)`, below.) A sat is replayed as always. A
+sat that needs an out-of-object access does not replay; sea-vc then runs the
+abstract program (kept from before the lowering; every access checked
+against its object) with the model's nondet values. If that run leaves an
+object, sea-vc prints `seam.inb-violation: <message>` and
+`seam.inb-violation-at: <loc>`, reports `vc.seam-inb-spurious` and exits 4
+(inconclusive; the program has a memory-safety error). This is the
+spurious-counterexample case a CEGAR loop would refine on. Otherwise exit 2
+as before. The check is of bounds (A-INB), not of separation: a run that
+leaves its object only into a gap keeps A-SEP, and a VC bug on such a run
+would be labelled spurious too (a separation check of the run, an owner per
+cell, is a follow-up). The run must be the model's execution: it gets the
+model's nondet values, and nondet memory cells are not given (the model has
+addresses, not object offsets), so a run that reads one stops and decides
+nothing (`seam.inb-violation: undetermined (...)`, exit 2 stays). Mapping
+model cells to object offsets would widen it (TODO).
 
 Using the A-INB-optimized encoding to prove A-INB is circular. Two attempts
 at `--seam-check-inb` were removed after exposing the issue: every encoding
@@ -159,28 +188,41 @@ an in-bounds condition, only in the encoding under A-INB (`inb-ptrmem.mlir`):
 each version still gave a wrong unsat labelled as checked. A sound discharge
 needs the instrumentation below, not a better predicate.
 
-The static fallback (kept). An access whose address leaf has a numeral offset
-outside its object, an object smaller than the access, or an ARM entry wholly
-outside its object is a definite violation: `Rules::inBounds` flags it,
-sea-vc warns `vc.seam-inb-violated` and encodes again without A-INB
-(`seam.inb: off (fallback: an access leaves its object)`), so the answer is
-the plain one. Before re-encoding sea-vc names the first 8 definite
-violations as `vc.seam-inb-violated: at <loc> <op>: <reason>` and prints
-`vc.seam-inb-violated-count: <n>`. This is a sanity check, not a soundness claim: it is path
-independent (an unreachable leaf also triggers it, `arm-unreach.mlir`) and sees
-only what is visible while encoding (`inb-ptrmem-static.mlir` is caught,
-`inb-ptrmem.mlir` with a symbolic `n` is not).
+Static out-of-object accesses (v0.2.0: reported, no fallback). An access
+whose every address alternative is outside its object (a numeral offset
+outside it, an object smaller than the access or of size 0, an ARM entry
+wholly outside it) is flagged by `Rules::inBounds` while encoding. sea-vc
+classifies each one by where it lands in the placement
+(`Rules::classifyOutOfObject`): in another object (A-SEP fails if the
+access executes), unknown (a symbolic offset or length), through null (an
+object of size 0: A-NULL fails if it executes), in a gap between objects
+(only A-INB fails). It warns `vc.seam-out-of-object`, names the first 8 as
+`seam.out-of-object-at: <loc> <op>: <reason> lands=<class>` and prints
 
-Discharging A-INB is a separate memory-safety job: instrument the program with
-a bounds check before every access (the object its pointer came from, as
-SeaHorn's `sea fpf` does), and verify the instrumented program; an unsat of
-the instrumented job together with an unsat of the original one gives the
-unconditional claim. Future work: a sea-mlir pass could check using only
-the object information it knows (the registry, allocation ops, and
-provenance of pointers stored in memory). It could minimize checks by
+    seam.out-of-object: accesses=<n> object=<a> unknown=<u> null=<z> gap=<g>
+
+and keeps the premises. The check is path independent (an unreachable leaf
+also triggers it, `arm-unreach.mlir`; the speculative random-access paths of
+an STL algorithm trigger it in programs that never execute them), and sees
+only what is visible while encoding (`inb-ptrmem-static.mlir` is caught,
+`inb-ptrmem.mlir` with a symbolic `n` is not). So an unsat with `object`,
+`unknown` or `null` above 0 holds only if those accesses do not execute; one
+with only `gap` accesses rests on its premises as any other.
+`--seam-out-of-object=fallback` restores the behaviour before v0.2.0: the
+run starts again without the premises (`seam.premises: off (fallback: an
+access leaves its object)`), the plain answer.
+
+Discharging the premises is a separate memory-safety job: instrument the
+program with a bounds check before every access (the object its pointer came
+from, as SeaHorn's `sea fpf` does), and verify the instrumented program; an
+unsat of the instrumented job (A-INB holds) together with an unsat of the
+original one gives the unconditional claim. A-NULL alone is a null-dereference
+check, cheaper and more common. Future work: a sea-mlir pass could check
+using only the object information it knows (the registry, allocation ops,
+and provenance of pointers stored in memory). It could minimize checks by
 omitting accesses the rules already show are in bounds and reusing one check
-for equal accesses. The premise
-provenance (`seam::Decision`, `premise.a-inb`) tells which jobs need it.
+for equal accesses. The premise provenance (`seam::Decision`,
+`premise.a-sep` / `-a-null` / `-a-nowrap`) tells which jobs need it.
 
 ## Where it lives
 
@@ -322,16 +364,16 @@ source and its assumptions. "Phase" is the planned order of work.
 | Normalize | pull `bvadd` through `ite` for pointer terms (bounded, it is exponential) | SeaHorn pointer arithmetic config | none | 1 |
 | Normalize | `a - a ~> 0`, `a - c ~> a + (-c)`, `ptr(b,o1) - ptr(b,o2) ~> o1 - o2` (added; thesis Fig 4.3 `-p`) | Fig 4.3 | none | 1 |
 | Compare | `ptr(b,o1) =p ptr(b,o2)  ~>  o1 = o2` | Fig 4.2 | none | 1 |
-| Compare | `ptr(b1,o1) =p ptr(b2,o2)  ~>  false`, b1 != b2, only the compare of a ROW step, objects of nonzero size | Fig 4.2, Ch 3 | A-INB | 1 |
+| Compare | `ptr(b1,o1) =p ptr(b2,o2)  ~>  false`, b1 != b2, only the compare of a ROW step, objects of nonzero size | Fig 4.2, Ch 3 | A-SEP | 1 |
 | Compare | constant folding, `a - b = a - c ~> b = c` | Fig 2.2 | none | 1 |
 | ROW | `select(store(a,i,v), j) ~> ite(i = j, v, select(a,j))`, then HIT / SKIP when the compare resolves | Fig 4.6 | as Compare | 1 |
 | ROW | `select(ite(c, m1, m2), j) ~> ite(c, select(m1,j), select(m2,j))` | Fig 2.6 | none | 1 |
 | Compare | `ite(c,x,y) = w ~> ite(c, x = w, y = w)` (ITE-EQ), only when bounded and a leaf resolves | Fig 2.1 | as Compare | 1 |
 | ite / Bool | `ite(true,..)`, `ite(c,a,a)`, `ite(a,true,false)`, `ite(a,b,ite(!a,c,d))`, double negation, negation into ite | Fig 2.1, 2.3 | none | 1 |
-| ARM | `alpha(p) meet alpha(q) = bot  ~>  p != q` (interval per base, no ITE-PUSH); ROW compares only | Ch 5, Thm 4 | A-INB (different bases); none for one base | 2, done |
-| Store-Map | SMAP-NEW, SMAP-HIT, WOW-COMMUTE, WOSMAP-COMMUTE | Fig 6.4 | A-INB (commute across objects) | 3, done |
-| Store-Map | R-HIT, R-MISS, R-SKIP, R-ABORT | Fig 6.5 | A-INB (R-SKIP) | 3, done |
-| Ranged | read over memset-words / memcpy-words (+ HIT/SKIP) | Fig 4.5, 4.7 | A-INB | 4 |
+| ARM | `alpha(p) meet alpha(q) = bot  ~>  p != q` (interval per base, no ITE-PUSH); ROW compares only | Ch 5, Thm 4 | A-SEP (different bases); none for one base | 2, done |
+| Store-Map | SMAP-NEW, SMAP-HIT, WOW-COMMUTE, WOSMAP-COMMUTE | Fig 6.4 | A-SEP (commute across objects, write / write) | 3, done |
+| Store-Map | R-HIT, R-MISS, R-SKIP, R-ABORT | Fig 6.5 | A-SEP (R-SKIP) | 3, done |
+| Ranged | read over memset-words / memcpy-words (+ HIT/SKIP) | Fig 4.5, 4.7 | A-SEP | 4 |
 | Bit-vector | extract of extract / concat / numeral / full width; concat: flatten, fold numerals, merge adjacent extracts of one term (byte reassembly) | z3 simplify leftovers | none | 5 |
 | Bit-vector | linear equality: cancel common addends (any term), numerals folded to one side, `a + c1 = a + c2`, `x = x`, `24 * x = 7` (low zero bits), canonical side order | SeaM normalization rules | none | 5 |
 | Bit-vector | AC normalization: flatten, sort by creation id, fold numerals, idempotence (`bvand`, `bvor`, `and`, `or`), `x ^ x = 0`, `x & !x` | SeaM normalization rules | none | 5 |
@@ -379,21 +421,21 @@ Notes:
   - *Order of the chain.* The head of a normal chain is the latest allocated
     object (the registry's `order`): WOW-COMMUTE moves a write below a write
     to a later object, WOSMAP-COMMUTE below a store-map of a later object, both
-    only for pointers into different registered objects of nonzero size under
-    A-INB (`Rules::commutes`). A normal `a` has nothing later beneath, so
+    only for pointers into different registered objects under A-SEP
+    (`Rules::commutes`). A normal `a` has nothing later beneath, so
     SMAP-NEW's store-map is in order (`RW_DONE`). Barriers (a pointer without a
     view, a symbolic offset, a size-0 object) are never moved across or
     merged: the thesis' "temporal order of writes at symbolic addresses is
     kept".
   - *Rules and assumptions.* SMAP-NEW, SMAP-HIT, the collapse of an identical
     address, R-HIT and R-MISS use no assumption; WOW-COMMUTE, WOSMAP-COMMUTE
-    and R-SKIP use A-INB (and with `--seam-inb=0` do not fire: the result then
-    holds over plain bit-vectors and arrays, tested). R-ABORT decides each of
-    its entries with the compare of ROW, which uses A-INB when the read
+    and R-SKIP use A-SEP (and with `--seam-premises=0` do not fire: the result
+    then holds over plain bit-vectors and arrays, tested). R-ABORT decides each
+    of its entries with the compare of ROW, which uses A-SEP when the read
     address and the entry are in different registered objects
     (`cmp.diff-base`, cross-base `arm.skip`); an entry on the same base is
-    decided with no assumption, and with `--seam-inb=0` none uses it. An
-    A-INB-dependent unsat can therefore also come from R-ABORT; the
+    decided with no assumption, and with `--seam-premises=0` none uses it. An
+    A-SEP-dependent unsat can therefore also come from R-ABORT; the
     `row.smap-abort-skip` / `cmp.diff-base` counters show it.
   - *R-ABORT is one-shot,* as in SeaHorn's `revertSMapToIte`, not the
     thesis' peel of one entry per step: the read becomes the chain
@@ -458,8 +500,8 @@ Table 8.5).
 
 - **Rule soundness, mechanically.** Every rule instance `lhs ~> rhs` is
   checked by the solver with `sea-vc --seam-check`: `premises => lhs = rhs`
-  (A-INB as the layout plus the in-bounds conditions of the compared
-  accesses); see "Rule trail and per-firing check". A rule that needs an
+  (A-SEP / A-NULL / A-NOWRAP stated as the layout plus the in-bounds
+  conditions of the compared accesses, A-INB, which implies them); see "Rule trail and per-firing check". A rule that needs an
   assumption it does not name is a bug.
 - **Unit tests** per rule (doctest-like, or lit via `sea-expr-eval` if it
   grows a rewrite mode).
@@ -481,7 +523,7 @@ given (kids already rewritten), rhs the term it returned. The hooks:
 bumps during the call (the rule itself and the reasons of the decisions it
 rests on: `row.store-skip` with `cmp.diff-base` or `arm.skip`;
 `premise.*` counters are dropped, they become the premise field);
-`Rules::countPremises` notes the `Premise` bits (A-INB). The scratch counters
+`Rules::countPremises` notes the `Premise` bits (A-SEP, A-NULL, A-NOWRAP). The scratch counters
 of ITE-EQ / the ROW compare tree are merged with `RewriteStats::merge`, so
 the reasons of a resolved tree are in its firing and those of a discarded
 attempt are not. SeaOpSem sets the context: the op being encoded (`load`,
@@ -511,14 +553,18 @@ evenly spaced) is a solver query `premise /\ lhs != rhs` (store-maps of both
 sides expanded through `SeaOpSem::solverTerm`) on the run's solver, with
 `--seam-check-timeout` (10 s; not for Yices). The premise
 (`SeaOpSem::firingPremise`): `true` for a firing without premises (the rule
-must be valid over plain bit-vectors and arrays, without the layout); for an
-A-INB firing, the layout (`obj.k = base`, a fact of the VC) and
-`Rules::inBounds` of each access address the rule compares
+must be valid over plain bit-vectors and arrays, without the layout); for a
+firing that uses A-SEP, A-NULL or A-NOWRAP, the layout (`obj.k = base`, a
+fact of the VC) and `Rules::inBounds` of each access address the rule compares
 (`Rules::accessAddresses`: the select index or store address, and the
 address of the write below it, or every entry of the store-map below it), at
-the access size of the context. This checks that the rule is a correct
-consequence of its stated premise; it does not discharge A-INB (that is the
-bounds-check job). A premise that cannot be stated (an A-INB firing in an
+the access size of the context: A-INB of those accesses, a sufficient
+premise (it implies the three). Stating A-SEP itself for a cross-object pair
+would make the premise the conclusion (the two cells differ), and the check
+would test only that the rule saw two provenances; the in-bounds form keeps
+its teeth. This checks that the rule is a correct consequence of a
+sufficient premise; it does not discharge one (that is the bounds-check
+job). A premise that cannot be stated (a premise firing in an
 `addr` context, a term that is not a select / store / wselect or a unit
 overlap of two recorded access bytes, a statically violated
 access, or a premise the solver finds unsatisfiable: checked first, so a vacuous premise never makes a firing valid) is `unexpressible` (warning `seam.check-unexpressible`), never valid.
@@ -531,7 +577,7 @@ shows the check catches both.
 Results (z3, timeout 10 s per check): every program of
 test/VC/seam under seven settings (default, --widen-memory=4,
 --seam-store-map=0, --seam-row-expand=0, --seam-simplify=0, --seam-arm=0,
---seam-inb=0): 5204 firings, all valid. utils/fuzz-seam.py --seam-check
+--seam-inb=0, now --seam-premises=0): 5204 firings, all valid. utils/fuzz-seam.py --seam-check
 (Yices, seed 7, 15 programs per mode, every --seam variant): bases 1679,
 any 2233, wide 6216, cells 32425, cells-violate 71930, circular 28993,
 ptrmem 18789 firings, all valid. verify-c-common (`--lower

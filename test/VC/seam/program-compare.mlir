@@ -6,7 +6,7 @@
 // use it).
 // RUN: sea-vc %s --lower | FileCheck %s
 // RUN: sea-vc %s --lower --seam | FileCheck %s
-// RUN: sea-vc %s --lower --seam --seam-inb=0 | FileCheck %s
+// RUN: sea-vc %s --lower --seam --seam-premises=0 | FileCheck %s
 // CHECK: result: sat
 // CHECK: replay: assert-failed
 !m = !sea.mem<!sea.ptr<64>, i8>

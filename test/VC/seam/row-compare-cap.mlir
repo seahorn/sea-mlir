@@ -7,7 +7,7 @@
 // RUN: sea-vc %s --lower --seam --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // CHECK-NOT: seam.alias.open.diff-object
 // CHECK: seam.alias.open.same-object: 1
-// CHECK: seam.rule.premise.a-inb: {{[1-9]}}
+// CHECK: seam.rule.premise.a-sep: {{[1-9]}}
 // CHECK: result: sat
 // CHECK: validate: checked={{[0-9]+}} mismatches=0
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0

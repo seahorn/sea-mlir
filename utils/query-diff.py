@@ -86,9 +86,9 @@ shown: the evidence line counts the jobs by what they prove, and
 Every z3 run has a resource limit (--rlimit, deterministic) and a
 wall-clock backstop (--timeout). z3 runs single-threaded by default
 (threads=1, parallel.enable=false), so --par N uses at most N cores
-for z3. The A-INB report (seam.inb: accesses /
-conditions, on stderr with --seam-stats) is compared too, when both
-print it.
+for z3. The premise report (seam.premises: accesses /
+conditions, on stderr with --seam-stats; seam.inb before v0.2) is
+compared too, when both print it.
 """
 
 import argparse
@@ -656,7 +656,9 @@ def classify_queries(o, n, z3, project_blocks, hints):
     return "unknown", ["reason=verdict-unknown"] + sides + by
 
 
-INB = re.compile(r"seam\.inb: \S+ accesses=(\d+) conditions=(\d+)")
+# the premise report of --seam: seam.premises (seam.inb before v0.2, so an old
+# binary still compares)
+INB = re.compile(r"seam\.(?:premises|inb): \S+ accesses=(\d+) conditions=(\d+)")
 
 
 def run(binary, f, args, timeout):
@@ -745,7 +747,7 @@ def main():
     ap.add_argument("--keep")
     a = ap.parse_args()
     a.args = a.args.split()
-    # the seam.inb counts (sea-vc refuses --seam-stats without a rewriter)
+    # the seam.premises counts (sea-vc refuses --seam-stats without a rewriter)
     if any(x == "--seam" or x.startswith("--simplify") for x in a.args):
         a.args.append("--seam-stats")
     files = []

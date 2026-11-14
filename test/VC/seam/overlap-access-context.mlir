@@ -12,7 +12,7 @@
 // RUN: sea-vc %s --lower --seam --seam-wide --seam-stats 2>&1 | FileCheck %s
 // RUN: sea-vc %s --lower --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // CHECK-NOT: seam.alias.open
-// CHECK: seam.rule.premise.a-inb: {{[1-9]}}
+// CHECK: seam.rule.premise.a-sep: {{[1-9]}}
 // CHECK: seam.rule.wide.ite-leaf-skip: 2
 // CHECK: seam.rule.wide.ite-split: 1
 // CHECK: result: unsat

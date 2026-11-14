@@ -69,7 +69,8 @@ are three outcomes.
   interpreter is wrong; this is a bug in sea-mlir.
 - With `--seam`, the run leaves an object. Exit status 4, with a
   `seam.inb-violation:` line. The model relies on an out-of-bounds access,
-  so the in-bounds assumption does not hold for it. The program has a
+  so the in-bounds property does not hold for it (and the premises
+  A-SEP or A-NULL may not). The program has a
   memory-safety error, and the answer about the assertion is
   inconclusive.
 

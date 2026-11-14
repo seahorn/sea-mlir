@@ -3,12 +3,12 @@
 // later one wins; each loaded config is printed, in order.
 // RUN: sea-vc %s --config=%S/Inputs/profiles/seam-trace.cfg --seam=false | FileCheck %s --check-prefix=CMD
 // RUN: sea-vc %s --config=%S/Inputs/profiles/seam-trace.cfg --config=%S/Inputs/profiles/stats.cfg | FileCheck %s --check-prefix=TWO
-// CMD-NOT: seam.inb
+// CMD-NOT: seam.premises
 // CMD: result: sat
 // TWO: vc.config: {{.*}}seam-trace.cfg
 // TWO-NEXT: vc.config: {{.*}}stats.cfg
 // TWO: vc.dag-size:
-// TWO: seam.inb: assumed
+// TWO: seam.premises: assumed
 // TWO: result: sat
 sea.program @p {
   %x = sea.nondet "nondet_u8" [0] : i8

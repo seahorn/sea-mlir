@@ -7,19 +7,24 @@ person or agent.
 
 Verify under named assumptions; never drop one silently.
 
-- An encoding may rely on an assumption, such as the in-bounds assumption
-  of SeaM (every access stays inside its object), if the assumption is
+- An encoding may rely on an assumption, such as the pointer premises of
+  SeaM (A-SEP: no cell accessed through two objects; A-NULL; A-NOWRAP), if
+  the assumption is
   named, reported in the output, and discharged by a separate check, such
   as a bounds-checking job.
 - Do not discharge an assumption by verifying again without it. If the
   discharging check is missing, build it.
-- Report every assumption a verdict rests on: `seam.inb: assumed ...`
-  next to `result: unsat`, and also `assume.memset-bound`,
-  `assume.a-inb` (memhavocs the lowering dropped under A-INB, also
-  without `--seam` and with `--seam-inb=0`), `assume.addr0-is-null`
+- Report every assumption a verdict rests on: `assume.a-sep`,
+  `assume.a-null`, `assume.a-nowrap` (the pointer premises of `--seam`;
+  `seam=<n>` rewrites rest on each, and `drop-fresh-memhavoc=<n>`
+  memhavocs the lowering dropped under A-SEP, also without `--seam` and
+  with `--seam-premises=0`) and `seam.premises: assumed ...` next to
+  `result: unsat`, any `seam.out-of-object:` line (the `unsat` holds only
+  if those accesses do not execute), and also `assume.memset-bound`,
+  `assume.addr0-is-null`
   (`vc`: placement makes null address 0; `uses=<n>`: a replay relied on
-  it), `seam.ptrint`, and any `seam.inb: off (fallback ...)` or
-  `seam.inb: off (lowering: ...)`.
+  it), `seam.ptrint`, and any `seam.premises: off (fallback ...)` or
+  `seam.premises: off (lowering: ...)`.
 - Front-end annotations (`align`, and the `inbounds`, `nusw` and `nuw`
   flags of pointer arithmetic) are trusted premises. `--check-align` and
   `--check-ptr-index` are separate jobs that assert every such promise;

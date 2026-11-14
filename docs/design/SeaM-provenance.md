@@ -1,5 +1,11 @@
 # SeaM: keeping provenance when reading through memory operations
 
+> Premise names (0.2.0): this document was written when the encoding rested
+> on A-INB. The encoding now names the premises it uses: A-SEP for
+> decisions across two objects, A-NULL for objects of size 0, A-NOWRAP for
+> the byte offset K of the stride rules (SeaM.md, "Soundness stance").
+> A-INB below names the stronger property that implies them.
+
 Status: Step 0, pruning impossible size-zero address leaves, is
 implemented. The optional v1 split rule is described below. The order is
 step 0, measurement, then v1 only for cases that remain.

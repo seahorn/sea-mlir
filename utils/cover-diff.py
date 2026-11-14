@@ -41,7 +41,7 @@ and not compared. A job with no tagged target on either side (an input
 without checks, a sea-vc that reports no site=) is unknown
 (reason=no-targets), not a pass. --reach options in --args / --a / --b are
 refused (cover-diff sets them; block targets have no sites). The reach answer of a target whose replay stopped at a
-memory-safety error (replay=memory-error: it rests on A-INB, which the
+memory-safety error (replay=memory-error: it rests on the premises, which the
 run breaks) counts as unknown.
 
 Placement. Both sides run on one placement of the objects (sea-vc
@@ -483,7 +483,7 @@ def smt2(a, rt):
 
 def safety_verdict(a, f, side_args, place=()):
     """The sea-vc safety verdict of a side: sat / unsat / unknown, or
-    inconclusive (exit 4: a sat that rests on A-INB, which its run breaks).
+    inconclusive (exit 4: a sat that rests on the premises, which its run may break).
     Any other exit (1 error, 2 a VC / interpreter mismatch, 5 an invalid
     rewrite) is an error."""
     cmd = [a.sea_vc, f] + a.common + side_args + list(place) + ["--format=jsonl"]

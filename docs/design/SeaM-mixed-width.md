@@ -1,5 +1,11 @@
 # SeaM: mixed-width accesses in one byte memory
 
+> Premise names (0.2.0): this document was written when the encoding rested
+> on A-INB. The encoding now names the premises it uses: A-SEP for
+> decisions across two objects, A-NULL for objects of size 0, A-NOWRAP for
+> the byte offset K of the stride rules (SeaM.md, "Soundness stance").
+> A-INB below names the stronger property that implies them.
+
 Status: byte-memory width terms are implemented behind `--seam-wide`. This
 document describes their contracts and the aligned word-level proposal.
 Implementation order: semantics-only wide terms and span accounting; then

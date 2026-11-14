@@ -9,7 +9,12 @@
 //
 //  Name    the named assumptions, in their printed order:
 //            memset-bound        sea-expand-memset's bound (VC)
-//            a-inb               the lowering's dropped memhavocs (VC)
+//            a-sep               SeaM's rewrites that rest on separation,
+//                                the lowering's dropped memhavocs (VC)
+//            a-null              SeaM's rewrites that rest on "no access
+//                                through an object of size 0" (VC)
+//            a-nowrap            SeaM's rewrites that rest on "an access
+//                                address does not wrap" (VC)
 //            addr0-is-null       address 0 is null (VC and runs)
 //            memhavoc-null-noop  memhavoc(null) is a no-op (VC and runs)
 //  Ledger  what one run / one VC / one report relied on:
@@ -31,8 +36,11 @@
 //                                  <r>] memhavoc-null-noop=...` (corpus
 //                                  headers, fuzz.assumptions)
 //
-// The seam.inb line (A-INB of --seam) is not here: its form is parsed by
-// utils/query-diff.py and fuzz-seam and stays in sea-vc's SeaM block.
+// The premises of --seam (A-SEP, A-NULL, A-NOWRAP: docs/design/SeaM.md,
+// "Soundness stance") are names here: `assume.a-sep: seam=<n>` counts the
+// rewrites that rest on it (0: the answer does not). Whether they are on, and
+// the accesses they are about, is sea-vc's `seam.premises:` line (parsed by
+// utils/query-diff.py and fuzz-seam), in its SeaM block.
 //
 //===----------------------------------------------------------------------===//
 
@@ -58,13 +66,15 @@ namespace assume {
 /// The named assumptions, in their printed order.
 enum class Name : unsigned {
   MemsetBound,
-  AInb,
+  ASep,
+  ANull,
+  ANoWrap,
   Addr0IsNull,
   MemhavocNullNoop,
 };
-constexpr unsigned kNames = 4;
+constexpr unsigned kNames = 6;
 
-/// `memset-bound`, `a-inb`, ...
+/// `memset-bound`, `a-sep`, ...
 llvm::StringRef nameOf(Name a);
 /// Whether runs (the interpreter) count uses of \p a.
 bool countedByRuns(Name a);

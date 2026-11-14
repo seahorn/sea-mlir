@@ -40,7 +40,7 @@ verdict on every input is the same). A nd.* with different sorts in the two
 queries is treated as private on each side (reported as "sort-clash").
 Result per program: equivalent | differ (a model of the shared constants,
 which one of A/B accepts and the other cannot) | unknown (z3 gave up) |
-error. Plain-vs-seam equivalence holds under A-INB (accesses stay in their
+error. Plain-vs-seam equivalence holds under the premises (implied by A-INB: accesses stay in their
 objects), which --seam assumes; a program that leaves its objects may
 differ legitimately.
 Exit status: 0 all equivalent, 1 some differ, 2 unknown or error.

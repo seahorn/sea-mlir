@@ -111,7 +111,7 @@ byte of a wide access or a size-0 base, A-INB) are what make the dropped
 constraints vacuous, so a sat model needs them: one that puts two such
 reads at one index breaks one, is detected (AckermannModel::strideBroken)
 before the result, and sea-vc reruns without the rule.
-Counted `vc.ackermann-stride-pairs` (of them `-stride-a-inb-pairs`) and
+Counted `vc.ackermann-stride-pairs` (of them `-stride-a-null-pairs`, `-stride-a-nowrap-pairs`) and
 why the rest were not (`-stride-not-eligible`, `-other-base`, `-divides`).
 On vcc hash_table_eq (seam-wide, yices): 95104 -> 43712 constraints, solve
 54 -> 26 s.

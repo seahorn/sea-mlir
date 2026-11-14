@@ -23,18 +23,20 @@ summary record: cache_hits).
 
 WHY: when a downstream bug shows up (wrong verdict, replay mismatch, solver
 error) the trail says which rules produced or touched the terms involved;
-the histogram says what a run relied on (which firings use A-INB).
+the histogram says what a run relied on (which firings use A-SEP, A-NULL,
+A-NOWRAP).
 
 TYPICAL:
   sea-vc p.mlir --lower --seam --seam-trail=t.jsonl
   seam-trail.py t.jsonl                     # histogram per rule / premise / op
-  seam-trail.py t.jsonl --premise A-INB     # the rules used under A-INB
+  seam-trail.py t.jsonl --premise A-NULL    # the rules used under A-NULL
   seam-trail.py t.jsonl --rule row.store-skip   # the firings of one rule
   seam-trail.py t.jsonl --contains 1234     # firings whose output contains
                                             #   node 1234 (needs t.jsonl.terms)
   seam-trail.py t.jsonl --produced 1234     # firings whose output is node 1234
   --run R picks the VC run (default: the last; sea-vc runs again without
-  A-INB after a static violation).
+  the premises after a static out-of-object access with
+  --seam-out-of-object=fallback).
 
 OUTPUT (stdout, `key: value` lines):
   run: <R>                          the run queried

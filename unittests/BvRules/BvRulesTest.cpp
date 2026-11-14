@@ -90,7 +90,7 @@ SeaMOptions simpOpts() {
   SeaMOptions o;
   o.simplify = true;
   o.memoryRules = false;
-  o.assumeInBounds = false;
+  o.assumePremises = false;
   o.arm = false;
   o.storeMap = false;
   return o;

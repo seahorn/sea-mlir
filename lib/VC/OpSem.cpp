@@ -49,7 +49,7 @@ SeaOpSem::SeaOpSem(ExprFactory &efac, ValueNames &names, bool nativeMulOverflow,
     if (!seam) {
       // plain bit-vector rules only: no memory rewriting, no assumption
       o.memoryRules = false;
-      o.assumeInBounds = false;
+      o.assumePremises = false;
       o.arm = false;
       o.storeMap = false;
     }
@@ -177,10 +177,13 @@ static std::string locText(Location loc) {
 }
 
 void SeaOpSem::noteInbViolation(Location loc, llvm::StringRef kind,
+                                seam::Landing landing,
                                 llvm::function_ref<std::string()> reason) {
+  ++oobLanding[static_cast<unsigned>(landing)];
   // the reason (a walk of the address) only for the notes printed
   if (++inbStaticViolations <= kInbViolationNotes)
-    inbNotes.push_back(locText(loc) + " " + kind.str() + ": " + reason());
+    inbNotes.push_back(locText(loc) + " " + kind.str() + ": " + reason() +
+                       " lands=" + seam::landingName(landing));
 }
 
 void SeaOpSem::trailAccess(const char *kind, uint64_t units) {
@@ -194,10 +197,16 @@ void SeaOpSem::trailAccess(const char *kind, uint64_t units) {
 
 Expr SeaOpSem::firingPremise(const RewriteTrail &trail,
                              const RewriteTrail::Firing &f, std::string &why) {
-  // composed (SeaM-mixed-width.md rev 5): the A-INB / LAYOUT part and the
-  // ALIGN part (the accesses' `align` annotations: trusted front-end facts)
+  // composed (SeaM-mixed-width.md rev 5): the premise / LAYOUT part and the
+  // ALIGN part (the accesses' `align` annotations: trusted front-end facts).
+  // A firing that uses A-SEP, A-NULL or A-NOWRAP is checked under the
+  // in-bounds conditions of the accesses it compared (A-INB, which implies
+  // all three): a sufficient premise. The separation premise of a cross-
+  // object pair would be its conclusion (the two cells differ), so it is not
+  // stated that way: the check keeps its teeth for everything but the
+  // provenance itself.
   Expr base;
-  if (f.premises & seam::PremAInb) {
+  if (f.premises & seam::PremProgram) {
     base = accessPremise(trail, f, why);
     if (!base)
       return Expr();
@@ -271,14 +280,14 @@ Expr SeaOpSem::accessPremise(const RewriteTrail &trail,
   }
   const RewriteTrail::Context &c = trail.context(f.ctx);
   if (!c.units) {
-    why = "A-INB firing outside a memory access (context " + c.kind + ")";
+    why = "premise firing outside a memory access (context " + c.kind + ")";
     return Expr();
   }
   // per-access spans (docs/design/SeaM-mixed-width.md): each address with
   // the width of its own access
   llvm::SmallVector<std::pair<Expr, uint64_t>, 4> spans;
   if (!seamRw->rules().accessSpans(f.lhs, c.units, spans)) {
-    why = "A-INB firing on a term that is not a select, store or wselect, "
+    why = "premise firing on a term that is not a select, store or wselect, "
           "or an overlap of recorded access bytes";
     return Expr();
   }
@@ -312,13 +321,16 @@ Expr SeaOpSem::accessPremise(const RewriteTrail &trail,
   return mknary<AND>(trueE, conj);
 }
 
-/// A-INB (SeaMRules.hh) is an assumption about the program: every access
-/// address that normalizes to a pointer into object k lies in object k. It is
-/// assumed and reported, not discharged (docs/design/SeaM.md, "A-INB: assumed
-/// and reported"). Each access is counted here; a leaf with a numeral offset
-/// that is out of bounds (or an object smaller than the access) is a definite
-/// violation, which sea-vc answers by running without the assumption (a
-/// sanity check, not a soundness claim).
+/// The premises of SeaM (SeaMRules.hh: A-SEP, A-NULL, A-NOWRAP) are
+/// assumptions about the program, implied by A-INB (every access address
+/// that normalizes to a pointer into object k lies in object k). They are
+/// assumed and reported, not discharged (docs/design/SeaM.md, "Soundness
+/// stance"). Each access is counted here, with its in-bounds condition; an
+/// access whose every leaf is out of its object (a numeral offset out of
+/// bounds, an object smaller than the access) is a static out-of-object
+/// access: sea-vc reports it, classified by where it lands
+/// (seam::Rules::classifyOutOfObject), and keeps the premises (they fail
+/// only if the access executes).
 Expr SeaOpSem::accessAddr(Expr mem, Expr ptr, uint64_t units,
                           OpSemContext &ctx) {
   if (!seamMode)
@@ -344,9 +356,10 @@ Expr SeaOpSem::accessAddr(Expr mem, Expr ptr, uint64_t units,
   bool violated = false;
   Expr inb = seamRw->rules().inBounds(ptr, units, violated);
   if (violated)
-    noteInbViolation(curOp->getLoc(), curOp->getName().stripDialect(), [&] {
-      return seamRw->rules().explainViolation(ptr, units, false);
-    });
+    noteInbViolation(
+        curOp->getLoc(), curOp->getName().stripDialect(),
+        seamRw->rules().classifyOutOfObject(ptr, units),
+        [&] { return seamRw->rules().explainViolation(ptr, units, false); });
   if (!isOpX<TRUE>(inb))
     inbSeen.insert(mk<AND>(ctx.getPathCond(), boolop::lneg(inb)));
   return ptr;
@@ -694,7 +707,7 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
                                          lookup(mc.getValue(), ctx));
       // A shadow memory (sea-lower-tracking; SeaM-null.md, "Shadow
       // memories"): its start goes to the registry, and every memory term
-      // over it is read by object identity, without A-INB. A data memory
+      // over it is read by object identity, without a premise. A data memory
       // with the same start term (same sort, same value) is then read the
       // same way: still sound (no assumption is added), less precise;
       // reported.
@@ -707,7 +720,8 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
           diag::warn("vc.seam-shadow-shared-start",
                      "a data memory starts with the same term as a shadow "
                      "memory (sea.mem.const of one sort and value): its "
-                     "accesses are read as shadow accesses, without A-INB "
+                     "accesses are read as shadow accesses, without the "
+                     "premises "
                      "(sound, less precise)",
                      op.getLoc());
       }
@@ -993,9 +1007,9 @@ void SeaOpSem::settleKeyed(OpSemContext &ctx) {
       bool violated = false;
       fallback(seamRw->rules().inBounds(p, 1, violated), loc);
       if (violated)
-        noteInbViolation(loc, "companion", [&] {
-          return seamRw->rules().explainViolation(p, 1, false);
-        });
+        noteInbViolation(
+            loc, "companion", seamRw->rules().classifyOutOfObject(p, 1),
+            [&] { return seamRw->rules().explainViolation(p, 1, false); });
     }
   for (const auto &[dv, nv, loc] : pendingKeyedRanges)
     if (!blockRanges.count({dv, nv})) {
@@ -1004,9 +1018,9 @@ void SeaOpSem::settleKeyed(OpSemContext &ctx) {
            n = seamRw->rewrite(lookup(nv, ctx));
       fallback(seamRw->rules().rangeInBounds(d, n, violated), loc);
       if (violated)
-        noteInbViolation(loc, "companion", [&] {
-          return seamRw->rules().explainViolation(d, 0, true, n);
-        });
+        noteInbViolation(
+            loc, "companion", seamRw->rules().classifyOutOfObject(d, 0, n),
+            [&] { return seamRw->rules().explainViolation(d, 0, true, n); });
     }
   pendingKeyed.clear();
   pendingKeyedRanges.clear();
@@ -1122,9 +1136,10 @@ void SeaOpSem::accessRange(Expr d, Expr n, OpSemContext &ctx) {
   bool violated = false;
   Expr inb = seamRw->rules().rangeInBounds(d, n, violated);
   if (violated)
-    noteInbViolation(curOp->getLoc(), curOp->getName().stripDialect(), [&] {
-      return seamRw->rules().explainViolation(d, 0, true, n);
-    });
+    noteInbViolation(curOp->getLoc(), curOp->getName().stripDialect(),
+                     seamRw->rules().classifyOutOfObject(d, 0, n), [&] {
+                       return seamRw->rules().explainViolation(d, 0, true, n);
+                     });
   if (!isOpX<TRUE>(inb))
     inbSeen.insert(mk<AND>(ctx.getPathCond(), boolop::lneg(inb)));
 }

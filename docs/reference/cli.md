@@ -33,7 +33,8 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--place-in=<file>` | with `--lower`: place the objects at the bases a `--place-out` file gives, checked as placement does; an object the file does not name is an error (`place.in-unplaced`). Two lowerings that share a file put their common objects at the same addresses |
 | `--lower-disable=<pass>,...` | with `--lower`: leave these optimization passes out of the lowering: `sccp`, `cse`, `canonicalize`. The lowering without one against the lowering with it validates the pass (`utils/cover-diff.py`, [Pass validation](../agents/gates.md#pass-validation)). `sea-drop-fresh-memhavoc` is refused: it is a semantics decision (a memhavoc of a fresh object is no tracked modification; without it, one after `sea_tracking_on` is) |
 | `--seam` | the SeaM memory rewriter ([Background: SeaM](seam.md)) |
-| `--seam-inb=0` | SeaM without the in-bounds assumption |
+| `--seam-premises=0` | SeaM without the pointer premises (A-SEP, A-NULL, A-NOWRAP) |
+| `--seam-out-of-object=fallback` | a static out-of-object access reruns without the premises (default `report`: warn, report, keep them) |
 | `--widen-memory=<k>` | with `--lower`: byte memories whose accesses are all aligned $k$-byte words become word memories |
 | `--ptr-mode=auto|opaque|address` | the pointer model; `auto` (default) chooses `address` if the program converts an integer to a pointer |
 | `--simplify` | the bit-vector and Boolean normalization of SeaM, without SeaM |

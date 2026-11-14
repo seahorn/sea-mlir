@@ -33,7 +33,8 @@
 // equal (the gcd of the stride differences does not divide the constant
 // difference), or one at a node over an object of size 0. Dropping any
 // constraint only weakens the lowered query: unsat stays sound with no premise.
-// The promises (and, for a byte of a wide access or a size-0 base, A-INB) are
+// The promises (and A-NOWRAP for a byte of a wide access, A-NULL for a size-0
+// base: SeaMRules.hh, the named premises) are
 // what make the dropped constraints vacuous, so a sat model needs them: one
 // that puts two such reads at one index breaks one, is detected
 // (AckermannModel::strideBroken) before the result, and sea-vc reruns without
@@ -492,9 +493,10 @@ public:
     /// read not eligible (some address not a promised node), different
     /// bases or operators (or K != 0), or the gcd divides the difference
     uint64_t strideNotEligible = 0, strideOtherBase = 0, strideDivides = 0;
-    /// of stridePairs, those with a byte of a wide access (K != 0): they
-    /// also rest on that access's A-INB (its span is in the space)
-    uint64_t strideAInbPairs = 0;
+    /// of stridePairs, those with a read at a node over an object of size 0
+    /// (they rest on A-NULL) and those with a byte of a wide access (K != 0:
+    /// they rest on A-NOWRAP, the access address does not wrap)
+    uint64_t strideANullPairs = 0, strideANoWrapPairs = 0;
     uint64_t constraints = 0; ///< constraints added (the other pairs)
 
     /// What report() says of the stride rule: not asked (no line), used
@@ -519,7 +521,8 @@ public:
       line("leaf-pairs").value(leafPairs);
       if (stride == Stride::On) {
         line("stride-pairs").value(stridePairs);
-        line("stride-a-inb-pairs").value(strideAInbPairs);
+        line("stride-a-null-pairs").value(strideANullPairs);
+        line("stride-a-nowrap-pairs").value(strideANoWrapPairs);
         line("stride-not-eligible").value(strideNotEligible);
         line("stride-other-base").value(strideOtherBase);
         line("stride-divides").value(strideDivides);
@@ -691,10 +694,12 @@ public:
             continue;
           }
           // the stride rule (trusted GEP promises), after the exact tests
-          if (bool aInb = false; strideApart(rs[k], rs[l], aInb)) {
+          if (StridePrem sp; strideApart(rs[k], rs[l], sp)) {
             ++m_stats.stridePairs;
-            if (aInb)
-              ++m_stats.strideAInbPairs;
+            if (sp.null)
+              ++m_stats.strideANullPairs;
+            if (sp.noWrap)
+              ++m_stats.strideANoWrapPairs;
             continue;
           }
           ++m_stats.constraints;
@@ -747,10 +752,11 @@ public:
   /// addresses of the read indices; null (the default) disables it.
   void setAccessOrigins(const AccessOrigins *o) { m_origins = o; }
   /// The bases of objects of size 0 (the stride rule: a read at a node over
-  /// one is vacuous under A-INB).
+  /// one is vacuous under A-NULL).
   void setSize0Bases(std::unordered_set<ENode *> b) { m_size0 = std::move(b); }
-  /// Off: no stride firing that rests on A-INB (K != 0, size-0 bases).
-  void setAssumeInBounds(bool b) { m_inb = b; }
+  /// Off: no stride firing that rests on a named premise (A-NOWRAP: K != 0;
+  /// A-NULL: size-0 bases).
+  void setAssumePremises(bool b) { m_premises = b; }
   /// The lowered arrays with their reads (the table of model reconstruction).
   const std::vector<Array> &arrays() const { return m_arrays; }
   /// The position of \p a in arrays(), or -1 if it is not lowered.
@@ -799,22 +805,26 @@ private:
   /// same cell through a ptr.add (plain) makes the read ineligible, since
   /// the promise holds only where the GEP is used (PtrIndex.md).
   bool strideApart(const Read &a, const Read &b) const {
-    bool aInb = false;
-    return strideApart(a, b, aInb);
+    StridePrem sp;
+    return strideApart(a, b, sp);
   }
-  /// \p aInb: the answer also rests on A-INB (a byte of a wide access, K !=
-  /// 0, or a node over an object of size 0).
-  bool strideApart(const Read &a, const Read &b, bool &aInb) const {
+  /// The named premises a stride answer also rests on.
+  struct StridePrem {
+    bool null = false;   ///< A-NULL: a node over an object of size 0
+    bool noWrap = false; ///< A-NOWRAP: a byte of a wide access (K != 0)
+  };
+  /// \p sp: the premises the answer also rests on.
+  bool strideApart(const Read &a, const Read &b, StridePrem &sp) const {
     if (!m_origins || a.plain || b.plain || a.nodes.empty() || b.nodes.empty())
       return false;
     for (const Expr &na : a.nodes)
       for (const Expr &nb : b.nodes)
-        if (!strideApartNodes(na, nb, aInb))
+        if (!strideApartNodes(na, nb, sp))
           return false;
     return true;
   }
   /// A node over an object of size 0 (null, a zero-sized allocation): no
-  /// access of positive width is in it under A-INB (cmp.size0-vacuous), so
+  /// access of positive width is in it under A-NULL (cmp.size0-vacuous), so
   /// a read at it never happens.
   bool size0Base(const Expr &n) const {
     return m_size0.count(op::ptr::base(n).get()) != 0;
@@ -833,17 +843,17 @@ private:
         }
     ++m_stats.strideDivides;
   }
-  bool strideApartNodes(const Expr &a, const Expr &b, bool &aInb) const {
+  bool strideApartNodes(const Expr &a, const Expr &b, StridePrem &sp) const {
     using namespace op;
     if (size0Base(a) || size0Base(b)) {
-      aInb = true;
-      return m_inb;
+      sp.null = true;
+      return m_premises;
     }
     if (ptr::byteOffset(a) != mpz_class(0L) ||
         ptr::byteOffset(b) != mpz_class(0L)) {
-      if (!m_inb)
+      if (!m_premises)
         return false;
-      aInb = true;
+      sp.noWrap = true;
     }
     if (isOpX<PTR_INDEX_NUSW>(a) != isOpX<PTR_INDEX_NUSW>(b) ||
         ptr::base(a) != ptr::base(b))
@@ -923,7 +933,7 @@ private:
   std::vector<Pair> m_pairs;
   const AccessOrigins *m_origins = nullptr;
   std::unordered_set<ENode *> m_size0;
-  bool m_inb = true;
+  bool m_premises = true;
   Stats m_stats;
   std::vector<Expr> m_candidates;
   std::vector<Array> m_arrays;

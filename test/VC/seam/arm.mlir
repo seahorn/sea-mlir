@@ -12,7 +12,7 @@
 // RUN: sea-vc %s --lower --seam --seam-arm=0 --seam-stats | FileCheck %s --check-prefix=NOARM
 // RUN: sea-vc %s --lower --seam --seam-arm=0 --smt2 | FileCheck %s --check-prefix=SMT-NOARM
 // RUN: sea-vc %s --lower --seam | FileCheck %s --check-prefix=CHECKED
-// RUN: sea-vc %s --lower --seam --seam-inb=0 --seam-stats | FileCheck %s --check-prefix=NOINB
+// RUN: sea-vc %s --lower --seam --seam-premises=0 --seam-stats | FileCheck %s --check-prefix=NOINB
 // RUN: sea-vc %s --lower | FileCheck %s --check-prefix=VERDICT
 // RUN: not sea-vc %s --lower --seam-arm=0 2>&1 | FileCheck %s --check-prefix=NOSEAM
 // ARM: seam.rule.arm.skip: 1
@@ -24,7 +24,7 @@
 // NOARM: seam.rule.row.store: 1
 // NOARM: result: unsat
 // SMT-NOARM: bvadd
-// CHECKED: seam.inb: assumed accesses=3 conditions=0
+// CHECKED: seam.premises: assumed accesses=3 conditions=0
 // CHECKED: result: unsat
 // NOINB-NOT: seam.rule.arm.skip
 // NOINB: result: unsat

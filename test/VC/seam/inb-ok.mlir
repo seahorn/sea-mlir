@@ -2,7 +2,7 @@
 // the assumption holds (not checked by sea-vc).
 // RUN: sea-vc %s --lower --seam 2>&1 | FileCheck %s
 // CHECK-NOT: Warning
-// CHECK: seam.inb: assumed accesses=3 conditions={{[1-9][0-9]*}}
+// CHECK: seam.premises: assumed accesses=3 conditions={{[1-9][0-9]*}}
 // CHECK: result: unsat
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @ok {

@@ -640,7 +640,7 @@ def main():
     ap.add_argument(
         "--seam",
         action="store_true",
-        help="also run sea-vc --seam (and --seam-inb=0) with each "
+        help="also run sea-vc --seam (and --seam-premises=0) with each "
         "solver: verdicts must agree, sat models must replay",
     )
     ap.add_argument(
@@ -676,7 +676,7 @@ def main():
             if args.seam:
                 variants += [
                     ("+seam", ["--seam"]),
-                    ("+seam0", ["--seam", "--seam-inb=0"]),
+                    ("+seam0", ["--seam", "--seam-premises=0"]),
                 ]
             if args.sink_assumes:
                 variants += [("+sink", ["--sink-assumes"])]

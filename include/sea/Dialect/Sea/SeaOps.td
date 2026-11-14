@@ -603,7 +603,8 @@ def Sea_MemConstOp : Sea_Op<"mem.const", [
     identity (sea-lower-tracking: one cell per object base), not program
     data: no value depends on it (the interpreter ignores it); the VC (SeaM)
     reads every memory that starts here as a shadow memory and applies no
-    A-INB rule to its accesses (docs/design/SeaM-null.md, "Shadow memories").
+    premise rule (A-SEP, A-NULL) to its accesses (docs/design/SeaM-null.md,
+    "Shadow memories").
 
     Not Pure: the result is an allocation (a new buffer of the in-place
     interpreter, the head of its own Mem-SSA chain). Two mem.const ops with

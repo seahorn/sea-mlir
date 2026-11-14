@@ -18,7 +18,7 @@
 // RUN: sea-vc %s --lower --program=same --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --program=single --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // CHECK-NOT: seam.alias.open
-// CROSS: seam.rule.premise.a-inb: {{[1-9]}}
+// CROSS: seam.rule.premise.a-sep: {{[1-9]}}
 // SINGLE: seam.rule.wide.smap-hit: 1
 // SAME: seam.rule.wide.smap-leaf-hit: 1
 // SAME: seam.rule.wide.smap-leaf-miss: 1

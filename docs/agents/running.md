@@ -88,7 +88,7 @@ approximate handling; each kind is printed once and repeats are summarized
 at exit (`--log=warn.<kind>:2` prints each; see
 [Logging](../reference/logging.md)). `Error: <message> [kind]` stops the
 tool. The kind is a short stable tag, such as
-`vc.seam-inb-violated`; match on it, not on the message. Nothing
+`vc.seam-out-of-object`; match on it, not on the message. Nothing
 unsupported is skipped silently: an operation, layout or form that
 `sea-vc` cannot encode exactly is an error with exit status 1.
 

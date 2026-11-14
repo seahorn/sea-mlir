@@ -324,7 +324,7 @@ tool.version: sea-mlir 0.1.1 (...)
 program: @nki_gather
 ...
 vc.ackermann-constraints: 0
-seam.inb: assumed accesses=40 conditions=8
+seam.premises: assumed accesses=40 conditions=8
 solve-time: 0.024
 result: unsat
 ```
@@ -361,7 +361,7 @@ $ sea-vc nki/gather-hw-N64D16K32-all-good.mlir --lower --seam
 vc-time: 0.800
 ...
 vc.ackermann-constraints: 0
-seam.inb: assumed accesses=1472 conditions=544
+seam.premises: assumed accesses=1472 conditions=544
 solve-time: 0.065
 result: unsat
 ```
@@ -388,12 +388,13 @@ runs out of the 16 GB memory cap and is tracked in the `hard` tier.
 
 ### Bounds and the memory model
 
-These checks coexist with SeaM's reported **A-INB assumption** that
-low-level memory accesses remain within their objects. A successful run
-under A-INB does not independently discharge that assumption. The API-level
-checks state useful bounds properties, but a complete discharge requires
-a separate check whose encoding does not rely on the assumption being
-proved. Read `seam.inb` alongside the verdict.
+These checks coexist with SeaM's reported **pointer premises** (A-SEP,
+A-NULL, A-NOWRAP), which hold when low-level memory accesses remain within
+their objects (A-INB). A successful run under the premises does not
+independently discharge them. The API-level checks state useful bounds
+properties, but a complete discharge requires a separate check whose
+encoding does not rely on the premises being proved. Read the
+`assume.a-*` and `seam.premises` lines alongside the verdict.
 
 ### A regression gate for Sea-MLIR
 

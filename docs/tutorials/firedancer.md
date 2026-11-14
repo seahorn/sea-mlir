@@ -116,7 +116,7 @@ object: name=obj.global.hp_out order=7 kind=global base=134516768 size=8192 alig
 object: name=obj.global.huff_decode_table order=8 kind=global base=134524960 size=16448 align=16
 vc-time: 0.021
 ...
-seam.inb: assumed accesses=51 conditions=9
+seam.premises: assumed accesses=51 conditions=9
 solve-time: 0.424
 result: unsat
 ```
@@ -133,7 +133,7 @@ two.
 ```console
 $ sea-vc firedancer/hpack-huff-mut-extra.mlir --lower --seam --widen-memory=4
 ...
-seam.inb: assumed accesses=52 conditions=10
+seam.premises: assumed accesses=52 conditions=10
 solve-time: 0.210
 result: sat
 ...
@@ -167,7 +167,7 @@ the shipped profile that sets `--lower --seam`:
 $ sea-vc firedancer/hpack-huff-mut-extra.mlir --config=seam --widen-memory=4 --format=jsonl > run.jsonl
 $ jq -r 'select(.kind=="stat" and .key=="vc.config").value' run.jsonl
 .../profiles/seam.cfg
-$ jq -c 'select(.kind=="stat" and .key=="seam.inb") | {value, accesses, conditions}' run.jsonl
+$ jq -c 'select(.kind=="stat" and .key=="seam.premises") | {value, accesses, conditions}' run.jsonl
 {"value":"assumed","accesses":52,"conditions":10}
 $ jq -r 'select(.kind=="result").value' run.jsonl
 sat

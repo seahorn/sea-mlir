@@ -47,15 +47,15 @@ the `sea-vc` command whose VC terms the lane builds. It is empty when no
 
 | lane | `sea_vc` | what |
 |---|---|---|
-| `memory-rules0` (default) | | the `--seam --seam-wide` encoding with the memory rules, simplification, the layout decision and A-INB off; the pointer rules run at accesses |
-| `seam-wide-inb0-simplify0-layout0` (`--rewrite`) | `sea-vc --seam --seam-wide --seam-inb=0 --seam-simplify=0 --seam-layout=0` | memory rules on |
+| `memory-rules0` (default) | | the `--seam --seam-wide` encoding with the memory rules, simplification, the layout decision and the premises off; the pointer rules run at accesses |
+| `seam-wide-inb0-simplify0-layout0` (`--rewrite`) | `sea-vc --seam --seam-wide --seam-premises=0 --seam-simplify=0 --seam-layout=0` | memory rules on |
 | `raw-wide` | | the `--seam --seam-wide` encoding before any rule |
 | `raw` | | the `--seam` encoding (byte accesses) before any rule |
-| `seam-wide-inb0` | `sea-vc --seam --seam-wide --seam-inb=0` | |
-| `seam-inb0` | `sea-vc --seam --seam-inb=0` | |
-| `seam-inb0-pull-concat` | `sea-vc --seam --seam-inb=0 --seam-pull-concat=4` | split (byte) pointer loads resolved; the only lane where `ptr.load-resolve-concat` can fire |
-| `seam-wide` | `sea-vc --seam --seam-wide` | under A-INB (`"ainb": true`) |
-| `seam` | `sea-vc --seam` | under A-INB (`"ainb": true`) |
+| `seam-wide-inb0` | `sea-vc --seam --seam-wide --seam-premises=0` | |
+| `seam-inb0` | `sea-vc --seam --seam-premises=0` | |
+| `seam-inb0-pull-concat` | `sea-vc --seam --seam-premises=0 --seam-pull-concat=4` | split (byte) pointer loads resolved; the only lane where `ptr.load-resolve-concat` can fire |
+| `seam-wide` | `sea-vc --seam --seam-wide` | under the premises (`"ainb": true`) |
+| `seam` | `sea-vc --seam` | under the premises (`"ainb": true`) |
 | `plain` | `sea-vc` | no SeaM and no rewriter. The boundary is `PtrIndexExpander` (the lowering's arithmetic) |
 | `simplify` | `sea-vc --simplify` | no SeaM: the bit-vector and Boolean rules only |
 
@@ -70,22 +70,23 @@ Notes:
 - Lanes without wide accesses (`raw`, `seam-inb0`, `seam-inb0-pull-concat`, `seam`, `plain`,
   `simplify`) refuse a multi-byte access (`vc.wide-access`). `sea-vc
   --lower` would split it.
-- An A-INB lane is an error when the program statically violates A-INB.
-  `sea-vc` would rerun without A-INB.
+- A premise lane is an error when the program has a static out-of-object
+  access (its firings would rest on a premise the program may break;
+  `sea-vc` reports it and keeps the premises).
 - In `plain` and `simplify`, an object is its placed address
   (`fromInt(n)`), not a variable `obj.<name>`.
 
-## Format (schema 2)
+## Format (schema 3)
 
 One JSON object with sorted keys:
 
 | key | value |
 |---|---|
-| `schema` | `2`. Additions (new keys, new term ops) keep the number; an incompatible change bumps it |
+| `schema` | `3` (2 before the premises were renamed: `premises` values, `sea_vc` flags). Additions (new keys, new term ops) keep the number; an incompatible change bumps it |
 | `lane`, `sea_vc` | the lane and its `sea-vc` command (see above) |
 | `ptr_mode` | `address` or `opaque` |
 | `address_bits` | N |
-| `ainb` | whether A-INB was used (the A-INB lanes) |
+| `ainb` | whether the premises A-SEP, A-NULL, A-NOWRAP were used (the premise lanes; the key keeps its name) |
 | `rewrite` | whether the memory rules ran |
 | `roots` | `[{name, location, operation, term}]`: every `iN`, address and memory result, in program order |
 | `side` | `[term]`: the side conditions, such as the layout `addr(obj.<name>) = base` |
@@ -135,7 +136,7 @@ rule call that changed its term gives one record, in order:
 |---|---|
 | `id` | the firing's number in the run |
 | `rules` | the rule, then the decisions it rests on (`["row.store-skip", "cmp.diff-base"]`) |
-| `premises` | the premise kinds used: `A-INB`, `LAYOUT`, `ALIGN`, `PTR-INDEX` |
+| `premises` | the premise kinds used: `A-SEP`, `A-NULL`, `A-NOWRAP`, `LAYOUT`, `ALIGN`, `PTR-INDEX` |
 | `op` | the VC operation: `load`, `store`, `addr` (an access address), or `side` / `query` (the final normalization) |
 | `loc`, `units` | the operation's location and access size (when it has them) |
 | `lhs`, `rhs` | raw terms. `lhs` is the term the rule was given, with its kids already rewritten |
@@ -153,6 +154,6 @@ trivially valid. A checker should reject one, as `--seam-check` does.
 ## Fail closed
 
 An operator, a sort or a width that the format has no node for, a program
-that is not straight-line, an unknown lane, and an A-INB violation in an
-A-INB lane are each an error (`[validation.export]`, status 1, nothing on
+that is not straight-line, an unknown lane, and a static out-of-object access in a
+premise lane are each an error (`[validation.export]`, status 1, nothing on
 stdout). Nothing is skipped or approximated. Tests: `test/SeamExport/`.

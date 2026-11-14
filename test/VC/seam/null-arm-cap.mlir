@@ -14,12 +14,12 @@
 // RUN: not sea-run %s --input=7=1,12=3 --missing=zero | FileCheck %s --check-prefix=NULL
 // RUN: sea-run %s --input=7=0,8=1,12=3 --missing=zero | FileCheck %s --check-prefix=OBJ
 // PLAIN: result: unsat
-// SEAM-NOT: vc.seam-inb-violated
-// SEAM: seam.inb: assumed
+// SEAM-NOT: seam.out-of-object
+// SEAM: seam.premises: assumed
 // SEAM-DAG: seam.rule.arm.skip: {{[1-9]}}
 // SEAM-DAG: seam.rule.cmp.size0-vacuous: {{[1-9]}}
 // SEAM: result: unsat
-// CHK-NOT: vc.seam-inb-violated
+// CHK-NOT: seam.out-of-object
 // CHK: result: unsat
 // CHK: seam-check: firings={{[1-9][0-9]*}} {{.*}} invalid=0 unknown=0 unexpressible=0
 // NULL: status: error

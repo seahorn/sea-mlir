@@ -19,7 +19,8 @@
 // addresses read one cell).
 // APART: vc.ackermann-reads: 2
 // APART: vc.ackermann-stride-pairs: 1
-// APART: vc.ackermann-stride-a-inb-pairs: 0
+// APART: vc.ackermann-stride-a-null-pairs: 0
+// APART: vc.ackermann-stride-a-nowrap-pairs: 0
 // APART: vc.ackermann-constraints: 0
 // APART: result: sat
 // OFF: vc.ackermann-constraints: 1

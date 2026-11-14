@@ -3,13 +3,13 @@
 // but the o1 leaf is selected only when b1 holds and the program assumes !b1.
 // Guarded aggregation (docs/design/SeaM-null.md, point 3): the o1 provenance
 // is `false` in the access condition, the others are live, so the access is
-// not a definite violation: no fallback, A-INB assumed (before: a whole-run
-// fallback, imprecise because the leaf is unreachable). Unsat either way.
+// not a static out-of-object access: none reported, the premises assumed.
+// Unsat either way.
 // RUN: sea-vc %s --lower | FileCheck %s --check-prefix=UNSAT
 // RUN: sea-vc %s --lower --seam 2>&1 | FileCheck %s --check-prefix=GUARDED
 // RUN: sea-vc %s --lower --seam --seam-check 2>&1 | FileCheck %s --check-prefix=CHECK-FIRINGS
-// GUARDED-NOT: vc.seam-inb-violated
-// GUARDED: seam.inb: assumed
+// GUARDED-NOT: seam.out-of-object
+// GUARDED: seam.premises: assumed
 // GUARDED: result: unsat
 // UNSAT: result: unsat
 // CHECK-FIRINGS: result: unsat

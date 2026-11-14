@@ -10,7 +10,7 @@
 //          builders, and their exact text and BRUNCH_STAT lines under the
 //          Derived rule. The expected strings are sea-vc output from before
 //          the port (one token, several tokens, an empty value, assume.*
-//          with a state word, seam.inb with notes, xrt.pairs with a
+//          with a state word, seam.premises with notes, xrt.pairs with a
 //          parenthesised k=v note).
 //  rules   Off / Value / Parts / Derived on the same lines; brunchOnly; a
 //          per-line policy over the report's.
@@ -121,43 +121,60 @@ void testForms() {
       "BRUNCH_STAT assume.addr0-is-null-null-uses 0\n");
   expect(
       "assume kv",
-      [](Report &r) { r.line("assume.a-inb").kv("drop-fresh-memhavoc", 1); },
-      "assume.a-inb: drop-fresh-memhavoc=1\n",
-      "BRUNCH_STAT assume.a-inb-drop-fresh-memhavoc 1\n");
-  // seam.inb
+      [](Report &r) { r.line("assume.a-sep").kv("drop-fresh-memhavoc", 1); },
+      "assume.a-sep: drop-fresh-memhavoc=1\n",
+      "BRUNCH_STAT assume.a-sep-drop-fresh-memhavoc 1\n");
+  // seam.premises
   expect(
-      "seam.inb assumed",
+      "seam.premises assumed",
       [](Report &r) {
-        r.line("seam.inb")
+        r.line("seam.premises")
             .value("assumed")
             .kv("accesses", 0)
             .kv("conditions", 0);
       },
-      "seam.inb: assumed accesses=0 conditions=0\n",
-      "BRUNCH_STAT seam.inb assumed\n"
-      "BRUNCH_STAT seam.inb-accesses 0\n"
-      "BRUNCH_STAT seam.inb-conditions 0\n");
+      "seam.premises: assumed accesses=0 conditions=0\n",
+      "BRUNCH_STAT seam.premises assumed\n"
+      "BRUNCH_STAT seam.premises-accesses 0\n"
+      "BRUNCH_STAT seam.premises-conditions 0\n");
   expect(
-      "seam.inb off lowering",
+      "seam.premises off lowering",
       [](Report &r) {
-        r.line("seam.inb")
+        r.line("seam.premises")
             .value("off")
             .text("")
-            .note("lowering: drop-fresh-memhavoc=1 rests on A-INB");
+            .note("lowering: drop-fresh-memhavoc=1 rests on A-SEP");
       },
-      "seam.inb: off (lowering: drop-fresh-memhavoc=1 rests on A-INB)\n",
-      "BRUNCH_STAT seam.inb off\n");
+      "seam.premises: off (lowering: drop-fresh-memhavoc=1 rests on A-SEP)\n",
+      "BRUNCH_STAT seam.premises off\n");
   expect(
-      "seam.inb off fallback",
+      "seam.premises off fallback",
       [](Report &r) {
-        r.line("seam.inb")
+        r.line("seam.premises")
             .value("off")
             .text(" (fallback: an access leaves its object)")
-            .note("lowering: drop-fresh-memhavoc=1 rests on A-INB");
+            .note("lowering: drop-fresh-memhavoc=1 rests on A-SEP");
       },
-      "seam.inb: off (fallback: an access leaves its object) (lowering: "
-      "drop-fresh-memhavoc=1 rests on A-INB)\n",
-      "BRUNCH_STAT seam.inb off\n");
+      "seam.premises: off (fallback: an access leaves its object) (lowering: "
+      "drop-fresh-memhavoc=1 rests on A-SEP)\n",
+      "BRUNCH_STAT seam.premises off\n");
+  // seam.out-of-object: no state word, k=v parts
+  expect(
+      "seam.out-of-object",
+      [](Report &r) {
+        r.line("seam.out-of-object")
+            .kv("accesses", 3)
+            .kv("object", 1)
+            .kv("unknown", 0)
+            .kv("null", 0)
+            .kv("gap", 2);
+      },
+      "seam.out-of-object: accesses=3 object=1 unknown=0 null=0 gap=2\n",
+      "BRUNCH_STAT seam.out-of-object-accesses 3\n"
+      "BRUNCH_STAT seam.out-of-object-object 1\n"
+      "BRUNCH_STAT seam.out-of-object-unknown 0\n"
+      "BRUNCH_STAT seam.out-of-object-null 0\n"
+      "BRUNCH_STAT seam.out-of-object-gap 2\n");
   // a parenthesised k=v note: several tokens, text only
   expect(
       "xrt.pairs",
@@ -180,13 +197,14 @@ void testForms() {
 
 void testRules() {
   auto seamOff = [](Report &r) {
-    r.line("seam.inb").value("off").kv("k", 2).note("n=3 x");
+    r.line("seam.premises").value("off").kv("k", 2).note("n=3 x");
   };
-  expect("off", seamOff, "seam.inb: off k=2 (n=3 x)\n", "", Brunch::Off);
-  expect("value", seamOff, "seam.inb: off k=2 (n=3 x)\n",
-         "BRUNCH_STAT seam.inb off k=2 (n=3 x)\n", Brunch::Value);
-  expect("parts", seamOff, "seam.inb: off k=2 (n=3 x)\n",
-         "BRUNCH_STAT seam.inb off\nBRUNCH_STAT seam.inb-k 2\n", Brunch::Parts);
+  expect("off", seamOff, "seam.premises: off k=2 (n=3 x)\n", "", Brunch::Off);
+  expect("value", seamOff, "seam.premises: off k=2 (n=3 x)\n",
+         "BRUNCH_STAT seam.premises off k=2 (n=3 x)\n", Brunch::Value);
+  expect("parts", seamOff, "seam.premises: off k=2 (n=3 x)\n",
+         "BRUNCH_STAT seam.premises off\nBRUNCH_STAT seam.premises-k 2\n",
+         Brunch::Parts);
   // Parts on a key Derived would not split; Derived leaves it out
   auto other = [](Report &r) { r.line("x.y").value("on").kv("n", 1); };
   expect("parts other", other, "x.y: on n=1\n",
@@ -317,18 +335,26 @@ void testAssume() {
   Ledger vc;
   vc.site(Name::MemhavocNullNoop, "sites", 2);
   vc.site(Name::Addr0IsNull, "null-uses", 0);
-  vc.site(Name::AInb, "drop-fresh-memhavoc", 3);
+  vc.site(Name::ANoWrap, "seam", 0);
+  vc.site(Name::ANull, "seam", 2);
+  vc.site(Name::ASep, "seam", 5);
+  vc.site(Name::ASep, "drop-fresh-memhavoc", 3);
   vc.site(Name::MemsetBound, "count", 1);
   vc.site(Name::MemsetBound, "bound", 64);
   Rendered r = render(Brunch::Derived, [&](Report &rep) { vc.report(rep); });
   CHECK(r.text == "assume.memset-bound: count=1 bound=64\n"
-                  "assume.a-inb: drop-fresh-memhavoc=3\n"
+                  "assume.a-sep: seam=5 drop-fresh-memhavoc=3\n"
+                  "assume.a-null: seam=2\n"
+                  "assume.a-nowrap: seam=0\n"
                   "assume.addr0-is-null: vc null-uses=0\n"
                   "assume.memhavoc-null-noop: vc sites=2\n",
         r.text);
   CHECK(r.brunch == "BRUNCH_STAT assume.memset-bound-count 1\n"
                     "BRUNCH_STAT assume.memset-bound-bound 64\n"
-                    "BRUNCH_STAT assume.a-inb-drop-fresh-memhavoc 3\n"
+                    "BRUNCH_STAT assume.a-sep-seam 5\n"
+                    "BRUNCH_STAT assume.a-sep-drop-fresh-memhavoc 3\n"
+                    "BRUNCH_STAT assume.a-null-seam 2\n"
+                    "BRUNCH_STAT assume.a-nowrap-seam 0\n"
                     "BRUNCH_STAT assume.addr0-is-null vc\n"
                     "BRUNCH_STAT assume.addr0-is-null-null-uses 0\n"
                     "BRUNCH_STAT assume.memhavoc-null-noop vc\n"

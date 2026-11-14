@@ -2,7 +2,7 @@
 // seam-wide includes seam (--lower --seam) and adds --seam-wide.
 // RUN: env -u SEA_MLIR_PROFILE_PATH sea-vc %s --config=seam-wide | FileCheck %s
 // CHECK: vc.config: {{.*}}seam-wide.cfg
-// CHECK: seam.inb: assumed
+// CHECK: seam.premises: assumed
 // CHECK: result: sat
 sea.program @p {
   %x = sea.nondet "nondet_u8" [0] : i8

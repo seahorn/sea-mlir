@@ -22,7 +22,7 @@
 // RUN: sea-vc %s --lower --program=ite --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --program=mixed --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // CHECK-NOT: seam.alias.open
-// MIXED: seam.rule.premise.a-inb: {{[1-9]}}
+// MIXED: seam.rule.premise.a-sep: {{[1-9]}}
 // ITE: seam.rule.wide.ite-leaf-splice: 2
 // MIXED: seam.rule.wide.ite-leaf-skip: 1
 // MIXED: seam.rule.wide.ite-leaf-splice: 1

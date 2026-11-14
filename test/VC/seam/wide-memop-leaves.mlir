@@ -29,7 +29,7 @@
 // RUN: sea-vc %s --lower --program=mcopy --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: sea-vc %s --lower --program=mhavoc --seam --seam-wide --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // CHECK-NOT: seam.alias.open
-// INB: seam.rule.premise.a-inb: {{[1-9]}}
+// INB: seam.rule.premise.a-sep: {{[1-9]}}
 // MSET-NOT: seam.rule.row.leaf-split:
 // REF: seam.rule.row.leaf-split-refused: 1
 // MSET-NOT: seam.rule.row.leaf-split:

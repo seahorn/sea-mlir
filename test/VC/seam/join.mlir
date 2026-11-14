@@ -9,7 +9,7 @@
 // RUN: sea-vc %s --lower --seam | FileCheck %s --check-prefix=VERDICT
 // RUN: sea-vc %s --lower | FileCheck %s --check-prefix=VERDICT
 // RUN: not sea-vc %s --lower --seam-stats 2>&1 | FileCheck %s --check-prefix=NOSEAM
-// RUN: sea-vc %s --lower --seam --seam-inb=0 | FileCheck %s --check-prefix=VERDICT
+// RUN: sea-vc %s --lower --seam --seam-premises=0 | FileCheck %s --check-prefix=VERDICT
 // VERDICT: result: unsat
 // STATS-DAG: seam.rule.row.ite:
 // STATS-DAG: seam.rule.row.store-hit:

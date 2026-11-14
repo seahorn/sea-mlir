@@ -1,18 +1,21 @@
-// A-INB under ARM: the store address q = p - 16 is a sum over an ite with five
-// leaves; for p = o5 it is the base of e: the access leaves its object o5 (the
-// objects are adjacent: o5 is 16 bytes above e) and the store overwrites e.
-// The plain VC is sat (the assertion fails). ARM would decide q != e from the
-// bases and answer unsat (a wrong answer under a violated A-INB), so an
-// access whose ARM entry lies wholly outside its object is a definite
-// violation (as a numeral offset is in the view case): warning, and sea-vc runs
-// again without A-INB.
+// Out-of-object under ARM: the store address q = p - 16 is a sum over an ite
+// with five leaves; for p = o5 it is the base of e: the access leaves its
+// object o5 (the objects are adjacent: o5 is 16 bytes above e) and the store
+// overwrites e. The plain VC is sat (the assertion fails). An access whose
+// ARM entry lies wholly outside its object is a static out-of-object access
+// (as a numeral offset is in the view case): reported, where it lands
+// unknown (no numeral offset), and the premises stay. ARM decides q != e
+// from the bases (A-SEP, which this store breaks): unsat, conditional on a
+// broken premise.
 // RUN: sea-vc %s --lower | FileCheck %s --check-prefix=SAT
 // RUN: sea-vc %s --lower --seam 2>&1 | FileCheck %s --check-prefix=STATIC
-// RUN: sea-vc %s --lower --seam --seam-inb=0 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %s --lower --seam --seam-premises=0 | FileCheck %s --check-prefix=SAT
 // RUN: sea-vc %s --lower --seam --seam-arm=0 | FileCheck %s --check-prefix=SAT
-// STATIC: vc.seam-inb-violated
-// STATIC: seam.inb: off (fallback: an access leaves its object)
-// STATIC: result: sat
+// STATIC: [vc.seam-out-of-object]
+// STATIC: seam.out-of-object-at: {{.*}} store: {{.*}}(ARM) lies outside its object lands=unknown
+// STATIC: seam.premises: assumed
+// STATIC: seam.out-of-object: accesses=1 object=0 unknown=1
+// STATIC: result: unsat
 // SAT: result: sat
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @armInb {

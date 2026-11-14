@@ -1,5 +1,11 @@
 # SeaM: the null object (and objects of size 0)
 
+> Premise names (0.2.0): this document was written when the encoding rested
+> on A-INB. The encoding now names the premises it uses: A-SEP for
+> decisions across two objects, A-NULL for objects of size 0, A-NOWRAP for
+> the byte offset K of the stride rules (SeaM.md, "Soundness stance").
+> A-INB below names the stronger property that implies them.
+
 Status: the null-object and size-zero access rules are implemented. The
 implementation details and deviations are listed at the end.
 
@@ -60,8 +66,9 @@ entry is never separated from a base (AddrRangeMap.hh:375-420).
    (ordinary out-of-bounds leaves and ARM alternatives too, not only null):
    an impossible leaf contributes `false` to the guarded condition; the
    access is a definite violation only if *every* alternative is
-   impossible (syntactically established; conservative). Only then the
-   static fallback applies (`vc.seam-inb-violated`); the replay witness
+   impossible (syntactically established; conservative). Only then it is
+   reported (`vc.seam-out-of-object` since 0.2.0, which keeps the premises;
+   before, the static fallback `vc.seam-inb-violated`); the replay witness
    check (`seam.inb-violation`) still reports a null dereference from the
    interpreter when a returned witness has one.
 
@@ -302,7 +309,8 @@ Deviations and additions (none changes the design's contract):
    only if every provenance is and no part is absolute. This is the same
    guarded rule applied to ARM alternatives (the design says "ARM
    alternatives too"); `test/VC/seam/arm-unreach.mlir` changed from a
-   fallback to `seam.inb: assumed` (same verdict, unsat).
+   fallback to `seam.inb: assumed` (now `seam.premises: assumed`; same
+   verdict, unsat).
 2. A vacuous pair is decided *different*, as the design says; a mixed ite
    whose other leaves are equal (e.g. `ite(c, null, A) = A`) is therefore
    still Unknown. Treating a vacuous pair as a wildcard (either answer) is

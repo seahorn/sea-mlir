@@ -1,9 +1,9 @@
 // inb-ptrmem.mlir with the pointer moved by a memmove (c to e) before the
-// reload. Same expectation: plain / --seam-inb=0 sat (n = 48: a+n = d,
-// replayed); --seam unsat with `seam.inb: assumed` (conditional on A-INB).
+// reload. Same expectation: plain / --seam-premises=0 sat (n = 48: a+n = d,
+// replayed); --seam unsat with `seam.premises: assumed` (conditional on A-INB).
 // RUN: sea-vc %s --lower --solver=z3 | FileCheck %s --check-prefix=PLAIN
 // RUN: %if yices %{ sea-vc %s --lower --solver=yices | FileCheck %s --check-prefix=PLAIN %}
-// RUN: sea-vc %s --lower --solver=z3 --seam --seam-inb=0 | FileCheck %s --check-prefix=NOINB
+// RUN: sea-vc %s --lower --solver=z3 --seam --seam-premises=0 | FileCheck %s --check-prefix=NOINB
 // RUN: sea-vc %s --lower --solver=z3 --seam 2>&1 | FileCheck %s --check-prefix=SEAM
 // RUN: %if yices %{ sea-vc %s --lower --solver=yices --seam 2>&1 | FileCheck %s --check-prefix=SEAM %}
 // RUN: sea-vc %s --lower --solver=z3 --seam --seam-arm=0 2>&1 | FileCheck %s --check-prefix=SEAM
@@ -11,12 +11,12 @@
 // RUN: sea-vc %s --lower --solver=z3 --seam --widen-memory=0 2>&1 | FileCheck %s --check-prefix=SEAM
 // PLAIN: result: sat
 // PLAIN: replay: assert-failed
-// NOINB: seam.inb: off
+// NOINB: seam.premises: off
 // NOINB: result: sat
 // NOINB: replay: assert-failed
 // NOINB: validate: checked={{[0-9]+}} mismatches=0
-// SEAM-NOT: vc.seam-inb-violated
-// SEAM: seam.inb: assumed accesses={{[0-9]+}} conditions={{[1-9][0-9]*}}
+// SEAM-NOT: seam.out-of-object
+// SEAM: seam.premises: assumed accesses={{[0-9]+}} conditions={{[1-9][0-9]*}}
 // SEAM: result: unsat
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @ptrmemmove {

@@ -12,7 +12,7 @@
 // RUN: sea-seam-export %s --lane=seam | %python %S/Inputs/show.py | FileCheck %s --allow-unused-prefixes --check-prefixes=ALL,SEAMENC,SEAM,INB -DLANE=seam
 // RUN: sea-seam-export %s --lane=plain | %python %S/Inputs/show.py | FileCheck %s --allow-unused-prefixes --check-prefixes=ALL,NOSEAM,PLAIN -DLANE=plain
 // RUN: sea-seam-export %s --lane=simplify | %python %S/Inputs/show.py | FileCheck %s --allow-unused-prefixes --check-prefixes=ALL,NOSEAM,SIMP -DLANE=simplify
-// ALL: header: schema=2 lane=[[LANE]] {{.*}} ptr_mode=opaque address_bits=8
+// ALL: header: schema=3 lane=[[LANE]] {{.*}} ptr_mode=opaque address_bits=8
 // ALL: root %p sea.addr.from_bits ptr: fromBits(nd.0_0)
 // SEAMENC: root %written sea.store memory: store(constMem(0), obj.slot, toBits(fromBits(nd.0_0)))
 // NOSEAM: root %written sea.store memory: store(constMem(0), fromInt(2), toBits(fromBits(nd.0_0)))

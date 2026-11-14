@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-"""Test helper: checks the structure of a sea-seam-export document (schema 2,
+"""Test helper: checks the structure of a sea-seam-export document (schema 3,
 docs/SeamExport.md) and prints it one record per line, terms as
 op(args), so FileCheck can pin the key lines. Exits 1 on a structural error.
 """
@@ -60,7 +60,7 @@ keys = set(d)
 extra = keys - TOP - {"firings", "firings_unexpressible"}
 if not TOP <= keys or extra:
     raise SystemExit(f"top-level keys: missing {TOP - keys}, unknown {extra}")
-if d["schema"] != 2:
+if d["schema"] != 3:
     raise SystemExit("schema")
 print(
     f"header: schema={d['schema']} lane={d['lane']} sea_vc='{d['sea_vc']}' "

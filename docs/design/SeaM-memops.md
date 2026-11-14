@@ -1,5 +1,11 @@
 # SeaM: memory operations as terms
 
+> Premise names (0.2.0): this document was written when the encoding rested
+> on A-INB. The encoding now names the premises it uses: A-SEP for
+> decisions across two objects, A-NULL for objects of size 0, A-NOWRAP for
+> the byte offset K of the stride rules (SeaM.md, "Soundness stance").
+> A-INB below names the stronger property that implies them.
+
 Status: Step 1 (MCOPY / MSET / MHAVOC, read rules, boundary, and `--seam`
 without `sea-expand-memset`) is implemented. Steps 2 (MFILL) and 3 (word
 layouts) are not started.
@@ -77,7 +83,7 @@ per cell:
   bases, both access addresses): `select(T, j) -> select(M, j)`. Premise:
   A-INB for the whole destination range (every cell of [d, d+n) is in d's
   object; n = 0 needs no access) and for j's access. Counted as
-  `premise.a-inb`; the trail records it as a range premise.
+  `premise.a-sep`; the trail records it as a range premise.
 - **skip (range)**: same object, `j - d` shown outside [0, n). Subtracting
   a common base is unconditional (mod 2^w); interval ordering is not:
   ordinary linear intervals are unsound for a wrapping range (4 bits:

@@ -88,7 +88,7 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   (tracking_on/off markers -> `tracked` updates; first in the lowering),
   `sea-lower-tracking` (tracking -> a shadow memory chain per tracked
   memory, keyed by sea.ptr.base, starting as sea.mem.const 0 shadow:
-  read by object identity in the VC, never by A-INB),
+  read by object identity in the VC, never by a pointer premise),
   `sea-lower-fat-pointers` (offset / size companions of pointers and of
   pointer-holding memories; ptr.base / dereferenceable become arithmetic);
   `sea-lower-ptr-index` (`sea.ptr.index`, explicit GEP pointer arithmetic with trusted no-wrap flags, -> mul / add / ptr.add, flags dropped; standalone only: the VC encodes the op as a PTR_INDEX node, docs/design/PtrIndex.md),
@@ -219,7 +219,8 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
 
 - Guiding principle: conditional soundness (Conway, Dams, Namjoshi,
   Barrett, SAS 2008). Encodings and rewrites may rely on named
-  assumptions (A-INB: every access stays in its object), reported in the
+  assumptions (the pointer premises of SeaM: A-SEP, A-NULL, A-NOWRAP,
+  all implied by A-INB, every access stays in its object), reported in the
   output. An assumption is discharged by a separate check (a bounds-check
   instrumented job), never inside the same run by an encoding without it.
   If the discharging check is missing, build that check; do not try to

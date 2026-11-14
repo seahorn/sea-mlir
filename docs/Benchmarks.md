@@ -89,7 +89,7 @@ jobs:
 ```
 
 - A key is any statistic sea-vc prints: a `BRUNCH_STAT <key> <value>` line
-  (the gate runs with `--brunch-stats`: `vc.ackermann-*`, `seam.inb-*`,
+  (the gate runs with `--brunch-stats`: `vc.ackermann-*`, `seam.premises-*`, `assume.*`,
   `seam.rule-calls`, ...) or a `key: value` line of its stdout (the
   `seam.rule.*` counts need `--seam-stats` in the job's `args`). Values are
   numbers; a bound is `max`, `min` and / or `exact`.

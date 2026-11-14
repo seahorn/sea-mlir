@@ -3,7 +3,7 @@
 // RUN: sea-vc %s --config=%S/Inputs/profiles/sub/outer.cfg | FileCheck %s
 // CHECK: vc.config: {{.*}}outer.cfg
 // CHECK-NOT: vc.config:
-// CHECK: seam.inb: assumed
+// CHECK: seam.premises: assumed
 // CHECK: result: sat
 sea.program @p {
   %x = sea.nondet "nondet_u8" [0] : i8

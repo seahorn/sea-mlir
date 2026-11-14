@@ -1,20 +1,20 @@
-// Without A-INB (--seam-inb=0, also the vc.seam-inb-violated fallback),
+// Without the premises (--seam-premises=0, also --seam-out-of-object=fallback),
 // the address compares of accesses and the memop range tests between two
 // placed objects at numeral offsets are decided by the placed numerals
 // (cmp.layout, mem.in-layout; uses: LAYOUT, the equations obj = n of the
-// VC). Before them nothing separated two objects without A-INB, and every
+// VC). Before them nothing separated two objects without the premises, and every
 // undecided memmove row nested the next read in the dynamic-shape case.
 // @store: a store to B[0] between a store to A[1] and its reload.
 // @copy: a memmove into B between a store to A[1] and its reload.
 // @program: a program compare A + 4 == B is never decided by the layout
 // (SeaM-null.md, point 4): it stays for the solver.
-// RUN: sea-vc %s --lower --program=store --seam --seam-inb=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=UNSAT,STORE
-// RUN: sea-vc %s --lower --program=copy --seam --seam-inb=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=UNSAT,COPY
-// RUN: sea-vc %s --lower --program=store --seam --seam-inb=0 --seam-check 2>&1 | FileCheck %s --check-prefixes=UNSAT,CHK
-// RUN: sea-vc %s --lower --program=copy --seam --seam-inb=0 --seam-check 2>&1 | FileCheck %s --check-prefixes=UNSAT,CHK
-// RUN: sea-vc %s --lower --program=store --seam --seam-inb=0 --seam-layout=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=UNSAT,OFF
-// RUN: sea-vc %s --lower --program=copy --seam --seam-inb=0 --seam-layout=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=UNSAT,OFF
-// RUN: sea-vc %s --lower --program=program --seam --seam-inb=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=PROG
+// RUN: sea-vc %s --lower --program=store --seam --seam-premises=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=UNSAT,STORE
+// RUN: sea-vc %s --lower --program=copy --seam --seam-premises=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=UNSAT,COPY
+// RUN: sea-vc %s --lower --program=store --seam --seam-premises=0 --seam-check 2>&1 | FileCheck %s --check-prefixes=UNSAT,CHK
+// RUN: sea-vc %s --lower --program=copy --seam --seam-premises=0 --seam-check 2>&1 | FileCheck %s --check-prefixes=UNSAT,CHK
+// RUN: sea-vc %s --lower --program=store --seam --seam-premises=0 --seam-layout=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=UNSAT,OFF
+// RUN: sea-vc %s --lower --program=copy --seam --seam-premises=0 --seam-layout=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=UNSAT,OFF
+// RUN: sea-vc %s --lower --program=program --seam --seam-premises=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=PROG
 // STORE: seam.rule.cmp.layout: {{[1-9]}}
 // COPY: seam.rule.mem.in-layout: {{[1-9]}}
 // OFF-NOT: seam.rule.cmp.layout

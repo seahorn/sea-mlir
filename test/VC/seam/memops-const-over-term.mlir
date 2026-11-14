@@ -8,7 +8,7 @@
 // RUN: sea-vc %s --program=eq --lower --seam | FileCheck %s --check-prefix=UNSAT
 // RUN: sea-vc %s --program=eq --lower --seam --seam-row-expand=0 | FileCheck %s --check-prefix=UNSAT
 // RUN: sea-vc %s --program=eq --lower --seam --seam-rule-limit=3 2>&1 | FileCheck %s --check-prefix=UNSAT
-// RUN: sea-vc %s --program=eq --lower --seam --seam-row-expand=0 --seam-inb=0 | FileCheck %s --check-prefix=UNSAT
+// RUN: sea-vc %s --program=eq --lower --seam --seam-row-expand=0 --seam-premises=0 | FileCheck %s --check-prefix=UNSAT
 // RUN: sea-vc %s --program=eq --lower --seam --seam-row-expand=0 --seam-check | FileCheck %s --check-prefix=CHECK-VALID
 // RUN: sea-vc %s --program=ne --lower --seam --seam-row-expand=0 | FileCheck %s --check-prefix=SAT
 // UNSAT: result: unsat

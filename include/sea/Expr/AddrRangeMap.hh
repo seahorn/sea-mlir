@@ -34,21 +34,20 @@
 //    the sum of the offsets as integers is the offset of the sum, no wrap. So
 //    two intervals of one base that do not meet imply different values with
 //    no assumption (|o1 - o2| < 2^w, so o1 != o2 mod 2^w).
-//  - A-INB (SeaM.md "Soundness stance") is what separates two bases: a
-//    pointer into b is not a pointer into b' (both objects of nonzero size).
-//    In ARM form: the entry (b, I) of an accessed term also says the term is
-//    in object b: it is the *provenance* of that leaf of the term (the base
-//    of the bvadd under the ites that select it), checked per leaf by
-//    Rules::inBounds like the view-based A-INB. Only the compare of a ROW
-//    step (two accessed addresses) may use it: `disjoint(..., crossBase)`.
+//  - A-SEP (SeaMRules.hh, SeaM.md "Soundness stance") is what separates two
+//    bases: an access through b and one through b' touch different cells.
+//    In ARM form: the entry (b, I) of an accessed term names the
+//    *provenance* of that leaf of the term (the base of the bvadd under the
+//    ites that select it). Only the compare of a ROW step (two accessed
+//    addresses) may use it: `disjoint(..., crossBase)`.
 //  - A term the abstraction does not understand is "absolute": an entry under
 //    the key kAbs (a number, like a numeral address, `ptr.from_int`, a loaded
 //    value). An absolute entry may be anywhere: it never differs from an
-//    entry of a base (no A-INB for it), only from another absolute interval
-//    that does not meet. A term that mentions a registered base through an
-//    operator other than bvadd / ite (bvsub of two bases, bvand, a ptr.to_int
-//    round trip) is top. This is the mentionsBase rule: a pointer built
-//    from integer casts is no pointer into a base.
+//    entry of a base (no provenance for it), only from another absolute
+//    interval that does not meet. A term that mentions a registered base
+//    through an operator other than bvadd / ite (bvsub of two bases, bvand, a
+//    ptr.to_int round trip) is top. This is the mentionsBase rule: a pointer
+//    built from integer casts is no pointer into a base.
 //  - Differences from the figures: bottom is the identity of join and absorbs
 //    add (Fig. 5.3 has [a, b] +^ bottom = [a, b], which is wrong for the sums
 //    of sets, one of them empty); bottom is never produced by alpha, only by
@@ -334,7 +333,7 @@ public:
   /// Fig. 5.9 ⊓: the common keys, intervals met; entries that meet to
   /// bottom are dropped (bottom if none is left). top ⊓ x = x. Theorem 4 for
   /// maps with no absolute entry: bottom means different pointers (with
-  /// A-INB if they have different keys). With absolute entries, use
+  /// A-SEP if they have different keys). With absolute entries, use
   /// disjoint().
   AddrRangeMap meet(const AddrRangeMap &o) const {
     if (m_top)
@@ -380,19 +379,19 @@ public:
   ///    from an entry of any base, whatever its interval; two absolute
   ///    entries are different if their intervals do not meet.
   ///  - a common base: its intervals must not meet (no assumption).
-  ///  - different bases (A-INB, \p crossBase): the terms are in different
-  ///    objects; needs every base of both maps to name an object of nonzero
-  ///    size (\p nonZero(key)): objects of size 0 share their base with a
-  ///    neighbour.
+  ///  - different bases (A-SEP, \p crossBase): the terms are accesses through
+  ///    different provenances; needs every base of both maps to satisfy
+  ///    \p nonZero(key) (SeaM passes "an object of nonzero size", the size-0
+  ///    entries being dropped first, below).
   ///  - an entry of an object of size 0 (null, a zero-sized allocation), only
   ///    with \p crossBase (the two terms are addresses of accesses of
-  ///    positive width, A-INB; docs/design/SeaM-null.md): no such access is
+  ///    positive width; docs/design/SeaM-null.md): no such access is
   ///    in that object, so the leaves of that provenance are vacuous and the
   ///    entry is dropped before the tests above (\p usedSize0 is set if one
   ///    was; a map left bottom is vacuous: true).
   /// Only one base on each side, the same: no cross pair to take on trust.
   /// \p usedCrossBase (optional) is set iff the answer is true *because of*
-  /// \p crossBase (A-INB): it stays false for every answer that holds
+  /// \p crossBase (A-SEP): it stays false for every answer that holds
   /// without the assumption (provenance: SeaMRules.hh, Decision).
   template <class NonZero>
   static bool disjoint(const AddrRangeMap &p, const AddrRangeMap &q,
@@ -404,7 +403,8 @@ public:
     if (p.isBot() || q.isBot())
       return true;
     if (crossBase) {
-      // drop the entries of size-0 objects (vacuous under A-INB)
+      // drop the entries of size-0 objects (vacuous: A-NULL, or A-SEP when
+      // they face only other bases; SeaMRules.hh armDisjoint tells which)
       auto drop = [&](const AddrRangeMap &m, AddrRangeMap &out) {
         bool any = false;
         for (const Entry &e : m.m_ents) {
@@ -549,10 +549,10 @@ public:
   }
 
   /// Are \p a and \p b different pointers by their ARMs (Thm 4)? See
-  /// AddrRangeMap::disjoint. \p crossBase: A-INB may separate two bases;
+  /// AddrRangeMap::disjoint. \p crossBase: A-SEP may separate two bases;
   /// \p usedCrossBase (optional): set iff a true answer needed that;
   /// \p usedSize0 (optional): set iff it dropped an entry of a size-0
-  /// object (A-INB: no positive-width access is in it).
+  /// object (no positive-width access is in it).
   bool disjoint(const Expr &a, const Expr &b, bool crossBase,
                 bool *usedCrossBase = nullptr, bool *usedSize0 = nullptr) {
     ++m_queries;

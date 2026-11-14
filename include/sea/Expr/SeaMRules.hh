@@ -15,37 +15,52 @@
 // that uses an assumption names it in its comment as `uses: ...`; a rule with
 // no `uses` line is valid over plain bit-vectors and arrays (the unit tests
 // check every case with Yices: `assumptions => lhs = rhs`).
-//   A-INB: the addresses of memory accesses lie in their objects. Stated on
-//          the syntactic view: an access address that normalizes to
-//          bvadd(obj.k, off) (a "pointer into object k", see view(): `off`
-//          mentions no registered base) satisfies obj.k <= addr and addr +
-//          unit <= obj.k + size_k, for every access unit. So two such
-//          addresses into different objects (both of nonzero size) are
-//          different. It is a fact about the program, not about the layout:
-//          sea-vc checks what it can (SeaOpSem::inBounds*: static violations
-//          fall back to no assumption; the rest is assumed) and
-//          says so in its output.
-//          Objects of size 0 (the null object of sea.ptr.null, zero-sized
-//          allocations; docs/design/SeaM-null.md) hold no access of positive
-//          width: A-INB is false for such an access, so a ROW leaf pair
-//          with one side in such an object is vacuous (`cmp.size0-vacuous`,
-//          decided different). Its pointers are never separated by base in
-//          a program compare (they may share an address with a neighbour).
-//          A range [d, d + n) in such an object is in bounds iff n = 0.
-// Used only by `cmp.diff-base`, `cmp.size0-vacuous` and by `arm.skip` across
-// two bases (or dropping a size-0 provenance), and only on
-// the compares ROW makes between a store address and a read address
-// (`diffBase` of decideEq / decidePair, set by row() and by overlap(), the
-// alias questions IS_OVERLAP those compares leave open): a compare is not
-// an access, so the equalities of the program (a one-past-the-end pointer
-// against the next object's base is legal C) never use it, whether they stand
-// in an address, a stored value or a condition.
+//
+// The named premises (premise bits below; SeaMOptions::assumePremises, sea-vc
+// --seam-premises, switches all three; off: every rule is valid over plain
+// bit-vectors). Stated on the syntactic view: an access address that
+// normalizes to bvadd(obj.k, off) (a "pointer into object k", see view():
+// `off` mentions no registered base) is an access *through provenance k*.
+//   A-SEP:    in one execution, no memory cell is accessed through two
+//             different provenances (pairwise, every pair of accesses:
+//             write / write and write / read). So two accesses through
+//             different objects touch different cells, whatever their sizes
+//             (`cmp.diff-base`, `arm.skip` across bases, R-SKIP, WOW-COMMUTE /
+//             WOSMAP-COMMUTE, the range tests of memory operations). Not
+//             "a write never reaches another object": two accesses that both
+//             leave their objects into the same gap would satisfy that and
+//             still share a cell.
+//   A-NULL:   no access of positive width (no range of positive length) is
+//             made through an object of size 0 (the null object of
+//             sea.ptr.null, zero-sized allocations; docs/design/SeaM-null.md).
+//             So a leaf of an access address in such an object is dead
+//             (`addr.prune-size0`), and a pair with such a leaf is vacuous
+//             (`cmp.size0-vacuous`; across two provenances A-SEP decides it
+//             already, and the reason names A-SEP).
+//   A-NOWRAP: an access address obj.k + off, read as an integer with off
+//             signed, lies in [0, 2^n): base plus offset does not wrap
+//             (the byte offset K of R-STRIDE, inside the K window of
+//             strideApartEntry; the Ackermann stride's K != 0).
+// All three are facts about the program, not about the layout. A-INB (every
+// access lies in its object) implies all three: a bounds check of the
+// program discharges them (docs/design/SeaM.md, "Soundness stance"). sea-vc
+// checks what it can statically (SeaOpSem::inBounds*: an access with no
+// alternative inside its object is reported, classified by where it lands;
+// the premises stay) and reports what the answer rests on.
+//
+// The premises are used only on the compares ROW makes between a store
+// address and a read address (`diffBase` of decideEq / decidePair, set by
+// row() and by overlap(), the alias questions IS_OVERLAP those compares leave
+// open), on access addresses (addr.prune-size0) and on the commutes of two
+// stores: a compare is not an access, so the equalities of the program (a
+// one-past-the-end pointer against the next object's base is legal C) never
+// use them, whether they stand in an address, a stored value or a condition.
 //
 // Shadow memories (docs/design/SeaM-null.md, "Shadow memories"). A memory
 // term built over a start the registry knows as a shadow root
 // (shadowMemory: `sea.mem.const ... shadow`, made by sea-lower-tracking)
 // holds metadata keyed by object identity: its accesses are not program
-// accesses, so none of the A-INB rules above applies to them (the compares
+// accesses, so none of the premise rules above applies to them (the compares
 // of ROW, R-ABORT and WOW-COMMUTE there run with diffBase = false). Instead
 // `shadow.distinct-base`: two different registered bases at offset 0 whose
 // placed numerals differ are different cells. uses: LAYOUT (the placement
@@ -57,9 +72,10 @@
 // premises (`Premise` bits) it needed, and their union; nothing is reduced to
 // the first reason. The counters are derived from it: every reason is counted
 // (`countReasons`), `arm.skip-diff-base` counts an ARM decision that separated
-// two bases, and `premise.a-inb` counts every rewrite that depends on A-INB
-// (ROW hit / skip, R-ABORT entries, R-SKIP, the commutes, a compare tree with
-// a leaf decided by it). A run whose `premise.a-inb` is 0 does not use A-INB.
+// two bases, and `premise.a-sep` / `premise.a-null` / `premise.a-nowrap`
+// count every rewrite that depends on that premise (ROW hit / skip, R-ABORT
+// entries, R-SKIP, the commutes, a compare tree with a leaf decided by it,
+// addr.prune-size0). A run whose count of a premise is 0 does not use it.
 //
 // RW_n. Every rule that returns RW_n says why n levels suffice: the rules
 // apply at the result and n levels below; the terms the rule builds out of the
@@ -67,14 +83,14 @@
 // returns a term built only of normal terms returns RW_DONE.
 //
 // Store-Map (thesis Ch. 6): `wow` at a store (Fig. 6.4) and the
-// read over a store-map (Fig. 6.5) in `row`. A-INB is used by WOW-COMMUTE,
+// read over a store-map (Fig. 6.5) in `row`. A-SEP is used by WOW-COMMUTE,
 // WOSMAP-COMMUTE (the two addresses are in different objects, so the writes
 // commute) and R-SKIP (the read is in another object than the store-map),
-// through Rules::distinctObjects: both objects registered, assumeInBounds
+// through Rules::distinctObjects: both objects registered, assumePremises
 // (one of size 0: cmp.size0-vacuous). R-ABORT decides each entry against the
 // read address with the compare of ROW (decideEq / buildEq, diffBase), so an
 // entry that is decided by a different object (cmp.diff-base, arm.skip across
-// bases) uses A-INB as ROW does (with --seam-inb=0 it does not). Same-base
+// bases) uses A-SEP as ROW does (with --seam-premises=0 it does not). Same-base
 // merging (SMAP-NEW, SMAP-HIT), R-HIT and R-MISS use no assumption: offsets are
 // numerals, different numerals are different addresses.
 //
@@ -119,9 +135,11 @@ namespace expr {
 
 /// Switches and bounds of the SeaM rules.
 struct SeaMOptions {
-  /// Use A-INB: pointers into different objects are different. Off: the
+  /// Use the named premises A-SEP, A-NULL and A-NOWRAP (see the header):
+  /// accesses through different objects touch different cells, no access is
+  /// made through an object of size 0, access addresses do not wrap. Off: the
   /// rules are valid over plain bit-vectors (nothing is assumed).
-  bool assumeInBounds = true;
+  bool assumePremises = true;
   /// Expand a read over a store whose address compare is unknown into
   /// ite(i = j, v, select(a, j)) (the thesis' ROW, which relies on ARM to
   /// decide most compares). Off: such a select is kept as it is (the solver's
@@ -141,7 +159,7 @@ struct SeaMOptions {
   /// mostly the matcher's gaps (keyed companions recorded through their
   /// mirror, other normal forms of one address), to be refined.
   bool checkInbPremise = false;
-  /// without A-INB, decide the access pairs / memop ranges of two placed
+  /// without the premises, decide the access pairs / memop ranges of two placed
   /// objects at numeral offsets by their placed numerals (cmp.layout,
   /// mem.in-layout; uses: LAYOUT). Off by default: valid only where the
   /// layout equations obj = n are part of the formula (sea-vc turns it on,
@@ -153,8 +171,8 @@ struct SeaMOptions {
   bool arm = true;
   /// Store-Map (thesis Ch. 6, Fig. 6.4; StoreMap.hh): compress writes to one
   /// object at numeral offsets into store-map terms, commute writes to
-  /// different objects into allocation order (uses A-INB, so only with
-  /// assumeInBounds). Reads over store-maps are always rewritten (R-HIT,
+  /// different objects into allocation order (uses A-SEP, so only with
+  /// assumePremises). Reads over store-maps are always rewritten (R-HIT,
   /// R-MISS, R-SKIP, R-ABORT), whatever this says: a store-map cannot go to a
   /// solver.
   bool storeMap = true;
@@ -216,8 +234,8 @@ struct SeaMOptions {
   /// encoding). Only sea-seam-export sets it (its raw lanes,
   /// docs/SeamExport.md); sea-vc never does.
   bool rules = true;
-  /// addr.prune-size0 (docs/design/SeaM-provenance.md; uses A-INB,
-  /// so only with assumeInBounds): drop the syntactic ite leaves of an access
+  /// addr.prune-size0 (docs/design/SeaM-provenance.md; uses A-NULL,
+  /// so only with assumePremises): drop the syntactic ite leaves of an access
   /// address (select / store index, memory-operation range) that are in an
   /// object of size 0.
   bool pruneSize0 = true;
@@ -255,7 +273,7 @@ struct SeaMOptions {
   /// R-STRIDE (PtrIndex.md section 0c; sea-vc --seam-stride): in R-ABORT, an
   /// entry b + o is skipped for a read whose every leaf is a promised node
   /// over b whose offsets never reach o. Uses the promises (PremPtrIndex)
-  /// and, for K != 0, A-INB.
+  /// and, for K != 0, A-NOWRAP.
   bool strideRule = false;
   /// Test hook (sea-vc --seam-plant-bug, hidden): make one rule wrong, so a
   /// test shows that the per-firing check (--seam-check) catches
@@ -273,8 +291,9 @@ namespace seam {
 enum class Tri { No, Yes, Unknown };
 
 /// The assumptions a decision or a rewrite depends on (docs/design/SeaM.md,
-/// "Soundness stance"), as a bit set. A-INB is an assumption about the
-/// program (discharged by a separate bounds check). LAYOUT is a fact of the
+/// "Soundness stance"), as a bit set. A-SEP, A-NULL and A-NOWRAP are
+/// assumptions about the program (see the header; a separate bounds check
+/// discharges all three, since A-INB implies them). LAYOUT is a fact of the
 /// VC, not an assumption: the placement equations obj.k = <numeral> (side
 /// conditions on every path); a rule that names it is valid given them
 /// (--seam-check adds them), and it is never reported as assumed. A new
@@ -282,7 +301,8 @@ enum class Tri { No, Yes, Unknown };
 /// premises already carries it.
 enum Premise : unsigned {
   PremNone = 0,
-  PremAInb = 1,
+  /// A-SEP: no cell accessed through two different provenances
+  PremASep = 1,
   PremLayout = 2,
   /// ALIGN: the `align` annotations of the accesses (front-end facts,
   /// trusted like LAYOUT; not an assumption, never
@@ -294,7 +314,13 @@ enum Premise : unsigned {
   /// inbounds / nusw / nuw; front-end facts, trusted like ALIGN). Counted
   /// `premise.ptr-index`; --seam-check adds op::ptr::promise of the nodes
   /// (PtrIndex.md section 5).
-  PremPtrIndex = 8
+  PremPtrIndex = 8,
+  /// A-NULL: no access of positive width through an object of size 0
+  PremANull = 16,
+  /// A-NOWRAP: an access address base + offset does not wrap
+  PremANoWrap = 32,
+  /// the named premises about the program (SeaMOptions::assumePremises)
+  PremProgram = PremASep | PremANull | PremANoWrap
 };
 
 /// What a compare decided, and everything it relied on: the rules that
@@ -356,21 +382,26 @@ public:
 
   /// Counts every rule that decided a leaf pair of \p d (not only the first),
   /// and `arm.skip-diff-base` for an ARM decision that separated two bases
-  /// (A-INB), so a run reports how many of its skips are cross-object.
+  /// (A-SEP), so a run reports how many of its skips are cross-object.
   void countReasons(const Decision &d) {
     for (const Decision::Reason &r : d.reasons) {
       m_stats.count(r.rule);
-      if ((r.premises & PremAInb) && std::strcmp(r.rule, "arm.skip") == 0)
+      if ((r.premises & PremASep) && std::strcmp(r.rule, "arm.skip") == 0)
         m_stats.count("arm.skip-diff-base");
     }
   }
   /// Counts one rewrite (a decision used, a commute, a skip) that depends on
-  /// the premises \p p: `premise.a-inb`. The number of firings in the run
-  /// that an unsat would be conditional on; 0 means the answer does not use
-  /// A-INB at all.
+  /// the premises \p p: `premise.a-sep`, `premise.a-null`,
+  /// `premise.a-nowrap` (and the facts: layout, align, ptr-index). The number
+  /// of firings in the run that an unsat would be conditional on; 0 means
+  /// the answer does not use that premise at all.
   void countPremises(unsigned p) {
-    if (p & PremAInb)
-      m_stats.count("premise.a-inb");
+    if (p & PremASep)
+      m_stats.count("premise.a-sep");
+    if (p & PremANull)
+      m_stats.count("premise.a-null");
+    if (p & PremANoWrap)
+      m_stats.count("premise.a-nowrap");
     if (p & PremLayout)
       m_stats.count("premise.layout");
     if (p & PremAlign)
@@ -896,17 +927,19 @@ public:
   /// N = PTR_INDEX_F(b, x_k, s_k, c, K) directly over b with an index, and:
   ///  - b + o < 2^n as integers, b the layout numeral (so the entry address
   ///    is exactly b + o);
-  ///  - by P3 of N, b + O is an integer in [0, 2^n); for K != 0, with
-  ///    b + size <= 2^n and b + size - 2^n <= K <= b, A-INB of the access
-  ///    (its address in [b, b + size)) excludes both wraps of b + O + K
-  ///    (PtrIndex.md section 0c): N's address is the integer b + O + K, so
-  ///    it equals b + o iff O + K = o, i.e. sum x_k s_k = o - c - K. A-INB
-  ///    alone does not give this for other K: a program ptr.add writes K
-  ///    signed and unbounded (op::ptr::addressPlus);
+  ///  - by P3 of N, b + O is an integer in [0, 2^n); for K != 0, A-NOWRAP
+  ///    of the access (b + O + K, an integer in [0, 2^n)) excludes both
+  ///    wraps of b + O + K (PtrIndex.md section 0c): N's address is the
+  ///    integer b + O + K, so it equals b + o iff O + K = o, i.e. sum x_k
+  ///    s_k = o - c - K. Only K in the window b + size - 2^n <= K <= b
+  ///    (with b + size <= 2^n) is taken: the window in which A-INB, the
+  ///    stronger property, gives the same (the rule's earlier premise).
+  ///    A-NOWRAP holds for every K; widening the window changes the
+  ///    query, so it is a separate change;
   ///  - no integer solution if g = gcd(|s_k|) does not divide o - c - K.
   /// \p prem gets PremPtrIndex and PremLayout (the numeral b: for o >=
-  /// 2^(n-1), P2 alone does not exclude the wrapped solution), and PremAInb
-  /// if some K != 0.
+  /// 2^(n-1), P2 alone does not exclude the wrapped solution), and
+  /// PremANoWrap if some K != 0.
   bool strideApartEntry(const Expr &b, const mpz_class &o, const Expr &idx,
                         unsigned &prem) const {
     const ObjectBase *ob = m_bases.lookup(b);
@@ -917,8 +950,8 @@ public:
     mpz_class bv = toMpz(ob->base.zext(n + 1));
     if (bv + o >= pow2(n))
       return false;
-    // the K range in which A-INB excludes a wrap of b + O + K (empty when
-    // the object does not end within the space)
+    // the K window (see above; empty when the object does not end within
+    // the space)
     const mpz_class size = toMpz(ob->size.zext(ob->size.getBitWidth() + 1));
     const mpz_class kLo = bv + size - pow2(n), kHi = bv;
     llvm::SmallVector<Expr, 8> stack{idx};
@@ -949,10 +982,10 @@ public:
       if (k != mpz_class(0L)) {
         if (kLo > mpz_class(0L) || k < kLo || k > kHi)
           return false;
-        p |= PremAInb;
+        p |= PremANoWrap;
       }
     }
-    if ((p & PremAInb) && !m_opts.assumeInBounds)
+    if ((p & PremANoWrap) && !m_opts.assumePremises)
       return false;
     prem = p;
     return true;
@@ -1357,8 +1390,8 @@ public:
   /// impossible leaf is `false` in the condition, and only the access as a
   /// whole is judged: \p violated is set iff the condition is `false` (every
   /// alternative impossible, syntactically; a definite violation, which
-  /// sea-vc answers by running without A-INB). A mixed `ite(c, null, A + i)`
-  /// has the satisfiable condition `ite(c, false, i <= size_A - units)`.
+  /// sea-vc reports, classified by where it lands). A mixed `ite(c, null, A +
+  /// i)` has the satisfiable condition `ite(c, false, i <= size_A - units)`.
   Expr inBounds(const Expr &addr, uint64_t units, bool &violated) const {
     // on the term as it is: a leaf node by its view (or ARM's node case);
     // the condition holds nodes and markers, erased at the boundary
@@ -1439,6 +1472,73 @@ public:
     return os.str();
   }
 
+  /// Where an access judged violated (inBounds / rangeInBounds false: no
+  /// alternative inside its object) lands, for the premises that remain
+  /// (sea-vc's static out-of-object report). Per leaf of the address's ite
+  /// tree, the span [placed base + off, + width) against every other placed
+  /// object of nonzero size (modulo 2^n: a span that wraps is tested at both
+  /// images). The access gets the first class that one of its leaves has,
+  /// in this order:
+  ///   Object   a leaf's span meets another object: A-SEP fails if the
+  ///            access executes (and is paired with an access of that one);
+  ///   Unknown  a leaf whose span is not known (no pointer view, a symbolic
+  ///            offset or length): it may land anywhere;
+  ///   Null     a leaf through an object of size 0 (null): A-NULL fails if
+  ///            the access executes;
+  ///   Gap      every leaf lands in no object: A-SEP and A-NULL hold, only
+  ///            A-INB (the property) fails.
+  /// \p units: the width of an access; 0 for a range of length \p n.
+  Landing classifyOutOfObject(const Expr &addr, uint64_t units,
+                              const Expr &n = Expr()) const {
+    llvm::SmallVector<Expr, 8> leaves;
+    llvm::SmallVector<Expr, 32> stack{addr};
+    std::unordered_set<Expr> seen;
+    while (!stack.empty()) {
+      Expr p = stack.pop_back_val();
+      if (!seen.insert(p).second)
+        continue;
+      if (isOpX<ITE>(p)) {
+        stack.push_back(p->arg(2));
+        stack.push_back(p->arg(1));
+        continue;
+      }
+      leaves.push_back(p);
+    }
+    unsigned nw;
+    // the span; 0: unknown (a symbolic length)
+    mpz_class span = mpz_class((unsigned long)units);
+    if (!units)
+      span = n && op::bv::isBvNum(n, nw) ? numVal(n) : mpz_class(0L);
+    bool unknown = false, null = false;
+    for (const Expr &leaf : leaves) {
+      std::optional<PtrView> v = view(leaf);
+      const ObjectBase *o = v ? m_bases.lookup(v->base) : nullptr;
+      if (!o || !op::bv::isBvNum(v->off, nw) || span == 0) {
+        unknown = true;
+        continue;
+      }
+      null = null || o->size.isZero();
+      const unsigned w = o->base.getBitWidth();
+      mpz_class mod = pow2(w), lo = toMpz(o->base.zext(w + 1));
+      lo = modPow2(lo + numVal(v->off), w);
+      mpz_class hi = lo; // exclusive, may pass 2^w
+      hi = hi + span;
+      mpz_class lo2 = lo, hi2 = hi; // the image one space down
+      lo2 = lo2 - mod;
+      hi2 = hi2 - mod;
+      for (const ObjectBase &q : m_bases.objects()) {
+        if (&q == o || q.size.isZero() || q.base.getBitWidth() != w)
+          continue;
+        mpz_class qlo = toMpz(q.base.zext(w + 1)), qhi = qlo;
+        qhi = qhi + toMpz(q.size.zext(q.size.getBitWidth() + 1));
+        if ((lo < qhi && qlo < hi) || (lo2 < qhi && qlo < hi2))
+          return Landing::Object;
+      }
+    }
+    if (unknown)
+      return Landing::Unknown;
+    return null ? Landing::Null : Landing::Gap;
+  }
   /// ite(c, t, e) for conditions, with ite(c, t, t) = t.
   static Expr iteCond(const Expr &c, const Expr &t, const Expr &e) {
     return t == e ? t : mk<ITE>(c, t, e);
@@ -1458,8 +1558,9 @@ public:
   /// allocation); the guards of the other leaves are kept. Null if every
   /// leaf is such; \p addr itself if none is. A numeral leaf, or a leaf
   /// without a pointer view (an ite beneath an addition), is kept. Valid only
-  /// at an access position, under that access's A-INB (inBounds /
-  /// rangeInBounds of \p addr, which make a size-0 leaf false or n = 0):
+  /// at an access position, under A-NULL for that access (a size-0 leaf is
+  /// never the address of an access of positive width; a range there has
+  /// n = 0):
   /// never for the address term itself (a compare, a stored pointer).
   /// Iterative over the ite DAG.
   Expr pruneSize0(const Expr &addr) const {
@@ -1505,7 +1606,7 @@ public:
   /// memories")? A memory term built (stores, store-maps, ites, memory-
   /// operation terms) over a start the registry knows as a shadow root
   /// (BaseRegistry::addShadowRoot: `sea.mem.const ... shadow`). An ite with
-  /// one shadow branch counts as shadow (no A-INB rule for it: the safe
+  /// one shadow branch counts as shadow (no premise rule for it: the safe
   /// side). A property of the term, so the rewriter's cache keeps it right.
   /// Memoized; iterative (store chains are deep).
   bool shadowMemory(const Expr &mem) const {
@@ -1784,10 +1885,12 @@ public:
                     num(size - units, w));
   }
 
-  /// the access addresses a memory rule at \p lhs relies on when
-  /// it uses A-INB: the address of the access (the read index of a select, the
-  /// address of a store) and the addresses of the write directly below it (a
-  /// store's address, every entry of a store-map). Every A-INB rule (ROW hit /
+  /// the access addresses a memory rule at \p lhs relies on when it uses
+  /// A-SEP / A-NULL (--seam-check states their in-bounds conditions, A-INB,
+  /// which implies both): the address of the access (the read index of a
+  /// select, the address of a store) and the addresses of the write directly
+  /// below it (a store's address, every entry of a store-map). Every premise
+  /// rule (ROW hit /
   /// skip and its compare tree, R-SKIP, R-ABORT, WOW-COMMUTE, WOSMAP-COMMUTE)
   /// compares exactly these. False for another term (the premise cannot be
   /// stated from the term).
@@ -1878,8 +1981,8 @@ public:
   /// mathematical integers). \p k is the byte offset of the read in the
   /// write (Sub / Hit), or of the write in the read (Super). Exact for one
   /// base and numeral offsets (and for i == j); across objects (single pointer
-  /// views, different registered bases) Skip under A-INB (whole spans in their
-  /// objects), not in a shadow memory. Unknown otherwise (the term stays).
+  /// views, different registered bases) Skip under A-SEP (two provenances,
+  /// whole spans), not in a shadow memory. Unknown otherwise (the term stays).
   WRel wideRelation(const Expr &i0, uint64_t w, const Expr &j0, uint64_t r,
                     uint64_t &k, Decision &d, bool shadow) const {
     const Expr i = op::ptr::stripObservation(i0),
@@ -1915,10 +2018,10 @@ public:
       }
       return WRel::Unknown;
     }
-    if (shadow || !m_opts.assumeInBounds || !m_bases.isBase(vi->base) ||
+    if (shadow || !m_opts.assumePremises || !m_bases.isBase(vi->base) ||
         !m_bases.isBase(vj->base))
       return WRel::Unknown;
-    d.add("cmp.diff-base", PremAInb); // uses: A-INB (whole spans)
+    d.add("cmp.diff-base", PremASep); // uses: A-SEP (whole spans)
     checkInbPremise(i, w, j, r);
     return WRel::Skip;
   }
@@ -2196,9 +2299,9 @@ public:
   ///   open pair where j is not split: no rewrite here.
   /// The value keeps its word shape: a read at ite(c, p, q) over writes at
   /// p and q is ite(c, v_p, v_q), not the concat of its bytes. Uses the
-  /// premises of the leaf decisions (A-INB: cmp.diff-base, cmp.size0-
-  /// vacuous, arm.skip across bases; ALIGN), stated on the whole accesses
-  /// (Rules::inBounds and the alignment of an ite address hold leaf by
+  /// premises of the leaf decisions (A-SEP / A-NULL: cmp.diff-base,
+  /// cmp.size0-vacuous, arm.skip across bases; ALIGN), stated on the whole
+  /// accesses (Rules::inBounds and the alignment of an ite address hold leaf by
   /// leaf). Nothing when no pair is decided. RW_FULL (new reads and
   /// extracts below the ite tree).
   std::optional<RewriteResult> rowWideLeaves(const Expr &exp, const Expr &arr,
@@ -2264,8 +2367,8 @@ public:
   /// (decideEq, diffBase = !shadow; a shadow memory: object identity):
   ///   Yes: v (wide.hit), RW_DONE; No: the read below (wide.skip), RW_1;
   ///   Unknown: ite(<rowCompare(i, j)>, v, the read below), the compare tree
-  ///   over the leaves (leaves decided by A-INB, ARM already true / false,
-  ///   the rest alias questions). uses: \p prem, and A-INB through the
+  ///   over the leaves (leaves decided by a premise, ARM already true / false,
+  ///   the rest alias questions). uses: \p prem, and A-SEP / A-NULL through the
   ///   compare (cmp.diff-base, cmp.size0-vacuous, arm.skip across bases).
   ///   RW_FULL for the ite (the compare tree and the new wselect).
   RewriteResult rowEqWidth(const Expr &exp, const Expr &arr, const char *rule,
@@ -2374,10 +2477,10 @@ public:
   ///   else (a partial overlap, an open in-test): undecided.
   /// One pair: wide.memop-hit / wide.memop-skip; an ite: the ite of the leaf
   /// values (wide.memop-split, wide.memop-leaf-*), when every pair is
-  /// decided. uses: the premises of the decisions (A-INB across objects: the
-  /// read span and the range [d, d + n) in their objects). Undecided:
-  /// unchanged here; rowW then takes the byte fallback (rev 3's "the term
-  /// stays" was replaced by the fallback after measurement).
+  /// decided. uses: the premises of the decisions (A-SEP across objects: the
+  /// read span and the range [d, d + n) through different provenances).
+  /// Undecided: unchanged here; rowW then takes the byte fallback (rev 3's "the
+  /// term stays" was replaced by the fallback after measurement).
   RewriteResult rowWideMemOp(const Expr &exp, const Expr &arr) {
     const Expr j = exp->arg(1), sort = exp->arg(2);
     const uint64_t r = op::bv::width(sort) / 8;
@@ -2404,7 +2507,7 @@ public:
       Range rg = decideInPair(lj, ld, haveN, nlo, nhi, dl, &kv, inb, r);
       if (rg == Range::Unknown)
         return Expr();
-      if (dl.premises & PremAInb)
+      if (dl.premises & (PremASep | PremANull))
         checkInbPremise(lj, r, ld, 1); // as wideRelation
       all.add(dl);
       if (rg == Range::Out) {
@@ -2457,8 +2560,8 @@ public:
   ///     addresses, as R-HIT / R-MISS).
   ///   lj in another object than b (decideInPair without a length: cmp.diff-
   ///     base, arm.skip, cmp.size0-vacuous): wselect(a0, j)
-  ///     (wide.smap-skip). uses: A-INB (the read span and the entries in
-  ///     their objects). Not in a shadow memory.
+  ///     (wide.smap-skip). uses: A-SEP (the read span and the entries through
+  ///     different provenances). Not in a shadow memory.
   ///   else undecided: no rewrite (the byte fallback, R-ABORT per byte).
   /// One leaf: its value; an ite j: the ite of the leaf values
   /// (wide.smap-split, wide.smap-leaf-*), not the concat of byte reads of
@@ -2500,7 +2603,7 @@ public:
       if (!shadow && decideInPair(lj, b, /*haveN=*/false, none, none, d,
                                   nullptr, /*inb=*/true) == Range::Out) {
         ++skips;
-        if ((d.premises & PremAInb) && m_opts.checkInbPremise)
+        if ((d.premises & (PremASep | PremANull)) && m_opts.checkInbPremise)
           for (const SMapEntry &e : StoreMapTable::entries(ocl))
             checkInbPremise(lj, r, ptrAt(b, e.offset), 1); // as wideRelation
         all.add(d);
@@ -2862,7 +2965,7 @@ public:
   }
 
   /// A wselect: over a store / wstore (rowWide), through an ite (exact),
-  /// across a store-map of another object (A-INB), over a memop term
+  /// across a store-map of another object (A-SEP), over a memop term
   /// (rowWideMemOp); undecided over any of these: the byte fallback; over
   /// an initial memory or a const array it stays (the boundary makes the
   /// same byte reads).
@@ -3002,21 +3105,22 @@ public:
   ///                  nonzero size (a size-0 object shares its base with a
   ///                  neighbour in the SeaHorn layout), only when
   ///                  \p diffBase (the compare is the one of a ROW step
-  ///                  between two access addresses): uses A-INB
+  ///                  between two access addresses): uses A-SEP
   ///   cmp.size0-vacuous  one side is a pointer into an object of size 0
   ///                  (null, a zero-sized allocation), only when \p diffBase:
-  ///                  an access of positive width is not in that object, so
-  ///                  A-INB of that access is false and the pair is
-  ///                  vacuous; decided different (SeaM-null.md, point 3).
-  ///                  uses: A-INB. Never for a program compare (null + k may
-  ///                  equal obj.A + j numerically).
+  ///                  an access of positive width is not in that object
+  ///                  (A-NULL) and the pair is vacuous; decided different
+  ///                  (SeaM-null.md, point 3). uses: A-SEP when the two
+  ///                  sides are views of different bases (two provenances),
+  ///                  else A-NULL. Never for a program compare (null + k
+  ///                  may equal obj.A + j numerically).
   ///   cmp.cancel     a + x = a + y => x = y numerals     no assumption
   ///   arm.skip       the address range maps are disjoint: no assumption
-  ///                  for one base or numbers, A-INB (\p d records it) when
+  ///                  for one base or numbers, A-SEP (\p d records it) when
   ///                  the decision separates two bases
   ///   shadow.distinct-base  only when \p shadow (the compare of a ROW step
   ///                  in a shadow memory; \p diffBase is then false: no
-  ///                  A-INB rule, no ARM): obj.a != obj.b, two registered
+  ///                  premise rule, no ARM): obj.a != obj.b, two registered
   ///                  bases, both offsets the numeral 0, whose placed
   ///                  numerals differ. A shadow cell is keyed by object
   ///                  identity (sea-lower-tracking: sea.ptr.base), and
@@ -3083,11 +3187,11 @@ public:
           d.add("cmp.same-base");
           return va == vb ? Tri::Yes : Tri::No;
         }
-      } else if (diffBase && m_opts.assumeInBounds) {
+      } else if (diffBase && m_opts.assumePremises) {
         const ObjectBase *oa = m_bases.lookup(pa->base);
         const ObjectBase *ob = m_bases.lookup(pb->base);
         if (oa && ob && !oa->size.isZero() && !ob->size.isZero()) {
-          d.add("cmp.diff-base", PremAInb); // uses: A-INB
+          d.add("cmp.diff-base", PremASep); // uses: A-SEP
           checkInbPremise(a, 1, b, 1);
           return Tri::No;
         }
@@ -3106,10 +3210,13 @@ public:
       }
     }
     // after the premise-free same-base decisions: a pair of equal terms or
-    // of numeral offsets of one base is decided without A-INB
-    if (diffBase && m_opts.assumeInBounds &&
+    // of numeral offsets of one base is decided without a premise
+    if (diffBase && m_opts.assumePremises &&
         ((pa && size0(pa->base)) || (pb && size0(pb->base)))) {
-      d.add("cmp.size0-vacuous", PremAInb); // uses: A-INB
+      // uses: A-SEP across two provenances (two views, different bases);
+      // A-NULL otherwise (one base of size 0, or a side without a view)
+      d.add("cmp.size0-vacuous",
+            pa && pb && pa->base != pb->base ? PremASep : PremANull);
       return Tri::No;
     }
     mpz_class dv;
@@ -3170,23 +3277,30 @@ public:
   /// a != b. Only for the compare of a ROW step (\p rowCompare: two access
   /// addresses); never for a program compare. Same-base and absolute
   /// intervals that do not meet need no assumption (AddrRangeMap.hh: no
-  /// A-NOWRAP, overflow gives top); different bases use A-INB (uses: A-INB,
-  /// only with assumeInBounds, through the access conditions of
-  /// Rules::inBounds).
-  /// When true, \p d gets `arm.skip`, with PremAInb if the answer is true
-  /// because of A-INB (the maps are disjoint only across different bases),
-  /// and `cmp.size0-vacuous` (A-INB) if it dropped the provenance of an
-  /// object of size 0 (AddrRangeMap::disjoint).
+  /// A-NOWRAP, overflow gives top); different bases use A-SEP (uses: A-SEP,
+  /// only with assumePremises; each leaf's provenance is its ARM base).
+  /// When true, \p d gets `arm.skip`, with PremASep if the answer is true
+  /// because of A-SEP (the maps are disjoint only across different bases),
+  /// and `cmp.size0-vacuous` if it dropped the provenance of an object of
+  /// size 0 (AddrRangeMap::disjoint): A-SEP if the maps are disjoint without
+  /// the drop, every base its own provenance; else A-NULL.
   bool armDisjoint(const Expr &a, const Expr &b, bool rowCompare,
                    Decision &d) const {
     if (!rowCompare || !m_opts.arm)
       return false;
     bool cross = false, zero = false;
-    if (!m_arm.disjoint(a, b, m_opts.assumeInBounds, &cross, &zero))
+    if (!m_arm.disjoint(a, b, m_opts.assumePremises, &cross, &zero))
       return false;
-    d.add("arm.skip", cross ? PremAInb : PremNone);
+    d.add("arm.skip", cross ? PremASep : PremNone);
+    // the dropped size-0 provenances: A-SEP when the maps are disjoint with
+    // every base its own provenance (no drop: each dropped entry meets only
+    // entries of other bases), else A-NULL
     if (zero)
-      d.add("cmp.size0-vacuous", PremAInb); // uses: A-INB
+      d.add("cmp.size0-vacuous",
+            AddrRangeMap::disjoint(m_arm.alpha(a), m_arm.alpha(b), true,
+                                   [](unsigned) { return true; })
+                ? PremASep
+                : PremANull);
     return true;
   }
 
@@ -3212,8 +3326,9 @@ public:
   /// Does `a = b` hold on every leaf pair (Yes), fail on every one (No), or
   /// neither / too many pairs (Unknown)? No term is built. \p d gets the
   /// reasons of *every* leaf pair the answer rests on, with their premises (a
-  /// later pair can need A-INB although the first is a same-base decision).
-  /// uses: A-INB (cmp.diff-base, arm.skip across bases) when \p diffBase;
+  /// later pair can need a premise although the first is a same-base
+  /// decision). uses: A-SEP (cmp.diff-base, arm.skip across bases) and
+  /// A-SEP / A-NULL (cmp.size0-vacuous) when \p diffBase;
   /// LAYOUT (shadow.distinct-base) when \p shadow.
   Tri decideEq(const Expr &a0, const Expr &b0, Decision &d, bool diffBase,
                bool shadow = false) const {
@@ -3296,8 +3411,9 @@ public:
   /// deciderSummands) are one multiset up to their numerals, and something
   /// cancels: a - b is the numeral \p d (mod 2^w). Valid over bit-vectors
   /// (addition mod 2^w is cancellative). Replaces cancel() on the flat forms.
-  /// The A-INB premise check: a cmp.diff-base decision rests on A-INB of both
-  /// addresses, which the run states only for the accesses OpSem recorded
+  /// The premise check: a cmp.diff-base decision rests on A-SEP for both
+  /// addresses; --seam-check states it as their A-INB (which implies A-SEP),
+  /// which the run states only for the accesses OpSem recorded
   /// (accessAddr: the address in normal form and the access's units). Both
   /// addresses of a decision must lie in a recorded access: the same term,
   /// or p + k with 0 <= k and k + span <= units (cancelDiff; the byte
@@ -3606,7 +3722,8 @@ public:
   /// below. In order:
   ///  - decideEq with diffBase (as row() decides the same pair): different
   ///    objects do not overlap whatever the offsets (cmp.diff-base, ARM
-  ///    across bases, cmp.size0-vacuous: uses A-INB, counted); RW_DONE.
+  ///    across bases, cmp.size0-vacuous: uses A-SEP / A-NULL, counted);
+  ///    RW_DONE.
   ///  - ITE-EQ over the address ites (buildEq with diffBase, as
   ///    rowCompareEq), the open leaves alias questions again (markAlias).
   ///  - one object, offsets undecided: the compare of the offsets
@@ -3620,7 +3737,7 @@ public:
   ///    object identity only (cmp.diff-base and cmp.size0-vacuous read the
   ///    bases of the two views; ARM across bases reads each leaf's
   ///    provenance, its intervals are exact claims about the term, no
-  ///    A-INB in them: AddrRangeMap.hh). The cancellation keeps the base
+  ///    premise in them: AddrRangeMap.hh). The cancellation keeps the base
   ///    of every leaf (numeralPart: the K, c of a node, the same ite), so
   ///    a decision of the cancelled question is one about the accesses.
   ///  - the sides ordered by id (ptr.overlap.order; symmetric for unit
@@ -3632,7 +3749,7 @@ public:
       return {exp, RWStatus::RW_DONE};
     const Expr a = exp->arg(0), b = exp->arg(2);
     Decision d;
-    Tri t = decideEq(a, b, d, /*diffBase=*/true); // uses: A-INB
+    Tri t = decideEq(a, b, d, /*diffBase=*/true); // uses: A-SEP / A-NULL
     if (t != Tri::Unknown) {
       countReasons(d);
       countPremises(d.premises);
@@ -4602,14 +4719,14 @@ public:
   // write over write: Store-Map (thesis Ch. 6, Fig. 6.4)
   //===------------------------------------------------------------------===//
 
-  /// Two pointers into different registered objects, under A-INB: the
-  /// addresses of two accesses (of positive width) through them differ. Both
+  /// Two pointers into different registered objects, under A-SEP: two
+  /// accesses through them (two provenances) touch different cells. Both
   /// objects of nonzero size: the test of cmp.diff-base; one of size 0 (null,
-  /// a zero-sized allocation): no such access is in it, the pair is vacuous
-  /// (cmp.size0-vacuous, SeaM-null.md; \p vacuous is set). uses: A-INB.
+  /// a zero-sized allocation): counted as cmp.size0-vacuous (SeaM-null.md;
+  /// \p vacuous is set), still two provenances. uses: A-SEP.
   bool distinctObjects(const Expr &b1, const Expr &b2,
                        bool *vacuous = nullptr) const {
-    if (!m_opts.assumeInBounds || b1 == b2)
+    if (!m_opts.assumePremises || b1 == b2)
       return false;
     const ObjectBase *o1 = m_bases.lookup(b1);
     const ObjectBase *o2 = m_bases.lookup(b2);
@@ -4640,16 +4757,17 @@ public:
   /// WOW-COMMUTE / WOSMAP-COMMUTE need the write to go below one to a *later*
   /// allocated object: the head of a normal chain is the latest object, the
   /// order the thesis' `<t` (allocation order, from the registry).
-  /// uses: A-INB.
+  /// uses: A-SEP for the pair of writes (write / write: a later read through
+  /// either object would otherwise see the other's write).
   bool commutes(const Expr &outer, const Expr &inner) {
-    return m_opts.assumeInBounds && outer != inner && m_bases.lookup(outer) &&
+    return m_opts.assumePremises && outer != inner && m_bases.lookup(outer) &&
            m_bases.lookup(inner) &&
            m_bases.lookup(outer)->order < m_bases.lookup(inner)->order &&
            distinctObjectsCounted(outer, inner);
   }
 
   /// WOW-COMMUTE in a shadow memory (\p i, \p j: the two store addresses,
-  /// pointer views \p vi, \p vj): no A-INB; both are object bases (offset
+  /// pointer views \p vi, \p vj): no premise; both are object bases (offset
   /// 0) whose placed numerals differ (shadow.distinct-base, uses: LAYOUT),
   /// and the object of i is allocated earlier (the order of the chain).
   bool shadowCommutes(const PtrView &vi, const PtrView &vj) {
@@ -4682,7 +4800,7 @@ public:
   ///    * different objects and the object of i allocated earlier than that of
   ///      j: WOW-COMMUTE
   ///      store(store(a0, i, v), j, w)                           wow.commute
-  ///      uses: A-INB (i and j differ). RW_1: the root at level 0, the inner
+  ///      uses: A-SEP (i and j differ). RW_1: the root at level 0, the inner
   ///      store at level 1 (its own rules, and its own chain), a0, i, v normal.
   ///  - `a` = store-map(a0, b, ocl):
   ///    * i = b + o, o a numeral: SMAP-HIT, the entry inserted
@@ -4691,13 +4809,13 @@ public:
   ///      RW_DONE.
   ///    * different objects, the object of i earlier than b: WOSMAP-COMMUTE
   ///      store-map(store(a0, i, v), b, ocl)                    smap.commute
-  ///      uses: A-INB (i is not any b + o). RW_1: the new store-map is the root
+  ///      uses: A-SEP (i is not any b + o). RW_1: the new store-map is the root
   ///      (not rewritten by shouldRewrite, but the follow-up frame is pushed),
   ///      its array, the store, at level 1; a0, i, v are normal. The ordered
   ///      map belongs to ocl, so it needs no transfer.
   ///  - otherwise the store is final (RW_DONE).
   /// In a shadow memory (shadowMemory: SeaM-null.md, "Shadow memories") no
-  /// rule uses A-INB: WOW-COMMUTE needs two bases at offset 0
+  /// rule uses A-SEP: WOW-COMMUTE needs two bases at offset 0
   /// (shadowCommutes, uses: LAYOUT), WOSMAP-COMMUTE is not applied.
   RewriteResult wow(const Expr &exp) {
     if (std::optional<RewriteResult> r = pruneAccess(exp))
@@ -4737,9 +4855,9 @@ public:
         }
         return {exp, RWStatus::RW_DONE};
       }
-      if (commutes(vi->base, vj->base)) { // uses: A-INB
+      if (commutes(vi->base, vj->base)) { // uses: A-SEP (write / write)
         m_stats.count("wow.commute");
-        countPremises(PremAInb);
+        countPremises(PremASep);
         return {op::array::store(op::array::store(a0, i, v), j, w),
                 RWStatus::RW_1};
       }
@@ -4763,9 +4881,9 @@ public:
         return {op::array::storeMap(a0, b, m_smaps.insert(ocl, vi->off, v)),
                 RWStatus::RW_DONE};
       }
-      if (!shadow && commutes(vi->base, b)) { // uses: A-INB
+      if (!shadow && commutes(vi->base, b)) { // uses: A-SEP (write / write)
         m_stats.count("smap.commute");
-        countPremises(PremAInb);
+        countPremises(PremASep);
         return {op::array::storeMap(op::array::store(a0, i, v), b, ocl),
                 RWStatus::RW_1};
       }
@@ -4779,12 +4897,12 @@ public:
 
   /// The compare of a ROW step between the address \p i of a write and the
   /// read address \p idx: `i = idx`, or, when one is an ite, the compare tree
-  /// over the leaves (buildEq: leaves that differ by A-INB are false there).
+  /// over the leaves (buildEq: leaves that differ by A-SEP are false there).
   /// \p depth / \p reduced as of buildEq (0 / false for the plain compare).
   /// \p premises gets the premises of the leaves it resolved (and the
-  /// premise counter is bumped for them). uses: A-INB, through buildEq.
-  /// \p shadow: the step is in a shadow memory: no A-INB, the leaves are
-  /// decided by object identity (decidePair, shadow.distinct-base), and the
+  /// premise counter is bumped for them). uses: A-SEP / A-NULL, through
+  /// buildEq. \p shadow: the step is in a shadow memory: no premise, the leaves
+  /// are decided by object identity (decidePair, shadow.distinct-base), and the
   /// open leaves stay PTR_EQ: a shadow cell is keyed by an object's base, not
   /// an access, so it is no alias question (overlap() would decide it in the
   /// access context).
@@ -4875,12 +4993,12 @@ public:
   ///    addresses.
   ///  - idx a pointer into another registered object (and the objects are
   ///    distinct, nonzero): R-SKIP (row.smap-skip): select(a0, idx), RW_1.
-  ///    uses: A-INB.
+  ///    uses: A-SEP.
   ///  - otherwise R-ABORT (row.smap-abort): neither equality nor disequality
   ///    with the base is known (idx has no pointer view, or a symbolic offset
-  ///    of b, or A-INB is off). The map is read as the store chain it stands
-  ///    for, once: each entry (o, v), newest first, is a ROW step with the
-  ///    compare of row() (decideEq: Yes ends the read with v, No skips the
+  ///    of b, or the premises are off). The map is read as the store chain it
+  ///    stands for, once: each entry (o, v), newest first, is a ROW step with
+  ///    the compare of row() (decideEq: Yes ends the read with v, No skips the
   ///    entry, Unknown gives ite(b + o = idx, v, <rest>)), the bottom is
   ///    select(a0, idx). The thesis peels one entry per step
   ///    (read(write(store-map(a, b, m \ o1), ptr(b, o1), v1), i)): same terms,
@@ -4893,7 +5011,7 @@ public:
   ///    every read of every version above it).
   RewriteResult rowStoreMap(const Expr &sm, const Expr &idx) {
     const Expr a0 = sm->arg(0), b = sm->arg(1), ocl = sm->arg(2);
-    // a shadow memory: no R-SKIP (A-INB); R-ABORT decides the entries by
+    // a shadow memory: no R-SKIP (A-SEP); R-ABORT decides the entries by
     // object identity
     const bool shadow = shadowMemory(sm);
     std::optional<PtrView> v = view(idx);
@@ -4909,9 +5027,9 @@ public:
         return {op::array::select(a0, idx), RWStatus::RW_1};
       }
     } else if (v && !shadow &&
-               distinctObjectsCounted(v->base, b)) { // uses: A-INB
+               distinctObjectsCounted(v->base, b)) { // uses: A-SEP
       m_stats.count("row.smap-skip");
-      countPremises(PremAInb);
+      countPremises(PremASep);
       return {op::array::select(a0, idx), RWStatus::RW_1};
     }
     m_stats.count("row.smap-abort");
@@ -4929,7 +5047,7 @@ public:
       Expr p = ptrAt(b, it->offset);
       Decision d;
       Tri t = decideEq(p, idx, d, /*diffBase=*/!shadow,
-                       shadow); // uses: A-INB, or LAYOUT in a shadow
+                       shadow); // uses: A-SEP, or LAYOUT in a shadow
       if (t == Tri::Yes) {
         m_stats.count("row.smap-abort-hit");
         countReasons(d);
@@ -5042,13 +5160,14 @@ public:
   /// the VC, not an assumption: uses LAYOUT). Bases with equal numerals (a
   /// hand-placed program) are not decided here.
   /// Only for the addresses of accesses (a ROW compare, a memop range) and
-  /// only without A-INB: with A-INB, cmp.diff-base decides such pairs first;
-  /// without it (--seam-inb=0, the vc.seam-inb-violated fallback) nothing
+  /// only without the premises: with A-SEP, cmp.diff-base decides such pairs
+  /// first; without them (--seam-premises=0, the opt-in fallback
+  /// --seam-out-of-object=fallback) nothing
   /// else separates two objects, and every undecided memop row nests the
   /// next read (a read through n undecided mcopys is 2^n leaves). Program
   /// compares are never decided by the layout (SeaM-null.md, point 4).
   std::optional<mpz_class> layoutDiff(const Expr &a, const Expr &b) const {
-    if (!m_opts.layoutDecide || m_opts.assumeInBounds)
+    if (!m_opts.layoutDecide || m_opts.assumePremises)
       return std::nullopt;
     std::optional<PtrView> va = view(a), vb = view(b);
     if (!va || !vb || va->base == vb->base)
@@ -5142,34 +5261,35 @@ public:
 
   /// in(j, d, n) for one leaf pair (j, d not ites); the rule and its premises
   /// go to \p dec when decided. \p k gets the numeral k = j - d when exact.
-  /// \p inb: A-INB may be used (false in a shadow memory). \p span: the
+  /// \p inb: the premises may be used (false in a shadow memory). \p span: the
   /// read is of span bytes [j, j + span): In when all are in the range, Out
   /// when none is (the circular test of k .. k + span - 1).
   Range decideInPair(const Expr &j, const Expr &d, bool haveN,
                      const mpz_class &nlo, const mpz_class &nhi, Decision &dec,
                      mpz_class *k, bool inb = true, uint64_t span = 1) const {
-    // different objects: no cell of [d, d + n) is j (uses: A-INB, for the
-    // whole destination range and for j's access)
+    // different objects: no cell of [d, d + n) is j (uses: A-SEP, the range
+    // is accessed through d's provenance, j through another, whatever n is)
     std::optional<PtrView> vj = view(j), vd = view(d);
     // an object of size 0 (null): the read j (positive width) cannot be in
-    // it, and a range [d, d + n) in it is empty (A-INB forces n = 0:
-    // rangeInBounds): vacuous, no cell is read (uses: A-INB; SeaM-null.md)
-    if (inb && m_opts.assumeInBounds &&
+    // it, and a range [d, d + n) in it is empty (A-NULL forces n = 0):
+    // vacuous, no cell is read (SeaM-null.md)
+    if (inb && m_opts.assumePremises &&
         ((vj && size0(vj->base)) || (vd && size0(vd->base)))) {
-      dec.add("cmp.size0-vacuous", PremAInb); // uses: A-INB
+      // uses: A-SEP across two provenances, else A-NULL (as decidePair)
+      dec.add("cmp.size0-vacuous",
+              vj && vd && vj->base != vd->base ? PremASep : PremANull);
       return Range::Out;
     }
     if (inb && vj && vd && vj->base != vd->base &&
         distinctObjects(vj->base, vd->base)) {
-      dec.add("cmp.diff-base", PremAInb); // uses: A-INB
+      dec.add("cmp.diff-base", PremASep); // uses: A-SEP
       return Range::Out;
     }
     // the same by ARM for a read address without a view: every provenance
     // of j (an ARM base entry; no absolute entry, which may be anywhere) is
-    // another object than d's, all of nonzero size (uses: A-INB, the
-    // per-provenance access condition of j, Rules::armInBounds, and d's
-    // range, which has a view so rangeInBounds states it)
-    if (inb && !vj && vd && m_opts.arm && m_opts.assumeInBounds) {
+    // another object than d's (uses: A-SEP, each provenance of j against
+    // d's)
+    if (inb && !vj && vd && m_opts.arm && m_opts.assumePremises) {
       const ObjectBase *od = m_bases.lookup(vd->base);
       const AddrRangeMap &mj = m_arm.alpha(j);
       if (od && !od->size.isZero() && !mj.isTop() && !mj.isBot() &&
@@ -5186,9 +5306,11 @@ public:
           apart = apart && e.first != od->order && e.first < m_bases.size();
         }
         if (apart) {
-          dec.add("arm.skip", PremAInb); // uses: A-INB
+          dec.add("arm.skip", PremASep); // uses: A-SEP
+          // a size-0 provenance of j is another object than d's (d's is of
+          // nonzero size): A-SEP as well
           if (zero)
-            dec.add("cmp.size0-vacuous", PremAInb);
+            dec.add("cmp.size0-vacuous", PremASep);
           return Range::Out;
         }
       }
@@ -5264,7 +5386,7 @@ public:
   /// \p resolved counts the resolved pairs. On
   /// the path that selects a pair, idx and d are that pair, so the tree equals
   /// the in-test of the whole terms. uses: the premises of the resolved pairs
-  /// (A-INB: cmp.diff-base, cmp.size0-vacuous, arm.skip; LAYOUT:
+  /// (A-SEP / A-NULL: cmp.diff-base, cmp.size0-vacuous, arm.skip; LAYOUT:
   /// mem.in-layout).
   Expr buildIn(const Expr &l, const Expr &r, const Expr &n, bool haveN,
                const mpz_class &nlo, const mpz_class &nhi, bool inb,
@@ -5303,9 +5425,9 @@ public:
   /// per (term, read), not per cell:
   ///   skip (row.<op>-skip): in(idx, d, n) false: select(M, idx). RW_1 (the
   ///     select over normal kids, at level 0).
-  ///     uses: A-INB when a leaf pair is in different objects (cmp.diff-base:
-  ///     the whole destination range [d, d + n) is in d's object, idx in its
-  ///     own; the premise is Rules::rangeInBounds and inBounds); none for
+  ///     uses: A-SEP when a leaf pair is in different objects (cmp.diff-base:
+  ///     the range [d, d + n) is accessed through d's provenance, idx through
+  ///     its own); none for
   ///     mem.empty (n = 0), mem.in-exact, arm.range (the circular test).
   ///   hit (row.<op>-hit): in(idx, d, n) true: mcopy -> select(Ms, s + k),
   ///     the read continues in the source (k = idx - d, a numeral when exact);
@@ -5316,7 +5438,7 @@ public:
   ///     expandUnknownRow is off (the boundary translates it). No assumption.
   ///     When idx or d is an ite, the compare is the tree of buildIn over
   ///     their leaf pairs (mem.in-push, at least one pair resolved): uses
-  ///     the premises of the resolved pairs (A-INB across objects).
+  ///     the premises of the resolved pairs (A-SEP across objects).
   ///   RW_FULL for the source read of mcopy and for the ite: the new selects
   ///   start their own chains below new sums (s + k, idx - d).
   RewriteResult rowMemOp(const Expr &exp, const Expr &t, const Expr &idx) {
@@ -5328,7 +5450,7 @@ public:
     };
     Decision dec;
     Expr k;
-    // no A-INB over a shadow memory (none is made by the VC generator: a
+    // no premise over a shadow memory (none is made by the VC generator: a
     // shadow has loads and stores only)
     Range r = decideIn(idx, memOpDst(t), memOpLen(t), dec, k,
                        /*inb=*/!shadowMemory(t));
@@ -5391,13 +5513,13 @@ public:
   ///   select(store(a, i, v), j) ~> v                  (decideEq: i = j)
   ///   select(store(a, i, v), j) ~> select(a, j)       (decideEq: i != j)
   ///   select(store(a, i, v), j) ~> ite(i = j, v, select(a, j))   otherwise
-  /// uses: A-INB, through the compare (row.store-skip with cmp.diff-base).
-  /// This is the only place that lets the compare use A-INB (diffBase): i
-  /// and j are the addresses of two accesses. In the third form, when i or j
-  /// is an ite, the compare is built over the leaves by buildEq (leaves
-  /// that differ by A-INB are false there); otherwise it is the plain `=`
-  /// (nothing more to decide), which the rewriter then visits as a program
-  /// compare (no A-INB).
+  /// uses: A-SEP / A-NULL, through the compare (row.store-skip with
+  /// cmp.diff-base). This is the only place that lets the compare use the
+  /// premises (diffBase): i and j are the addresses of two accesses. In the
+  /// third form, when i or j is an ite, the compare is built over the leaves
+  /// by buildEq (leaves that differ by a premise are false there); otherwise
+  /// it is the plain `=` (nothing more to decide), which the rewriter then
+  /// visits as a program compare (no premise).
   /// RW_DONE for HIT (v is normal). RW_1 for SKIP: the new select is at level
   /// 0 and its kids are normal. RW_(d+1) for the ite (RW_1 with a plain
   /// compare): the ite at level 0, the select and the compare tree (depth d)
@@ -5414,13 +5536,13 @@ public:
   /// addr.prune-size0 at a positive-width access (docs/design/SeaM-
   /// provenance.md):
   ///   select(M, a) ~> select(M, a'),  store(M, a, v) ~> store(M, a', v)
-  /// with a' = pruneSize0(a), under the access's A-INB inBounds(a) (a size-0
-  /// leaf is false there: a = a' on every execution it admits). Only the
-  /// index argument changes. No rewrite when every leaf is size 0 (a definite
-  /// violation: the static fallback) or the memory is a shadow memory
-  /// (identity contract, no A-INB).
+  /// with a' = pruneSize0(a), under A-NULL (a size-0 leaf is never the
+  /// address of an access of positive width: a = a' on every execution it
+  /// admits). Only the index argument changes. No rewrite when every leaf is
+  /// size 0 (a definite violation, reported by sea-vc) or the memory is a
+  /// shadow memory (identity contract, no premise).
   std::optional<RewriteResult> pruneAccess(const Expr &exp) {
-    if (!m_opts.assumeInBounds || !m_opts.pruneSize0 ||
+    if (!m_opts.assumePremises || !m_opts.pruneSize0 ||
         !isOpX<ITE>(exp->arg(1)))
       return std::nullopt;
     const Expr arr = exp->arg(0);
@@ -5428,7 +5550,7 @@ public:
     if (!p || p == exp->arg(1) || shadowMemory(arr))
       return std::nullopt;
     m_stats.count("addr.prune-size0");
-    countPremises(PremAInb);
+    countPremises(PremANull);
     Expr res = isOpX<SELECT>(exp) ? op::array::select(arr, p)
                                   : op::array::store(arr, p, exp->arg(2));
     return RewriteResult{res, RWStatus::RW_1};
@@ -5436,18 +5558,18 @@ public:
 
   /// addr.prune-size0 at a memory-operation term (mset / mcopy / mhavoc,
   /// MemOps.hh; docs/design/SeaM-provenance.md, range pruning): an
-  /// operation-level equivalence under the A-INB of its ranges (rangeInBounds
-  /// of the destination, and of the source of an mcopy), not an address
+  /// operation-level equivalence under A-NULL for its ranges (a range in an
+  /// object of size 0 has length 0), not an address
   /// equality: a size-0 leaf there admits n = 0, where both operations are
   /// no-ops although the addresses differ.
   ///  - a range with a live leaf left: the range address pruned;
-  ///  - a range whose every leaf is size 0: A-INB gives n = 0, the term is
+  ///  - a range whose every leaf is size 0: A-NULL gives n = 0, the term is
   ///    its incoming memory (a no-op, not a violation);
   ///  - a range condition `false` (a numeral n > 0 that cannot fit: a
-  ///    definite violation): no rewrite, the static fallback handles it.
+  ///    definite violation): no rewrite (sea-vc reports it).
   /// Never for a shadow memory.
   RewriteResult memOp(const Expr &exp) {
-    if (!m_opts.assumeInBounds || !m_opts.pruneSize0)
+    if (!m_opts.assumePremises || !m_opts.pruneSize0)
       return {exp, RWStatus::RW_DONE};
     const bool copy = isOpX<MEM_COPY>(exp);
     const unsigned di = isOpX<MEM_SET>(exp) ? 1 : 2;
@@ -5473,9 +5595,9 @@ public:
       (void)rangeInBounds(a, n, violated);
       if (violated)
         return {exp, RWStatus::RW_DONE};
-      if (!p) { // every leaf size 0: A-INB gives n = 0
+      if (!p) { // every leaf size 0: A-NULL gives n = 0
         m_stats.count("addr.prune-size0-noop");
-        countPremises(PremAInb);
+        countPremises(PremANull);
         return {memOpBase(exp), RWStatus::RW_DONE};
       }
       kids[i] = p;
@@ -5484,7 +5606,7 @@ public:
     if (!changed)
       return {exp, RWStatus::RW_DONE};
     m_stats.count("addr.prune-size0-range");
-    countPremises(PremAInb);
+    countPremises(PremANull);
     return {exp->efac().mkNary(exp->op(), kids.begin(), kids.end()),
             RWStatus::RW_1};
   }
@@ -5499,7 +5621,7 @@ public:
     if (isOpX<STORE>(arr)) {
       const Expr i = arr->arg(1);
       // a shadow memory (SeaM-null.md, "Shadow memories"): its accesses are
-      // keyed by object identity, not program accesses: no A-INB rule
+      // keyed by object identity, not program accesses: no premise rule
       // (cmp.diff-base, cmp.size0-vacuous, ARM); shadow.distinct-base
       const bool shadow = shadowMemory(arr);
       Decision d;

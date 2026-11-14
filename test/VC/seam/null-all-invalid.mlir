@@ -1,10 +1,12 @@
 // Null-object acceptance, row 2 (docs/design/SeaM-null.md): every
 // alternative of the read address p = ite(c, null, A + 32) (A has 16 bytes)
 // is impossible for an access of positive width, so the access is a definite
-// violation (guarded aggregation: only when *every* alternative is): the
-// static fallback warns vc.seam-inb-violated and runs without A-INB. The
-// answer is the plain one, sat, replayed on the placed program. The safety
-// job (and the interpreter) reports the violation: null or out of bounds.
+// violation (guarded aggregation: only when *every* alternative is): sea-vc
+// warns vc.seam-out-of-object (it lands through null) and keeps the
+// premises. The answer is still sat, replayed on the placed program (the
+// counterexample does not need A-NULL); --seam-check cannot state the
+// premise of the firing that relies on the violated access. The safety job
+// (and the interpreter) reports the violation: null or out of bounds.
 // RUN: sea-vc %s --lower | FileCheck %s --check-prefix=PLAIN
 // RUN: sea-vc %s --lower --seam --seam-check --solver=z3 2>&1 | FileCheck %s --check-prefix=SEAM
 // RUN: %if yices %{ sea-vc %s --lower --seam --seam-check --solver=yices 2>&1 | FileCheck %s --check-prefix=SEAM %}
@@ -12,11 +14,12 @@
 // RUN: not sea-run %s --input=3=0 --missing=zero | FileCheck %s --check-prefix=OOB
 // PLAIN: result: sat
 // PLAIN: replay: assert-failed
-// SEAM: Warning: an access leaves its object{{.*}}[vc.seam-inb-violated]
-// SEAM: seam.inb: off (fallback: an access leaves its object)
+// SEAM: Warning: {{.*}}[vc.seam-out-of-object]
+// SEAM: seam.premises: assumed
+// SEAM: seam.out-of-object: accesses=1 object=0 unknown=0 null=1
 // SEAM: result: sat
 // SEAM: replay: assert-failed
-// SEAM: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
+// SEAM: seam-check: {{.*}} invalid=0 unknown=0
 // NULL: status: error
 // NULL: message: memory access through the null pointer
 // OOB: status: error

@@ -40,7 +40,7 @@
 // RUN:   --require result:value --require stat:key,value,brunch
 // RUN: FileCheck %s --check-prefix=UNSAT < %t.unsat.jsonl
 // UNSAT: {"kind":"stat","key":"vc-time","value":{{[0-9]+\.[0-9]+}},"text":"vc-time: {{[0-9.]+}}"}
-// UNSAT: {"kind":"stat","key":"seam.inb","value":"assumed","accesses":{{[0-9]+}},"conditions":{{[0-9]+}},"text":"seam.inb: assumed
+// UNSAT: {"kind":"stat","key":"seam.premises","value":"assumed","accesses":{{[0-9]+}},"conditions":{{[0-9]+}},"text":"seam.premises: assumed
 // UNSAT: {"kind":"stat","key":"seam.rewrite-time","value":{{[0-9.]+}},
 // UNSAT: {"kind":"result","value":"unsat","text":"result: unsat"}
 // UNSAT: {"kind":"stat","key":"result","value":"unsat","brunch":true,"text":"BRUNCH_STAT result unsat"}

@@ -29,8 +29,8 @@
 // RUN: sea-vc %s --program=open --lower --solver=z3 | FileCheck %s --check-prefix=SAT
 // RUN: sea-vc %s --program=open --lower --seam --seam-stats --seam-check --solver=z3 2>&1 | FileCheck %s --check-prefixes=SAT,OPEN,CHK --implicit-check-not=cmp.size0-vacuous --implicit-check-not=cmp.diff-base --implicit-check-not=ptr.overlap --implicit-check-not=seam.alias.open
 // RUN: sea-opt %s --sea-apply-tracking --sea-lower-tracking | FileCheck %s --check-prefix=LOW
-// SEAM-NOT: vc.seam-inb-violated
-// SEAM: seam.inb: assumed
+// SEAM-NOT: seam.out-of-object
+// SEAM: seam.premises: assumed
 // SEAM-NOT: cmp.size0-vacuous
 // SEAM: seam.rule.shadow.access: {{[1-9]}}
 // SEAM: seam.rule.shadow.distinct-base: {{[1-9]}}

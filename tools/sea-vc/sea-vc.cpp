@@ -518,8 +518,9 @@ static cl::opt<bool> seamStride(
              "skipped for a read at sea.ptr.index nodes with a promise over b "
              "whose offsets never reach o (docs/design/PtrIndex.md section "
              "0c). Uses the promises (premise.ptr-index) and, for a node "
-             "with a byte offset K != 0, A-INB (only for b + size - 2^n <= K "
-             "<= b, where A-INB excludes a wrap); --seam-check checks the "
+             "with a byte offset K != 0, A-NOWRAP (only for b + size - 2^n <= "
+             "K <= b, the window where in-bounds would give the same); "
+             "--seam-check checks the "
              "firings under them"),
     cl::init(false));
 
@@ -574,26 +575,49 @@ static cl::opt<bool> seamStats(
              "`seam.<name>: <n>` lines (stderr with --smt2, else stdout)"),
     cl::init(false));
 
-static cl::opt<bool> seamInb(
-    "seam-inb",
-    cl::desc("With --seam: use the assumption A-INB (pointers into different "
-             "objects are different). --seam-inb=0 uses no assumption: the "
-             "rewriting is valid over plain bit-vectors and arrays"),
+static cl::opt<bool> seamPremises(
+    "seam-premises",
+    cl::desc("With --seam: use the named premises A-SEP (no cell is accessed "
+             "through two different objects in one execution), A-NULL (no "
+             "access of positive width through an object of size 0, such as "
+             "null) and A-NOWRAP (an access address base + offset does not "
+             "wrap); reported as assume.a-sep / a-null / a-nowrap. "
+             "--seam-premises=0 uses no assumption: the rewriting is valid "
+             "over plain bit-vectors and arrays"),
     cl::init(true));
+
+/// What a static out-of-object access (an access with no alternative inside
+/// its object) does to a run with the premises.
+enum class OutOfObject { Report, Fallback };
+static cl::opt<OutOfObject> seamOutOfObject(
+    "seam-out-of-object",
+    cl::desc("With --seam: what a static out-of-object access does (an "
+             "access whose every address alternative is outside its "
+             "object). report (default): warning vc.seam-out-of-object and "
+             "the seam.out-of-object lines (where each lands: another "
+             "object, a gap, null, unknown); the premises stay, so an unsat "
+             "holds for the executions that do not reach such an access "
+             "(one that lands in another object breaks A-SEP if reached). "
+             "fallback: run again without the premises (as --seam-premises=0)"),
+    cl::values(clEnumValN(OutOfObject::Report, "report",
+                          "report and keep the premises (default)"),
+               clEnumValN(OutOfObject::Fallback, "fallback",
+                          "report, then run without the premises")),
+    cl::init(OutOfObject::Report));
 
 static cl::opt<bool> seamPruneSize0(
     "seam-prune-size0",
     cl::desc(
         "With --seam: rule addr.prune-size0 (docs/design/SeaM-provenance.md, "
-        "step 0; uses A-INB): drop the ite leaves of an access address "
+        "step 0; uses A-NULL): drop the ite leaves of an access address "
         "(load, store, memory-operation range) that point into an object of "
         "size 0, such as null (default on; --seam-prune-size0=0 off)"),
     cl::init(true));
 
 static cl::opt<bool> seamLayout(
     "seam-layout",
-    cl::desc("With --seam and without A-INB (--seam-inb=0, or the "
-             "vc.seam-inb-violated fallback): decide the address compares of "
+    cl::desc("With --seam and without the premises (--seam-premises=0, or "
+             "--seam-out-of-object=fallback): decide the address compares of "
              "accesses and memop range tests between two placed objects at "
              "numeral offsets by their placed numerals (cmp.layout, "
              "mem.in-layout; uses: LAYOUT, a fact of the VC). Default on; "
@@ -621,7 +645,7 @@ static cl::opt<bool> seamRowGroup(
 static cl::opt<bool> seamCheckInbPremise(
     "seam-check-inb-premise",
     cl::desc("With --seam: check that every cmp.diff-base decision's two "
-             "addresses lie in accesses whose A-INB condition the run "
+             "addresses lie in accesses whose in-bounds condition the run "
              "recorded (counters premise.inb-checked / "
              "premise.inb-unrecorded; warning vc.inb-premise-unrecorded). "
              "Default off: the matcher is still too narrow (keyed companions, "
@@ -741,9 +765,10 @@ static cl::opt<bool> seamArm(
         "when the syntactic checks of a read-over-write compare leave it "
         "unknown, decide it false if the address range maps of the two "
         "addresses are disjoint (counter arm.skip). Same-base intervals "
-        "need no assumption; different bases use A-INB, which is "
-        "assumed and reported (seam.inb: assumed ...): an unsat holds "
-        "if every access stays in its object. Never used for a compare of the "
+        "need no assumption; different bases use A-SEP, which is "
+        "assumed and reported (assume.a-sep: seam=<n>): an unsat holds "
+        "if no cell is accessed through two objects. Never used for a "
+        "compare of the "
         "program. "
         "--seam-arm=0 turns it off"),
     cl::init(true));
@@ -753,7 +778,7 @@ static cl::opt<bool> seamStoreMap(
     cl::desc("With --seam: Store-Map (thesis Ch. 6): compress writes to one "
              "object at numeral offsets into store-map terms (SMAP-NEW, "
              "SMAP-HIT), commute writes to different objects into allocation "
-             "order (uses A-INB), and read store-maps by R-HIT / R-MISS / "
+             "order (uses A-SEP), and read store-maps by R-HIT / R-MISS / "
              "R-SKIP / R-ABORT. Faster rewriting of long write sequences; the "
              "query is the same. Store-maps are expanded into stores before "
              "the solver sees the query. --seam-store-map=0 keeps linear "
@@ -1931,40 +1956,52 @@ TYPICAL:
                                  #   (hit and skip decided by an object-aware
                                  #   compare), pointer normalization, ite and
                                  #   Boolean rules. Conditionally sound: it
-                                 #   assumes accesses stay inside their
-                                 #   objects (A-INB), so the store address and
-                                 #   read address of a ROW step in different
-                                 #   objects differ (never a compare of the
-                                 #   program); --seam-inb=0 uses no
-                                 #   assumption. An access none of whose
-                                 #   alternatives can be in its object (a
-                                 #   numeral offset outside it, an object of
-                                 #   size 0: sea.ptr.null is the null object,
-                                 #   obj.null, size 0) is detected (a sanity
-                                 #   check, not a soundness claim): warning
-                                 #   vc.seam-inb-violated, and the run starts
-                                 #   again without the assumption; an
-                                 #   impossible alternative of a mixed
-                                 #   pointer is only false in its condition.
-                                 #   A ROW pair with one side in a size-0
-                                 #   object is vacuous under A-INB
-                                 #   (cmp.size0-vacuous).
+                                 #   assumes three named premises about the
+                                 #   program: A-SEP (no cell is accessed
+                                 #   through two different objects in one
+                                 #   execution: the store and read address
+                                 #   of a ROW step in different objects
+                                 #   differ; never a compare of the
+                                 #   program), A-NULL (no access of positive
+                                 #   width through an object of size 0:
+                                 #   sea.ptr.null is the null object,
+                                 #   obj.null, size 0; a ROW pair or an
+                                 #   address alternative there is vacuous)
+                                 #   and A-NOWRAP (an access address base +
+                                 #   offset does not wrap: the stride
+                                 #   rules). A-INB (every access stays in
+                                 #   its object) implies all three;
+                                 #   --seam-premises=0 uses none. An access
+                                 #   none of whose alternatives can be in
+                                 #   its object (a numeral offset outside
+                                 #   it, an object of size 0) is reported,
+                                 #   classified by where it lands (warning
+                                 #   vc.seam-out-of-object,
+                                 #   seam.out-of-object lines); the
+                                 #   premises stay (they fail only if the
+                                 #   access executes; the check is
+                                 #   path-insensitive);
+                                 #   --seam-out-of-object=fallback runs
+                                 #   again without them. An impossible
+                                 #   alternative of a mixed pointer is only
+                                 #   false in its condition.
                                  #   Shadow memories (sea.mem.const ...
                                  #   shadow: sea-lower-tracking) are read
-                                 #   by object identity, never by A-INB:
+                                 #   by object identity, never by a premise:
                                  #   their accesses are not counted in
-                                 #   seam.inb (seam.rule.shadow.access),
+                                 #   seam.premises (seam.rule.shadow.access),
                                  #   two different bases at offset 0 are
                                  #   different cells (shadow.distinct-base,
                                  #   premise LAYOUT: the obj.k = <address>
                                  #   equations; not an assumption)
-                                 #   A-INB is assumed and reported
-                                 #   (`seam.inb: assumed ...`), never
+                                 #   The premises are assumed and reported
+                                 #   (`assume.a-sep: seam=<n>` ...: the
+                                 #   rewrites that rest on each), never
                                  #   discharged by sea-vc: an unsat holds
-                                 #   for programs whose accesses stay in
-                                 #   their objects. Discharging it is a
-                                 #   separate memory-safety job (bounds
-                                 #   checks before every access)
+                                 #   for programs whose accesses satisfy
+                                 #   them. Discharging them is a separate
+                                 #   memory-safety job (bounds checks before
+                                 #   every access discharge A-INB)
                                  #   Needs --vc-join=ite. Segments must have
                                  #   distinct names and disjoint ranges
                                  #   (errors vc.seam-segment-duplicate /
@@ -1983,18 +2020,18 @@ TYPICAL:
                                  #   equations, no assumption
                                  #   (seam.rule.memop.translated)
   sea-vc p.mlir --lower --seam --seam-prune-size0=0   # no addr.prune-size0
-                                 #   (default on, uses A-INB): an access
+                                 #   (default on, uses A-NULL): an access
                                  #   address ite(c, null + o, B + x) is
                                  #   kept; with the rule a load / store uses
                                  #   B + x (seam.rule.addr.prune-size0), a
                                  #   range drops the null leaf
                                  #   (addr.prune-size0-range) or, all leaves
-                                 #   size 0, is a no-op (A-INB: n = 0;
+                                 #   size 0, is a no-op (A-NULL: n = 0;
                                  #   addr.prune-size0-noop). Only the access
                                  #   argument changes, never a compare or a
                                  #   stored pointer; shadow memories exempt
-  sea-vc p.mlir --lower --seam --seam-inb=0 --seam-layout=0
-                                 # without A-INB, do not decide access
+  sea-vc p.mlir --lower --seam --seam-premises=0 --seam-layout=0
+                                 # without the premises, do not decide access
                                  #   compares / memop ranges of two placed
                                  #   objects by their placed numerals
                                  #   (cmp.layout, mem.in-layout; default on)
@@ -2050,14 +2087,14 @@ TYPICAL:
                                  #   disjoint address range maps, counter
                                  #   seam.rule.arm.skip; same-base intervals
                                  #   use no assumption, different bases use
-                                 #   A-INB; never a program compare)
+                                 #   A-SEP; never a program compare)
   sea-vc p.mlir --lower --seam --seam-store-map=0   # no Store-Map (default
                                  #   on): writes stay a linear chain of
                                  #   stores. With it, writes to one object at
                                  #   numeral offsets are grouped into a
                                  #   store-map (an ordered map per object),
                                  #   writes to objects allocated earlier move
-                                 #   below it (A-INB), and a read is a map
+                                 #   below it (A-SEP), and a read is a map
                                  #   lookup: same query, much less rewriting
                                  #   time on long write sequences (thesis
                                  #   Table 8.4). Counters seam.rule.smap.* and
@@ -2132,7 +2169,7 @@ TYPICAL:
                                  #   each by the lowest level that decides
                                  #   it with z3: L0 nothing (a missing exact
                                  #   rewrite), L1 + layout, L2 + A-INB of the
-                                 #   accesses (a missing A-INB rule), else
+                                 #   accesses (a missing premise rule), else
                                  #   undecided (the solver's search, or a
                                  #   path fact); unknown = timeout
                                  #   (--eq-audit-timeout=<s>, 5) or rlimit
@@ -2160,11 +2197,13 @@ TYPICAL:
   sea-vc p.mlir --lower --seam --seam-check   # check every firing with the
                                  #   solver (--solver): premises => lhs = rhs
                                  #   on its actual terms (store-maps
-                                 #   expanded); A-INB firings get the layout
-                                 #   and the in-bounds conditions of the
-                                 #   accesses the rule compares (this checks
-                                 #   the rule against its stated premise; it
-                                 #   does not discharge A-INB).
+                                 #   expanded); a firing that uses A-SEP,
+                                 #   A-NULL or A-NOWRAP gets the layout and
+                                 #   the in-bounds conditions (A-INB, which
+                                 #   implies the three) of the accesses the
+                                 #   rule compares (this checks the rule
+                                 #   against a sufficient premise; it does
+                                 #   not discharge one).
                                  #   --seam-check=N: N firings, evenly
                                  #   spaced; --seam-check-timeout=<s> (10);
                                  #   --seam-check-rlimit=<n>: z3 resource
@@ -2223,7 +2262,7 @@ TYPICAL:
                                  #   (vc.ackermann-stride: fallback). Also
                                  #   turns on the K writers in SeaM: a byte
                                  #   of a wide access at a promised node is
-                                 #   that node with K = k (needs A-INB).
+                                 #   that node with K = k (needs A-NOWRAP).
                                  #   docs/design/PtrIndex.md sections 0b, 5
   sea-vc p.mlir --ptr-mode=opaque     # the pointer model (default auto:
                                  #   address mode iff the program has an
@@ -2678,38 +2717,61 @@ OUTPUT (stdout, `key: value` lines):
                                   uses of its segment. A fact about the
                                   target, discharged by no check; the
                                   replays' own uses: `uses=<n>` lines)
-  assume.a-inb: drop-fresh-memhavoc=<n>   (n > 0: --lower of an abstract
-                                  program dropped n memhavocs of fresh
-                                  objects whose no-op rests on A-INB (an
-                                  update of another object, or the
-                                  memhavoc's range, could reach the object
-                                  after placement); also without --seam and
-                                  with --seam-inb=0 (`seam.inb: off
-                                  (lowering: ...)`); a separate
-                                  memory-safety check discharges it)
+  assume.a-sep: seam=<n> [drop-fresh-memhavoc=<m>]
+  assume.a-null: seam=<n>
+  assume.a-nowrap: seam=<n>       (--seam with the premises: the SeaM
+                                  rewrites that rest on each named premise,
+                                  0: the answer does not; A-SEP: no cell is
+                                  accessed through two different objects in
+                                  one execution; A-NULL: no access of
+                                  positive width through an object of size
+                                  0, such as null; A-NOWRAP: an access
+                                  address base + offset does not wrap. A
+                                  bounds check of the program (A-INB)
+                                  discharges all three.
+                                  drop-fresh-memhavoc=<m>, m > 0: --lower of
+                                  an abstract program dropped m memhavocs of
+                                  fresh objects whose no-op rests on A-SEP;
+                                  also without --seam and with
+                                  --seam-premises=0, then the only field)
   assume.memset-bound: count=<n> bound=<K>   (n > 0: --lower without --seam
                                   expanded n symbolic-length memsets /
                                   memmoves with assume(len <= K), the
                                   sea.assume ops marked sea.memset_bound; an
                                   unsat holds only for lengths <= K; K the
                                   largest bound; with --smt2 on stderr)
-  seam.inb: assumed accesses=<n> conditions=<m>
-  seam.inb: off [(fallback: an access leaves its object)]
-      [(lowering: drop-fresh-memhavoc=<n> rests on A-INB)]   (the VC runs
-                                  without A-INB, the lowering's dropped
-                                  memhavocs still rest on it; after a
-                                  fallback, warning
-                                  vc.seam-inb-fallback-conditional)
-  vc.seam-inb-violated: at <file:line:col> <op>: <reason>
-                                  (--seam, before the run restarts without
-                                  A-INB; the first 8 definite violations:
-                                  op load / store / memset / memmove /
-                                  companion, reason the check that failed:
-                                  numeral offset outside, range outside,
-                                  object of size 0 or smaller than the
-                                  access, ARM range outside; with --smt2 on
-                                  stderr)
-  vc.seam-inb-violated-count: <n> (all definite violations)
+  seam.premises: assumed accesses=<n> conditions=<m>
+  seam.premises: off [(fallback: an access leaves its object)]
+      [(lowering: drop-fresh-memhavoc=<n> rests on A-SEP)]   (--seam:
+                                  whether the premises are on; n program
+                                  accesses, m of them with an in-bounds
+                                  condition that is not constant (what a
+                                  bounds check would check). off: the VC
+                                  runs without them, the lowering's dropped
+                                  memhavocs still rest on A-SEP; after the
+                                  opt-in fallback, warning
+                                  vc.seam-fallback-conditional)
+  seam.out-of-object: accesses=<n> object=<a> unknown=<u> null=<z> gap=<g>
+                                  (--seam, n > 0: n accesses leave their
+                                  object on every address alternative
+                                  (warning vc.seam-out-of-object), by where
+                                  they land in the placement: another
+                                  object (A-SEP fails if one executes),
+                                  unknown (a symbolic offset or length),
+                                  null (an object of size 0: A-NULL fails if
+                                  one executes), a gap between objects (only
+                                  A-INB fails). The premises stay: an unsat
+                                  holds for the executions that reach none
+                                  of them; --seam-out-of-object=fallback
+                                  runs again without the premises)
+  seam.out-of-object-at: <file:line:col> <op>: <reason> lands=<class>
+                                  (the first 8 of them: op load / store /
+                                  memset / memmove / companion, reason the
+                                  check that failed: numeral offset
+                                  outside, range outside, object of size 0
+                                  or smaller than the access, ARM range
+                                  outside; class object / unknown / null /
+                                  gap; with --smt2 on stderr)
   seam.alias.open.<kind>: <n>     (--seam-stats: the alias questions the
                                   rewriter left to the solver, IS_OVERLAP
                                   terms of the query; kind all,
@@ -2751,7 +2813,7 @@ OUTPUT (stdout, `key: value` lines):
                                   boundary: store-maps expanded, memory-
                                   operation terms translated), unique-names,
                                   ackermannize)
-  seam-trace: id=<n> rules=<r,...> premises=<A-INB,LAYOUT,ALIGN,PTR-INDEX|none> op=<kind>
+  seam-trace: id=<n> rules=<r,...> premises=<A-SEP,A-NULL,A-NOWRAP,LAYOUT,ALIGN,PTR-INDEX|none> op=<kind>
       [loc=<file:line:col>] lhs=<node id> rhs=<node id>   (--seam-trace,
                                   stderr; then seam-trace-lhs: / -rhs: with
                                   the printed terms, cut at 400 characters)
@@ -2759,7 +2821,7 @@ OUTPUT (stdout, `key: value` lines):
       unexpressible=<n>           (--seam-check, after the verdict; checked =
                                   valid + invalid + unknown; unexpressible: a
                                   firing whose premise cannot be stated, e.g.
-                                  an A-INB firing while an address is
+                                  a premise firing while an address is
                                   normalized, or one the boundary cannot
                                   translate: warning seam.check-unexpressible,
                                   never counted valid. A memory-valued firing
@@ -2774,12 +2836,13 @@ OUTPUT (stdout, `key: value` lines):
                                   --smt2 on stderr): rule-calls, rules-fired,
                                   cache-hits, ..., and seam.rule.<rule>: the
                                   times each rule fired (row.store-hit,
-                                  row.store-skip, cmp.diff-base [A-INB],
+                                  row.store-skip, cmp.diff-base [A-SEP],
                                   cmp.same-base, add.normalize, ...); every
                                   rule behind a decision is counted, not only
-                                  the first; seam.rule.premise.a-inb: the
-                                  rewrites that depend on A-INB (0: the answer
-                                  does not use it), seam.rule.arm.skip-diff-base:
+                                  the first; seam.rule.premise.a-sep / a-null
+                                  / a-nowrap: the rewrites that depend on
+                                  each (as assume.a-*: seam=),
+                                  seam.rule.arm.skip-diff-base:
                                   the ARM skips across two bases)
 Names in the query are the names `sea-opt --mlir-use-nameloc-as-prefix`
 prints (%x, ^bb1); nondet constants are nd.<site>; with --seam an
@@ -2905,7 +2968,7 @@ stderr, or the log file; each line flushed as it is written):
 phases: lower, encode, simplify (with the rewriter's normalization),
 solver-term, ackermann, solve, replay (sat only). A killed run's last
 start line names the phase it was in. A run that restarts (the
-vc.seam-inb-violated fallback, the --ack-stride retry) repeats them from
+--seam-out-of-object=fallback, the --ack-stride retry) repeats them from
 encode. <memory>: rss-mb vm-mb (now; Linux only, else omitted)
 peak-rss-mb (so far), in MB; vm-mb is what --mem-limit bounds.
 Inside encode, every --progress-interval=<s> seconds (default 10,
@@ -3057,19 +3120,19 @@ R_T of a --lower --seam run keeps symbolic-length
 memset / memmove: run sea-vc --seam on it.
   reach.program: <id> op=<op> file=<dir>/reach-<k>.mlir at=<loc> [site=<k>]
   reach.programs: <n> dir=<dir>
-  The seam.inb / assume.* lines are the assumptions the answers rest on, as
+  The seam.premises / assume.* lines are the assumptions the answers rest on, as
   for a verdict; the reach runs use the safety replays' interpreter options
   (--addr0-is-null, --memhavoc-null), and after reach.summary
   assume.addr0-is-null: uses=<n> / assume.memhavoc-null-noop: uses=<n>
   count their steps that rested on them. An unreachable check site is vacuity or dead
-  code; a reachable one has satisfiable preconditions (on A-INB under
-  --seam). Errors: vc.reach-replay-mismatch, vc.reach-replay-not-reached,
+  code; a reachable one has satisfiable preconditions (on the premises
+  under --seam). Errors: vc.reach-replay-mismatch, vc.reach-replay-not-reached,
   vc.reach-inconsistent (a replay that reached its own target, agrees
   with the model and stays in its objects reaches a target the VC answers
   unreachable): bugs, status 2; warning vc.reach-replay-memory-error.
   Status: 0 every target decided and every reachable one replayed to it;
   3 some unknown; 4 a replay stops at a memory-safety error before its
-  target (the answer rests on A-INB); 2 a bug as above; 1 error. Not a
+  target (the answer rests on the premises); 2 a bug as above; 1 error. Not a
   safety verdict.
 
 SPLIT (--split=<sel,...>, --split-leaves=<sel,...>, --split-auto,
@@ -3229,7 +3292,8 @@ Kinds and fields:
   stat          key, value (a number when the text is one), plus one field
                 per k=v of the line: every `key: value [k=v ...]` line
                 that is not below (vc-time, seam.*, vc.ackermann-*,
-                seam.inb: value=assumed accesses= conditions=, seam-check:
+                seam.premises: value=assumed accesses= conditions=,
+                seam.out-of-object: accesses= object= ..., seam-check:
                 firings= ..., vc.ptr-companion: loads= ...); a field named
                 kind/text/value twice gets a `_` suffix. BRUNCH_STAT lines
                 are stat records with "brunch":true
@@ -3326,8 +3390,9 @@ jq one-liners:
 BRUNCH STATS (--brunch-stats): also prints `BRUNCH_STAT <key> <value>` lines
 (one token values; brunch collects them into a CSV, utils/bench.py too): result,
 vc-time, solve-time, status (the exit status; not for status 1 before the
-verdict), seam.inb (assumed|off) with seam.inb-accesses / seam.inb-conditions,
-the assume.* lines split the same way (assume.a-inb-drop-fresh-memhavoc,
+verdict), seam.premises (assumed|off) with seam.premises-accesses /
+seam.premises-conditions, the assume.* lines split the same way
+(assume.a-sep-seam, assume.a-sep-drop-fresh-memhavoc,
 assume.memset-bound-count / -bound, assume.addr0-is-null vc with
 assume.addr0-is-null-null-uses),
 and with --seam-stats every seam.* counter and time (also vc.*-time). With
@@ -3345,7 +3410,9 @@ vc.replay-no-failure): a bug in the VC or the interpreter, or a load of an earli
 version whose cell was clobbered (the in-place interpreter sees the new
 value, the VC the old one); 3 unknown; 4 (--seam) sat that does not replay
 because the program leaves an object with the model's inputs: A-INB does not
-hold, the answer is inconclusive, the program has a memory-safety error
+hold (A-SEP or A-NULL may: the check is of bounds, not of separation, so a
+run that only leaves into a gap is reported here as well), the answer is
+inconclusive, the program has a memory-safety error
 (`seam.inb-violation: <message>`, `seam.inb-violation-at: <loc>`; the
 abstract program is run with the model's nondet values, and only a run that
 reads no nondet memory cell is the model's execution: otherwise
@@ -3826,14 +3893,16 @@ int main(int argc, char **argv) {
       return fail("several programs; pick one with --program");
     program = p;
   }
-  if ((!seamInb || !seamRowExpand || !seamRowGroup || seamCheckInbPremise ||
-       !seamLayout || !seamArm || !seamPruneSize0 || seamWide ||
-       seamWideIteOpen || !seamLeafSplit || seamLeafSplitPartial ||
-       seamPullIndex || seamOffsetLeaves.getNumOccurrences() ||
-       seamResolveIteNodes || seamPullConcat || seamCongruence ||
-       ptrCompanion != CompanionMode::Off || !seamStoreMap || !seamSimplify) &&
+  if ((!seamPremises || seamOutOfObject.getNumOccurrences() || !seamRowExpand ||
+       !seamRowGroup || seamCheckInbPremise || !seamLayout || !seamArm ||
+       !seamPruneSize0 || seamWide || seamWideIteOpen || !seamLeafSplit ||
+       seamLeafSplitPartial || seamPullIndex ||
+       seamOffsetLeaves.getNumOccurrences() || seamResolveIteNodes ||
+       seamPullConcat || seamCongruence || ptrCompanion != CompanionMode::Off ||
+       !seamStoreMap || !seamSimplify) &&
       !seam)
-    return fail("--seam-inb, --seam-row-expand, --seam-row-group, "
+    return fail("--seam-premises, --seam-out-of-object, --seam-row-expand, "
+                "--seam-row-group, "
                 "--seam-check-inb-premise, --seam-layout, --seam-prune-size0, "
                 "--seam-wide, --seam-wide-ite-open, --seam-leaf-split, "
                 "--seam-leaf-split-partial, --seam-offset-leaves, "
@@ -3948,7 +4017,8 @@ int main(int argc, char **argv) {
     plantBug = expr::SeaMOptions::PlantBug::RowStoreHit;
   else if (!seamPlantBug.empty())
     return fail("--seam-plant-bug: sub.const or row.store-hit");
-  // the trail outlives the runs (a run without A-INB may follow the first)
+  // the trail outlives the runs (a run without the premises may follow the
+  // first)
   expr::RewriteTrail trail;
   std::unique_ptr<raw_fd_ostream> trailOs, termsOs;
   if (!seamTrail.empty()) {
@@ -3978,8 +4048,8 @@ int main(int argc, char **argv) {
   // gets the expansion (as do add / sub overflow for every solver: solvers
   // expand those eagerly anyway).
   bool nativeMulOverflow = backend != Backend::Yices;
-  // With --seam the answer rests on A-INB. A sat whose replay fails may be
-  // an artifact of a program that leaves its objects; the abstract program
+  // With --seam the answer rests on the premises. A sat whose replay fails may
+  // be an artifact of a program that leaves its objects; the abstract program
   // (every access checked against its object) tells, so keep a copy.
   // --reach: every check of the input gets its reach site, before any
   // pass and any copy: the targets of the lowered program are found in the
@@ -4001,7 +4071,7 @@ int main(int argc, char **argv) {
       p->setAttr(sea::kReachFailuresAttr, UnitAttr::get(&context));
   }
   OwningOpRef<ModuleOp> abstractModule;
-  if (seam && seamInb && abstract && lower)
+  if (seam && seamPremises && abstract && lower)
     abstractModule = module->clone();
   // The pointer mode (PtrSort S0), classified on
   // the input program, before the lowering: sea-split-wide-access makes
@@ -4133,7 +4203,7 @@ int main(int argc, char **argv) {
   if (auto n =
           program->getAttrOfType<IntegerAttr>(sea::kMemhavocNullGuardsAttr))
     nullGuards = n.getInt();
-  // the memhavocs sea-drop-fresh-memhavoc dropped under A-INB
+  // the memhavocs sea-drop-fresh-memhavoc dropped under A-SEP
   // the counters of the lowering passes: sea-range-fold (--range-fold)
   sea::stats::Report lowerStats; // no BRUNCH_STAT lines
   if (auto d =
@@ -4223,7 +4293,7 @@ int main(int argc, char **argv) {
     ropts.lowered = lower;
     ropts.addr0IsNull = addr0IsNull;
     ropts.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
-    if (seam && seamInb && abstractModule)
+    if (seam && seamPremises && abstractModule)
       for (auto p : abstractModule->getOps<sea::ProgramOp>())
         if (p.getSymName() == program.getSymName())
           ropts.abstractProgram = p;
@@ -4343,9 +4413,9 @@ int main(int argc, char **argv) {
   bool iteStatsDone = false;
   uint64_t splitArithNodes = 0;
   size_t splitIntRecorded = 0;
-  // One run of the VC and the solver. Returns kRetryWithoutInb if A-INB
-  // (assumed by the rewriting) is found not to hold.
-  constexpr int kRetryWithoutInb = -1;
+  // One run of the VC and the solver. Returns kRetryWithoutPremises when an
+  // access leaves its object statically and --seam-out-of-object=fallback.
+  constexpr int kRetryWithoutPremises = -1;
   // a sat model that breaks a GEP promise the stride rule relied on: rerun
   // without the rule (PtrIndex.md section 5)
   constexpr int kRetryWithoutStride = -2;
@@ -4558,7 +4628,7 @@ int main(int argc, char **argv) {
     expr::ExprFactory efac;
     sea::ValueNames names(program);
     expr::SeaMOptions seamOpts;
-    seamOpts.assumeInBounds = inb;
+    seamOpts.assumePremises = inb;
     seamOpts.expandUnknownRow = seamRowExpand;
     seamOpts.groupSameValueRow = seamRowGroup;
     seamOpts.checkInbPremise = seamCheckInbPremise;
@@ -4847,7 +4917,7 @@ int main(int argc, char **argv) {
     // the kind of an alias question by its leaf pairs (Rules::eqPairs: an
     // ite pointer is its leaves, not one pointer without a view): every pair
     // by what the views of its two pointers say; the question is the least
-    // decided kind among its pairs (diff-object first: A-INB decides such a
+    // decided kind among its pairs (diff-object first: A-SEP decides such a
     // pair at an access, so one left open is the census's alarm), and
     // `many-leaves` when it has more pairs than the decisions look at
     std::map<std::string, uint64_t> aliasOpenPairs, memOpOpen;
@@ -5382,7 +5452,7 @@ int main(int argc, char **argv) {
         if (o.size.isZero())
           size0.insert(o.constant.get());
       ack.setSize0Bases(std::move(size0));
-      ack.setAssumeInBounds(inb);
+      ack.setAssumePremises(inb);
     }
     ack.analyze(query);
     // auto: not for Bitwuzla, whose own array handling (lemmas on demand)
@@ -5521,27 +5591,43 @@ int main(int argc, char **argv) {
       }
       return sea::solver::makeSolver(efac, backend, l, config);
     };
-    // A-INB is assumed and reported, not checked. Definite violations (a
-    // numeral offset outside the object) make the run start again without
-    // it: a sanity check.
+    // The premises (A-SEP, A-NULL, A-NOWRAP) are assumed and reported, not
+    // checked. A static out-of-object access (no alternative inside its
+    // object: a numeral offset or a range wholly outside it, an object of
+    // size 0 such as null) is reported with where it lands; the premises
+    // fail only if it executes (the check is path-insensitive), so they
+    // stay. --seam-out-of-object=fallback runs again without them.
     if (inb && sem.seam() && sem.inbStaticViolationCount()) {
-      sea::diag::warn("vc.seam-inb-violated",
-                      "an access leaves its object (" +
-                          Twine(sem.inbStaticViolationCount()) +
-                          " access(es) with no alternative inside its "
-                          "object: a numeral offset or an offset range "
-                          "wholly outside it, or an object of size 0 such "
-                          "as null): --seam's A-INB "
-                          "does not hold; running without it");
-      // name the accesses (the first few): where, and which check failed
+      using expr::seam::Landing;
+      const unsigned inObj = sem.outOfObjectCount(Landing::Object);
+      const unsigned unk = sem.outOfObjectCount(Landing::Unknown);
+      const unsigned nul = sem.outOfObjectCount(Landing::Null);
+      std::string what;
+      if (mayRetry)
+        what = "running without the premises (--seam-out-of-object=fallback)";
+      else {
+        what = "the premises stay: the answer holds for the executions that "
+               "reach none of them";
+        if (inObj + unk + nul)
+          what += " (one that is reached and lands in another object, "
+                  "somewhere unknown or through null breaks A-SEP or A-NULL)";
+      }
+      sea::diag::warn(
+          "vc.seam-out-of-object",
+          Twine(sem.inbStaticViolationCount()) +
+              " access(es) leave their object on every address alternative "
+              "(object=" +
+              Twine(inObj) + " unknown=" + Twine(unk) + " null=" + Twine(nul) +
+              " gap=" + Twine(sem.outOfObjectCount(Landing::Gap)) + "); " +
+              what);
+      // name the accesses (the first few): where, which check failed, and
+      // where the access lands
       raw_ostream &os = statOut();
       for (const std::string &n : sem.inbViolationNotes())
-        os << "vc.seam-inb-violated: at " << n << "\n";
-      os << "vc.seam-inb-violated-count: " << sem.inbStaticViolationCount()
-         << "\n";
+        os << "seam.out-of-object-at: " << n << "\n";
       os.flush();
       if (mayRetry)
-        return kRetryWithoutInb;
+        return kRetryWithoutPremises;
     }
     // --split-check: the construction of each level, by z3 (rlimit), on the
     // solver's terms (the boundary of the query): its case conditions are
@@ -5691,10 +5777,23 @@ int main(int argc, char **argv) {
         vcAssumes.site(Name::MemsetBound, "count", memsetBounds);
         vcAssumes.site(Name::MemsetBound, "bound", memsetBoundK);
       }
-      // A-INB, also without --seam: the lowering dropped memhavocs that
-      // are no-ops only if no access lands in their object from outside
+      // the premises of --seam: the rewrites that rest on each (0: the
+      // answer does not), always shown when they are on
+      if (inb && sem.seam()) {
+        const llvm::StringMap<uint64_t> &rc = sem.seamRewriter()->stats().rules;
+        auto count = [&](llvm::StringRef k) -> uint64_t {
+          auto it = rc.find(k);
+          return it == rc.end() ? 0 : it->second;
+        };
+        vcAssumes.site(Name::ASep, "seam", count("premise.a-sep"));
+        vcAssumes.site(Name::ANull, "seam", count("premise.a-null"));
+        vcAssumes.site(Name::ANoWrap, "seam", count("premise.a-nowrap"));
+      }
+      // A-SEP, also without --seam: the lowering dropped memhavocs that
+      // are no-ops only if no access through another object touches their
+      // object's cells
       if (dropFreshInb)
-        vcAssumes.site(Name::AInb, "drop-fresh-memhavoc", dropFreshInb);
+        vcAssumes.site(Name::ASep, "drop-fresh-memhavoc", dropFreshInb);
       // placement makes null address 0 (the segment "null"): every VC of a
       // lowered program identifies null with address 0 (a fact of the
       // target: no check discharges it)
@@ -5706,19 +5805,32 @@ int main(int argc, char **argv) {
         vcAssumes.site(Name::MemhavocNullNoop, "sites", nullGuards);
       vcAssumes.report(r);
       if (sem.seam()) {
-        // the assumption the answer depends on, always visible
+        // whether the premises are on, always visible: the accesses they
+        // are about, and those whose in-bounds condition is not constant
+        // (what a bounds check, which discharges A-INB and with it the
+        // premises, would check)
         if (inb)
-          r.line("seam.inb")
+          r.line("seam.premises")
               .value("assumed")
               .kv("accesses", sem.inbAccessCount())
               .kv("conditions", sem.inbConditionCount());
         else {
           // note: the run's fallback note, " (...)" or empty
-          sea::stats::Line &l = r.line("seam.inb").value("off").text(note);
-          // the lowering's drops rest on A-INB all the same
+          sea::stats::Line &l = r.line("seam.premises").value("off").text(note);
+          // the lowering's drops rest on A-SEP all the same
           if (dropFreshInb)
             l.note("lowering: drop-fresh-memhavoc=" +
-                   std::to_string(dropFreshInb) + " rests on A-INB");
+                   std::to_string(dropFreshInb) + " rests on A-SEP");
+        }
+        // the static out-of-object accesses, by where they land
+        if (unsigned n = sem.inbStaticViolationCount()) {
+          using expr::seam::Landing;
+          r.line("seam.out-of-object")
+              .kv("accesses", n)
+              .kv("object", sem.outOfObjectCount(Landing::Object))
+              .kv("unknown", sem.outOfObjectCount(Landing::Unknown))
+              .kv("null", sem.outOfObjectCount(Landing::Null))
+              .kv("gap", sem.outOfObjectCount(Landing::Gap));
         }
       }
       for (const auto &[k, v] : fromBitsLeft)
@@ -6352,7 +6464,7 @@ int main(int argc, char **argv) {
       return 3;
     }
     // the stride rule: a model that puts two reads whose constraint it
-    // dropped at one index breaks a GEP promise (or a wide access's A-INB);
+    // dropped at one index breaks a GEP promise (or a wide access's A-NOWRAP);
     // decided before any result is printed, the run is repeated without
     // the rule (the arrays are built eagerly: AckermannModel)
     if (ackOn && strideOn && ack.stats().stridePairs) {
@@ -6639,12 +6751,15 @@ int main(int argc, char **argv) {
         ptrIntCheck ? ptrIntViolated + ptrIntUnstored > 0
                     : replay.run.status == sea::RunStatus::AssertFailed;
     gOut->flush();
-    // A failed replay under A-INB: if the model's inputs make the abstract
-    // program access memory outside an object, the sat is not a bug but an
-    // artifact of the violated assumption (conditional soundness: the answer
-    // holds only for executions that satisfy A-INB), and the program has a
-    // memory-safety error. Discharging A-INB is a separate memory-safety
-    // check's work.
+    // A failed replay under the premises: if the model's inputs make the
+    // abstract program access memory outside an object, the program has a
+    // memory-safety error and the sat may be an artifact of a violated
+    // premise (conditional soundness: the answer holds only for executions
+    // that satisfy them). This tests bounds (A-INB, which implies the
+    // premises), not separation: a run whose access only lands in a gap
+    // keeps A-SEP, and is labelled here as well (a VC bug would hide behind
+    // it; a separation check of the run is a follow-up). Discharging the
+    // premises is a separate memory-safety check's work.
     bool replayFailed = replay.run.status == sea::RunStatus::Error ||
                         !replay.mismatches.empty() || !claimSeen;
     if (replayFailed && inb && abstractModule) {
@@ -6684,11 +6799,12 @@ int main(int argc, char **argv) {
             "vc.seam-inb-spurious",
             "sat, but the counterexample does not replay: the program "
             "accesses memory outside an object with these inputs, so A-INB "
-            "(assumed by --seam) does not hold; the answer is inconclusive "
-            "and the program has a memory-safety error (a separate "
-            "memory-safety check of the program discharges A-INB; "
-            "--seam-inb=0 drops it from the VC only, not from the lowering's "
-            "dropped memhavocs, assume.a-inb)",
+            "does not hold, and the premises --seam assumes (A-SEP, A-NULL) "
+            "may not; the answer is inconclusive and the program has a "
+            "memory-safety error (a separate memory-safety check of the "
+            "program discharges them; --seam-premises=0 drops them from the "
+            "VC only, not from the lowering's dropped memhavocs, "
+            "assume.a-sep)",
             abs.at ? std::optional<Location>(abs.at->getLoc()) : std::nullopt);
         return 4;
       }
@@ -6767,34 +6883,40 @@ int main(int argc, char **argv) {
   };
   // one VC and solver run with its fallbacks (a part of a split, or the
   // whole query)
+  // the opt-in fallback: a static out-of-object access reruns without the
+  // premises
+  const bool mayDropPremises =
+      seam && seamPremises && seamOutOfObject == OutOfObject::Fallback;
   auto runOnce = [&]() -> int {
-    int rc = runVc(seamInb, seam && seamInb, "");
+    int rc = runVc(seamPremises, mayDropPremises, "");
     if (rc == kRetryExactCompanion) {
       companionMode = CompanionMode::Exact;
-      rc = runVc(seamInb, seam && seamInb, " (fallback: sat under A-PTRINT)");
+      rc = runVc(seamPremises, mayDropPremises,
+                 " (fallback: sat under A-PTRINT)");
     }
     if (rc == kRetryWithoutStride) {
       strideOn = false;
-      rc = runVc(seamInb, seam && seamInb,
+      rc = runVc(seamPremises, mayDropPremises,
                  " (fallback: the model breaks a GEP promise)");
       if (rc == kRetryExactCompanion) {
         companionMode = CompanionMode::Exact;
-        rc = runVc(seamInb, seam && seamInb, " (fallback: sat under A-PTRINT)");
+        rc = runVc(seamPremises, mayDropPremises,
+                   " (fallback: sat under A-PTRINT)");
       }
     }
-    // the A-INB fallback keeps the rule: its firings that rest on A-INB (K,
-    // size-0 bases) are off without it.
-    if (rc == kRetryWithoutInb) {
-      // the lowering's drops still rest on A-INB, which this program breaks
+    // the opt-in fallback (--seam-out-of-object=fallback) keeps the stride
+    // rule: its firings that rest on a premise (K, size-0 bases) are off
+    // without the premises.
+    if (rc == kRetryWithoutPremises) {
+      // the lowering's drops still rest on A-SEP
       if (dropFreshInb)
-        sea::diag::warn("vc.seam-inb-fallback-conditional",
-                        Twine("the run without A-INB still rests on it: the "
-                              "lowering dropped ") +
+        sea::diag::warn("vc.seam-fallback-conditional",
+                        Twine("the run without the premises still rests on "
+                              "A-SEP: the lowering dropped ") +
                             Twine(dropFreshInb) +
-                            " memhavoc(s) that are no-ops only under A-INB "
-                            "(assume.a-inb), and an access of this program "
-                            "leaves its object: the answer is conditional on "
-                            "an assumption the program is known to break");
+                            " memhavoc(s) that are no-ops only under A-SEP "
+                            "(assume.a-sep), and an access of this program "
+                            "leaves its object");
       rc = runVc(false, false, " (fallback: an access leaves its object)");
     }
     return rc;
@@ -6805,7 +6927,7 @@ int main(int argc, char **argv) {
     // no solver
     rc = [&]() -> int {
       splitPickRun = true;
-      int prc = runVc(seamInb, false, "");
+      int prc = runVc(seamPremises, false, "");
       splitPickRun = false;
       if (prc)
         return prc;
@@ -6955,7 +7077,7 @@ int main(int argc, char **argv) {
       // --split-auto: the pick run, then the leaves of the top candidate
       if (splitAuto) {
         splitPickRun = true;
-        int prc = runVc(seamInb, false, "");
+        int prc = runVc(seamPremises, false, "");
         splitPickRun = false;
         if (prc)
           return prc;

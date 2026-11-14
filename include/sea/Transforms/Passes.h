@@ -124,8 +124,8 @@ std::unique_ptr<mlir::Pass> createExpandSmallMemMovePass();
 inline constexpr llvm::StringLiteral kExpandMemMoveStatsAttr =
     "sea.expand_memmove";
 /// On the sea.program: the number of memhavocs sea-drop-fresh-memhavoc
-/// dropped whose soundness rests on A-INB (an i64; absent: none). sea-vc
-/// reports it as `assume.a-inb: drop-fresh-memhavoc=<n>`.
+/// dropped whose soundness rests on A-SEP (an i64; absent: none). sea-vc
+/// reports it as `assume.a-sep: drop-fresh-memhavoc=<n>`.
 /// On the sea.program: the number of memhavocs sea-guard-null-memhavoc
 /// guarded (their pointer may be null). sea-vc reports it as
 /// `assume.memhavoc-null-noop: vc sites=<n>`.

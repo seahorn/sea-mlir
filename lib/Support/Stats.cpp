@@ -101,9 +101,10 @@ void renderLine(const Line &l, Pass pass, llvm::raw_ostream &os) {
     return;
   case Brunch::Derived: {
     // sea-vc's SeaM block: every `key: value` line with a one-token value,
-    // plus the parts of seam.inb and assume.*
+    // plus the parts of seam.premises, seam.out-of-object and assume.*
     auto [key, val] = llvm::StringRef(text).split(": ");
-    if (key == "seam.inb" || key.starts_with("assume."))
+    if (key == "seam.premises" || key == "seam.out-of-object" ||
+        key.starts_with("assume."))
       brunchParts(os, key, val);
     else if (!val.empty() && !val.contains(' '))
       brunchStat(os, key, val);

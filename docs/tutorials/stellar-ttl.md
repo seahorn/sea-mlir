@@ -167,7 +167,8 @@ transactions.
 The port's fidelity, matching key and entry types, and workers' ownership
 of map shards are premises. The harness executes commits sequentially;
 it does not verify worker races. SeaM assumes low-level accesses stay
-within their objects, reported as `seam.inb: assumed`.
+within their objects (the pointer premises A-SEP, A-NULL, A-NOWRAP),
+reported as `assume.a-*` and `seam.premises: assumed`.
 
 The merge keeps the old dirty flag. Write-back therefore depends on a
 global TTL entry already being dirty. Valid footprints exclude TTL keys,
@@ -232,7 +233,7 @@ The output keeps the encoding assumption visible:
 ```console
 $ sea-vc stellar/ttl-contract-K1.mlir --lower --seam --widen-memory=4
 ...
-seam.inb: assumed accesses=316 conditions=0
+seam.premises: assumed accesses=316 conditions=0
 solve-time: 0.090
 result: unsat
 ```
