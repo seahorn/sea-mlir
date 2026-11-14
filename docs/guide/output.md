@@ -13,7 +13,7 @@ comes from the [HPACK decoder proof](../tutorials/firedancer.md):
 
 ```console
 $ sea-vc firedancer/hpack-huff-proof.mlir --lower --seam --widen-memory=4
-tool.version: sea-mlir 0.1.0 (...)
+tool.version: sea-mlir 0.1.1 (...)
 ...
 seam.inb: assumed accesses=51 conditions=9
 ...
@@ -55,7 +55,7 @@ encoding statistics. These help diagnose a result or compare configurations:
 
 ```console
 $ sea-vc firedancer/hpack-huff-proof.mlir --lower --seam --widen-memory=4
-tool.version: sea-mlir 0.1.0 (...)
+tool.version: sea-mlir 0.1.1 (...)
 vc.typecheck-time: 0.001
 program: @main
 vc.ptr-mode: opaque

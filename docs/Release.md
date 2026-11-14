@@ -1,4 +1,4 @@
-# sea-mlir 0.1.0: the first release
+# sea-mlir 0.1.1
 
 This release freezes the functionality of sea-mlir so that applications can
 build on a fixed version instead of the development branch. It is a
@@ -81,6 +81,19 @@ releases the pin moves to a newer LLVM commit about once a month.
 `--llvm <dir>`, also the commits it is behind `main`, in total and in the
 MLIR parts sea-mlir uses). `just release-check` warns when the pin is
 older than 45 days and fails when it is older than 90 days.
+
+Version numbers of the 0.x preview, before LLVM 24:
+- The minor version (0.x to 0.(x+1)) changes when what a verdict rests on
+  changes (the default assumptions, the encoding semantics), or when the
+  output or the command line change incompatibly.
+- The patch version changes for fixes, performance, new opt-in flags, and
+  the removal of hidden experiments. Verdicts are unchanged.
+- A tag is made when a stack of changes that completes a theme merges, and
+  always just before a minor change.
+
+Within a minor version the same verdicts are expected; only performance may
+move. Across minor versions verdict differences are expected, and they are
+triaged against the tag of the earlier version.
 
 ### Configure, build, test, install
 
