@@ -56,7 +56,6 @@ To see what a solver receives, use `--smt2`, not a log.
 | `vc.solve` | 1 | `sea-vc` | one solver call of the verdict |
 | `vc.reach` | 2 | `sea-vc` | `--reach`: one target's query (answer, solve time) and replay (status, time); a target a concrete run decided (`via`, `by`) |
 | `vc.store-read` | 3 | `sea-vc` | a memory key read before any write |
-| `xrt.model-record` | 3 | `sea-vc` | `--x-read-table`: one read record of the model (`record`, `addr`, `value`, `rel`) as the model reads it back |
 | `yices.const-array` | 2 | `sea-vc` | `--solver=yices`: an assertion in which a const-array survives the select rewrite (yices cannot assert it): their count and the assertion |
 | `canon.fold` | 2 | all (canonicalize) | one fold of a sea canonicalizer: `assume-true`, `assume-false`, `assert-true`, `assert-false`, `br-merge`, `load-stored` |
 | `fuzz.run` | 1, 2 | `sea-run` | `--fuzz`: start and end (1); each trial that reached new coverage (2) |
@@ -158,8 +157,8 @@ operations under that operation), `time`. A failed pass has the message
 
 `vc.solve`: one event per solver call of the verdict (a run that starts again
 calls it again): `backend`, `result` (`sat`, `unsat`, `unknown`), `time`,
-`nodes-made`. The auxiliary queries of `--seam-check`, `--eq-audit`,
-`--words-check` and `--x-read-table-check` have no event.
+`nodes-made`. The auxiliary queries of `--seam-check`, `--eq-audit`
+and `--words-check` have no event.
 
 ## Selecting logs
 

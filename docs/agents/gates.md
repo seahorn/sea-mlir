@@ -251,13 +251,12 @@ split markers is not standalone), except those `--exclude` matches (default
 `^VC/limits/`: the `--timeout` tests, which run for minutes without the
 flag); every input runs every entry. The
 built-in matrix (`--print-matrix`) holds the default encoding, `--seam`
-with `--seam-stats --brunch-stats`, `--mem=lambda`, `--x-read-table=mux`
-(with and without its premise checks), `--seam-words=auto --words-check`,
+with `--seam-stats --brunch-stats`, `--mem=lambda`, `--seam-words=auto --words-check`,
 `--eq-audit`, `--split-auto`, `--reach`, `--smt2`, and two `sea-run`
 entries (`--missing=zero`, `--fuzz=200 --seed=1`); each `sea-vc` run adds
 `--log=vc.phase,lower.pass,vc.solve` (`--vc-common`). The entries that run
 extra solver checks, the encodings without SeaM (`default`,
-`--mem=lambda`) and the read-table experiment (`xrt`), which take minutes
+`--mem=lambda`), which take minutes
 on some vcc jobs, are `heavy`;
 `--quick` skips them for the inputs of `$SEA_BENCH_SUITES` (the bench
 corpus) only: the small programs of `test/VC` and `test/Interp` run every

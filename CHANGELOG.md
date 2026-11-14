@@ -62,8 +62,8 @@ Scope, build, assumptions and known issues: [docs/Release.md](docs/Release.md).
   - `--seam-check` on a build without Bitwuzla (`--solver=bitwuzla`) now
     reports `vc.solver-unavailable` under `--smt2` and `--vcgen-only`; it was
     skipped silently there.
-  - `--x-read-table-check-timeout=0` no longer sets z3's `timeout=0`: the
-    same behaviour (no timeout), no parameter set.
+  - Removed the hidden `--x-read-table*` experiment (a guarded read table at
+    the solver boundary; design and data are in the project notes).
   - `--z3-tactic` applies to the solver of the verdict only, no longer to
     the auxiliary checks; a tactic z3 rejects is the error `vc.z3-tactic`.
   - Output files (`--print-lowered`, `--place-out`, `--reach-programs`,

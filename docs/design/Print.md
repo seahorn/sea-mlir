@@ -171,9 +171,9 @@ location, by range).
   (`solver::Model::defaultCell`): every use of its array in the query is
   a select (through stores and ites) and no select index has its address
   in the model. A solver's model gives such a cell a value anyway (an
-  array's `else`, the 0 of an Ackermann / read-table function), so the
+  array's `else`, the 0 of an Ackermann function), so the
   evaluation alone cannot tell: `expr::ReadCellsModel` (the solver's
-  arrays), `AckermannModel`, `xrt::TableModel` (their functions) and
+  arrays), `AckermannModel` (its functions) and
   `WordsModel` (a byte is a default iff its word is) answer it, the same
   for every solver. Conservative: an array used other than by reads (an
   equality, a lambda), or a read index with no value, has no default

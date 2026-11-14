@@ -663,7 +663,7 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
     }
     // Ops whose effect is a fact, not a value.
     if (auto assume = dyn_cast<AssumeOp>(op)) {
-      assumeSides.push_back(ctx.side().size()); // EXPERIMENT: --x-read-table
+      assumeSides.push_back(ctx.side().size());
       ctx.addScopedSide(toBool(in(0)));
       continue;
     }
