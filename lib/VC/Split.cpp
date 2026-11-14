@@ -968,8 +968,10 @@ uint64_t SplitCensus::attributeArith(SeaOpSem &sem, const Expr &solverQuery,
             break;
           }
           std::vector<ENode *> u;
+          // sorted by id (std::set<ENode *>), merged by id
           std::set_union(r.atoms.begin(), r.atoms.end(), c.atoms.begin(),
-                         c.atoms.end(), std::back_inserter(u));
+                         c.atoms.end(), std::back_inserter(u),
+                         std::less<ENode *>());
           r.atoms = std::move(u);
           if (r.atoms.size() > kMaxArithAtoms) {
             r.over = true;
@@ -1178,9 +1180,11 @@ bool IteCensus::ground(ENode *root, const expr::BaseRegistry &bases) {
 const IteCensus::TreeSets &IteCensus::treeOf(const Expr &root) {
   auto add = [](std::vector<ENode *> &into, const std::vector<ENode *> &b,
                 bool &capped) {
+    // every set sorted by id (guards come from a std::set<ENode *>), so
+    // the cap keeps the same nodes in every run
     std::vector<ENode *> u;
     std::set_union(into.begin(), into.end(), b.begin(), b.end(),
-                   std::back_inserter(u));
+                   std::back_inserter(u), std::less<ENode *>());
     if (u.size() > kTreeCap) {
       u.resize(kTreeCap);
       capped = true;
