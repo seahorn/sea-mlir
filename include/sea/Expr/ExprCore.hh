@@ -99,6 +99,9 @@ public:
    **/
   virtual void Print(std::ostream &OS, const std::vector<ENode *> &args,
                      int depth = 0, bool brkt = true) const = 0;
+  /// Equality of operators; false for operators of different classes (one
+  /// unique table holds the nodes of all operators, ExprFactory). Terminals
+  /// rely on their TerminalKind for this: one kind per terminal type.
   virtual bool operator==(const Operator &rhs) const = 0;
   virtual bool operator<(const Operator &rhs) const = 0;
   virtual size_t hash() const = 0;
@@ -322,12 +325,10 @@ public:
 
 class ExprFactory : boost::noncopyable {
 protected:
-  using unique_entry_type =
+  // -- type of the unique table: one set for all operators (the hash and
+  // -- the equality include the operator, Operator::operator==)
+  using unique_type =
       std::unordered_set<ENode *, ENodeUniqueHash, ENodeUniqueEqual>;
-
-  using unique_key_type = std::string;
-  // -- type of the unique table
-  using unique_type = std::map<unique_key_type, unique_entry_type>;
 
   using caches_type = boost::ptr_vector<CacheStub>;
 
@@ -357,12 +358,9 @@ protected:
   void Remove(ENode *val) {
     clearCaches(val);
     if (!val->isMutable()) {
-      unique_type::iterator it = unique.find(val->op().name());
       // -- can only remove things that have been inserted before
-      assert(it != unique.end());
-      it->second.erase(val);
-      if (it->second.empty())
-        unique.erase(it);
+      [[maybe_unused]] size_t n = unique.erase(val);
+      assert(n == 1);
     }
     freeNode(val);
   }
@@ -385,7 +383,7 @@ protected:
       return v;
     }
 
-    auto x = unique[v->op().name()].insert(v);
+    auto x = unique.insert(v);
     if (x.second) {
       v->setId(uniqueId());
       return v;
