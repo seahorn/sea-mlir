@@ -22,6 +22,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "sea/VC/JoinCases.h"
+#include "sea/Support/Stats.h"
 
 #include <boost/functional/hash.hpp>
 
@@ -197,6 +198,13 @@ unsigned checkReorder(ExprFactory &efac) {
 
 } // namespace
 
+/// The `cases.*` lines of \p jc on stdout.
+static void printCounters(const sea::JoinCases &jc) {
+  sea::stats::Report r;
+  jc.report(r);
+  r.print(llvm::outs(), false);
+}
+
 int main(int argc, char **argv) {
   ExprFactory efac;
   auto b = [&](const std::string &n) {
@@ -237,7 +245,7 @@ int main(int argc, char **argv) {
           "bit-vector edge refused");
     CHECK(why.find("condition 0 is not Boolean") != std::string::npos,
           "refusal reason: " << why);
-    jc.print(llvm::outs());
+    printCounters(jc);
   }
   if (argc > 1 && std::string(argv[1]) == "reorder") {
     llvm::outs() << "reorder.exhaustive: " << checkReorder(efac) << "\n";
@@ -260,7 +268,7 @@ int main(int argc, char **argv) {
       r = jc.join({e0, e1}, {x, y}, sea::JoinKind::Value, why);
       CHECK(r == mk<ITE>(e0, x, y), "distinct: " << str(r));
       llvm::outs() << "reorder: merge\n";
-      jc.print(llvm::outs());
+      printCounters(jc);
     }
     {
       // merge and drop-default
@@ -277,7 +285,7 @@ int main(int argc, char **argv) {
       r = jc.join({e0, e1}, {x, x}, sea::JoinKind::Companion, why);
       CHECK(r == x, "all equal: " << str(r));
       llvm::outs() << "reorder: merge drop-default\n";
-      jc.print(llvm::outs());
+      printCounters(jc);
     }
   }
   llvm::outs() << "failures: " << failures << "\n";

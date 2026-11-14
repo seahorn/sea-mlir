@@ -45,6 +45,7 @@
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/ExprOpArray.hh"
 #include "sea/Expr/Smt/Model.hh"
+#include "sea/Support/Stats.h"
 
 #include "llvm/Support/raw_ostream.h"
 
@@ -90,6 +91,23 @@ public:
         0; ///< reads with a proved-aligned S, not a whole word
     uint64_t maskedReads = 0; ///< reads through a canonical B_S
     uint64_t maskedParts = 0; ///< distinct symbolic parts with a B_S
+
+    /// The `<prefix><counter>: <n>` lines (sea-vc `words.`).
+    void report(sea::stats::Report &r, llvm::StringRef prefix) const {
+      auto line = [&](const llvm::Twine &k) -> sea::stats::Line & {
+        return r.line((prefix + k).str());
+      };
+      line("candidates").value(candidates);
+      line("eligible").value(eligible);
+      line("chosen").value(chosen);
+      line("translated").value(translated);
+      line("word-reads").value(wordReads);
+      line("aligned-proved").value(alignedProved);
+      line("aligned-by-annotation").value(alignedByAnnotation);
+      line("aligned-partial").value(alignedPartial);
+      line("masked-reads").value(maskedReads);
+      line("masked-parts").value(maskedParts);
+    }
   };
 
   /// \p w a power of two >= 2; \p layout: constants with a known value (the
@@ -269,6 +287,23 @@ public:
   const std::vector<std::pair<Expr, Expr>> &reads() const { return m_reads; }
   const Stats &stats() const { return m_stats; }
   const std::vector<Census> &census() const { return m_census; }
+
+  /// The counters (Stats::report), then one `<prefix>array: name=...` line
+  /// per candidate array (the census).
+  void report(sea::stats::Report &r, llvm::StringRef prefix) const {
+    stats().report(r, prefix);
+    for (const Census &c : census()) {
+      sea::stats::Line &l = r.line((prefix + "array").str());
+      l.kv("name", *op::bind::fname(c.array->first()))
+          .kv("chosen", c.chosen ? 1 : 0)
+          .kv("selects", c.selects)
+          .kv("wselects", c.wselects)
+          .kv("aligned-words", c.alignedWords)
+          .kv("other-bytes", c.otherBytes);
+      if (!c.chosen)
+        l.kv("reason", c.reason.empty() ? "-" : c.reason);
+    }
+  }
 
 private:
   bool isCandidateSort(const Expr &a) const {

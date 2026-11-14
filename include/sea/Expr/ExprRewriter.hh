@@ -50,6 +50,7 @@
 #include "sea/Expr/ExprCore.hh"
 #include "sea/Expr/RewriteTrail.hh"
 #include "sea/Support/Diag.h"
+#include "sea/Support/Stats.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
@@ -230,21 +231,25 @@ struct RewriteStats {
     trail = t;
   }
 
-  /// \brief `key: value` lines, rules sorted by name
-  void print(llvm::raw_ostream &os, llvm::StringRef prefix = "") const {
-    os << prefix << "rule-calls: " << ruleCalls << "\n"
-       << prefix << "rules-fired: " << rulesFired << "\n"
-       << prefix << "cache-hits: " << cacheHits << "\n"
-       << prefix << "cache-inserts: " << cacheInserts << "\n"
-       << prefix << "chain-hops: " << chainHops << "\n"
-       << prefix << "chain-starts: " << chainStarts << "\n"
-       << prefix << "chain-start-caches: " << chainStartCaches << "\n";
+  /// \brief `<prefix><counter>: <n>` lines, rules (`<prefix>rule.<name>`)
+  /// sorted by name
+  void report(sea::stats::Report &r, llvm::StringRef prefix = "") const {
+    auto line = [&](const llvm::Twine &k) -> sea::stats::Line & {
+      return r.line((prefix + k).str());
+    };
+    line("rule-calls").value(ruleCalls);
+    line("rules-fired").value(rulesFired);
+    line("cache-hits").value(cacheHits);
+    line("cache-inserts").value(cacheInserts);
+    line("chain-hops").value(chainHops);
+    line("chain-starts").value(chainStarts);
+    line("chain-start-caches").value(chainStartCaches);
     std::vector<std::pair<std::string, uint64_t>> v;
     for (auto &kv : rules)
       v.emplace_back(kv.getKey().str(), kv.getValue());
     std::sort(v.begin(), v.end());
     for (auto &kv : v)
-      os << prefix << "rule." << kv.first << ": " << kv.second << "\n";
+      line("rule." + kv.first).value(kv.second);
   }
 };
 
