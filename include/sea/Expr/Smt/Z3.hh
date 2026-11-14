@@ -315,8 +315,13 @@ protected:
   }
 
 public:
-  ZContext(ExprFactory &ef) : efac(ef), ctx(m_c) { init(); }
-  ZContext(ExprFactory &ef, z3::config &c) : efac(ef), ctx(c) { init(); }
+  ZContext(ExprFactory &ef) : efac(ef), ctx((z3EnsureContext(m_c), m_c)) {
+    init();
+  }
+  ZContext(ExprFactory &ef, z3::config &c)
+      : efac(ef), ctx((z3EnsureContext(c), c)) {
+    init();
+  }
   ZContext(const ZContext &) = delete;
 
   ~ZContext() { cache.clear(); }
@@ -674,9 +679,19 @@ public:
       *(out++) = z3.toExpr(r[i]);
   }
 
+  /// After a check: a memory-out is unknown (reasonUnknown says why), any
+  /// other error is reported
+  void checkCheckError() {
+    Z3_error_code code = Z3_get_error_code(ctx);
+    if (code != Z3_OK && code != Z3_MEMOUT_FAIL)
+      z3ReportError(ctx, code);
+  }
+
   boost::tribool solve() {
+    // a memory-out is read below, as unknown
+    Z3ExpectErrors expect;
     boost::tribool res = z3l_to_tribool(Z3_solver_check(ctx, solver));
-    ctx.check_error();
+    checkCheckError();
     return res;
   }
 
@@ -703,9 +718,10 @@ public:
     for (unsigned i = 0; i < av.size(); ++i)
       raw_av[i] = Z3_ast_vector_get(ctx, av, i);
 
+    Z3ExpectErrors expect;
     boost::tribool res = z3l_to_tribool(
         Z3_solver_check_assumptions(ctx, solver, raw_av.size(), &raw_av[0]));
-    ctx.check_error();
+    checkCheckError();
     return res;
   }
 
@@ -740,17 +756,7 @@ public:
 
   /// Makes z3 build the solver now: it does so at the first use, and reads
   /// the global parameters (the default tactic, sat.euf) when it does.
-  /// Returns z3's message when that fails (an unknown tactic), else empty.
-  std::string init() {
-    // the caller reports the error: not the internal-error handler
-    Z3ExpectErrors expect;
-    Z3_solver_get_num_scopes(ctx, solver);
-    Z3_error_code code = Z3_get_error_code(ctx);
-    if (code == Z3_OK)
-      return std::string();
-    const char *msg = Z3_get_error_msg(ctx, code);
-    return msg ? msg : "z3 failed to build the solver";
-  }
+  void init() { Z3_solver_get_num_scopes(ctx, solver); }
 };
 
 template <typename Z>

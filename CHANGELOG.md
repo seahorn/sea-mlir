@@ -76,7 +76,8 @@ Scope, build, assumptions and known issues: [docs/Release.md](docs/Release.md).
   them (and a failing call went on). `--z3-tactic` that z3 cannot parse
   (`vc.z3-tactic`) and `--z3-param` that z3 rejects (`smt.z3-param`) are
   errors; any other z3 error reaches a handler on every z3 context: kind
-  `smt.z3-internal`, non-zero exit.
+  `smt.z3-internal`, non-zero exit. A z3 memory-out is not one of
+  these: it ends as unknown (exit 3), as a memory limit does.
 
 ### Tools and utilities
 - `sea-reduce` (mlir-reduce with sea patterns and the sea reduction tree)

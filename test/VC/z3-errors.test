@@ -12,6 +12,7 @@ NAME-NOT: smt.z3-internal
 A z3 parameter z3 rejects (z3 alone warns and carries on):
 RUN: not sea-vc %S/seam/eq-audit.mlir --program=memset --lower --seam --z3-param=nosuchparam=1 2>&1 | FileCheck %s --check-prefix=PNAME
 PNAME: Error: z3 rejects --z3-param nosuchparam=1: {{.*}}unknown parameter{{.*}} [smt.z3-param]
+RUN: not sea-vc %S/seam/eq-audit.mlir --program=memset --lower --seam --z3-param=warning=false --z3-param=nosuchparam=1 2>&1 | FileCheck %s --check-prefix=PNAME
 RUN: not sea-vc %S/seam/eq-audit.mlir --program=memset --lower --seam --z3-param=rlimit=abc 2>&1 | FileCheck %s --check-prefix=PVALUE
 PVALUE: Error: z3 rejects --z3-param rlimit=abc: {{.*}} [smt.z3-param]
 RUN: not sea-vc %S/seam/eq-audit.mlir --program=memset --lower --seam --z3-param=sat.euf=1 2>&1 | FileCheck %s --check-prefix=PBOOL
@@ -19,6 +20,25 @@ PBOOL: Error: z3 rejects --z3-param sat.euf=1: {{.*}} [smt.z3-param]
 A good parameter and a good tactic still run:
 RUN: sea-vc %S/seam/eq-audit.mlir --program=memset --lower --seam --z3-param=smt.random_seed=3 --z3-tactic=smtfd 2>&1 | FileCheck %s --check-prefix=OK
 OK: result: sat
+
+A z3 memory-out is not an internal error: it is the memory limit's outcome
+(unknown, exit 3), in a check, outside one (reach: the memout is z3's error
+code), and when z3 cannot even make a context (memory_max_size at most 16):
+RUN: sh -c 'sea-vc "$0" --program=memset --lower --seam --z3-param=memory_max_size=18 >%t.plain 2>&1; test $? -eq 3' %S/seam/eq-audit.mlir
+RUN: FileCheck %s --check-prefix=MEMOUT < %t.plain
+RUN: sh -c 'sea-vc "$0" --program=memset --lower --seam --reach --z3-param=memory_max_size=18 >%t.reach 2>&1; test $? -eq 3' %S/seam/eq-audit.mlir
+RUN: FileCheck %s --check-prefix=MEMOUT < %t.reach
+RUN: sh -c 'sea-vc "$0" --program=memset --lower --seam --z3-param=memory_max_size=16 >%t.ctx 2>&1; test $? -eq 3' %S/seam/eq-audit.mlir
+RUN: FileCheck %s --check-prefix=MEMOUT < %t.ctx
+RUN: sh -c 'sea-vc "$0" --program=memset --lower --seam --z3-tactic=qfbv --z3-param=memory_max_size=20 >%t.tac 2>&1; test $? -eq 3' %S/seam/eq-audit.mlir
+RUN: FileCheck %s --check-prefix=MEMOUT < %t.tac
+RUN: sh -c 'sea-vc "$0" --program=memset --lower --seam --reach --z3-param=memory_max_size=18 --mem-limit=2000 >%t.lim 2>&1; test $? -eq 3' %S/seam/eq-audit.mlir
+RUN: FileCheck %s --check-prefix=MEMLIM < %t.lim
+MEMOUT: result: unknown
+MEMOUT-NOT: smt.z3-internal
+MEMLIM: result: unknown
+MEMLIM: mem-limit: hit
+MEMLIM-NOT: smt.z3-internal
 
 An error z3 reports from inside sea-vc reaches the handler (planted: an invalid
 API call):
