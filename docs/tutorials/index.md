@@ -19,6 +19,8 @@ problem and the scope of the check before discussing verification machinery.
 | [HPACK decoding](firedancer.md) | nghttp2's Huffman decoder in Firedancer | Does the decoder respect its input and output boundaries? |
 | [Transaction parsing](txn-parse.md) | Firedancer's `fd_txn_parse_core` | Do parsing steps preserve the bounds needed for subsequent reads? |
 | [HTTP/2 flow control](h2-flow-control.md) | Firedancer's h2 client | Do window updates and data transmission preserve the protocol's accounting? |
+| [z3: a tableau pivot step](z3-pivot.md) | z3's `static_matrix::pivot_row_to_row_given_cell` | Does one pivot step leave every column of the target row correct, for any matrix shape? |
+| [z3: the pivot-step gate](z3-pivot-gate.md) | the same function, on z3's own headers | What does the gate certify, what does a developer see, and what does it cost per pull request? |
 
 ## Reproducing the experiments
 
