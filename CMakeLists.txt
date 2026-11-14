@@ -10,6 +10,9 @@ set(SEA_GIT_DESCRIBE "" CACHE STRING
 set(CMAKE_BUILD_WITH_INSTALL_NAME_DIR ON)
 set(CMAKE_CXX_STANDARD 17 CACHE STRING "C++ standard to conform to")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# As LLVM (llvm/CMakeLists.txt): ISO C++, no GNU extensions, so this code is
+# compiled in the same dialect as the LLVM / MLIR headers it includes.
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(LLVM_LIT_ARGS "-sv -j8" CACHE STRING "Default options for lit")
 get_property(LLVM_LIT_ARGS_CACHED CACHE LLVM_LIT_ARGS PROPERTY VALUE)
