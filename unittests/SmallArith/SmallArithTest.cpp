@@ -159,8 +159,8 @@ void testCircular() {
                               << ", " << str(nhi) << ", " << w << ")");
             CHECK(smallarith::ref::circular(lo, hi, nlo, nhi, w) == want,
                   "ref::circular(" << str(lo) << ", " << str(hi) << ", "
-                                   << str(nlo) << ", " << str(nhi) << ", "
-                                   << w << ")");
+                                   << str(nlo) << ", " << str(nhi) << ", " << w
+                                   << ")");
           }
   // every answer (wrap / empty, undecided, In, Out) is reached
   for (uint64_t n : answers)
