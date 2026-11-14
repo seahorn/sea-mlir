@@ -4,6 +4,7 @@
 add_subdirectory(ExprRewriter)
 add_subdirectory(AddrRange)
 add_subdirectory(Log)
+add_subdirectory(Timer)
 # these check rules for soundness with Yices (lit feature `yices`)
 if(SEA_WITH_YICES)
   add_subdirectory(SeaMRules)

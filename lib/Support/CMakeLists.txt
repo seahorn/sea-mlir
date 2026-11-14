@@ -8,6 +8,7 @@ add_mlir_library(SeaSupport
   Output.cpp
   ProcMem.cpp
   SeaLog.cpp
+  Timer.cpp
   Version.cpp
 
   LINK_LIBS PUBLIC
