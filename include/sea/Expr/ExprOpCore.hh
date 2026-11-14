@@ -210,8 +210,12 @@ struct TerminalTrait<expr::mpz_class> {
   }
 
   static inline size_t hash(const expr::mpz_class &v) {
-    std::hash<std::string> hasher;
-    return hasher(v.to_string());
+    // the sign and the limbs, no string conversion
+    mpz_srcptr z = v.get_mpz_t();
+    size_t seed = static_cast<size_t>(mpz_sgn(z) + 1);
+    for (size_t i = 0, n = mpz_size(z); i < n; ++i)
+      boost::hash_combine(seed, mpz_getlimbn(z, i));
+    return seed;
   }
 
   static TerminalKind getKind() { return TerminalKind::MPZ; }
