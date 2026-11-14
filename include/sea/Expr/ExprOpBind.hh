@@ -33,8 +33,8 @@ struct SCOPE_PS {
   }
 };
 struct FAPP_PS;
-Expr rangeTy(Expr);
-inline bool isBVar(Expr e);
+Expr rangeTy(const Expr &);
+inline bool isBVar(const Expr &e);
 } // namespace bind
 
 namespace typeCheck {
@@ -81,7 +81,7 @@ struct Fdecl : public TypeCheckBase {
     if (exp->arity() < 2)
       return sort::errorTy(exp->efac());
 
-    auto isType = [&tc](Expr exp) -> bool {
+    auto isType = [&tc](const Expr &exp) -> bool {
       return isOp<TYPE_TY>(tc.typeOf(exp));
     };
 
@@ -131,44 +131,56 @@ struct Fapp : public TypeCheckBase {
 } // namespace typeCheck
 
 namespace bind {
-inline Expr bind(Expr name, Expr value) { return mk<BIND>(name, value); }
-inline Expr name(Expr e) { return e->left(); }
-inline Expr type(Expr e) { return e->right(); }
-inline Expr value(Expr e) { return e->right(); }
+inline Expr bind(const Expr &name, const Expr &value) {
+  return mk<BIND>(name, value);
+}
+inline Expr name(const Expr &e) { return e->left(); }
+inline Expr type(const Expr &e) { return e->right(); }
+inline Expr value(const Expr &e) { return e->right(); }
 
-inline Expr var(Expr name, Expr type) { return bind(name, type); }
-inline Expr intVar(Expr name) { return var(name, mk<INT_TY>(name->efac())); }
-inline Expr realVar(Expr name) { return var(name, mk<REAL_TY>(name->efac())); }
-inline Expr boolVar(Expr name) { return var(name, mk<BOOL_TY>(name->efac())); }
-inline Expr charVar(Expr name) { return var(name, mk<CHAR_TY>(name->efac())); }
-inline Expr unintVar(Expr name) {
+inline Expr var(const Expr &name, const Expr &type) { return bind(name, type); }
+inline Expr intVar(const Expr &name) {
+  return var(name, mk<INT_TY>(name->efac()));
+}
+inline Expr realVar(const Expr &name) {
+  return var(name, mk<REAL_TY>(name->efac()));
+}
+inline Expr boolVar(const Expr &name) {
+  return var(name, mk<BOOL_TY>(name->efac()));
+}
+inline Expr charVar(const Expr &name) {
+  return var(name, mk<CHAR_TY>(name->efac()));
+}
+inline Expr unintVar(const Expr &name) {
   return var(name, mk<UNINT_TY>(name->efac()));
 }
 
 template <typename T>
-bool isVar(Expr v) {
+bool isVar(const Expr &v) {
   return isOpX<BIND>(v) && isOpX<T>(bind::type(v));
 }
-inline bool isBoolVar(Expr v) { return isVar<BOOL_TY>(v); }
-inline bool isIntVar(Expr v) { return isVar<INT_TY>(v); }
-inline bool isRealVar(Expr v) { return isVar<REAL_TY>(v); }
+inline bool isBoolVar(const Expr &v) { return isVar<BOOL_TY>(v); }
+inline bool isIntVar(const Expr &v) { return isVar<INT_TY>(v); }
+inline bool isRealVar(const Expr &v) { return isVar<REAL_TY>(v); }
 
-inline Expr constDecl(Expr name, Expr type) { return mk<FDECL>(name, type); }
-inline Expr boolConstDecl(Expr name) {
+inline Expr constDecl(const Expr &name, const Expr &type) {
+  return mk<FDECL>(name, type);
+}
+inline Expr boolConstDecl(const Expr &name) {
   return constDecl(name, mk<BOOL_TY>(name->efac()));
 }
-inline Expr intConstDecl(Expr name) {
+inline Expr intConstDecl(const Expr &name) {
   return constDecl(name, mk<INT_TY>(name->efac()));
 }
-inline Expr realConstDecl(Expr name) {
+inline Expr realConstDecl(const Expr &name) {
   return constDecl(name, mk<REAL_TY>(name->efac()));
 }
-inline Expr unintConstDecl(Expr name) {
+inline Expr unintConstDecl(const Expr &name) {
   return constDecl(name, mk<UNINT_TY>(name->efac()));
 }
 
 template <typename Range>
-Expr fdecl(Expr fname, const Range &args) {
+Expr fdecl(const Expr &fname, const Range &args) {
   // -- at least one value for range type
   assert(boost::size(args) > 0);
   ExprVector _args;
@@ -177,20 +189,21 @@ Expr fdecl(Expr fname, const Range &args) {
   return mknary<FDECL>(_args);
 }
 
-inline bool isFdecl(Expr fdecl) { return isOpX<FDECL>(fdecl); }
-inline Expr fname(Expr fdecl) { return fdecl->first(); }
+inline bool isFdecl(const Expr &fdecl) { return isOpX<FDECL>(fdecl); }
+inline Expr fname(const Expr &fdecl) { return fdecl->first(); }
 
-inline Expr fapp(Expr fdecl) { return mk<FAPP>(fdecl); }
+inline Expr fapp(const Expr &fdecl) { return mk<FAPP>(fdecl); }
 
 template <typename Range>
-Expr fapp(Expr fdecl, const Range &args) {
+Expr fapp(const Expr &fdecl, const Range &args) {
   ExprVector _args;
   _args.push_back(fdecl);
   _args.insert(_args.end(), std::begin(args), std::end(args));
   return mknary<FAPP>(_args);
 }
 
-inline Expr fapp(Expr fdecl, Expr a0, Expr a1 = Expr(), Expr a2 = Expr()) {
+inline Expr fapp(const Expr &fdecl, const Expr &a0, const Expr &a1 = Expr(),
+                 const Expr &a2 = Expr()) {
   ExprVector args;
   args.push_back(fdecl);
 
@@ -203,46 +216,48 @@ inline Expr fapp(Expr fdecl, Expr a0, Expr a1 = Expr(), Expr a2 = Expr()) {
   return mknary<FAPP>(args);
 }
 
-inline bool isFapp(Expr fapp) { return isOpX<FAPP>(fapp); }
+inline bool isFapp(const Expr &fapp) { return isOpX<FAPP>(fapp); }
 
-inline Expr rangeTy(Expr fdecl) { return fdecl->last(); }
+inline Expr rangeTy(const Expr &fdecl) { return fdecl->last(); }
 
-inline size_t domainSz(Expr fdecl) {
+inline size_t domainSz(const Expr &fdecl) {
   assert(fdecl->arity() >= 2);
   return fdecl->arity() - 2;
 }
 
-inline Expr domainTy(Expr fdecl, size_t n) {
+inline Expr domainTy(const Expr &fdecl, size_t n) {
   assert(n + 2 < fdecl->arity());
   return fdecl->arg(n + 1);
 }
 
 template <typename T>
-bool isFdecl(Expr v) {
+bool isFdecl(const Expr &v) {
   return isOpX<FDECL>(v) && isOpX<T>(rangeTy(v));
 }
 
 /** constant is an applied nullary function */
 template <typename T>
-bool isConst(Expr v) {
+bool isConst(const Expr &v) {
   return isOpX<FAPP>(v) && v->arity() == 1 && isFdecl<T>(fname(v));
 }
 
-inline Expr mkConst(Expr name, Expr sort) {
+inline Expr mkConst(const Expr &name, const Expr &sort) {
   return fapp(constDecl(name, sort));
 }
-inline Expr boolConst(Expr name) { return fapp(boolConstDecl(name)); }
-inline Expr intConst(Expr name) { return fapp(intConstDecl(name)); }
-inline Expr realConst(Expr name) { return fapp(realConstDecl(name)); }
-inline Expr unintConst(Expr name) { return fapp(unintConstDecl(name)); }
+inline Expr boolConst(const Expr &name) { return fapp(boolConstDecl(name)); }
+inline Expr intConst(const Expr &name) { return fapp(intConstDecl(name)); }
+inline Expr realConst(const Expr &name) { return fapp(realConstDecl(name)); }
+inline Expr unintConst(const Expr &name) { return fapp(unintConstDecl(name)); }
 
-inline bool isBoolConst(Expr v) { return isConst<BOOL_TY>(v); }
-inline bool isIntConst(Expr v) { return isConst<INT_TY>(v); }
-inline bool isRealConst(Expr v) { return isConst<REAL_TY>(v); }
-inline bool isArrayConst(Expr v) { return isConst<ARRAY_TY>(v); }
-inline bool isStructConst(Expr v) { return isConst<STRUCT_TY>(v); }
-inline bool isFiniteMapConst(Expr v) { return isConst<FINITE_MAP_TY>(v); }
-inline bool isUnintConst(Expr v) { return isConst<UNINT_TY>(v); }
+inline bool isBoolConst(const Expr &v) { return isConst<BOOL_TY>(v); }
+inline bool isIntConst(const Expr &v) { return isConst<INT_TY>(v); }
+inline bool isRealConst(const Expr &v) { return isConst<REAL_TY>(v); }
+inline bool isArrayConst(const Expr &v) { return isConst<ARRAY_TY>(v); }
+inline bool isStructConst(const Expr &v) { return isConst<STRUCT_TY>(v); }
+inline bool isFiniteMapConst(const Expr &v) {
+  return isConst<FINITE_MAP_TY>(v);
+}
+inline bool isUnintConst(const Expr &v) { return isConst<UNINT_TY>(v); }
 
 struct FAPP_PS {
   static inline void print(std::ostream &OS, int depth, int brkt,
@@ -269,7 +284,7 @@ struct FAPP_PS {
 
 /// Creates a new fdecl with the same signature as the given
 /// fdecl and a new name
-inline Expr rename(Expr fdecl, Expr name) {
+inline Expr rename(const Expr &fdecl, const Expr &name) {
   assert(isOpX<FDECL>(fdecl));
   ExprVector _args;
   _args.reserve(fdecl->arity());
@@ -280,7 +295,7 @@ inline Expr rename(Expr fdecl, Expr name) {
 
 /// construct a new expression by applying fdecl to the same
 /// arguments as fapp. For example, reapp of g(a,b) and f is f(a, b)
-inline Expr reapp(Expr fapp, Expr fdecl) {
+inline Expr reapp(const Expr &fapp, const Expr &fdecl) {
   assert(isOpX<FDECL>(fdecl));
   assert(isOpX<FAPP>(fapp));
 
@@ -296,7 +311,7 @@ namespace bind {
 /// returns true if an expression is a constant
 class IsConst {
 public:
-  bool operator()(Expr e) {
+  bool operator()(const Expr &e) {
     if (isOpX<VARIANT>(e))
       return this->operator()(variant::mainVariant(e));
     // A const is a nullary function application of ConstDecl.
@@ -310,7 +325,7 @@ public:
 /// variant. Structural and constant time: the sort stored in the
 /// declaration, no inference. Fatal error on any other term (use
 /// TypeChecker for those).
-inline Expr declaredSort(Expr c) {
+inline Expr declaredSort(const Expr &c) {
   if (isOpX<VARIANT>(c))
     return declaredSort(variant::mainVariant(c));
   if (!IsConst()(c))
@@ -320,7 +335,7 @@ inline Expr declaredSort(Expr c) {
 
 class IsConstDecl {
 public:
-  bool operator()(Expr e) {
+  bool operator()(const Expr &e) {
     // A const decl is a nullary function declaration
     // of unit -> SomeConstType (e.g. bv(32)).
     // A function decl has two args -- name and SomeConstType.

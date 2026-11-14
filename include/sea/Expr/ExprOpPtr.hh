@@ -214,14 +214,16 @@ inline bool isMarker(const Expr &e) { return isMarker(e.get()); }
 /// address of its argument, so a reader may see through it (sound under the
 /// sort too; PTR_FROM_INT / PTR_FROM_BITS are constructors: no see-through,
 /// D17).
-inline bool isObservation(const Expr &e) {
+inline bool isObservation(const ENode *e) {
   return isOpX<ADDR>(e) || isOpX<PTR_TO_INT>(e) || isOpX<PTR_TO_BITS>(e);
 }
+inline bool isObservation(const Expr &e) { return isObservation(e.get()); }
 /// \p e without its observation markers.
-inline Expr stripObservation(Expr e) {
-  while (isObservation(e))
-    e = e->arg(0);
-  return e;
+inline Expr stripObservation(const Expr &e) {
+  ENode *n = e.get();
+  while (isObservation(n))
+    n = n->arg(0);
+  return Expr(n);
 }
 
 /// The address width of \p a (a pointer or an address): a node's base's,
@@ -283,7 +285,7 @@ inline mpz_class byteOffset(const Expr &e) {
 }
 
 /// PTR_INDEX of \p kind over b with the (index, stride) pairs, c and K.
-inline Expr ptrIndex(PtrOpKind kind, Expr b,
+inline Expr ptrIndex(PtrOpKind kind, const Expr &b,
                      const std::vector<std::pair<Expr, mpz_class>> &idx,
                      const mpz_class &c, const mpz_class &K) {
   ExprFactory &ef = b->efac();

@@ -485,11 +485,14 @@ public:
   /*===================== PUBLIC API ========================================*/
 
   Expr mkTerm(const Operator &o) { return Expr(mkExpr(o)); }
-  Expr mkUnary(const Operator &o, Expr e) { return Expr(mkExpr(o, e.get())); }
-  Expr mkBin(const Operator &o, Expr e1, Expr e2) {
+  Expr mkUnary(const Operator &o, const Expr &e) {
+    return Expr(mkExpr(o, e.get()));
+  }
+  Expr mkBin(const Operator &o, const Expr &e1, const Expr &e2) {
     return Expr(mkExpr(o, e1.get(), e2.get()));
   }
-  Expr mkTern(const Operator &o, Expr e1, Expr e2, Expr e3) {
+  Expr mkTern(const Operator &o, const Expr &e1, const Expr &e2,
+              const Expr &e3) {
     return Expr(mkExpr(o, e1.get(), e2.get(), e3.get()));
   }
   template <typename iterator>

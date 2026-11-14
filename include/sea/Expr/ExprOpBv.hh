@@ -124,7 +124,7 @@ inline Expr ptrsort(unsigned width, ExprFactory &efac) {
 }
 inline bool isPtrSort(const Expr &s) { return isOpX<PTRSORT>(s); }
 /// A pointer constant of ptr(w) (a register, an object's base).
-inline Expr ptrConst(Expr name, unsigned width) {
+inline Expr ptrConst(const Expr &name, unsigned width) {
   return bind::mkConst(name, ptrsort(width, name->efac()));
 }
 inline bool isPtrConst(const Expr &v) { return bind::isConst<PTRSORT>(v); }
@@ -141,7 +141,7 @@ inline Expr bvsort(unsigned width, ExprFactory &efac) {
 
 /// The width of bv(w). Not of ptr(w): an address width is read with
 /// ptr::addrSortWidth / ptr::addrWidth.
-inline unsigned width(Expr bvsort) {
+inline unsigned width(const Expr &bvsort) {
   assert(isOpX<BVSORT>(bvsort) && "bv::width of a non-bv sort");
   return getTerm<const BvSort>(bvsort).m_width;
 }
@@ -158,7 +158,9 @@ namespace bv {
 
 /// Bit-vector numeral of a given sort
 /// num is an integer numeral, and bvsort is a bit-vector sort
-inline Expr bvnum(Expr num, Expr bvsort) { return bind::bind(num, bvsort); }
+inline Expr bvnum(const Expr &num, const Expr &bvsort) {
+  return bind::bind(num, bvsort);
+}
 
 /// bit-vector numeral of an arbitrary precision integer
 inline Expr bvnum(mpz_class num, unsigned bwidth, ExprFactory &efac) {
@@ -166,12 +168,12 @@ inline Expr bvnum(mpz_class num, unsigned bwidth, ExprFactory &efac) {
 }
 
 /// true if v is a bit-vector numeral
-inline bool is_bvnum(Expr v) {
+inline bool is_bvnum(const Expr &v) {
   return isOpX<BIND>(v) && v->arity() == 2 && isOpX<MPZ>(v->arg(0)) &&
          isOpX<BVSORT>(v->arg(1));
 }
 
-inline bool isBvNum(Expr v, unsigned &w) {
+inline bool isBvNum(const Expr &v, unsigned &w) {
   if (isOpX<BIND>(v) && v->arity() == 2 && isOpX<MPZ>(v->arg(0)) &&
       isOpX<BVSORT>(v->arg(1))) {
     w = width(v->arg(1));
@@ -180,30 +182,30 @@ inline bool isBvNum(Expr v, unsigned &w) {
   return false;
 }
 
-inline bool isBvNum(Expr v) {
+inline bool isBvNum(const Expr &v) {
   unsigned w;
   return isBvNum(v, w);
 }
 
-inline unsigned widthBvNum(Expr v) {
+inline unsigned widthBvNum(const Expr &v) {
   assert(isBvNum(v));
   Expr sort = bind::rangeTy(v);
   return width(sort);
 }
 
-inline mpz_class toMpz(Expr v) {
+inline mpz_class toMpz(const Expr &v) {
   assert(is_bvnum(v));
   return getTerm<mpz_class>(v->arg(0));
 }
 
-inline Expr bvConst(Expr v, unsigned width) {
+inline Expr bvConst(const Expr &v, unsigned width) {
   Expr sort = bvsort(width, v->efac());
   return bind::mkConst(v, sort);
 }
 
-inline bool isBvConst(Expr v) { return bind::isConst<BVSORT>(v); }
+inline bool isBvConst(const Expr &v) { return bind::isConst<BVSORT>(v); }
 
-inline unsigned widthBvConst(Expr v) {
+inline unsigned widthBvConst(const Expr &v) {
   assert(isBvConst(v));
   Expr sort = bind::rangeTy(v->first());
   return width(sort);
@@ -270,7 +272,7 @@ namespace typeCheck {
 namespace bvType {
 
 /// \return type of children
-inline Expr returnType(Expr exp, TypeChecker &tc) {
+inline Expr returnType(const Expr &exp, TypeChecker &tc) {
   return tc.typeOf(exp->first());
 }
 
@@ -307,7 +309,7 @@ struct BinaryBool : public TypeCheckBase {
 };
 
 /// \return: BVSORT with sum of children's widths
-inline Expr getExtendReturnType(Expr exp, TypeChecker &tc) {
+inline Expr getExtendReturnType(const Expr &exp, TypeChecker &tc) {
   unsigned width = 0;
   for (auto b = exp->args_begin(), e = exp->args_end(); b != e; b++) {
     Expr bvsort = isOp<BVSORT>(*b) ? *b : tc.typeOf(*b);
@@ -322,7 +324,7 @@ struct Concat : public TypeCheckBase {
   /// \return: BVSORT with sum of children's width
   /// Possible types of children: BVSORT (children don't need matching widths)
   inline Expr inferType(Expr exp, TypeChecker &tc) override {
-    auto returnTypeFn = [](Expr exp, TypeChecker &tc) {
+    auto returnTypeFn = [](const Expr &exp, TypeChecker &tc) {
       return getExtendReturnType(exp, tc);
     };
     return typeCheck::checkChildrenAll<GreaterEqual, BVSORT>(exp, tc, 2,
@@ -367,7 +369,7 @@ template <typename LastType>
 Expr checkUnsignedChildren(
     Expr exp, TypeChecker &tc, unsigned numChildren,
     std::function<Expr(Expr, TypeChecker &)> returnTypeFn) {
-  auto isUint = [](Expr exp) { return isOp<UINT>(exp); };
+  auto isUint = [](const Expr &exp) { return isOp<UINT>(exp); };
 
   if (exp->arity() == numChildren &&
       std::all_of(exp->args_begin(), --exp->args_end(), isUint) &&
@@ -382,7 +384,7 @@ struct Extract : public TypeCheckBase {
   /// expression Expected Children types(in order): UINT_TERMINAL_TY,
   /// UINT, BVSORT
   inline Expr inferType(Expr exp, TypeChecker &tc) override {
-    auto returnTypeFn = [](Expr exp, TypeChecker &tc) {
+    auto returnTypeFn = [](const Expr &exp, TypeChecker &tc) {
       Expr high = exp->arg(0);
       Expr low = exp->arg(1);
       Expr bv = exp->arg(2);
@@ -413,7 +415,7 @@ struct Bv2Int : public TypeCheckBase {
 /// Expected Children types(in order): UINT, INT_TY
 struct Int2Bv : public TypeCheckBase {
   inline Expr inferType(Expr exp, TypeChecker &tc) override {
-    auto returnTypeFn = [](Expr exp, TypeChecker &tc) {
+    auto returnTypeFn = [](const Expr &exp, TypeChecker &tc) {
       unsigned width = getTerm<unsigned>(exp->left());
       return bv::bvsort(width, exp->efac());
     };
@@ -426,7 +428,7 @@ struct Int2Bv : public TypeCheckBase {
 /// Expected Children types(in order): UINT, BVSORT
 struct Rotate : public TypeCheckBase {
   inline Expr inferType(Expr exp, TypeChecker &tc) override {
-    auto returnTypeFn = [](Expr exp, TypeChecker &tc) {
+    auto returnTypeFn = [](const Expr &exp, TypeChecker &tc) {
       return tc.typeOf(exp->right());
     };
 
@@ -438,7 +440,7 @@ struct Rotate : public TypeCheckBase {
 /// Expected Children types(in order): UINT_TERMINAL_TY, BVSORT
 struct Repeat : public TypeCheckBase {
   inline Expr inferType(Expr exp, TypeChecker &tc) override {
-    auto returnTypeFn = [](Expr exp, TypeChecker &tc) {
+    auto returnTypeFn = [](const Expr &exp, TypeChecker &tc) {
       unsigned timesRepeated = getTerm<unsigned>(exp->left());
       unsigned width = bv::width(tc.typeOf(exp->right()));
 
@@ -519,7 +521,7 @@ NOP(SMUL_NO_UNDERFLOW, "bvbmul_no_underflow", FUNCTIONAL, BvOp,
 namespace bv {
 /* XXX Add tc methods as needed */
 
-inline Expr bvnot(Expr v) { return mk<BNOT>(v); }
+inline Expr bvnot(const Expr &v) { return mk<BNOT>(v); }
 
 /// The width of \p v when it can be read off the term without sort
 /// inference: a numeral, a bit-vector constant, an extract, a zext/sext, a
@@ -564,7 +566,7 @@ inline bool extractInRange(unsigned high, const Expr &v) {
 /// high < width(v); the second is asserted when the width of v is known
 /// without inference (extractInRange). No per-term type check here: the
 /// constructor is on the hot path of byte reassembly.
-inline Expr extract(unsigned high, unsigned low, Expr v) {
+inline Expr extract(unsigned high, unsigned low, const Expr &v) {
   assert(high >= low);
   assert(extractInRange(high, v) &&
          "bv::extract: high bit at or beyond the argument's width");
@@ -573,21 +575,21 @@ inline Expr extract(unsigned high, unsigned low, Expr v) {
 }
 
 /// high bit to extract
-inline unsigned high(Expr v) { return getTerm<unsigned>(v->arg(0)); }
+inline unsigned high(const Expr &v) { return getTerm<unsigned>(v->arg(0)); }
 /// low bit to extract
-inline unsigned low(Expr v) { return getTerm<unsigned>(v->arg(1)); }
+inline unsigned low(const Expr &v) { return getTerm<unsigned>(v->arg(1)); }
 /// bv argument to extract
-inline Expr earg(Expr v) { return v->arg(2); }
+inline Expr earg(const Expr &v) { return v->arg(2); }
 
-inline Expr sext(Expr v, unsigned width) {
+inline Expr sext(const Expr &v, unsigned width) {
   return mk<BSEXT>(v, bvsort(width, v->efac()));
 }
 
-inline Expr zext(Expr v, unsigned width) {
+inline Expr zext(const Expr &v, unsigned width) {
   return mk<BZEXT>(v, bvsort(width, v->efac()));
 }
 
-inline Expr concat(Expr v, Expr u) { return mk<BCONCAT>(v, u); }
+inline Expr concat(const Expr &v, const Expr &u) { return mk<BCONCAT>(v, u); }
 
 } // namespace bv
 } // namespace op
