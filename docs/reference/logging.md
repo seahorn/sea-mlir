@@ -251,7 +251,7 @@ applies them to every pass manager it builds (`--lower`, `--print-refs`,
 | `--mlir-print-ir-after-all`, `--mlir-print-ir-before-all` | print the program after (before) each pass |
 | `--mlir-print-ir-after-change` | only when the pass changed it |
 | `--mlir-print-ir-after-failure` | after a pass that fails |
-| `--mlir-timing` | a time report per pass, at exit |
+| `--mlir-timing` | a time report at exit (stderr): sea-vc's phases (those of `vc.phase`), the lowering's passes nested under `lower` |
 | `--mlir-pass-statistics` | the statistics of each pass |
 | `--mlir-print-debuginfo` | print locations with the IR |
 | `--mlir-print-ir-module-scope` | print the whole module, not only the pass's operation; needs `--mlir-disable-threading` |

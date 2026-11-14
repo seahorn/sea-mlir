@@ -130,6 +130,10 @@ void testScope(sea::FakeClock &clk) {
       {
         sea::TimeScope s(n, &root);
         clk.advance(1.0);
+        // what runs inside nests under the phase (a pass manager's timers)
+        CHECK(bool(s.timing()), "nested scope is live");
+        mlir::TimingScope inner = s.timing().nest("sea-inner");
+        inner.stop();
       }
       CHECK(n.count() == 1, "nested scope counts");
     }
@@ -137,12 +141,18 @@ void testScope(sea::FakeClock &clk) {
   }
   CHECK(report.find("sea-phase") != std::string::npos,
         "nested scope in --mlir-timing");
+  CHECK(report.find("sea-inner") != std::string::npos &&
+            report.find("sea-inner") > report.find("sea-phase"),
+        "a scope nested in a TimeScope's timing()");
   // a disabled manager: no nesting, the timer still counts
   {
     mlir::DefaultTimingManager tm;
     mlir::TimingScope root = tm.getRootScope();
     sea::Timer n("off");
-    { sea::TimeScope s(n, &root); }
+    {
+      sea::TimeScope s(n, &root);
+      CHECK(!s.timing(), "no nested scope under a disabled parent");
+    }
     CHECK(n.count() == 1, "disabled parent");
   }
   llvm::outs() << "scope: ok\n";

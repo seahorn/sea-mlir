@@ -164,6 +164,10 @@ public:
   TimeScope(const TimeScope &) = delete;
   TimeScope &operator=(const TimeScope &) = delete;
 
+  /// The nested --mlir-timing scope (empty without a parent): the parent
+  /// of what runs inside this one, e.g. a PassManager's pass timers.
+  mlir::TimingScope &timing() { return nested; }
+
 private:
   Timer &timer;
   mlir::TimingScope nested;
