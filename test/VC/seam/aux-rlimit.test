@@ -1,0 +1,33 @@
+// The rlimit flags of the auxiliary checks (z3's resource limit, deterministic;
+// 0 = unset). At 1 every check runs out: the check is unknown, reason=rlimit.
+// (--x-read-table-check-rlimit, the hidden experiment's, has no test: its
+// check does not run on these programs, "Not convertible to Z3: ptr".)
+
+// --words-check
+RUN: sea-vc %S/initial-words.mlir --program=eq --lower --seam --seam-wide --seam-words=all --words-check --words-check-rlimit=1 2>&1 | FileCheck %s --check-prefix=WORDS
+WORDS: [vc.words-check-unknown]
+WORDS: words.check: unknown defs={{[0-9]+}} reason=rlimit
+// unset: decided, no reason
+RUN: sea-vc %S/initial-words.mlir --program=eq --lower --seam --seam-wide --seam-words=all --words-check 2>&1 | FileCheck %s --check-prefix=WORDS0
+WORDS0: words.check: ok
+WORDS0-NOT: rlimit
+
+// --eq-audit: the items with a check that ran out
+RUN: sea-vc %S/eq-audit.mlir --program=memset --lower --seam --eq-audit --eq-audit-rlimit=1 2>&1 | FileCheck %s --check-prefix=AUDIT
+AUDIT: eq-audit: source=row-memop items=1 sampled=1 {{.*}} unknown=1 {{.*}} unknown-rlimit=1
+RUN: sea-vc %S/eq-audit.mlir --program=memset --lower --seam --eq-audit 2>&1 | FileCheck %s --check-prefix=AUDIT0
+AUDIT0: eq-audit: source=row-memop items=1 sampled=1 {{.*}} L2=1 {{.*}} unknown=0
+AUDIT0-NOT: unknown-rlimit
+
+// --seam-check
+RUN: sea-vc %S/row-leaf-split.mlir --lower --program=account --seam --seam-check --seam-check-rlimit=1 2>&1 | FileCheck %s --check-prefix=CHECK1
+CHECK1: seam-check-unknown: id={{[0-9]+}} rules={{[^ ]+}} reason=rlimit
+CHECK1: seam-check: firings={{[0-9]+}} checked={{[0-9]+}} valid={{[0-9]+}} invalid=0 unknown={{[1-9][0-9]*}} unexpressible=0 unknown-rlimit={{[1-9][0-9]*}}
+
+// another backend has no rlimit: the factory's warning, the checks run
+RUN: %if bitwuzla %{ sea-vc %S/row-leaf-split.mlir --lower --program=account --seam --seam-check --seam-check-rlimit=1 --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=BZ %}
+BZ: [vc.limit-unsupported]
+BZ: seam-check: firings={{[0-9]+}} {{.*}}invalid=0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

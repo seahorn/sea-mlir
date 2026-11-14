@@ -14,7 +14,6 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringMap.h"
 
-#include <chrono>
 #include <sstream>
 
 using namespace mlir;
@@ -247,10 +246,6 @@ LogicalResult VCGen::genVc(ProgramOp program, OpSemContext &ctx) {
   llvm::DenseSet<Block *> reached(rpot.begin(), rpot.end());
   Expr trueE = mk<TRUE>(ctx.efac());
 
-  using Clock = std::chrono::steady_clock;
-  auto secondsSince = [](Clock::time_point t) {
-    return std::chrono::duration<double>(Clock::now() - t).count();
-  };
   // -- progress (setProgress): count the work, report through the op hook
   EncodeProgress prog;
   std::function<void(Operation &)> savedOpHook;
@@ -280,20 +275,19 @@ LogicalResult VCGen::genVc(ProgramOp program, OpSemContext &ctx) {
       // -- initialize bb-exec register; the entry block is unconditional
       bbV = ctx.havoc(sem.mkSymbReg(bb));
       ctx.setPathCond(trueE);
-      auto t0 = Clock::now();
+      TimeScope exec(execTimer);
       if (failed(sem.exec(*bb, ctx)))
         return failure();
-      execTime += secondsSince(t0);
     } else {
-      auto t0 = Clock::now();
-      bbV = computePathCondForBb(*bb, reached, ctx);
-      joinTime += secondsSince(t0);
+      {
+        TimeScope join(joinTimer);
+        bbV = computePathCondForBb(*bb, reached, ctx);
+      }
       if (!bbV) // a refused cases join (--vc-join-cases), reported
         return failure();
-      t0 = Clock::now();
+      TimeScope exec(execTimer);
       if (failed(sem.exec(*bb, ctx.pc(bbV))))
         return failure();
-      execTime += secondsSince(t0);
     }
     isEntry = false;
     guards[bb] = bbV;

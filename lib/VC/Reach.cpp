@@ -7,16 +7,15 @@
 
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
+#include "sea/Support/Timer.h"
 #include "sea/VC/Replay.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/Path.h"
 
 #include <algorithm>
-#include <chrono>
 #include <map>
 #include <optional>
 #include <set>
@@ -451,11 +450,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
              const VCGen &vcgen, Expr query, SeaOpSem &sem, OpSemContext &ctx,
              const ReachOptions &options, const ReachHooks &hooks,
              out::Emitter &out, const ReachRuns *runs) {
-  using Clock = std::chrono::steady_clock;
-  auto since = [](Clock::time_point t) {
-    return std::chrono::duration<double>(Clock::now() - t).count();
-  };
-  const auto start = Clock::now();
+  const Stopwatch start;
   // a guard the query does not mention would be unconstrained (a sat for
   // nothing): only the entry's may be absent (it executes on every run)
   ExprSet consts;
@@ -508,7 +503,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
   }
   for (size_t i : order) {
     const ReachTarget &t = targets[i];
-    const auto t0 = Clock::now();
+    const Stopwatch t0;
     std::string at = formatLoc(t.loc);
     if (at.empty())
       at = "-";
@@ -610,7 +605,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
       solver::Solver &s = shared ? *shared : *own;
       ExprVector lits{g};
       ++queries;
-      const auto solveStart = Clock::now();
+      const Stopwatch solveStart;
       // a solver of its own: the guard is asserted and the check is a
       // plain one (z3 answers check-sat-assuming with its incremental
       // core, which can be much slower than its one-shot solver)
@@ -625,12 +620,12 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
           .kv("result", res == solver::SolverResult::SAT     ? "sat"
                         : res == solver::SolverResult::UNSAT ? "unsat"
                                                              : "unknown")
-          .kv("solve-time", since(solveStart));
+          .kv("solve-time", solveStart.seconds());
       if (res == solver::SolverResult::UNSAT) {
         v = Verdict::Unreachable;
       } else if (res == solver::SolverResult::SAT) {
         v = Verdict::Reachable;
-        const auto replayStart = Clock::now();
+        const Stopwatch replayStart;
         int rc = hooks.withModel(s, [&](solver::Model &m) {
           ReachReplay rp =
               replayToTarget(program, m, sem, ctx, index, t.op, options);
@@ -730,7 +725,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
         SEA_LOG(logReach, log::Object)
             .kv("target", t.id)
             .kv("replay", replayStatus)
-            .kv("replay-time", since(replayStart));
+            .kv("replay-time", replayStart.seconds());
         if (rc) {
           // a rerun (sea-vc's retries) prints its own records; an error
           // prints the targets answered so far
@@ -739,7 +734,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
           return rc;
         }
       } else {
-        reason = hooks.reasonUnknown ? hooks.reasonUnknown(s, since(t0))
+        reason = hooks.reasonUnknown ? hooks.reasonUnknown(s, t0.seconds())
                                      : s.reason_unknown();
       }
     }
@@ -749,7 +744,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
     ++(v == Verdict::Reachable     ? nReach
        : v == Verdict::Unreachable ? nUnreach
                                    : nUnknown);
-    const double sec = since(t0);
+    const double sec = t0.seconds();
     rec.str("status", verdictName(v)).str("op", t.opName);
     raw_string_ostream os(rec.text);
     os << "reach: " << t.id << " " << verdictName(v) << " op=" << t.opName;
@@ -776,7 +771,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
       rec.str("witness", witness);
       os << " witness=" << witness;
     }
-    std::string secText = llvm::formatv("{0:f3}", sec).str();
+    std::string secText = secondsText(sec);
     rec.set("time", out::jtoken(secText));
     os << " time=" << secText << " at=" << at;
     addLocFields(rec, "at", t.loc);
@@ -797,7 +792,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
   out.lines() << "reach.summary: targets=" << targets.size()
               << " reachable=" << nReach << " unreachable=" << nUnreach
               << " unknown=" << nUnknown << " queries=" << queries
-              << " time=" << llvm::formatv("{0:f3}", since(start)).str();
+              << " time=" << secondsText(start.seconds());
   if (options.modelRuns)
     out.lines() << " model-runs=" << byModelRuns;
   out.lines() << "\n";
@@ -807,8 +802,7 @@ int runReach(ProgramOp program, llvm::ArrayRef<ReachTarget> targets,
                 << " cfg=" << byCfg << " unknown=" << nUnknown
                 << " trials=" << runs->trials << " seeds=" << runs->seedTrials
                 << " inb-violated=" << runs->inbViolated
-                << " time=" << llvm::formatv("{0:f3}", runs->seconds).str()
-                << "\n";
+                << " time=" << secondsText(runs->seconds) << "\n";
   if (addr0Uses)
     out.lines() << "assume.addr0-is-null: uses=" << addr0Uses << "\n";
   if (memhavocUses)

@@ -26,12 +26,10 @@
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/ExprAPInt.hh"
 #include "sea/Expr/ExprOverflow.hh"
-#include "sea/Expr/Smt/Yices2SolverImpl.hh"
-#ifdef WITH_BITWUZLA
-#include "sea/Expr/Smt/BitwuzlaSolverImpl.hh"
-#endif
-#include "sea/Expr/Smt/Z3SolverImpl.hh"
+#include "sea/Expr/Smt/SolverFactory.h"
+#include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
+#include "sea/Support/Version.h"
 
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/CommandLine.h"
@@ -49,7 +47,7 @@ using namespace llvm;
 static cl::opt<std::string> inputFilename(cl::Positional, cl::desc("<input>"),
                                           cl::init("-"));
 
-enum class Backend { Z3, Yices, Bitwuzla };
+using sea::solver::Backend;
 static cl::opt<Backend>
     backend("solver", cl::desc("Solver to evaluate with"),
             cl::init(Backend::Z3),
@@ -79,7 +77,8 @@ INPUT (one term per line, unsigned decimal values):
   cmp <=|distinct|bvult|...> <w> <a> <b>     (prints 0 or 1)
   zext|sext <w> <w2> <a>    trunc <w> <w2> <a>    ite <w> <c> <a> <b>
 
-OUTPUT: one unsigned decimal value per input line, in order.
+OUTPUT: one unsigned decimal value per input line, in order (stdout).
+stderr: `tool.version: ...` first, then diagnostics.
 STATUS CODES: 0 ok; 1 bad input or solver did not return sat.
 )";
 
@@ -191,11 +190,20 @@ struct TermBuilder {
 int main(int argc, char **argv) {
   InitLLVM y(argc, argv);
   sea::log::init(); // SEA_LOG / SEA_LOG_FILE, before --log
+  // Repeated warnings are summarized at exit, whatever the exit path.
+  struct Summary {
+    ~Summary() { sea::diag::printSummary(); }
+  } summary;
+  sea::setVersionPrinter("sea-expr-eval");
   cl::ParseCommandLineOptions(argc, argv, "Evaluate bv terms through Expr\n");
   if (agent) {
     outs() << agentGuide;
     return 0;
   }
+
+  // stdout carries only the values (utils/check-semantics.py parses it), so
+  // the version goes to stderr.
+  errs() << "tool.version: " << sea::versionString() << "\n";
 
   auto buf = MemoryBuffer::getFileOrSTDIN(inputFilename);
   if (!buf)
@@ -203,23 +211,11 @@ int main(int argc, char **argv) {
 
   ExprFactory efac;
   TermBuilder tb(efac);
-  std::unique_ptr<sea::solver::Solver> solver;
-  if (backend == Backend::Z3) {
-    solver = std::make_unique<sea::solver::z3_solver_impl>(efac);
-  } else if (backend == Backend::Bitwuzla) {
-#ifdef WITH_BITWUZLA
-    solver = std::make_unique<sea::solver::bitwuzla_solver_impl>(efac);
-#else
-    return fail("built without Bitwuzla (configure with -DBITWUZLA_ROOT)");
-#endif
-  } else {
-#ifdef WITH_YICES2
-    solver = std::make_unique<sea::solver::yices_solver_impl>(efac);
-#else
-    return fail("built without Yices (configure with -DSEA_ENABLE_YICES=ON "
-                "-DYICES2_ROOT=<install>)");
-#endif
-  }
+  // null after an error (a backend this build lacks)
+  std::unique_ptr<sea::solver::Solver> solver =
+      sea::solver::makeSolver(efac, backend);
+  if (!solver)
+    return 1;
 
   ExprVector vars;
   for (line_iterator it(**buf, /*SkipBlanks=*/true); !it.is_at_eof(); ++it) {

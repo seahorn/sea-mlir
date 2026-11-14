@@ -850,7 +850,6 @@ public:
             out << "(_ BitVec " << bv::width(sort::arrayIndexTy(ty)) << ") ";
           } else {
             out << "UfoUnknownSort ";
-            llvm::errs() << "u1: " << *sort::arrayIndexTy(ty) << "\n";
           }
           if (isOpX<INT_TY>(sort::arrayValTy(ty)))
             out << "Int";
@@ -858,23 +857,18 @@ public:
             out << "(_ BitVec " << bv::width(sort::arrayValTy(ty)) << ") ";
           } else {
             out << "UfoUnknownSort";
-            llvm::errs() << "u2: " << *sort::arrayValTy(ty) << "\n";
           }
           out << ") ";
         } else if (isOpX<BVSORT>(ty)) {
           out << "(_ BitVec " << bv::width(ty) << ") ";
         } else {
           out << "UfoUnknownSort ";
-          llvm::errs() << "u3: " << *ty << "\n";
         }
       }
       out << "))\n";
     }
 
     for (const Expr &v : fp.getVars()) {
-      if (!bind::IsConst()(v)) {
-        std::cerr << "FP var not a constant: " << *v << "\n";
-      }
       assert(bind::IsConst()(v));
       out << "(declare-var " << fp.z3.toSmtLib(v) << " ";
       Expr ty = bind::declaredSort(v);
