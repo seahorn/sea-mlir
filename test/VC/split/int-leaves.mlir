@@ -12,6 +12,13 @@
 // LEAVES: split.verdict: unsat parts=3 unsat=3 sat=0 unknown=0 {{.*}} check-unknown=0 check=on leaf-structural=3
 // LEAVES: result: unsat
 
+// --split-check-rlimit bounds each check (z3's rlimit): at 1 every check is
+// unknown, warned, counted; the verdict stands.
+// RUN: sea-vc %s --lower --split-leaves=@k.cc:9 --split-check-rlimit=1 2>&1 | FileCheck %s --check-prefix=RLIMIT
+// RLIMIT: [vc.split-check-unknown]
+// RLIMIT: split.check: level=0 target={{%[0-9]+}} cases=3 exhaustive=unknown exact=unknown
+// RLIMIT: split.verdict: unsat {{.*}} check-unknown=3
+
 // The checks catch a broken integer construction (planted): exit 5.
 // RUN: not sea-vc %s --lower --split-leaves=@k.cc:9 --x-split-plant=drop-case 2>&1 | FileCheck %s --check-prefix=DROP
 // RUN: not sea-vc %s --lower --split-leaves=@k.cc:9 --x-split-plant=wrong-value 2>&1 | FileCheck %s --check-prefix=WRONG

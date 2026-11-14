@@ -42,6 +42,7 @@ llvm_config.add_tool_substitutions(
         "sea-log-test",
         "sea-timer-test",
         "sea-stats-test",
+        "sea-solver-factory-test",
         "sea-store-map-test",
         "sea-memops-test",
         "sea-ackermann-test",

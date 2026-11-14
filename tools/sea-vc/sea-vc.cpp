@@ -23,8 +23,8 @@
 #include "sea/Expr/Smt/BitwuzlaSolverImpl.hh"
 #endif
 #include "sea/Expr/Smt/EZ3.hh"
+#include "sea/Expr/Smt/SolverFactory.h"
 #include "sea/Expr/Smt/Z3.hh"
-#include "sea/Expr/Smt/Z3SolverImpl.hh"
 #include "sea/Interp/ParseInput.h"
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
@@ -82,7 +82,7 @@ static cl::opt<std::string>
     programName("program", cl::desc("Program to check (default: the only one)"),
                 cl::value_desc("name"));
 
-enum class Backend { Z3, Yices, Bitwuzla };
+using sea::solver::Backend;
 static cl::opt<Backend>
     backend("solver", cl::desc("Solver"), cl::init(Backend::Z3),
             cl::values(clEnumValN(Backend::Z3, "z3", "z3 (default)"),
@@ -5241,12 +5241,9 @@ int main(int argc, char **argv) {
           }
         }
         defs.push_back(expr::mk<expr::XOR>(bytesQ, query));
-        auto z = std::make_unique<sea::solver::z3_solver_impl>(efac);
-        if (wordsCheckTimeout) {
-          sea::ZParams<sea::EZ3> params(z->get_context());
-          params.set("timeout", wordsCheckTimeout * 1000);
-          z->get_solver().set(params);
-        }
+        sea::solver::Limits wl;
+        wl.timeoutMs = wordsCheckTimeout * 1000;
+        auto z = sea::solver::makeSolver(efac, Backend::Z3, wl);
         bool added = true;
         for (const expr::Expr &d : defs)
           added = added && z->add(d);
@@ -5265,7 +5262,8 @@ int main(int argc, char **argv) {
               expr::WideExpander wx;
               bytesR = wx.expand(orig);
             }
-            auto z1 = std::make_unique<sea::solver::z3_solver_impl>(efac);
+            // no limit
+            auto z1 = sea::solver::makeSolver(efac, Backend::Z3);
             bool ok1 = true;
             for (size_t d = 0; d + 1 < defs.size(); ++d)
               ok1 = ok1 && z1->add(defs[d]);
@@ -5484,64 +5482,26 @@ int main(int argc, char **argv) {
     // and store, and the query
     double vcSeconds = vcClock.seconds();
 
+    // the Yices configuration of every solver of the run (z3 and Bitwuzla
+    // ignore it)
+    sea::solver::SolverConfig solverConfig;
+    solverConfig.kindPrefix = "vc.";
+    solverConfig.yicesLogic = yicesLogic;
+    solverConfig.yicesConfig = yicesConfig;
+    solverConfig.yicesParams = yicesParams;
     // Backend::Bitwuzla without the library is an error (null solver)
     // \p limits: --timeout / --mem-limit (the solver of the verdict only)
     auto makeSolver = [&](bool limits =
                               false) -> std::unique_ptr<sea::solver::Solver> {
-      const unsigned ms = limits ? solveTimeout * 1000 : 0;
-      if (backend == Backend::Z3) {
-        auto z = std::make_unique<sea::solver::z3_solver_impl>(efac);
-        if (ms) {
-          sea::ZParams<sea::EZ3> params(z->get_context());
-          params.set("timeout", ms);
-          z->get_solver().set(params);
-        }
-        return z;
+      sea::solver::Limits l;
+      if (limits) {
+        l.timeoutMs = solveTimeout * 1000;
+        // z3 and Yices: the process limit only (RLIMIT_AS; z3's global
+        // memory_max_size, set at start-up)
+        if (backend == Backend::Bitwuzla)
+          l.memMB = uint64_t(memLimit) * 1024;
       }
-      if (backend == Backend::Bitwuzla) {
-#ifdef WITH_BITWUZLA
-        sea::solver::bitwuzla_solver_impl::solver_options o;
-        if (ms)
-          o["time-limit-per"] = std::to_string(ms);
-        if (limits && memLimit)
-          o["memory-limit"] = std::to_string(uint64_t(memLimit) * 1024);
-        return std::make_unique<sea::solver::bitwuzla_solver_impl>(efac,
-                                                                   nullptr, o);
-#else
-        sea::diag::error("vc.solver-unavailable",
-                         "this sea-vc was built without Bitwuzla (configure "
-                         "with -DBITWUZLA_ROOT=<install>)");
-        return nullptr;
-#endif
-      }
-#ifndef WITH_YICES2
-      return nullptr; // refused after option parsing
-#else
-      sea::solver::yices_solver_impl::solver_options yo;
-      for (const std::string &kv : yicesConfig) {
-        auto [k, v] = StringRef(kv).split('=');
-        yo[k.str()] = v.str();
-      }
-      auto y = std::make_unique<sea::solver::yices_solver_impl>(
-          efac, yicesLogic.empty() ? nullptr : yicesLogic.c_str(), yo);
-      if (!y->config_error().empty()) {
-        sea::diag::error("vc.yices-config",
-                         "Yices rejects --yices-logic / --yices-config " +
-                             y->config_error());
-        return nullptr;
-      }
-      for (const std::string &kv : yicesParams) {
-        auto [k, v] = StringRef(kv).split('=');
-        std::string err;
-        if (!y->set_param(k.str(), v.str(), err)) {
-          sea::diag::error("vc.yices-param",
-                           "Yices rejects --yices-param " + kv + ": " + err);
-          return nullptr;
-        }
-      }
-      y->set_timeout(ms);
-      return y;
-#endif
+      return sea::solver::makeSolver(efac, backend, l, solverConfig);
     };
     // A-INB is assumed and reported, not checked. Definite violations (a
     // numeral offset outside the object) make the run start again without
@@ -5574,12 +5534,9 @@ int main(int argc, char **argv) {
         expr::Expr g = sem.solverTerm(f, why);
         if (!g)
           return SR::UNKNOWN;
-        auto z = std::make_unique<sea::solver::z3_solver_impl>(efac);
-        if (splitCheckRlimit) {
-          sea::ZParams<sea::EZ3> params(z->get_context());
-          params.set("rlimit", unsigned(splitCheckRlimit));
-          z->get_solver().set(params);
-        }
+        sea::solver::Limits sl;
+        sl.rlimit = splitCheckRlimit;
+        auto z = sea::solver::makeSolver(efac, Backend::Z3, sl);
         return z->add(g) ? z->check() : SR::UNKNOWN;
       };
       auto word = [](SR r) {
@@ -5779,12 +5736,9 @@ int main(int argc, char **argv) {
       if (!auditOn)
         return;
       sea::Stopwatch watch;
-      auto z = std::make_unique<sea::solver::z3_solver_impl>(efac);
-      if (eqAuditTimeout) {
-        sea::ZParams<sea::EZ3> params(z->get_context());
-        params.set("timeout", eqAuditTimeout * 1000);
-        z->get_solver().set(params);
-      }
+      sea::solver::Limits al;
+      al.timeoutMs = eqAuditTimeout * 1000;
+      auto z = sea::solver::makeSolver(efac, Backend::Z3, al);
       const expr::BaseRegistry &bases = vcgen.baseRegistry();
       sea::EqAudit audit(*z, bases);
       expr::Expr layout = sem.layoutFacts();
@@ -5891,29 +5845,14 @@ int main(int argc, char **argv) {
       // qfaufbv preprocessing chain, which blows up on row.store
       // obligations (24.8 s against 0.33 s pushed). So z3 gets relevancy 0
       // and one push, never popped: the solver is dropped after the query.
+      // Yices runs its checks without a time limit (warned below)
       auto mkCheckSolver = [&]() -> std::unique_ptr<sea::solver::Solver> {
-        if (backend == Backend::Z3) {
-          auto z = std::make_unique<sea::solver::z3_solver_impl>(efac);
-          sea::ZParams<sea::EZ3> params(z->get_context());
-          if (ms)
-            params.set("timeout", ms);
-          params.set("relevancy", 0u);
-          z->get_solver().set(params);
-          z->push();
-          return z;
-        }
-        if (backend == Backend::Bitwuzla) {
-#ifdef WITH_BITWUZLA
-          sea::solver::bitwuzla_solver_impl::solver_options o;
-          if (ms)
-            o["time-limit-per"] = std::to_string(ms);
-          return std::make_unique<sea::solver::bitwuzla_solver_impl>(
-              efac, nullptr, o);
-#else
-          return nullptr;
-#endif
-        }
-        return makeSolver();
+        sea::solver::Limits cl;
+        if (backend != Backend::Yices)
+          cl.timeoutMs = ms;
+        sea::solver::SolverConfig cc = solverConfig;
+        cc.z3Relevancy0Push = true;
+        return sea::solver::makeSolver(efac, backend, cl, cc);
       };
       if (backend != Backend::Z3 && backend != Backend::Bitwuzla && ms)
         sea::diag::warn("seam.check-no-timeout",
@@ -6013,11 +5952,11 @@ int main(int argc, char **argv) {
         os << "seam-check-lhs: " << expr::RewriteTrail::text(f.lhs) << "\n";
         os << "seam-check-rhs: " << expr::RewriteTrail::text(f.rhs) << "\n";
         // the query as SMT-LIB (z3's printer, whatever the solver)
-        sea::solver::z3_solver_impl printer(efac);
-        printer.add(q);
+        auto printer = sea::solver::makeSolver(efac, Backend::Z3);
+        printer->add(q);
         std::string smt;
         raw_string_ostream ss(smt);
-        printer.to_smt_lib(ss);
+        printer->to_smt_lib(ss);
         for (StringRef rest = ss.str(); !rest.empty();) {
           auto [line, tail] = rest.split('\n');
           rest = tail;
@@ -6084,16 +6023,13 @@ int main(int argc, char **argv) {
                                 sem.seamRewriter()->rules().widthOf(o.constant),
                                 efac)));
       expr::Expr layout = expr::mknary<expr::AND>(tt, lay);
-      std::unique_ptr<sea::solver::Solver> cs;
-      if (backend == Backend::Z3) {
-        auto z = std::make_unique<sea::solver::z3_solver_impl>(efac);
-        sea::ZParams<sea::EZ3> params(z->get_context());
-        params.set("timeout", unsigned(xReadTableCheckTimeout * 1000));
-        z->get_solver().set(params);
-        cs = std::move(z);
-      } else {
-        cs = makeSolver();
-      }
+      // z3: the timeout (0: none, as z3 reads a timeout of 0); else
+      // unlimited
+      sea::solver::Limits xl;
+      if (backend == Backend::Z3)
+        xl.timeoutMs = xReadTableCheckTimeout * 1000;
+      std::unique_ptr<sea::solver::Solver> cs =
+          sea::solver::makeSolver(efac, backend, xl, solverConfig);
       if (!cs)
         return;
       sea::Stopwatch watch;
@@ -6383,16 +6319,14 @@ int main(int argc, char **argv) {
     runXrtCheck();
     if (reach) {
       // the reach queries (lib/VC/Reach.cpp); the solver above holds the
-      // query
+      // query. --reach-rlimit is z3's (refused for other backends)
       auto limitSolver = [&](sea::solver::Solver &s) {
         if (!reachRlimit)
           return;
-        auto &z = static_cast<sea::solver::z3_solver_impl &>(s);
-        sea::ZParams<sea::EZ3> params(z.get_context());
-        params.set("rlimit", unsigned(reachRlimit));
-        if (solveTimeout)
-          params.set("timeout", unsigned(solveTimeout * 1000));
-        z.get_solver().set(params);
+        sea::solver::Limits rl;
+        rl.rlimit = reachRlimit;
+        rl.timeoutMs = solveTimeout * 1000;
+        sea::solver::setLimits(s, rl, solverConfig);
       };
       sea::ReachHooks hooks;
       bool first = true;
