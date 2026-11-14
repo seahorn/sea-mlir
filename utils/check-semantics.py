@@ -17,8 +17,8 @@ z3 computes the expected result with `(simplify ...)` on the SMT-LIB term
 - with --sea-opt and --fold, the op folders (sea-opt --sccp): every case
   has constant operands, so every result must fold to a sea.const, whose
   value is compared (a result that does not fold is a mismatch).
-Intrinsic ops (min/max, abs, bswap, ctpop, funnel shifts, overflow bits) are checked
-against reference terms that are their LLVM LangRef / SMT-LIB 2.7
+Intrinsic ops (min/max, abs, bswap, ctpop, funnel shifts, overflow bits) are
+checked against reference terms that are their LLVM LangRef / SMT-LIB 2.7
 definitions written in SMT-LIB 2.6 (wide arithmetic, shifts of the
 concatenation), deliberately not the formulas the expansion uses (z3 4.12
 has no bvuaddo & co). The VC encodes only mul overflow natively (z3, and

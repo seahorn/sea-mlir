@@ -5,11 +5,11 @@
 //-*-//
 //
 // Rewrites the intrinsic ops (min/max, abs, bswap, funnel shifts, overflow
-// bits)
-// into core bit-vector ops the VC encodes. abs's nsw (LLVM's
+// bits) into core bit-vector ops the VC encodes. abs's nsw (LLVM's
 // is_int_min_poison) stays a promise: it becomes the nsw of the expansion's
-// `0 - x`, which overflows exactly at the minimal signed value. The interpreter
-// executes both forms, which is what lets the oracles validate this pass.
+// `0 - x`, which overflows exactly at the minimal signed value. The
+// interpreter executes both forms, which is what lets the oracles validate
+// this pass.
 //
 // Contract.
 //   Accepts: any program.

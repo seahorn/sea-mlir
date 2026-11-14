@@ -106,8 +106,9 @@ static const llvm::StringSet<> *allowedAttrs(Operation *op) {
           "addr.diff",    "addr.to_int", "addr.from_int", "addr.from_bits",
           "addr.to_bits", "ptr.add",     "ptr.diff",      "ptr.null"})
       t[std::string("sea.") + n] = {};
-    for (const char *n : {"add", "sub", "mul", "shl", "abs"})
+    for (const char *n : {"add", "sub", "mul", "shl"})
       t[std::string("sea.") + n] = {"nsw", "nuw"};
+    t["sea.abs"] = {"nsw"};
     for (const char *n : {"icmp", "addr.cmp", "ptr.cmp"})
       t[std::string("sea.") + n] = {"predicate"};
     t["sea.extract"] = {"low"};
@@ -203,7 +204,7 @@ std::string CondWriter::render(Value v, unsigned depth) {
     head = stringifyICmpPredicate(c.getPredicate()).str();
   else
     head = op->getName().getStringRef().drop_front(4).str(); // "sea."
-  // wrap flags (add, sub, mul, shl): promises, shown
+  // wrap flags (add, sub, mul, shl; abs: nsw): promises, shown
   if (op->hasAttr("nsw"))
     head += ".nsw";
   if (op->hasAttr("nuw") && !isa<PtrIndexOp>(op))

@@ -5,7 +5,7 @@
 // negation (values: utils/check-semantics.py --sea-opt).
 // CHECK-LABEL: sea.program @p
 // CHECK-NOT: sea.abs
-// CHECK: sea.sub %{{.*}}, %{{.*}} : i32
+// CHECK: sea.sub %{{[^ ]+}}, %{{[^ ]+}} : i32
 // CHECK: sea.select
 // CHECK: sea.sub %{{.*}}, %{{.*}} nsw : i32
 // CHECK: sea.select

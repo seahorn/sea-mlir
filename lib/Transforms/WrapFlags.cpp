@@ -3,9 +3,9 @@
 
 //===- WrapFlags.cpp - nsw / nuw promises into assumes or asserts -*- C++ -*-//
 //
-// add / sub / mul / shl may carry LLVM's nsw / nuw flags: promises that the
-// signed / unsigned result fits. Their value is always the wrapped one; this
-// pass decides what the promise means for verification:
+// add / sub / mul / shl may carry LLVM's nsw / nuw flags (abs: nsw only):
+// promises that the signed / unsigned result fits. Their value is always the
+// wrapped one; this pass decides what the promise means for verification:
 //   mode=assume  sea.assume "no overflow" (executions that break it are
 //                infeasible: LLVM's poison is assumed not to happen);
 //   mode=assert  sea.assert "no overflow" (overflow is checked);
