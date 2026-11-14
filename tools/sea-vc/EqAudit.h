@@ -35,10 +35,12 @@
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/Smt/Solver.hh"
 #include "sea/Support/Stats.h"
+#include "sea/Support/Timer.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <functional>
 #include <map>
 #include <sstream>
 #include <string>
@@ -67,12 +69,20 @@ public:
           unsigned shapeDepth = 3)
       : m_solver(s), m_bases(bases), m_depth(shapeDepth) {}
 
+  /// With an rlimit: told, for an unknown check that took the given seconds,
+  /// whether it was the rlimit (counted as unknown-rlimit per source)
+  void setRlimitHit(std::function<bool(double)> f) {
+    m_rlimitHit = std::move(f);
+  }
+
   /// Audits \p it for \p source; returns its level.
   Level audit(llvm::StringRef source, const Item &it) {
     using namespace expr;
     Src &src = m_src[source.str()];
+    uint64_t before = m_rlimitUnknown;
     Level lvl = classify(it);
     ++src.count[lvl];
+    src.unknownRlimit += m_rlimitUnknown > before;
     std::string key = shapeOf(it);
     auto &sh = src.shapes[lvl][key];
     if (sh.first++ == 0) {
@@ -105,6 +115,8 @@ public:
                            .kv("sampled", sampled);
       for (unsigned lv = 0; lv < NLevels; ++lv)
         l.kv(levelName(lv), src.count[lv]);
+      if (m_rlimitHit)
+        l.kv("unknown-rlimit", src.unknownRlimit);
       for (unsigned lv = 0; lv < NLevels; ++lv) {
         std::vector<std::pair<uint64_t, const std::string *>> v;
         for (const auto &[k, ce] : src.shapes[lv])
@@ -140,6 +152,8 @@ private:
   struct Src {
     uint64_t total = 0;
     uint64_t count[NLevels] = {};
+    /// items with a check that reached the rlimit
+    uint64_t unknownRlimit = 0;
     /// per level: shape -> (count, first example)
     std::map<std::string, std::pair<uint64_t, uint64_t>> shapes[NLevels];
     /// per level: shape -> the printed first example
@@ -148,11 +162,15 @@ private:
 
   sea::solver::SolverResult check(const expr::ExprVector &fs) {
     m_solver.push();
+    sea::Stopwatch watch;
     bool ok = true;
     for (const expr::Expr &f : fs)
       ok = ok && m_solver.add(f);
     sea::solver::SolverResult r =
         ok ? m_solver.check() : sea::solver::SolverResult::UNKNOWN;
+    if (r == sea::solver::SolverResult::UNKNOWN && m_rlimitHit &&
+        m_rlimitHit(watch.seconds()))
+      ++m_rlimitUnknown;
     m_solver.pop();
     return r;
   }
@@ -240,6 +258,8 @@ private:
   unsigned m_depth;
   size_t m_textMax = 600;
   std::map<std::string, Src> m_src;
+  std::function<bool(double)> m_rlimitHit;
+  uint64_t m_rlimitUnknown = 0;
 };
 
 } // namespace sea

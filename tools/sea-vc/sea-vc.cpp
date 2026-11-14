@@ -302,6 +302,13 @@ static cl::opt<bool> wordsCheck(
 static cl::opt<unsigned> wordsCheckTimeout(
     "words-check-timeout",
     cl::desc("Seconds for --words-check (0: none; default 60)"), cl::init(60));
+static cl::opt<unsigned> wordsCheckRlimit(
+    "words-check-rlimit",
+    cl::desc("z3's resource limit for --words-check (0: none; deterministic, "
+             "unlike --words-check-timeout). Untuned: unset until a corpus "
+             "sweep sets a default. An exhausted check is `unknown "
+             "reason=rlimit`"),
+    cl::init(0), cl::value_desc("n"));
 
 static cl::opt<bool> checkAlign(
     "check-align",
@@ -785,6 +792,13 @@ static cl::opt<unsigned>
     eqAuditTimeout("eq-audit-timeout",
                    cl::desc("Seconds per --eq-audit check (z3; default 5)"),
                    cl::init(5));
+static cl::opt<unsigned> eqAuditRlimit(
+    "eq-audit-rlimit",
+    cl::desc("z3's resource limit per --eq-audit check (0: none; "
+             "deterministic, unlike --eq-audit-timeout). Untuned: unset "
+             "until a corpus sweep sets a default. Checks that exhaust it "
+             "are `unknown`, counted as unknown-rlimit"),
+    cl::init(0), cl::value_desc("n"));
 
 static cl::opt<unsigned> eqAuditShapes(
     "eq-audit-shapes",
@@ -796,6 +810,14 @@ static cl::opt<unsigned> seamCheckTimeout(
     "seam-check-timeout",
     cl::desc("Seconds per --seam-check query (default 10; z3 and Bitwuzla)"),
     cl::init(10));
+static cl::opt<unsigned> seamCheckRlimit(
+    "seam-check-rlimit",
+    cl::desc("z3's resource limit per --seam-check query (0: none; "
+             "deterministic, unlike --seam-check-timeout; z3 only, other "
+             "backends warn). Untuned: unset until a corpus sweep sets a "
+             "default. An exhausted query is `seam-check-unknown ... "
+             "reason=rlimit`"),
+    cl::init(0), cl::value_desc("n"));
 
 static cl::opt<std::string> seamPlantBug(
     "seam-plant-bug",
@@ -847,6 +869,26 @@ static cl::opt<unsigned> xReadTableCheckTimeout(
     "x-read-table-check-timeout",
     cl::desc("Experiment: seconds per premise check (z3 only)"), cl::init(30),
     cl::Hidden);
+static cl::opt<unsigned> xReadTableCheckRlimit(
+    "x-read-table-check-rlimit",
+    cl::desc("Experiment: z3's resource limit per premise check (0: none; "
+             "untuned, unset by default); exhausted checks are counted in "
+             "xrt.check-unknown reason=rlimit"),
+    cl::init(0), cl::Hidden);
+
+/// Whether the last unknown of \p s, after a check of \p sec seconds, is z3's
+/// resource limit: z3 says `max. resource limit exceeded`, but in an
+/// incremental solver `canceled` (normalized: timeout) for both limits, so it
+/// is the rlimit unless the check took the time of the timeout (\p timeoutSec,
+/// 0: none)
+static bool hitRlimit(sea::solver::Solver &s, unsigned rlimit,
+                      unsigned timeoutSec, double sec) {
+  if (!rlimit)
+    return false;
+  std::string r = s.reason_unknown();
+  return r.find("resource limit") != std::string::npos ||
+         (r == "timeout" && !(timeoutSec && sec >= timeoutSec));
+}
 
 static cl::opt<sea::out::Format>
     outFormat("format", cl::desc("Output format of stdout"),
@@ -2104,7 +2146,12 @@ TYPICAL:
                                  #   accesses (a missing A-INB rule), else
                                  #   undecided (the solver's search, or a
                                  #   path fact); unknown = timeout
-                                 #   (--eq-audit-timeout=<s>, 5), vacuous =
+                                 #   (--eq-audit-timeout=<s>, 5) or rlimit
+                                 #   (--eq-audit-rlimit=<n>: z3 resource
+                                 #   limit, deterministic; unset by
+                                 #   default, untuned until a corpus sweep
+                                 #   sets one; the line then has
+                                 #   unknown-rlimit=<items>), vacuous =
                                  #   the L2 premise is unsat, unstated = no
                                  #   A-INB premise. Lines (after the run):
                                  #   eq-audit: source=<s> items=<n>
@@ -2130,7 +2177,11 @@ TYPICAL:
                                  #   the rule against its stated premise; it
                                  #   does not discharge A-INB).
                                  #   --seam-check=N: N firings, evenly
-                                 #   spaced; --seam-check-timeout=<s> (10)
+                                 #   spaced; --seam-check-timeout=<s> (10);
+                                 #   --seam-check-rlimit=<n>: z3 resource
+                                 #   limit per query, deterministic (unset
+                                 #   by default: untuned until a corpus
+                                 #   sweep sets one; a non-z3 backend warns)
   sea-vc p.mlir --ackermannize=on  # reads of read-only array constants
                                  #   (nd.<site> memories, memhavoc arrays:
                                  #   used only under select) become fresh
@@ -2160,7 +2211,12 @@ TYPICAL:
                                  #   auto: arrays whose aligned word reads
                                  #   cover the other bytes read. --words-check:
                                  #   z3 check of the word query against the
-                                 #   byte query (exit 2 if they differ).
+                                 #   byte query (exit 2 if they differ);
+                                 #   --words-check-timeout=<s> (60),
+                                 #   --words-check-rlimit=<n> (z3 resource
+                                 #   limit, deterministic; unset by default:
+                                 #   untuned until a corpus sweep sets one;
+                                 #   `words.check: unknown ... reason=rlimit`).
                                  #   docs/design/SeaM-initial-words.md
   sea-vc p.mlir --seam --ack-stride=false   # (default on) the stride rule in the Ackermann
                                  #   lowering: reads at sea.ptr.index nodes
@@ -2374,7 +2430,7 @@ OUTPUT (stdout, `key: value` lines):
                                   masked-parts; with the SeaM counters)
   words.array: name=<A> chosen=0|1 selects=<n> wselects=<n>
                aligned-words=<n> other-bytes=<n> [reason=<why not>]
-  words.check: ok|failed|unknown defs=<n>   (--words-check)
+  words.check: ok|failed|unknown defs=<n> [reason=rlimit]   (--words-check)
   words.model: decoded=<n> defaulted=<n>    (sat with words: bytes read
                                   back from words; defaulted: a word with
                                   no value, byte 0)
@@ -2724,7 +2780,7 @@ OUTPUT (stdout, `key: value` lines):
   seam-check-lhs: <term> / seam-check-rhs: <term>
   seam-check-smt: <line>          (the SMT-LIB of the failed check: sat means
                                   the rule's result differs from its input)
-  seam-check-unknown: id=<n> rules=<r,...>    (timeout or solver unknown)
+  seam-check-unknown: id=<n> rules=<r,...> [reason=rlimit]   (timeout, rlimit or solver unknown)
   seam.<counter>: <n>              (--seam-stats, before `result:`; with
                                   --smt2 on stderr): rule-calls, rules-fired,
                                   cache-hits, ..., and seam.rule.<rule>: the
@@ -5243,16 +5299,21 @@ int main(int argc, char **argv) {
         defs.push_back(expr::mk<expr::XOR>(bytesQ, query));
         sea::solver::Limits wl;
         wl.timeoutMs = wordsCheckTimeout * 1000;
+        wl.rlimit = wordsCheckRlimit;
         auto z = sea::solver::makeSolver(efac, Backend::Z3, wl);
         bool added = true;
         for (const expr::Expr &d : defs)
           added = added && z->add(d);
+        sea::Stopwatch wwatch;
         auto r = added ? z->check() : sea::solver::SolverResult::UNKNOWN;
+        const bool wRlimit = r == sea::solver::SolverResult::UNKNOWN &&
+                             hitRlimit(*z, wordsCheckRlimit, wordsCheckTimeout,
+                                       wwatch.seconds());
         const char *verdict = r == sea::solver::SolverResult::UNSAT ? "ok"
                               : r == sea::solver::SolverResult::SAT ? "failed"
                                                                     : "unknown";
         vout() << "words.check: " << verdict << " defs=" << defs.size() - 1
-               << "\n";
+               << (wRlimit ? " reason=rlimit" : "") << "\n";
         if (r == sea::solver::SolverResult::SAT) {
           // localize: the first read whose decoding differs from its bytes
           // (the original read's index translated too: equal under defs)
@@ -5282,7 +5343,9 @@ int main(int argc, char **argv) {
         }
         if (r != sea::solver::SolverResult::UNSAT)
           sea::diag::warn("vc.words-check-unknown",
-                          "--words-check: the solver gave no answer");
+                          wRlimit ? "--words-check: the solver reached "
+                                    "--words-check-rlimit (reason=rlimit)"
+                                  : "--words-check: the solver gave no answer");
         lap("words-check");
       }
     } else {
@@ -5738,9 +5801,14 @@ int main(int argc, char **argv) {
       sea::Stopwatch watch;
       sea::solver::Limits al;
       al.timeoutMs = eqAuditTimeout * 1000;
+      al.rlimit = eqAuditRlimit;
       auto z = sea::solver::makeSolver(efac, Backend::Z3, al);
       const expr::BaseRegistry &bases = vcgen.baseRegistry();
       sea::EqAudit audit(*z, bases);
+      if (eqAuditRlimit)
+        audit.setRlimitHit([&](double sec) {
+          return hitRlimit(*z, eqAuditRlimit, eqAuditTimeout, sec);
+        });
       expr::Expr layout = sem.layoutFacts();
       expr::SeaMRewriter *rw = sem.seamRewriter();
       auto pick = [&](size_t n, size_t k) {
@@ -5836,6 +5904,7 @@ int main(int argc, char **argv) {
       size_t n = fs.size();
       size_t m = (checkSample && checkSample < n) ? checkSample : n;
       uint64_t valid = 0, invalid = 0, unknown = 0, unexpr = 0;
+      uint64_t unknownRlimit = 0;
       unsigned ms = seamCheckTimeout * 1000;
       // a fresh solver per query. Hypothesis (measured, not read in z3's
       // source): z3 decides its auto-configuration at the first push, before
@@ -5850,6 +5919,7 @@ int main(int argc, char **argv) {
         sea::solver::Limits cl;
         if (backend != Backend::Yices)
           cl.timeoutMs = ms;
+        cl.rlimit = seamCheckRlimit;
         sea::solver::SolverConfig cc = solverConfig;
         cc.z3Relevancy0Push = true;
         return sea::solver::makeSolver(efac, backend, cl, cc);
@@ -5926,6 +5996,7 @@ int main(int argc, char **argv) {
         std::unique_ptr<sea::solver::Solver> cs = mkCheckSolver();
         if (!cs)
           return;
+        sea::Stopwatch qwatch;
         sea::solver::SolverResult res =
             cs->add(q) ? cs->check() : sea::solver::SolverResult::UNKNOWN;
         if (res == sea::solver::SolverResult::UNSAT) {
@@ -5934,8 +6005,14 @@ int main(int argc, char **argv) {
         }
         if (res != sea::solver::SolverResult::SAT) {
           ++unknown;
+          const bool viaRlimit = backend == Backend::Z3 &&
+                                 hitRlimit(*cs, seamCheckRlimit,
+                                           seamCheckTimeout, qwatch.seconds());
+          if (viaRlimit)
+            ++unknownRlimit;
           os << "seam-check-unknown: id=" << f.id
-             << " rules=" << trail.rulesOf(f) << "\n";
+             << " rules=" << trail.rulesOf(f)
+             << (viaRlimit ? " reason=rlimit" : "") << "\n";
           continue;
         }
         ++invalid;
@@ -5966,7 +6043,10 @@ int main(int argc, char **argv) {
       os << "seam-check: firings=" << n
          << " checked=" << (valid + invalid + unknown) << " valid=" << valid
          << " invalid=" << invalid << " unknown=" << unknown
-         << " unexpressible=" << unexpr << "\n";
+         << " unexpressible=" << unexpr;
+      if (seamCheckRlimit)
+        os << " unknown-rlimit=" << unknownRlimit;
+      os << "\n";
       checkInvalid += invalid;
     };
     // EXPERIMENT: premise checks of the read table (sampled): under A-INB
@@ -6028,6 +6108,7 @@ int main(int argc, char **argv) {
       sea::solver::Limits xl;
       if (backend == Backend::Z3)
         xl.timeoutMs = xReadTableCheckTimeout * 1000;
+      xl.rlimit = xReadTableCheckRlimit;
       std::unique_ptr<sea::solver::Solver> cs =
           sea::solver::makeSolver(efac, backend, xl, solverConfig);
       if (!cs)
@@ -6045,7 +6126,14 @@ int main(int argc, char **argv) {
         rep.line("xrt.check-premise").value(xReadTableCheckPremise);
       });
       cs->add(expr::mk<expr::AND>(sides, expr::mk<expr::AND>(prem, layout)));
+      uint64_t xrtRlimit = 0;
+      sea::Stopwatch cwatch;
       auto ctxRes = cs->check();
+      if (ctxRes == sea::solver::SolverResult::UNKNOWN &&
+          backend == Backend::Z3 &&
+          hitRlimit(*cs, xReadTableCheckRlimit, xReadTableCheckTimeout,
+                    cwatch.seconds()))
+        ++xrtRlimit;
       put([&](sea::stats::Report &rep) {
         rep.line("xrt.check-context")
             .value(ctxRes == sea::solver::SolverResult::SAT     ? "sat"
@@ -6054,7 +6142,12 @@ int main(int argc, char **argv) {
       });
       auto one = [&](expr::Expr ob, uint64_t &u, uint64_t &s, uint64_t &k) {
         cs->push();
+        sea::Stopwatch owatch;
         auto r = cs->add(ob) ? cs->check() : sea::solver::SolverResult::UNKNOWN;
+        if (r == sea::solver::SolverResult::UNKNOWN && backend == Backend::Z3 &&
+            hitRlimit(*cs, xReadTableCheckRlimit, xReadTableCheckTimeout,
+                      owatch.seconds()))
+          ++xrtRlimit;
         cs->pop();
         if (r == sea::solver::SolverResult::UNSAT)
           ++u;
@@ -6183,6 +6276,12 @@ int main(int argc, char **argv) {
                         std::to_string(c.first + c.second));
         });
       }
+      if (xReadTableCheckRlimit)
+        put([&](sea::stats::Report &rep) {
+          rep.line("xrt.check-unknown")
+              .kv("reason", "rlimit")
+              .kv("n", xrtRlimit);
+        });
       put([&](sea::stats::Report &rep) {
         rep.line("xrt.check-time").seconds(watch.seconds());
       });
