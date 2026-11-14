@@ -19,7 +19,10 @@ cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Debug \
 ninja -C build check-sea
 ```
 
-`check-sea` runs lit with `LLVM_LIT_ARGS`, default `-sv -j8` (a bounded default, not tuned; one worker per core otherwise). Override: `-DLLVM_LIT_ARGS="-sv -j<N>"`.
+`check-sea` runs lit with `LLVM_LIT_ARGS`, default `-sv -j8` (a bounded
+default, not tuned; one worker per core otherwise). Override:
+`-DLLVM_LIT_ARGS="-sv -j<N>"`. An existing build dir keeps its cached value
+(configured without it: `-sv`); set `-DLLVM_LIT_ARGS` once.
 
 Also needs Boost (headers), GMP and z3 (`Z3_ROOT`). Yices 2 is optional
 (`-DSEA_ENABLE_YICES=AUTO|ON|OFF`, `YICES2_ROOT` if not system-wide; GPLv3:

@@ -18,9 +18,9 @@ message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
 # LLVMConfig.cmake (find_package above) sets a normal LLVM_LIT_ARGS "-sv" that
-# shadows the cache entry, so -DLLVM_LIT_ARGS was ignored. Restore the cache
-# value. Default "-sv -j8" (not one lit worker per core of a shared machine);
-# override with -DLLVM_LIT_ARGS=...
+# shadows the cache entry, so -DLLVM_LIT_ARGS was lost on every re-configure.
+# Restore the cache value. Default "-sv -j8" (not one lit worker per core of a
+# shared machine); override with -DLLVM_LIT_ARGS=...
 set(LLVM_LIT_ARGS "${LLVM_LIT_ARGS_CACHED}")
 set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)
 set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/lib)
