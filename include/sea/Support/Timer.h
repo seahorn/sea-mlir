@@ -37,10 +37,12 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <deque>
 #include <string>
+#include <utility>
 
 namespace sea {
 
@@ -102,8 +104,9 @@ public:
   explicit Timer(std::string name = "", bool cpu = false)
       : timerName(std::move(name)), withCpu(cpu) {}
 
-  /// Starts an interval; the timer must not be running.
+  /// Starts an interval; the timer must not be running (asserted).
   void start() {
+    assert(!isRunning && "sea::Timer started twice");
     t0 = wallNow();
     if (withCpu)
       cpu0 = cpuSecondsNow();
@@ -114,14 +117,17 @@ public:
   void stop() {
     if (!isRunning)
       return;
+    isRunning = false;
     add(secondsBetween(t0, wallNow()), withCpu ? cpuSecondsNow() - cpu0 : 0);
   }
-  /// Adds one interval measured elsewhere (TimerGroup::lap).
+  /// Adds one interval measured elsewhere (TimerGroup::lap). Must not be
+  /// called while the timer is running (it would end that interval
+  /// uncounted).
   void add(double seconds, double cpuSeconds = 0) {
+    assert(!isRunning && "sea::Timer::add while running");
     wall += seconds;
     cpuTotal += cpuSeconds;
     ++n;
-    isRunning = false;
   }
 
   llvm::StringRef name() const { return timerName; }
