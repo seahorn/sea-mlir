@@ -1220,7 +1220,29 @@ public:
   /// sum such as obj.a + (obj.b - obj.a) (integer casts) is the pointer
   /// obj.b, not a pointer into a. Needs a normalized \p e only for the
   /// offset to be a normal term.
+  ///
+  /// Memoized per node (the key pinned): the result depends only on the
+  /// node, the options and the registry, and the registry only grows, with
+  /// each base constant registered when it is made (SeaOpSem: a term can
+  /// hold a base only after its registration), so isBase of every subterm
+  /// stays what it was (mentionsBase's memo relies on the same). view has no
+  /// other side effect than its own counters (view.offset-sum,
+  /// view.offset-node, ptr.to-int-view), which count once per distinct node
+  /// while the memo is on; no premise, no trail note, no out-of-object span.
+  /// Off with a rule trail (it records every rule application).
   std::optional<PtrView> view(const Expr &e0) const {
+    if (m_stats.trail)
+      return viewOnce(e0);
+    auto it = m_viewMemo.find(e0.get());
+    if (it != m_viewMemo.end())
+      return it->second.second;
+    std::optional<PtrView> v = viewOnce(e0);
+    m_viewMemo.emplace(e0.get(), std::make_pair(e0, v));
+    return v;
+  }
+
+  /// view without the memo.
+  std::optional<PtrView> viewOnce(const Expr &e0) const {
     // a node is read through its flat form, a bvadd a rule built over one
     // (splitRead's j + k) too. Shallow: the offset keeps the nodes of the
     // loads in it (rules build terms from it: sub.same-base, the compare
@@ -5751,6 +5773,9 @@ private:
   mutable std::unordered_map<Expr, bool> m_shadowMemo;
   /// mentionsBase, per node
   mutable std::unordered_map<Expr, bool> m_mentionsMemo;
+  /// view per node, the key pinned
+  mutable std::unordered_map<ENode *, std::pair<Expr, std::optional<PtrView>>>
+      m_viewMemo;
   /// flat / flatDeep per node, and the keys pinned
   mutable std::unordered_map<ENode *, Expr> m_flatMemo, m_flatDeepMemo;
   mutable std::vector<Expr> m_flatPin;
