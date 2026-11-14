@@ -5709,11 +5709,14 @@ int main(int argc, char **argv) {
       }
       std::string path =
           splitSmt2 + ".part" + std::to_string(splitPartId) + ".smt2";
-      std::error_code ec;
-      llvm::raw_fd_ostream os(path, ec);
-      if (ec)
-        return fail("--split-smt2: cannot write " + path + ": " + ec.message());
-      ps->to_smt_lib(os);
+      if (failed(sea::writeFileAtomic(
+              path,
+              [&](llvm::raw_ostream &os) {
+                ps->to_smt_lib(os);
+                return success();
+              },
+              "vc.split-smt2", "--split-smt2")))
+        return 1;
       printStats(
           [&](sea::stats::Report &r) { r.line("split.smt2").value(path); });
     }

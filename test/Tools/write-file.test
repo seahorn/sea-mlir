@@ -11,6 +11,8 @@
 // LOWERED: Error: --print-lowered: cannot write '{{.*}}missing{{/|\\}}low.mlir': {{.*}} [vc.print-lowered]
 // RUN: not sea-vc %{in} --ack-dump-pairs=%t/missing/pairs.txt 2>&1 | FileCheck %s --check-prefix=PAIRS
 // PAIRS: Error: --ack-dump-pairs: cannot write '{{.*}}missing{{/|\\}}pairs.txt': {{.*}} [vc.ack-dump-pairs]
+// RUN: not sea-vc %S/../VC/split/guards.mlir --program=bug --split=^bb1 --split-smt2=%t/missing/q --vcgen-only 2>&1 | FileCheck %s --check-prefix=SPLIT
+// SPLIT: Error: --split-smt2: cannot write '{{.*}}missing{{/|\\}}q.part{{[0-9]+}}.smt2': {{.*}} [vc.split-smt2]
 // RUN: not %{place} 2>&1 | FileCheck %s --check-prefix=PLACE
 // PLACE: Error: sea-place-static: the placement file: cannot write '{{.*}}missing{{/|\\}}w.place': {{.*}} [place.out-file]
 
