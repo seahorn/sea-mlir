@@ -330,11 +330,10 @@ public:
   /// <kind>: <reason>` (sea-vc prints them with vc.seam-inb-violated).
   static constexpr unsigned kInbViolationNotes = 8;
   const std::vector<std::string> &inbViolationNotes() const { return inbNotes; }
-  /// EXPERIMENT (sea-vc --x-read-table): the rewriter, and the A-INB
-  /// violation terms `path && !inb` of the accesses seen.
+  /// The SeaM rewriter (null without --seam).
   expr::SeaMRewriter *seamRewriter() { return seamRw.get(); }
-  const expr::ExprSet &inbViolationTerms() const { return inbSeen; }
-  /// EXPERIMENT: positions in the side conditions of the sea.assume facts.
+  /// Positions in the side conditions of the sea.assume facts (the
+  /// --x-reach-plant=skip-assumes test plant).
   const std::vector<size_t> &assumeSidePositions() const { return assumeSides; }
 
 private:

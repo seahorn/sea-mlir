@@ -1,7 +1,5 @@
 // The rlimit flags of the auxiliary checks (z3's resource limit, deterministic;
 // 0 = unset). At 1 every check runs out: the check is unknown, reason=rlimit.
-// (--x-read-table-check-rlimit, the hidden experiment's, has no test: its
-// check does not run on these programs, "Not convertible to Z3: ptr".)
 
 // --words-check
 RUN: sea-vc %S/initial-words.mlir --program=eq --lower --seam --seam-wide --seam-words=all --words-check --words-check-rlimit=1 2>&1 | FileCheck %s --check-prefix=WORDS

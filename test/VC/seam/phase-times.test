@@ -12,21 +12,8 @@ CHECK: vc.unique-names-time:
 CHECK: vc.exec-time:
 CHECK: vc.join-time:
 
-The laps of the other boundaries, each once and in order (a lap name is
-used at most once per run: solver-term is lapped on three exclusive paths).
-RUN: sea-vc %S/../../SeaHorn/opsem/muchang.gstr.mlir --lower --seam --seam-stats --x-read-table=plain 2>&1 | FileCheck %s --check-prefix=XRT
-XRT: vc.setup-time:
-XRT-NEXT: vc.encode-time:
-XRT-NEXT: vc.simplify-sides-time:
-XRT-NEXT: vc.mkquery-time:
-XRT-NEXT: vc.simplify-query-time:
-XRT-NEXT: vc.solver-term-time:
-XRT-NEXT: vc.xrt-translate-time:
-XRT-NEXT: vc.unique-names-time:
-XRT-NEXT: vc.ackermannize-time:
-XRT-NEXT: vc.xrt-lower-time:
-XRT-NEXT: vc.exec-time:
-XRT-NEXT: vc.join-time:
+The laps of the words boundary, each once and in order (a lap name is
+used at most once per run: solver-term is lapped on two exclusive paths).
 RUN: sea-vc %S/initial-words.mlir --program=eq --lower --seam --seam-wide --seam-words=all --words-check --seam-stats 2>&1 | FileCheck %s --check-prefix=WORDS
 WORDS: vc.setup-time:
 WORDS-NEXT: vc.encode-time:

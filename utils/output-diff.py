@@ -124,14 +124,12 @@ SRC = os.path.dirname(HERE)
 V = " --lower --widen-memory=8"
 SEAM = V + " --seam --seam-stats --brunch-stats"
 # The plan's matrix (stage 0). `heavy` (skipped by --quick): extra solver checks,
-# the plain array encoding (default, lambda) and the read-table experiment (xrt):
-# minutes per vcc job, some past the timeout.
+# the plain array encoding (default, lambda): minutes per vcc job, some past
+# the timeout.
 DEFAULT_MATRIX = f"""\
 default sea-vc heavy:{V}
 seam-stats sea-vc:{SEAM}
 lambda sea-vc heavy:{V} --mem=lambda --brunch-stats
-xrt sea-vc heavy:{SEAM} --x-read-table=mux
-xrt-check sea-vc heavy:{SEAM} --x-read-table=mux --x-read-table-check=1
 words sea-vc heavy:{SEAM} --seam-words=auto --words-check
 eq-audit sea-vc heavy:{SEAM} --eq-audit
 split-auto sea-vc heavy:{SEAM} --split-auto
