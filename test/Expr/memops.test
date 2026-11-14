@@ -28,5 +28,13 @@ CHECK: test: boundary ok
 CHECK: test: ptr-index ok
 CHECK: failures: 0
 
+// The log tag yices.const-array (docs/reference/logging.md): the assertion
+// yices is about to refuse, not the rewritten one before it.
+RUN: not --crash sea-memops-test const-array-log 2>&1 | FileCheck %s --check-prefix=LOG
+LOG-NOT: log: yices.const-array
+LOG: const-array-log: unsupported assertion next
+LOG-NEXT: log: yices.const-array const-arrays=2 assertion="(const-array(bv(4), x)=const-array(bv(4), 0:bv(8)))"
+LOG-NEXT: the context does not support lambda terms
+
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

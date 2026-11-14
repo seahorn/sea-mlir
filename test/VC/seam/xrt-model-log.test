@@ -1,0 +1,13 @@
+// The log tag xrt.model-record (docs/reference/logging.md): each read record
+// the --x-read-table model reads back, with its address, value and
+// relevance; nothing without the tag.
+// RUN: sea-vc %S/inb-witness-memory.mlir --lower --seam --x-read-table=objack --log=xrt.model-record:3 2>&1 | FileCheck %s
+// RUN: sea-vc %S/inb-witness-memory.mlir --lower --seam --x-read-table=objack 2>&1 | FileCheck %s --check-prefix=OFF
+// CHECK: log: xrt.model-record record=0 addr=({{[0-9a-fx]+}}:bv(64)) value=(1:bv(8)) rel=true
+// CHECK: result: sat
+// CHECK: xrt.model: relevant=1
+// OFF-NOT: xrt.model-record
+// OFF: result: sat
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -9,6 +9,7 @@
 #include "sea/Support/Log.h"
 #include "sea/Support/Stats.h"
 #include "sea/Support/Timer.h"
+#include "sea/Support/WriteFile.h"
 #include "sea/VC/Replay.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -306,36 +307,33 @@ std::string replaysOn(const ReachOptions &options) {
 /// A corpus file of the run's inputs (sea-run --input-file).
 bool writeWitness(StringRef path, const ReachTarget &t, StringRef at,
                   const ReachOptions &options, const RunResult &run) {
-  std::error_code ec;
-  llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_Text);
-  if (ec) {
-    diag::error("vc.reach-witness",
-                "cannot write '" + path + "': " + ec.message());
-    return false;
-  }
-  os << "# sea-vc --reach: " << t.id << " op=" << t.opName << " at=" << at
-     << "\n";
-  os << "# " << replaysOn(options) << "\n";
-  for (const NondetRead &rd : run.reads) {
-    os << "nondet: site=" << rd.site << " callee=" << rd.callee
-       << " width=" << rd.value.getBitWidth() << " value=";
-    rd.value.print(os, /*isSigned=*/false);
-    os << "\n";
-  }
-  for (const CellRead &cr : run.cellReads) {
-    if (!cr.object.empty()) {
-      diag::error("vc.reach-witness",
-                  "a memory cell of an abstract memory in a witness (place "
-                  "the program first)");
-      return false;
+  auto body = [&](llvm::raw_ostream &os) -> LogicalResult {
+    os << "# sea-vc --reach: " << t.id << " op=" << t.opName << " at=" << at
+       << "\n";
+    os << "# " << replaysOn(options) << "\n";
+    for (const NondetRead &rd : run.reads) {
+      os << "nondet: site=" << rd.site << " callee=" << rd.callee
+         << " width=" << rd.value.getBitWidth() << " value=";
+      rd.value.print(os, /*isSigned=*/false);
+      os << "\n";
     }
-    os << "memread: site=" << memSiteOf(cr.siteOp) << " addr=";
-    cr.addr.print(os, /*isSigned=*/false);
-    os << " width=" << cr.value.getBitWidth() << " value=";
-    cr.value.print(os, /*isSigned=*/false);
-    os << "\n";
-  }
-  return true;
+    for (const CellRead &cr : run.cellReads) {
+      if (!cr.object.empty()) {
+        diag::error("vc.reach-witness",
+                    "a memory cell of an abstract memory in a witness (place "
+                    "the program first)");
+        return failure();
+      }
+      os << "memread: site=" << memSiteOf(cr.siteOp) << " addr=";
+      cr.addr.print(os, /*isSigned=*/false);
+      os << " width=" << cr.value.getBitWidth() << " value=";
+      cr.value.print(os, /*isSigned=*/false);
+      os << "\n";
+    }
+    return success();
+  };
+  return succeeded(
+      writeFileAtomic(path, body, "vc.reach-witness", "--reach-witness"));
 }
 
 } // namespace

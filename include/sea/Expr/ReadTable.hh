@@ -46,6 +46,7 @@
 #include "sea/Expr/SeaMRules.hh"
 #include "sea/Expr/Smt/Model.hh"
 #include "sea/Expr/TypeChecker.hh"
+#include "sea/Support/Log.h"
 #include "sea/Support/Stats.h"
 
 #include <map>
@@ -56,6 +57,12 @@
 
 namespace expr {
 namespace xrt {
+
+/// Each model record a ReadTable model reads back (inline: one tag for
+/// every includer).
+inline sea::log::Tag logModelRecord("xrt.model-record", 3,
+                                    "a read record of the --x-read-table "
+                                    "model (address, value, relevance)");
 
 struct IdLess {
   bool operator()(const ENode *a, const ENode *b) const {
@@ -1271,9 +1278,11 @@ private:
       Expr vn =
           op::bv::bvnum(reducedValue(v), op::bv::widthBvNum(v), v->efac());
       bool rel = !isOpX<FALSE>(r);
-      if (getenv("XRT_DEBUG"))
-        llvm::errs() << "xrt.model-record: " << k << " addr=" << *i
-                     << " value=" << *v << " rel=" << *r << "\n";
+      SEA_LOG(logModelRecord, sea::log::Detail)
+          .kv("record", k)
+          .kv("addr", *i)
+          .kv("value", *v)
+          .kv("rel", *r);
       auto &tbl = rel ? f.cells : irr;
       if (rel)
         ++m_relevant;

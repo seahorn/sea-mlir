@@ -12,6 +12,7 @@
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
 #include "sea/Support/Timer.h"
+#include "sea/Support/WriteFile.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -96,37 +97,17 @@ std::string formatAssignment(const Assignment &a) {
   return std::to_string(a.site) + "@" + a.cell + "=" + a.value;
 }
 
-/// Writes `text` to `path` whole: to `.<name>.tmp` in the same directory,
-/// then renamed, so a reader of the directory (a peer's --fuzz-sync) sees
-/// the file complete or not at all.
+/// Writes `text` to `path` whole (writeFileAtomic): a reader of the
+/// directory (a peer's --fuzz-sync) sees the file complete or not at all.
 static LogicalResult writeWhole(StringRef path, StringRef text,
                                 std::string &error) {
-  llvm::SmallString<128> tmp = llvm::sys::path::parent_path(path);
-  llvm::sys::path::append(tmp,
-                          "." + llvm::sys::path::filename(path).str() + ".tmp");
-  {
-    std::error_code ec;
-    llvm::raw_fd_ostream os(tmp, ec, llvm::sys::fs::OF_Text);
-    if (ec) {
-      error = "cannot write '" + tmp.str().str() + "': " + ec.message();
-      return failure();
-    }
-    os << text;
-    os.close();
-    if (os.has_error()) {
-      error = "cannot write '" + tmp.str().str() + "': " + os.error().message();
-      os.clear_error();
-      llvm::sys::fs::remove(tmp);
-      return failure();
-    }
-  }
-  if (std::error_code ec = llvm::sys::fs::rename(tmp, path)) {
-    error = "cannot rename '" + tmp.str().str() + "' to '" + path.str() +
-            "': " + ec.message();
-    llvm::sys::fs::remove(tmp);
-    return failure();
-  }
-  return success();
+  return writeFileAtomic(
+      path,
+      [&](llvm::raw_ostream &os) {
+        os << text;
+        return success();
+      },
+      error);
 }
 
 LogicalResult writeCorpusFile(StringRef path,

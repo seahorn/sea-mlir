@@ -12,6 +12,7 @@ add_mlir_library(SeaSupport
   Stats.cpp
   Timer.cpp
   Version.cpp
+  WriteFile.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport

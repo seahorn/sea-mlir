@@ -34,6 +34,7 @@
 #include "sea/Support/Stats.h"
 #include "sea/Support/Timer.h"
 #include "sea/Support/Version.h"
+#include "sea/Support/WriteFile.h"
 #include "sea/Transforms/Passes.h"
 #include "sea/Transforms/RangeFold.h"
 
@@ -3439,12 +3440,15 @@ static int writeReachPrograms(ModuleOp module, sea::ProgramOp program,
       return 1;
     SmallString<128> path(reachPrograms);
     sys::path::append(path, "reach-" + Twine(k) + ".mlir");
-    std::error_code ec;
-    raw_fd_ostream os(path, ec, sys::fs::OF_Text);
-    if (ec)
-      return fail("cannot write '" + path + "': " + ec.message());
     // with the locations; R_T's own target has its id in sea.reach_target
-    copy->print(os, OpPrintingFlags().enableDebugInfo(true, false));
+    if (failed(sea::writeFileAtomic(
+            path,
+            [&](raw_ostream &os) {
+              copy->print(os, OpPrintingFlags().enableDebugInfo(true, false));
+              return success();
+            },
+            "vc.reach-programs", "--reach-programs")))
+      return 1;
     std::string at = sea::formatLoc(t.loc);
     sea::out::Record rec("reach.program");
     rec.str("id", t.id).str("op", t.opName).str("file", path.str());
@@ -4251,20 +4255,22 @@ int main(int argc, char **argv) {
   // --print-lowered: the program the VC encodes, named as sea::ValueNames
   // names it (AsmState of the module, NameLocs as name prefixes)
   if (!printLowered.empty()) {
-    std::error_code ec;
-    raw_fd_ostream os(printLowered, ec, sys::fs::OF_Text);
-    if (ec)
-      return fail("cannot write '" + printLowered + "': " + ec.message());
-    os << "// sea-vc --print-lowered: the program the VC encodes, named as "
-          "the VC names it\n// (split selectors, split.* lines); a nondet "
-          "result is nd.<site> in the VC.\n";
-    // locations inline (no #loc aliases), so a grep for a name shows its
-    // position
-    module->print(os, OpPrintingFlags()
-                          .enableDebugInfo(true, false)
-                          .useLocalScope()
-                          .printNameLocAsPrefix());
-    os << "\n";
+    auto body = [&](raw_ostream &os) {
+      os << "// sea-vc --print-lowered: the program the VC encodes, named as "
+            "the VC names it\n// (split selectors, split.* lines); a nondet "
+            "result is nd.<site> in the VC.\n";
+      // locations inline (no #loc aliases), so a grep for a name shows its
+      // position
+      module->print(os, OpPrintingFlags()
+                            .enableDebugInfo(true, false)
+                            .useLocalScope()
+                            .printNameLocAsPrefix());
+      os << "\n";
+      return success();
+    };
+    if (failed(sea::writeFileAtomic(printLowered, body, "vc.print-lowered",
+                                    "--print-lowered")))
+      return 1;
   }
   // case splitting (sea/VC/Split.h): the targets, on the program the VC
   // encodes; the choices of the run's first levels; what a run reports
@@ -5450,36 +5456,38 @@ int main(int argc, char **argv) {
           origins.through([&](const expr::Expr &n) { return ack.image(n); });
     }
     if (ackOn && !ackDumpPairs.empty()) {
-      std::error_code ec;
-      llvm::raw_fd_ostream os(ackDumpPairs, ec);
-      if (ec)
-        return fail("--ack-dump-pairs: " + ec.message());
-      const auto &arrs = ack.arrays();
-      for (size_t a = 0; a < arrs.size(); ++a) {
-        os << "array " << a << " "
-           << *expr::op::bind::fname(arrs[a].array->first()) << "\n";
-        for (size_t k = 0; k < arrs[a].reads.size(); ++k) {
-          // the index, then the loads the read came from (the distinct
-          // locations of the selects merged into it; - for none)
-          os << "read " << a << " " << k << " " << *arrs[a].reads[k].index
-             << " loc=";
-          std::vector<std::string> ls;
-          for (const expr::Expr &sel : arrs[a].reads[k].selects)
-            for (mlir::Location l : preAckOrigins.of(sel.get())) {
-              std::string t = sea::formatLoc(l);
-              if (t.empty())
-                t = "-";
-              if (!llvm::is_contained(ls, t))
-                ls.push_back(t);
-            }
-          if (ls.empty())
-            os << "-";
-          llvm::interleave(ls, os, ";");
-          os << "\n";
+      auto body = [&](llvm::raw_ostream &os) {
+        const auto &arrs = ack.arrays();
+        for (size_t a = 0; a < arrs.size(); ++a) {
+          os << "array " << a << " "
+             << *expr::op::bind::fname(arrs[a].array->first()) << "\n";
+          for (size_t k = 0; k < arrs[a].reads.size(); ++k) {
+            // the index, then the loads the read came from (the distinct
+            // locations of the selects merged into it; - for none)
+            os << "read " << a << " " << k << " " << *arrs[a].reads[k].index
+               << " loc=";
+            std::vector<std::string> ls;
+            for (const expr::Expr &sel : arrs[a].reads[k].selects)
+              for (mlir::Location l : preAckOrigins.of(sel.get())) {
+                std::string t = sea::formatLoc(l);
+                if (t.empty())
+                  t = "-";
+                if (!llvm::is_contained(ls, t))
+                  ls.push_back(t);
+              }
+            if (ls.empty())
+              os << "-";
+            llvm::interleave(ls, os, ";");
+            os << "\n";
+          }
         }
-      }
-      for (const auto &p : ack.constrainedPairs())
-        os << "pair " << p.array << " " << p.k << " " << p.l << "\n";
+        for (const auto &p : ack.constrainedPairs())
+          os << "pair " << p.array << " " << p.k << " " << p.l << "\n";
+        return success();
+      };
+      if (failed(sea::writeFileAtomic(ackDumpPairs, body, "vc.ack-dump-pairs",
+                                      "--ack-dump-pairs")))
+        return 1;
     }
     lap("ackermannize");
     if (xrtOn) {
