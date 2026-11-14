@@ -16,6 +16,10 @@ sea.program @intrinsics {
   %4 = sea.bswap %a : i16
   // CHECK: sea.ctpop %{{.*}} : i16
   %ctp = sea.ctpop %a : i16
+  // CHECK: sea.abs %{{.*}} : i16
+  %abs = sea.abs %a : i16
+  // CHECK: sea.abs %{{.*}} nsw : i16
+  %absn = sea.abs %a nsw : i16
   // CHECK: sea.fshl %{{.*}}, %{{.*}}, %{{.*}} : i16
   %5 = sea.fshl %a, %b, %0 : i16
   // CHECK: sea.fshr

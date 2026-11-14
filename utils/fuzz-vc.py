@@ -297,8 +297,12 @@ class Gen:
     def intrinsic(self, scope, w):
         a, b = self.pick(scope, w), self.pick(scope, w)
         v = self.fresh()
-        kind = self.rng.choice(["minmax", "ovf", "funnel", "bswap"])
-        if kind == "bswap" and w % 16 == 0:
+        kind = self.rng.choice(["minmax", "ovf", "funnel", "bswap", "abs"])
+        if kind == "abs":
+            # nsw: LLVM's is_int_min_poison, a promise (diff_wrap_flags)
+            flag = self.rng.choice(["", " nsw"])
+            self.emit(f"{v} = sea.abs {a}{flag} : i{w}")
+        elif kind == "bswap" and w % 16 == 0:
             self.emit(f"{v} = sea.bswap {a} : i{w}")
         elif kind == "funnel":
             s = self.pick(scope, w)

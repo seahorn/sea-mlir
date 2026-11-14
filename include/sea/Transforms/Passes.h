@@ -71,15 +71,16 @@ std::unique_ptr<mlir::Pass> createCheckAlignPass();
 /// section 6).
 std::unique_ptr<mlir::Pass> createCheckPtrIndexPass(bool assumeAsserts = false);
 
-/// sea-expand-intrinsics: intrinsic ops (min/max, bswap, funnel shifts,
+/// sea-expand-intrinsics: intrinsic ops (min/max, abs, bswap, funnel shifts,
 /// overflow bits) become core bit-vector ops; with \p keepMulOverflow,
 /// sea.umulo / sea.smulo stay (for a solver that encodes them natively).
 std::unique_ptr<mlir::Pass>
 createExpandIntrinsicsPass(bool keepMulOverflow = false);
 
 /// sea-wrap-flags: turns the nsw / nuw promises of add / sub / mul / shl
-/// into sea.assume (mode=assume) or sea.assert (mode=assert) of "no
-/// overflow", or drops them (mode=drop); removes the flags.
+/// (and the nsw of abs: is_int_min_poison) into sea.assume (mode=assume) or
+/// sea.assert (mode=assert) of "no overflow", or drops them (mode=drop);
+/// removes the flags.
 std::unique_ptr<mlir::Pass> createWrapFlagsPass();
 
 /// sea-print-strengthen / sea-print-weaken: convert print ops between the

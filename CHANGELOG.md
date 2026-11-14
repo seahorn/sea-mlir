@@ -12,7 +12,7 @@ Scope, build, assumptions and known issues: [docs/Release.md](docs/Release.md).
 - Memory: Mem-SSA memories with `inplace` updates; pointers and abstract
   objects (malloc / alloca / globals, `sea.segment`); memset / memmove /
   memhavoc; memory layouts in the type (exact, aligned, unaligned, keyed).
-- Structs (register-only, `sea.struct.nondet`), intrinsics (min/max, bswap,
+- Structs (register-only, `sea.struct.nondet`), intrinsics (min/max, abs, bswap,
   funnel shifts, overflow ops, ctpop), `sea.concat` / `sea.extract`.
 - `sea.ptr.index`: GEPs with trusted no-wrap flags (docs/design/PtrIndex.md);
   `sea.addr.from_bits` / `to_bits`; `sea.ptr.base` / `dereferenceable`.

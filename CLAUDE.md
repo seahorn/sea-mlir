@@ -62,8 +62,8 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   for --seam reads whose mcopy range test stays open;
   docs/design/SeaM-memops.md),
   `sea-split-critical-edges`,
-  `sea-split-wide-access`, `sea-expand-intrinsics` (min/max, bswap, funnel
-  shifts, overflow ops; mul overflow kept for z3 and Bitwuzla), `sea-wrap-flags`
+  `sea-split-wide-access`, `sea-expand-intrinsics` (min/max, abs, bswap,
+  funnel shifts, overflow ops; mul overflow kept for z3 and Bitwuzla), `sea-wrap-flags`
   (nsw/nuw promises -> assume/assert/drop), `sea-sink-assumes` (every
   assume of a BMC-form program -> one assume of the conjunction on the
   path, before the assert: SeaHorn's UnifyAssumes; `sea-vc

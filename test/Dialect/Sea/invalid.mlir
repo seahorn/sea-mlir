@@ -177,5 +177,14 @@ sea.program @deref_len_width {
   sea.halt
 }
 
+// -----
+
+sea.program @abs_nuw {
+  %x = sea.const 1 : i8
+  // expected-error@+1 {{has no nuw promise}}
+  %a = sea.abs %x {nuw} : i8
+  sea.halt
+}
+
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

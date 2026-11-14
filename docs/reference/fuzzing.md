@@ -815,7 +815,7 @@ several paths, so the walk stops at once.
   compares at the width of its operands;
 - `(<op> a ...)`: an operation whose value the text fully shows, named
   as in the IR without `sea.`: the arithmetic and bitwise operations,
-  min and max, the overflow tests, `concat`, `select`, `struct.create`,
+  min, max and abs, the overflow tests, `concat`, `select`, `struct.create`,
   the `addr.*` operations, and `ptr.add`, `ptr.diff`, `ptr.null`. The
   `nsw` and `nuw` promises show as `.nsw` and `.nuw` (`(add.nsw a b)`).
   Operations that change the width carry the result width:

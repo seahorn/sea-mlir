@@ -42,7 +42,8 @@ llvm::APInt bvAShr(const llvm::APInt &x, const llvm::APInt &y);
 std::optional<llvm::APInt> evalPureOp(mlir::Operation *op,
                                       llvm::ArrayRef<llvm::APInt> operands);
 
-/// The no-wrap promise (`nsw` / `nuw`) of add / sub / mul / shl that the
+/// The no-wrap promise (`nsw` / `nuw`) of add / sub / mul / shl, or the
+/// `nsw` of abs (the input is not the minimal signed value), that the
 /// concrete operands break, if any. The op's value is the wrapped one
 /// regardless.
 std::optional<llvm::StringRef>

@@ -106,7 +106,7 @@ static const llvm::StringSet<> *allowedAttrs(Operation *op) {
           "addr.diff",    "addr.to_int", "addr.from_int", "addr.from_bits",
           "addr.to_bits", "ptr.add",     "ptr.diff",      "ptr.null"})
       t[std::string("sea.") + n] = {};
-    for (const char *n : {"add", "sub", "mul", "shl"})
+    for (const char *n : {"add", "sub", "mul", "shl", "abs"})
       t[std::string("sea.") + n] = {"nsw", "nuw"};
     for (const char *n : {"icmp", "addr.cmp", "ptr.cmp"})
       t[std::string("sea.") + n] = {"predicate"};

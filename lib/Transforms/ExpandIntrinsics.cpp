@@ -4,9 +4,12 @@
 //===- ExpandIntrinsics.cpp - intrinsic ops into core bit-vector ops -*- C++
 //-*-//
 //
-// Rewrites the intrinsic ops (min/max, bswap, funnel shifts, overflow bits)
-// into core bit-vector ops the VC encodes. The interpreter executes both
-// forms, which is what lets the oracles validate this pass.
+// Rewrites the intrinsic ops (min/max, abs, bswap, funnel shifts, overflow
+// bits)
+// into core bit-vector ops the VC encodes. abs's nsw (LLVM's
+// is_int_min_poison) stays a promise: it becomes the nsw of the expansion's
+// `0 - x`, which overflows exactly at the minimal signed value. The interpreter
+// executes both forms, which is what lets the oracles validate this pass.
 //
 // Contract.
 //   Accepts: any program.
@@ -44,8 +47,8 @@ public:
 
   StringRef getArgument() const final { return "sea-expand-intrinsics"; }
   StringRef getDescription() const final {
-    return "Expand intrinsic ops (min/max, bswap, funnel shifts, overflow "
-           "bits) into core bit-vector ops";
+    return "Expand intrinsic ops (min/max, abs, bswap, funnel shifts, "
+           "overflow bits) into core bit-vector ops";
   }
 
   void runOnOperation() override;
@@ -102,6 +105,14 @@ struct Expander {
 
   Value minMax(ICmpPredicate p, Value x, Value y) {
     return select(cmp(p, x, y), x, y);
+  }
+
+  /// ite(x <s 0, 0 - x, x); nsw on the negation carries abs's promise.
+  Value abs(Value x, bool nsw) {
+    Value neg =
+        SubOp::create(b, loc, x.getType(), cst(bitWidthOf(x.getType()), 0), x,
+                      nsw ? b.getUnitAttr() : UnitAttr(), UnitAttr());
+    return select(isNeg(x), neg, x);
   }
 
   /// Bytes in reverse order: byte 0 becomes the most significant.
@@ -185,6 +196,7 @@ void ExpandIntrinsicsPass::runOnOperation() {
             .Case([&](SMaxOp) {
               return e.minMax(ICmpPredicate::sgt, in(0), in(1));
             })
+            .Case([&](AbsOp a) { return e.abs(in(0), a.getNsw()); })
             .Case([&](BSwapOp) { return e.bswap(in(0)); })
             .Case([&](CtPopOp) { return e.ctpop(in(0)); })
             .Case([&](FShlOp) { return e.funnel(true, in(0), in(1), in(2)); })
@@ -223,7 +235,7 @@ void ExpandIntrinsicsPass::runOnOperation() {
     op->erase();
   getOperation().walk([&](Operation *op) {
     bool keptMul = keepMulOverflow && isa<UMulOOp, SMulOOp>(op);
-    if (!keptMul && isa<UMinOp, UMaxOp, SMinOp, SMaxOp, BSwapOp, CtPopOp,
+    if (!keptMul && isa<UMinOp, UMaxOp, SMinOp, SMaxOp, AbsOp, BSwapOp, CtPopOp,
                         FShlOp, FShrOp, UAddOOp, SAddOOp, USubOOp, SSubOOp,
                         UMulOOp, SMulOOp, SDivOOp, NegOOp>(op)) {
       (void)postconditionFailed("sea-expand-intrinsics", "an intrinsic op", op);
