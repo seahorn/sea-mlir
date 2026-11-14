@@ -77,6 +77,9 @@ struct SolverConfig {
   /// z3: sat.euf=true for this solver only (the same way; SeaHorn sets it
   /// with the `sat` tactic)
   bool z3SatEuf = false;
+  /// z3: test hook (sea-vc --z3-plant-error): make an invalid z3 API call
+  /// on the new solver's context, as an internal error would
+  bool z3PlantError = false;
   /// Yices: the logic of the context (empty: Yices' default)
   std::string yicesLogic;
   /// Yices: context configuration, `key=value` each

@@ -24,6 +24,7 @@
 #include "sea/Expr/Smt/EZ3.hh"
 #include "sea/Expr/Smt/SolverFactory.h"
 #include "sea/Expr/Smt/Z3.hh"
+#include "sea/Expr/Smt/Z3Error.h"
 #include "sea/Interp/ParseInput.h"
 #include "sea/Support/Assume.h"
 #include "sea/Support/Diag.h"
@@ -383,6 +384,12 @@ static cl::opt<std::string> z3Tactic(
              "sat.euf=true, as SeaHorn). Applies to the solver of the verdict "
              "only, not to the auxiliary checks. default: z3's own"),
     cl::init("default"));
+
+static cl::opt<bool> z3PlantError(
+    "z3-plant-error",
+    cl::desc("Testing only: make an invalid z3 API call when the first z3 "
+             "solver is made, as a z3 error of sea-vc's own would"),
+    cl::init(false), cl::Hidden);
 
 static cl::list<std::string>
     z3Params("z3-param",
@@ -3620,7 +3627,13 @@ int main(int argc, char **argv) {
       errs() << "sea-vc: --z3-param wants key=value, got '" << kv << "'\n";
       return 1;
     }
-    Z3_global_param_set(k.str().c_str(), v.str().c_str());
+    // z3 only warns about an unknown name or a bad value: report it
+    std::string perr;
+    if (!sea::z3SetGlobalParam(k.str(), v.str(), perr)) {
+      sea::diag::error("smt.z3-param",
+                       "z3 rejects --z3-param " + kv + ": " + perr);
+      return 1;
+    }
   }
   if (agent) {
     outs() << agentGuide;
@@ -5457,6 +5470,7 @@ int main(int argc, char **argv) {
     solverConfig.yicesLogic = yicesLogic;
     solverConfig.yicesConfig = yicesConfig;
     solverConfig.yicesParams = yicesParams;
+    solverConfig.z3PlantError = z3PlantError;
     // Backend::Bitwuzla without the library is an error (null solver)
     // \p limits: --timeout / --mem-limit (the solver of the verdict only)
     auto makeSolver = [&](bool limits =

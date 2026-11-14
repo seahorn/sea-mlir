@@ -1,0 +1,30 @@
+A z3 error is reported, never ignored. sea-vc builds without exceptions, so z3++
+cannot throw: outside input (--z3-tactic, --z3-param) is checked where it
+enters, and every z3 context has an error handler (smt.z3-internal) behind it.
+
+A tactic z3 cannot parse (z3 alone prints "(error" and carries on):
+RUN: not sea-vc %S/seam/eq-audit.mlir --program=memset --lower --seam --z3-tactic='(then' 2>&1 | FileCheck %s --check-prefix=TACTIC
+TACTIC: Error: z3 rejects --z3-tactic '(then': {{.*}} [vc.z3-tactic]
+RUN: not sea-vc %S/seam/eq-audit.mlir --program=memset --lower --seam --z3-tactic=nosuchtactic 2>&1 | FileCheck %s --check-prefix=NAME
+NAME: Error: z3 rejects --z3-tactic 'nosuchtactic': {{.*}} [vc.z3-tactic]
+NAME-NOT: smt.z3-internal
+
+A z3 parameter z3 rejects (z3 alone warns and carries on):
+RUN: not sea-vc %S/seam/eq-audit.mlir --program=memset --lower --seam --z3-param=nosuchparam=1 2>&1 | FileCheck %s --check-prefix=PNAME
+PNAME: Error: z3 rejects --z3-param nosuchparam=1: {{.*}}unknown parameter{{.*}} [smt.z3-param]
+RUN: not sea-vc %S/seam/eq-audit.mlir --program=memset --lower --seam --z3-param=rlimit=abc 2>&1 | FileCheck %s --check-prefix=PVALUE
+PVALUE: Error: z3 rejects --z3-param rlimit=abc: {{.*}} [smt.z3-param]
+RUN: not sea-vc %S/seam/eq-audit.mlir --program=memset --lower --seam --z3-param=sat.euf=1 2>&1 | FileCheck %s --check-prefix=PBOOL
+PBOOL: Error: z3 rejects --z3-param sat.euf=1: {{.*}} [smt.z3-param]
+A good parameter and a good tactic still run:
+RUN: sea-vc %S/seam/eq-audit.mlir --program=memset --lower --seam --z3-param=smt.random_seed=3 --z3-tactic=smtfd 2>&1 | FileCheck %s --check-prefix=OK
+OK: result: sat
+
+An error z3 reports from inside sea-vc reaches the handler (planted: an invalid
+API call):
+RUN: not sea-vc %S/seam/eq-audit.mlir --program=memset --lower --seam --z3-plant-error 2>&1 | FileCheck %s --check-prefix=PLANT
+PLANT: Error: z3 reported an error (code {{[0-9]+}}): {{.*}} [smt.z3-internal]
+PLANT-NOT: result:
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

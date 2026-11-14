@@ -6,6 +6,7 @@
 #include "sea/Expr/Smt/SolverFactory.h"
 
 #include "sea/Expr/Smt/EZ3.hh"
+#include "sea/Expr/Smt/Z3Error.h"
 #include "sea/Expr/Smt/Z3SolverImpl.hh"
 #include "sea/Support/Diag.h"
 #ifdef WITH_YICES2
@@ -131,7 +132,21 @@ std::unique_ptr<Solver> makeSolver(expr::ExprFactory &efac, Backend backend,
   switch (backend) {
   case Backend::Z3: {
     auto z = std::make_unique<z3_solver_impl>(efac);
+    if (config.z3PlantError)
+      plantZ3Error(z->get_context().raw_context());
     z3Limits(*z, limits, config, config.z3Relevancy0Push);
+    // z3 reports a tactic it cannot parse on its own output only and goes on
+    // with its default: check it first (once; the solver's init() below
+    // reports a name z3 does not know)
+    if (!config.z3Tactic.empty()) {
+      std::string terr;
+      if (!z3CheckTactic(config.z3Tactic, terr)) {
+        sea::diag::error(config.kindPrefix + "z3-tactic",
+                         "z3 rejects --z3-tactic '" + config.z3Tactic +
+                             "': " + terr);
+        return nullptr;
+      }
+    }
     // the global parameters z3 reads when it builds the solver: for this
     // solver only
     if (!config.z3Tactic.empty() || config.z3SatEuf) {

@@ -49,7 +49,10 @@ private:
     using namespace expr;
     z3::context &ctx = z.ctx();
 
-    Z3_lbool bVal = Z3_get_bool_value(ctx, z);
+    // a sort or a declaration is no expression: z3 reports an error for it
+    Z3_lbool bVal = (z.kind() == Z3_SORT_AST || z.kind() == Z3_FUNC_DECL_AST)
+                        ? Z3_L_UNDEF
+                        : Z3_get_bool_value(ctx, z);
     if (bVal == Z3_L_TRUE) {
       RETURN(mk<TRUE>(m_efac));
     } else if (bVal == Z3_L_FALSE) {
