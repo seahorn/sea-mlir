@@ -57,7 +57,7 @@ is part of SeaHorn, not of this release.
 
 | Dependency | Version | Notes |
 |---|---|---|
-| LLVM + MLIR | the commit in `LLVM_REVISION` (`93f05d753ad3`, LLVM 24 `main`) | built with `-DLLVM_ENABLE_PROJECTS=mlir -DLLVM_ENABLE_ASSERTIONS=ON -DLLVM_INSTALL_UTILS=ON`, then installed. Other revisions are not supported. |
+| LLVM + MLIR | the commit in `LLVM_REVISION` (`302c842d6601`, LLVM 24 `main`) | built with `-DLLVM_ENABLE_PROJECTS=mlir -DLLVM_ENABLE_ASSERTIONS=ON -DLLVM_INSTALL_UTILS=ON`, then installed. Other revisions are not supported. |
 | z3 | tested with 4.12.0 and 5.3.3 | `-DZ3_ROOT=<install>`, and `-DSEA_Z3=<z3 binary>` for the tests |
 | Yices 2 | tested with 2.6.4 (Ubuntu `libyices2-dev`) and 2.7.0 | optional: `-DSEA_ENABLE_YICES=AUTO` (default: used when found), `ON` (required) or `OFF`; `-DYICES2_ROOT=<install>` if it is not installed system-wide |
 | Bitwuzla | 0.9 (>= 0.5, the C++ `TermManager` API) | optional: `-DBITWUZLA_ROOT=<install>` enables `--solver=bitwuzla` |

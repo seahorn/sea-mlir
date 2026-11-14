@@ -8,7 +8,7 @@ the only platform that is built and tested.
 
 | Dependency | Version | Notes |
 |---|---|---|
-| LLVM and MLIR | the commit in `LLVM_REVISION` (`93f05d753ad3`) | built with `-DLLVM_ENABLE_PROJECTS=mlir -DLLVM_ENABLE_ASSERTIONS=ON -DLLVM_INSTALL_UTILS=ON`, then installed; other revisions are not supported |
+| LLVM and MLIR | the commit in `LLVM_REVISION` (`302c842d6601`) | built with `-DLLVM_ENABLE_PROJECTS=mlir -DLLVM_ENABLE_ASSERTIONS=ON -DLLVM_INSTALL_UTILS=ON`, then installed; other revisions are not supported |
 | z3 | tested with 4.12.0 and 5.3.3 | the supported solver |
 | Yices 2 | tested with 2.6.4 and 2.7.0 | optional secondary solver (`-DSEA_ENABLE_YICES=AUTO\|ON\|OFF`); not in release binaries (GPLv3) |
 | Bitwuzla | 0.9 (at least 0.5) | optional secondary solver |
@@ -52,7 +52,7 @@ pin, z3 and Bitwuzla at pinned versions, sea-mlir with `check-sea`
 ```console
 $ sea-vc --version
 sea-vc (sea-mlir 0.1.1 (...))
-  LLVM/MLIR 24.0.0git at 93f05d753ad3
+  LLVM/MLIR 24.0.0git at 302c842d6601
   build: Release, assertions on
   z3 4.12.0.0
   yices 2.6.4
