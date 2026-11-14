@@ -8,6 +8,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "ArithStats.h"
 #include "EqAudit.h"
 #include "sea/Dialect/Sea/SeaDialect.h"
 #include "sea/Dialect/Sea/SeaOps.h"
@@ -28,6 +29,7 @@
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
 #include "sea/Support/Output.h"
+#include "sea/Support/ProcMem.h"
 #include "sea/Support/Version.h"
 #include "sea/Transforms/Passes.h"
 #include "sea/Transforms/RangeFold.h"
@@ -38,8 +40,10 @@
 #include "sea/VC/Split.h"
 #include "sea/VC/VCGen.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <new>
 #include <set>
@@ -58,6 +62,7 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -522,6 +527,30 @@ static cl::opt<bool> dagStats(
              "distinct DAG nodes per operator (vc.dag-op: <op> <n>)"),
     cl::init(false));
 
+static cl::opt<bool> arithStats(
+    "arith-stats",
+    cl::desc("Print the multiplications, divisions and remainders of the "
+             "query the solver gets, by operator, width and operand kind "
+             "(numeral, ite of numerals, ite with symbolic leaves, two "
+             "non-constant terms), with the distinct ite conditions, in "
+             "total (arith.total, arith.op) and per source location of the "
+             "sea op that made them (arith.loc; nodes made or rewritten by a "
+             "later stage: unattributed). Works with --vcgen-only"),
+    cl::init(false));
+static cl::opt<bool> iteStats(
+    "ite-stats",
+    cl::desc("Report the values whose VC terms are ite trees (memories, "
+             "addresses, integers feeding mul/div/rem) per source location, "
+             "with leaves and conditions, and the loads at non-ground "
+             "addresses by kind and location (ite.* lines; also with "
+             "--vcgen-only; not with a split)"),
+    cl::init(false));
+static cl::opt<unsigned> iteStatsMax(
+    "ite-stats-max",
+    cl::desc("--ite-stats: the most ite.site lines per kind and ite.load-site "
+             "lines (default 40; 0: all); the summary lines count the rest"),
+    cl::init(40));
+
 static cl::opt<bool> seamStats(
     "seam-stats",
     cl::desc("With --seam or --simplify: print the rewriter's counters as "
@@ -967,7 +996,7 @@ static sea::log::Tag logPhase(
     "vc.phase", 1,
     "the start and end of each sea-vc phase (lower, encode, simplify, "
     "solver-term, ackermann, solve, replay, replay-original); the end with "
-    "time and sizes");
+    "time, memory and sizes; progress inside encode");
 static sea::log::Tag logSolve("vc.solve", 1,
                               "each solver call of the verdict: backend, "
                               "result, time, Expr nodes made so far");
@@ -977,34 +1006,231 @@ static cl::opt<bool> progress(
     cl::desc("Log the start and end of each phase on stderr, or the log "
              "file: an alias of --log=vc.phase (=false: vc.phase:0) (lower, "
              "encode, simplify, solver-term, "
-             "ackermann, solve, replay, replay-original)"),
+             "ackermann, solve, replay, replay-original); the end with time, "
+             "memory and sizes; progress lines inside encode "
+             "(--progress-interval)"),
     cl::init(false), cl::cb<void, bool>([](bool on) {
       sea::log::select(on ? "vc.phase" : "vc.phase:0", "--progress");
     }));
+
+static cl::opt<double> progressInterval(
+    "progress-interval",
+    cl::desc("vc.phase progress lines inside encode: one when this many "
+             "seconds passed since the last (checked before each op and "
+             "after each block); 0: one after every block (default 10, "
+             "untuned); under --mem-limit also how often the "
+             "mem-limit-progress note is refreshed"),
+    cl::init(10.0), cl::value_desc("seconds"));
+
+static cl::opt<uint64_t> memLimitPlant(
+    "mem-limit-plant",
+    cl::desc("Testing only: before encode op <n> (1, 2, ... in encoding "
+             "order; 0: off), end the run as an allocation failing under "
+             "--mem-limit would"),
+    cl::init(0), cl::value_desc("n"), cl::Hidden);
+
+static cl::opt<bool> memLimitPlantLlvm(
+    "mem-limit-plant-llvm",
+    cl::desc("Testing only: with --mem-limit-plant, fail through LLVM's "
+             "out-of-memory path (llvm::report_bad_alloc_error, as an LLVM "
+             "container's failed allocation does) instead of operator new's"),
+    cl::init(false), cl::Hidden);
+
+namespace {
+/// A line the --mem-limit handler writes as is (no allocation there):
+/// formatted ahead, in the output format in effect, when its contents
+/// change. Two slots: a reader sees a whole line unless set() runs twice while
+/// it writes (the main thread is the only writer, and during encode the only
+/// allocator).
+class HandlerNote {
+public:
+  /// `textLine`: one `key: value k=v ...` line, no newline.
+  void set(StringRef textLine) {
+    std::string line = outFormat == sea::out::Format::Jsonl
+                           ? sea::out::parseLine(textLine).json()
+                           : textLine.str();
+    line += '\n';
+    const int slot = cur.load(std::memory_order_relaxed) == 0 ? 1 : 0;
+    size_t n = line.size();
+    if (n > sizeof(buf[slot])) { // never a cut line (invalid JSON)
+      sea::diag::warn("vc.mem-limit-note-long",
+                      "a --mem-limit note line does not fit its buffer: a "
+                      "hit will not print it");
+      n = 0;
+    }
+    std::memcpy(buf[slot], line.data(), n);
+    len[slot] = n;
+    cur.store(slot, std::memory_order_release);
+  }
+  void clear() { cur.store(-1, std::memory_order_release); }
+  void write(int fd) const {
+    const int slot = cur.load(std::memory_order_acquire);
+    if (slot >= 0 && len[slot])
+      (void)!::write(fd, buf[slot], len[slot]);
+  }
+
+private:
+  char buf[2][4096];
+  size_t len[2] = {0, 0};
+  std::atomic<int> cur{-1};
+};
+} // namespace
+
+/// The phase in progress (`mem-limit-phase:`) and the last encode progress
+/// tick of it (`mem-limit-progress:`), for memLimitHit; set only under
+/// --mem-limit.
+static HandlerNote memPhaseNote, memProgressNote;
+
+/// The op being encoded and its number in the encoding order (EncodeMeter,
+/// under --mem-limit): `mem-limit-op:`, formatted by the handler itself.
+static std::atomic<Operation *> memCurOp{nullptr};
+static std::atomic<uint64_t> memCurOpIndex{0};
+
+namespace {
+/// A fixed buffer the handler formats into (no allocation). Text written
+/// with putSafe keeps only printable ASCII other than `"` `\\` and space
+/// (others become `?`), so the text line is one token per field and the
+/// same bytes are valid inside a JSON string.
+struct RawLine {
+  char b[1024];
+  size_t n = 0;
+  void put(StringRef s) {
+    for (char c : s)
+      if (n < sizeof(b))
+        b[n++] = c;
+  }
+  void putSafe(StringRef s) {
+    for (char c : s)
+      if (n < sizeof(b))
+        b[n++] = (c > ' ' && c < 127 && c != '"' && c != '\\') ? c : '?';
+  }
+  void putNum(uint64_t v) {
+    char d[24];
+    int k = 0;
+    do
+      d[k++] = char('0' + v % 10);
+    while ((v /= 10) && k < 24);
+    while (k && n < sizeof(b))
+      b[n++] = d[--k];
+  }
+};
+
+/// The first source position (or else name) of `loc`, without allocating:
+/// looks through names, call sites (the callee) and fused locations (the
+/// first). fileLocOf's choice may differ for fused locations.
+void rawLoc(RawLine &out, Location loc) {
+  StringRef name;
+  for (unsigned depth = 0; depth < 16; ++depth) {
+    if (auto f = dyn_cast<FileLineColLoc>(loc)) {
+      StringRef file = f.getFilename().getValue();
+      if (file.size() > 160)
+        file = file.take_back(160);
+      out.putSafe(file);
+      out.put(":");
+      out.putNum(f.getLine());
+      out.put(":");
+      out.putNum(f.getColumn());
+      return;
+    }
+    if (auto nl = dyn_cast<NameLoc>(loc)) {
+      if (name.empty())
+        name = nl.getName().getValue();
+      loc = nl.getChildLoc();
+    } else if (auto cs = dyn_cast<CallSiteLoc>(loc)) {
+      loc = cs.getCallee();
+    } else if (auto fl = dyn_cast<FusedLoc>(loc)) {
+      if (fl.getLocations().empty())
+        break;
+      loc = fl.getLocations().front();
+    } else {
+      break;
+    }
+  }
+  if (name.empty())
+    out.put("-");
+  else
+    out.putSafe(name.take_front(160));
+}
+} // namespace
+
+/// `mem-limit-op: <name> ops=<n> at=<where>`: the op in progress when the
+/// limit hit (encode only), in the output format in effect.
+static void writeMemCurOp(int fd) {
+  Operation *op = memCurOp.load(std::memory_order_acquire);
+  if (!op)
+    return;
+  RawLine t;
+  t.put("mem-limit-op: ");
+  t.putSafe(op->getName().getStringRef());
+  t.put(" ops=");
+  t.putNum(memCurOpIndex.load(std::memory_order_relaxed));
+  t.put(" at=");
+  rawLoc(t, op->getLoc());
+  if (outFormat != sea::out::Format::Jsonl) {
+    t.put("\n");
+    (void)!::write(fd, t.b, t.n);
+    return;
+  }
+  // the record parseLine makes of the text line (jsonl-check)
+  RawLine j;
+  j.put("{\"kind\":\"stat\",\"key\":\"mem-limit-op\",\"value\":\"");
+  j.putSafe(op->getName().getStringRef());
+  j.put("\",\"ops\":");
+  j.putNum(memCurOpIndex.load(std::memory_order_relaxed));
+  j.put(",\"at\":\"");
+  rawLoc(j, op->getLoc());
+  j.put("\",\"text\":\"");
+  j.put(StringRef(t.b, t.n));
+  j.put("\"}\n");
+  (void)!::write(fd, j.b, j.n);
+}
+
+/// The memory fields of vc.phase end and progress events: rss-mb vm-mb
+/// (Linux only) and peak-rss-mb.
+static sea::log::Event &withMem(sea::log::Event &e) {
+  const sea::ProcMem m = sea::readProcMem();
+  if (m.hasCurrent)
+    e.kv("rss-mb", sea::ProcMem::mb(m.rssKB))
+        .kv("vm-mb", sea::ProcMem::mb(m.vmKB));
+  if (m.hasPeak)
+    e.kv("peak-rss-mb", sea::ProcMem::mb(m.peakRssKB));
+  return e;
+}
+static void memText(raw_ostream &os, const sea::ProcMem &m) {
+  if (m.hasCurrent)
+    os << " rss-mb=" << sea::ProcMem::mb(m.rssKB)
+       << " vm-mb=" << sea::ProcMem::mb(m.vmKB);
+  if (m.hasPeak)
+    os << " peak-rss-mb=" << sea::ProcMem::mb(m.peakRssKB);
+}
 
 namespace {
 /// A phase of the run: the start event is written when it is made; the end
 /// event is SEA_PHASE_END(phase) with the phase's sizes after it.
 /// \p run (encode only): the number of the VC run, 1, 2, ... (a fallback
 /// or a retry starts the VC again). The clock is read only when vc.phase
-/// is on.
+/// is on. Under --mem-limit the phase is noted for the handler.
 struct Phase {
   const char *name;
   std::chrono::steady_clock::time_point t0;
-  explicit Phase(const char *name) : name(name) {
+  explicit Phase(const char *name, unsigned run = 0) : name(name) {
+    if (memLimit) {
+      std::string t = std::string("mem-limit-phase: ") + name;
+      if (run)
+        t += " run=" + std::to_string(run);
+      memPhaseNote.set(t);
+      memProgressNote.clear();
+    }
     if (!logPhase.on(sea::log::Flow))
       return;
     t0 = std::chrono::steady_clock::now();
-    SEA_LOG(logPhase, sea::log::Flow).msg("start").kv("phase", name);
-  }
-  Phase(const char *name, unsigned run) : name(name) {
-    if (!logPhase.on(sea::log::Flow))
-      return;
-    t0 = std::chrono::steady_clock::now();
-    SEA_LOG(logPhase, sea::log::Flow)
-        .msg("start")
-        .kv("phase", name)
-        .kv("run", run);
+    if (run)
+      SEA_LOG(logPhase, sea::log::Flow)
+          .msg("start")
+          .kv("phase", name)
+          .kv("run", run);
+    else
+      SEA_LOG(logPhase, sea::log::Flow).msg("start").kv("phase", name);
   }
   double seconds() const {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
@@ -1013,13 +1239,137 @@ struct Phase {
 };
 } // namespace
 
-/// The end event of phase P; its arguments (sizes) are evaluated only when
-/// vc.phase is on.
+/// The end event of phase P: the time, the memory (withMem), then the
+/// sizes the caller adds; evaluated only when vc.phase is on.
 #define SEA_PHASE_END(P)                                                       \
-  SEA_LOG(logPhase, sea::log::Flow)                                            \
-      .msg("end")                                                              \
-      .kv("phase", (P).name)                                                   \
-      .kv("time", (P).seconds())
+  !logPhase.on(sea::log::Flow)                                                 \
+      ? (void)0                                                                \
+      : ::sea::log::Voidify() &                                                \
+            withMem(::sea::log::Event(logPhase, sea::log::Flow)                \
+                        .msg("end")                                            \
+                        .kv("phase", (P).name)                                 \
+                        .kv("time", (P).seconds()))
+
+[[noreturn]] static void memLimitHit();
+
+namespace {
+/// Progress inside encode (VCGen::setProgress), on when vc.phase is on or
+/// under --mem-limit: a `vc.phase progress` event (vc.phase on) and the
+/// handler's progress note (--mem-limit) at each tick, every
+/// --progress-interval seconds (0: after every block). Between ticks it
+/// keeps the op that took the longest and the op that made the most Expr
+/// nodes so far: one op (a load the SeaM rewriter reads through a long
+/// store chain) can take most of the phase, and no tick fires inside it.
+class EncodeMeter {
+  using Clock = std::chrono::steady_clock;
+
+public:
+  EncodeMeter(expr::ExprFactory &efac, unsigned run)
+      : efac(efac), run(run), t0(Clock::now()), lastTick(t0) {}
+
+  ~EncodeMeter() { memCurOp.store(nullptr, std::memory_order_release); }
+
+  void operator()(const sea::EncodeProgress &p) {
+    if (memLimit) {
+      memCurOpIndex.store(p.ops, std::memory_order_relaxed);
+      memCurOp.store(p.op, std::memory_order_release);
+      if (memLimitPlant && p.op && p.ops == memLimitPlant)
+        memLimitPlantLlvm ? llvm::report_bad_alloc_error("planted", false)
+                          : memLimitHit();
+    }
+    const Clock::time_point now = Clock::now();
+    const uint64_t nodes = efac.nodesMade();
+    if (prevOp) {
+      const double d = std::chrono::duration<double>(now - prevStart).count();
+      if (d > slowest.amount)
+        slowest = {d, prevOp};
+      const uint64_t dn = nodes - prevNodes;
+      if (double(dn) > biggest.amount)
+        biggest = {double(dn), prevOp};
+    }
+    prevOp = p.op;
+    prevStart = now;
+    prevNodes = nodes;
+    const bool due =
+        progressInterval <= 0
+            ? p.op == nullptr
+            : std::chrono::duration<double>(now - lastTick).count() >=
+                  progressInterval;
+    if (!due)
+      return;
+    lastTick = now;
+    tick(p, std::chrono::duration<double>(now - t0).count(), nodes);
+  }
+
+private:
+  struct Top {
+    double amount = 0;
+    Operation *op = nullptr;
+  };
+  static std::string where(Operation *op) {
+    // the source position, else the location's name (a SeaHorn export's
+    // loc("sm460")), else -
+    std::string t = "-";
+    if (std::optional<FileLineColLoc> fl = sea::fileLocOf(op->getLoc()))
+      t = sea::fileLocText(*fl);
+    else if (std::optional<std::string> n = sea::locNameOf(op->getLoc()))
+      t = *n;
+    if (t.size() > 160) // the handler's note has a fixed size
+      t = "..." + t.substr(t.size() - 157);
+    return t;
+  }
+
+  void tick(const sea::EncodeProgress &p, double secs, uint64_t nodes) {
+    const sea::ProcMem m = sea::readProcMem();
+    std::string s;
+    raw_string_ostream os(s);
+    os << "time=" << format("%.3f", secs) << " blocks=" << p.blocks
+       << " blocks-total=" << p.blocksTotal << " ops=" << p.ops
+       << " ops-total=" << p.opsTotal << " nodes-made=" << nodes;
+    memText(os, m);
+    if (slowest.op)
+      os << " slowest-op=" << slowest.op->getName().getStringRef()
+         << " slowest-op-time=" << format("%.3f", slowest.amount)
+         << " slowest-op-at=" << sea::log::textValue(where(slowest.op));
+    if (biggest.op)
+      os << " biggest-op=" << biggest.op->getName().getStringRef()
+         << " biggest-op-nodes=" << uint64_t(biggest.amount)
+         << " biggest-op-at=" << sea::log::textValue(where(biggest.op));
+    // the same fields, in the same order, in both
+    if (logPhase.on(sea::log::Flow)) {
+      sea::log::Event e(logPhase, sea::log::Flow);
+      e.msg("progress")
+          .kv("phase", "encode")
+          .kv("run", run)
+          .kv("time", secs)
+          .kv("blocks", p.blocks)
+          .kv("blocks-total", p.blocksTotal)
+          .kv("ops", p.ops)
+          .kv("ops-total", p.opsTotal)
+          .kv("nodes-made", nodes);
+      withMem(e);
+      if (slowest.op)
+        e.kv("slowest-op", slowest.op->getName().getStringRef())
+            .kv("slowest-op-time", slowest.amount)
+            .kv("slowest-op-at", where(slowest.op));
+      if (biggest.op)
+        e.kv("biggest-op", biggest.op->getName().getStringRef())
+            .kv("biggest-op-nodes", uint64_t(biggest.amount))
+            .kv("biggest-op-at", where(biggest.op));
+    }
+    if (memLimit) {
+      memProgressNote.set("mem-limit-progress: " + s);
+    }
+  }
+
+  expr::ExprFactory &efac;
+  unsigned run;
+  Clock::time_point t0, lastTick, prevStart;
+  Operation *prevOp = nullptr;
+  uint64_t prevNodes = 0;
+  Top slowest, biggest;
+};
+} // namespace
 
 static uint64_t countOps(Operation *op) {
   uint64_t n = 0;
@@ -1028,8 +1378,9 @@ static uint64_t countOps(Operation *op) {
 }
 
 /// --mem-limit: an allocation that fails (operator new; Bitwuzla, the VC)
-/// ends the run as unknown. Writes without allocating.
-static void memLimitHit() {
+/// ends the run as unknown (LLVM containers fail through
+/// llvm::report_bad_alloc_error: memLimitHitLlvm). Writes without allocating.
+[[noreturn]] static void memLimitHit() {
   outs().flush();
   static const char msg[] = "result: unknown\nmem-limit: hit\n";
   static const char jmsg[] =
@@ -1040,10 +1391,20 @@ static void memLimitHit() {
     (void)!::write(1, jmsg, sizeof(jmsg) - 1);
   else
     (void)!::write(1, msg, sizeof(msg) - 1);
+  // where: the phase in progress, and the last progress tick of encode
+  memPhaseNote.write(1);
+  memProgressNote.write(1);
+  writeMemCurOp(1);
   static const char err[] =
       "Error: memory limit (--mem-limit) hit [vc.mem-limit]\n";
   (void)!::write(2, err, sizeof(err) - 1);
   ::_exit(3);
+}
+
+/// The LLVM bad-alloc handler (llvm::safe_malloc, SmallVector growth, ...);
+/// it must not return.
+[[noreturn]] static void memLimitHitLlvm(void *, const char *, bool) {
+  memLimitHit();
 }
 
 static cl::list<std::string> configFiles(
@@ -1208,11 +1569,11 @@ static cl::list<std::string> splitBool(
     cl::value_desc("selector"));
 static cl::list<std::string> splitLeaves(
     "split-leaves", cl::CommaSeparated,
-    cl::desc("Split the VC on an address value whose term is an ite tree (or "
-             "ptr-from-bits of one): one part per distinct leaf, the value "
-             "fixed to the leaf, with the disjunction of the leaf's path "
-             "conditions. Selector as for --split (an address-typed op "
-             "result)"),
+    cl::desc("Split the VC on an address or integer (iN, N > 1) value whose "
+             "term is an ite tree (an address: or ptr-from-bits of one): one "
+             "part per distinct leaf, the value fixed to the leaf, with the "
+             "disjunction of the leaf's path conditions. Selector as for "
+             "--split (an address or integer op result or block argument)"),
     cl::value_desc("selector"));
 static cl::opt<bool> splitAuto(
     "split-auto",
@@ -1230,18 +1591,22 @@ static cl::opt<bool> splitCandidatesOpt(
              "--split-leaves) and the i1 values and block guards in the ite "
              "conditions behind open alias questions or in the indices of "
              "array reads (split.bool-candidate, for --split), ranked by "
-             "those questions, then those reads (a heuristic)"),
+             "those questions, then those reads; and the integer and i1 "
+             "values and guards by the mul/div/rem nodes they control "
+             "(split.arith-candidate) (heuristics)"),
     cl::init(false));
 static cl::opt<unsigned> splitCandidatesMax(
     "split-candidates-max",
-    cl::desc("--split-candidates: the most split.bool-candidate lines "
-             "(default 20; 0: all); the split.candidates line counts the "
+    cl::desc("--split-candidates: the most split.bool-candidate and "
+             "split.arith-candidate lines (default 20; 0: all); the "
+             "split.candidates and split.arith-candidates lines count the "
              "dropped ones"),
     cl::init(20));
 static cl::opt<unsigned> splitMaxParts(
     "split-max-parts",
-    cl::desc("Hard cap on the number of parts of a split (default 64): more "
-             "is an error (vc.split-max-parts)"),
+    cl::desc("Hard cap on the number of parts of a split (default 64, "
+             "untuned): more is an error (vc.split-max-parts); raise it for "
+             "nested splits or wide leaf sets"),
     cl::init(64));
 static cl::opt<unsigned> splitMaxPaths(
     "split-max-paths",
@@ -1343,7 +1708,16 @@ TYPICAL:
                                  #   --split-leaves can split on, ranked by
                                  #   the open alias questions (none open:
                                  #   by the array reads whose index they
-                                 #   are in); no solver
+                                 #   are in), and by the mul/div/rem they
+                                 #   control; no solver
+  sea-vc p.mlir --lower --split-leaves=@f.cc:286  # one part per value of a
+                                 #   path-merged integer (a column index):
+                                 #   each part multiplies by a constant
+  sea-vc p.mlir --lower --ite-stats --vcgen-only  # which memories,
+                                 #   addresses and integers feeding
+                                 #   arithmetic are ite trees over block
+                                 #   guards, and the loads at non-ground
+                                 #   addresses, per source line; no solver
   sea-vc p.mlir --format=jsonl   # every stdout line one JSON object (jq;
                                  #   OUTPUT FORMATS)
   sea-vc p.mlir --timeout=600 --mem-limit=16  # limits: the solver's check
@@ -1421,12 +1795,17 @@ TYPICAL:
                                  #   targets before it)
   sea-vc p.mlir --vcgen-only     # generate and check the VC, print its
                                  #   statistics and result: none; no solver
-                                 #   (also not --seam-check / --eq-audit /
-                                 #   --x-read-table-check); not with --smt2
+                                 #   of the query; --eq-audit runs (its own
+                                 #   z3 checks); --vcgen-only skips
+                                 #   --seam-check and --x-read-table-check
+                                 #   (warning vc.vcgen-only-check-skipped);
+                                 #   not with
+                                 #   --smt2
   sea-vc p.mlir --print-refs=strong  # keep every printed value alive
                                  #   through the lowering (PRINTS)
   sea-vc p.mlir --progress       # = --log=vc.phase: the start and end
-                                 #   (time, sizes) of each phase on stderr
+                                 #   (time, memory, sizes) of each phase on
+                                 #   stderr; progress inside encode
   sea-vc p.mlir '--log=*:1'      # the whole flow: phases, passes, solver
                                  #   calls (LOGS)
   sea-vc p.mlir --config=seam    # options from a profile (CONFIG below);
@@ -1840,9 +2219,26 @@ TYPICAL:
                                  #   each firing under P1-P3). Off: on vcc
                                  #   it slows the solver (PtrIndex.md 0c)
   sea-vc p.mlir --ack-dump-pairs=<f>  # with the lowering on: every lowered
-                                 #   read (`read <a> <k> <index>`) and every
-                                 #   constrained pair (`pair <a> <k> <l>`)
-                                 #   to <f>, for a census of undecided pairs
+                                 #   read (`read <a> <k> <index> loc=<l>`)
+                                 #   and every constrained pair (`pair <a>
+                                 #   <k> <l>`) to <f>, for a census of
+                                 #   undecided pairs; loc= (last field) the
+                                 #   loads the read came from, `;`-separated
+                                 #   (- for none: a select a later stage
+                                 #   made); split the line at its last
+                                 #   ` loc=`
+  sea-vc p.mlir --lower --seam --vcgen-only --arith-stats  # the products,
+                                 #   divisions and remainders of the query
+                                 #   the solver gets, by operand kind
+                                 #   (numeral: linear; ite-num / ite-sym: an
+                                 #   operand is path-merged, ite / concat of
+                                 #   ites, leaves numerals or not; nonconst:
+                                 #   two non-constant terms) and per source
+                                 #   location: a
+                                 #   product by a path-merged value (ite-*)
+                                 #   is cheap per path and can be a solver
+                                 #   cliff as one term (try --split on its
+                                 #   condition); see OUTPUT
   sea-vc p.mlir --vc-join=eq     # joins as fresh constants with guarded
                                  #   equalities (default ite: a block
                                  #   argument is ite over the incoming edges,
@@ -1963,6 +2359,72 @@ OUTPUT (stdout, `key: value` lines):
   vc.dag-size: <n>                (--dag-stats: distinct nodes of the query
                                   the solver gets; with --smt2 on stderr)
   vc.dag-op: <op> <n>             (--dag-stats: distinct nodes per operator)
+  arith.total: ops=<n> attributed=<n> unattributed=<n> locations=<n>
+               shared=<n>          (--arith-stats; with --smt2 on stderr:
+                                  the distinct bvmul / bvudiv / bvsdiv /
+                                  bvurem / bvsrem / bvsmod / mul-overflow
+                                  predicate nodes of the query the solver
+                                  gets; unattributed: made or rewritten by a
+                                  stage after the encoding (SeaM rules,
+                                  the boundary's expansions, e.g. address
+                                  arithmetic of ptr.index); shared: nodes
+                                  of several locations, counted at each)
+  arith.op: op=<op> width=<w> operands=numeral|ite-num|ite-sym|nonconst
+            count=<n> unattributed=<n>[ conds=<n> conds-max=<n>]
+                                  (per operator, operand width and kind,
+                                  numeral operands dropped first (n-ary
+                                  products): numeral = at most one operand
+                                  left; else ite-num = an operand is
+                                  path-merged (its value tree, through ite
+                                  branches, concat, extract, extensions,
+                                  bvneg, bvnot, holds an ite) with numeral
+                                  leaves only; else ite-sym = one is
+                                  path-merged; else nonconst. ite kinds:
+                                  conds = the distinct ite conditions of the
+                                  group, conds-max = the most of one node)
+  arith.loc: op=<op> width=<w> operands=<kind> count=<n>[ conds-max=<n>]
+             loc=<file:line:col>[ inlined-at=..][ name=..]
+                                  (per source location of the sea op that
+                                  made the node: mul / div / rem / umulo /
+                                  smulo / ptr.index; loc is the last field)
+  ite.values: kind=mem|addr|int values= over-guards= sites= listed= dropped=
+    leaves-max= capped=           (--ite-stats, after the run's first
+                                  encoding, before any solver; on stderr
+                                  under --smt2 in text; with or without --vcgen-only
+                                  and --seam; not with a split: values of
+                                  the kind whose term (as encoded) is an ite
+                                  tree (addr: or ptr-from-bits of one).
+                                  mem: memory values; addr: addresses; int:
+                                  integers in the backward slice of an
+                                  operand of mul / udiv / sdiv / urem / srem
+                                  / umulo / smulo / sdivo, through integer
+                                  and i1 ops and block arguments, not
+                                  through memory. over-guards: values with
+                                  a block guard among the atoms of their
+                                  conditions; sites: distinct locations;
+                                  capped: values whose leaf, condition or
+                                  guard set reached the cap, 256)
+  ite.site: kind= values= leaves= conds= guard-atoms= capped= name= loc=
+                                  (per location of a kind, most leaves
+                                  first, at most --ite-stats-max (40; 0:
+                                  all); leaves / conds / guard-atoms: the
+                                  most over its values of distinct leaves,
+                                  distinct ite conditions, block guards
+                                  among the conditions' atoms; name: its
+                                  first value, a --split-leaves selector;
+                                  a block argument without a position has
+                                  its block's first op's)
+  ite.loads: loads= dynamic= ite= ite-index= from-bits= symbolic= sites=
+    listed= dropped=              (--ite-stats: loads the encoding met;
+                                  dynamic: address term with a free
+                                  constant (numerals and object bases are
+                                  ground), by kind: ite (an ite tree, or
+                                  ptr-from-bits of one), from-bits (a
+                                  pointer read back from memory), ite-index
+                                  (an ite below the top: an index chosen by
+                                  a path or a select), symbolic (other))
+  ite.load-site: kind= loads= loc=  (per kind and location, most first, at
+                                  most --ite-stats-max)
   result: sat|unsat|unknown|none  (none: --vcgen-only, --split-candidates)
   hint: split: open-aliases=<n>[ ackermann-constraints=<m>]; rerun with
                                   --split-candidates ...
@@ -1978,12 +2440,28 @@ OUTPUT (stdout, `key: value` lines):
                                   size reaches the limit):
                                   z3's memory-out; an allocation that
                                   fails (operator new: the VC, Bitwuzla's
-                                  C++) prints result: unknown and this line
+                                  C++; LLVM containers: llvm bad-alloc
+                                  handler) prints result: unknown and this line
                                   and exits 3; Bitwuzla: an unknown within
                                   the time under --mem-limit. Not detected:
                                   Yices exits on its own out-of-memory
                                   (status 16, "Out of memory"), and GMP
                                   aborts)
+  mem-limit-phase: <phase> [run=<n>]   (after mem-limit: hit: the phase
+                                  running, the last vc.phase start; none:
+                                  before the first phase; solve: the
+                                  solver's own limit)
+  mem-limit-progress: time= blocks= blocks-total= ops= ops-total=
+      nodes-made= [rss-mb= vm-mb=] peak-rss-mb= [slowest-op=
+      slowest-op-time= slowest-op-at=] [biggest-op= biggest-op-nodes=
+      biggest-op-at=]             (a hit in encode, after a progress tick:
+                                  the counters of the last tick, see
+                                  PROGRESS; up to --progress-interval old)
+  mem-limit-op: <op> ops=<n> at=<where>   (a hit in encode: the op being
+                                  encoded, n-th in encoding order; where:
+                                  file:line:col, else the location name,
+                                  else -; bytes other than printable
+                                  ASCII, " \ and space shown as ?)
   nondet: site=<n> callee=<f> width=<w> value=<unsigned>   (sat: from the model)
   memread: site=<n> addr=<a> width=<w> value=<v> [obj=&<o>[<off>]]
                                   (sat: cells from the model; obj: the
@@ -2356,11 +2834,26 @@ parallel to path of call-site arrays, [] for an entry not inlined).
 PROGRESS (--progress = --log=vc.phase, --progress=false = vc.phase:0; on
 stderr, or the log file; each line flushed as it is written):
 `log: vc.phase start phase=<name>` at the start of each phase and
-`log: vc.phase end phase=<name> time=<s> <sizes>` at its end; phases:
-lower, encode, simplify (with the rewriter's normalization), solver-term,
-ackermann, solve, replay (sat only). A killed run's last start line names
-the phase it was in. A run that restarts (the vc.seam-inb-violated
-fallback, the --ack-stride retry) repeats them from encode.
+`log: vc.phase end phase=<name> time=<s> <memory> <sizes>` at its end;
+phases: lower, encode, simplify (with the rewriter's normalization),
+solver-term, ackermann, solve, replay (sat only). A killed run's last
+start line names the phase it was in. A run that restarts (the
+vc.seam-inb-violated fallback, the --ack-stride retry) repeats them from
+encode. <memory>: rss-mb vm-mb (now; Linux only, else omitted)
+peak-rss-mb (so far), in MB; vm-mb is what --mem-limit bounds.
+Inside encode, every --progress-interval=<s> seconds (default 10,
+untuned; 0: after every block; checked before each op and after each
+block, so never inside one op):
+`log: vc.phase progress phase=encode run=<n> time=<s> blocks=<d>
+blocks-total=<n> ops=<d> ops-total=<n> nodes-made=<n> <memory>
+[slowest-op=<op> slowest-op-time=<s> slowest-op-at=<where>]
+[biggest-op=<op> biggest-op-nodes=<n> biggest-op-at=<where>]`: blocks
+encoded of those reachable; ops whose encoding started (no terminators);
+the op that took longest and the one that made the most Expr nodes so far
+(SeaM's load / store rewriting is part of its op; block joins are in no
+op). One op can dominate the phase: these fields name it once it ends.
+Under --mem-limit the counters are kept without the log, for the
+mem-limit-* lines of a hit (OUTPUT FORMATS).
 
 DIAGNOSTICS (stderr): "Warning: ... [kind]" (yellow) for incomplete or
 approximate handling, once per kind; repeats are counted and summarized at
@@ -2373,7 +2866,8 @@ flow, 2 object, 3 detail; 0 off); --log=help lists the tags. One line per
 event: `log: <tag> [<msg>] k=v ... [at <loc>]`; under --format=jsonl
 {"log":"<tag>","level":L,...,"text":"<the text line>"}.
 Level-1 (flow) tags, `--log=*:1` for all:
-  vc.phase    start phase=<p> / end phase=<p> time=<s> + sizes: lower
+  vc.phase    start phase=<p> / end phase=<p> time=<s> rss-mb vm-mb
+              peak-rss-mb + sizes (progress: PROGRESS): lower
               ops-before ops-after; encode nodes-made sides guarantees
               (its start: run=<n>, 2+ after a fallback or retry);
               simplify, solver-term nodes-made; ackermann on arrays pairs
@@ -2517,12 +3011,18 @@ fixed when the encoding defines it, before SeaM rewrites its uses; each part
 is VC[t := value] /\ condition, answered by the usual run (lowering once;
 encoding, SeaM, Ackermann, solver, replay per part). --split: an i1 value
 (2 parts: 1, 0) or a block guard (true, false). --split-leaves: an address
-whose term is an ite tree, or ptr-from-bits of one: one part per distinct
-leaf, condition = the disjunction of its path conditions. Selectors: the VC
+or an integer (iN, N > 1) whose term is an ite tree (an address: or
+ptr-from-bits of one): one part per distinct leaf, condition = the
+disjunction of its path conditions (a path-merged column index: one part
+per column). Selectors: the VC
 name (%x, nd.<site>, ^bb3; names of the lowered program as
 --print-lowered=<file> writes it; sea-opt numbers values differently) or
-@<file>:<line> (the one op result of the kind with a file position, its own
-or an inlined call site, on that line; an ambiguous one lists every match:
+@<file>:<line>[:<col>] (the one op result or block argument of the kind with
+a file position, its own or an inlined call site, on that line (and column),
+by kind preference: --split-leaves takes address op results, else address
+block arguments, else integer op results, else integer block arguments;
+--split takes i1 op results, else i1 block arguments; only the first
+non-empty class may be ambiguous; an ambiguous one lists every match:
 name, op, type, col=; one that finds nothing lists the results of other
 types on the line and the nearest lines with results of the kind). Several targets nest (one level per target, in
 encoding order, under the cases before it; enumerated depth-first, one run
@@ -2538,8 +3038,9 @@ one unsplit part). --split-check (default on): per level, z3 (rlimit
 case exact (condition => term = value, on the solver's terms: pointers by
 address (pointer identity holds by construction and is checked
 structurally)); failed: exit 5, vc.split-check-failed; unknown: warning
-vc.split-check-unknown. --split-max-parts (64): more parts is an error
-(vc.split-max-parts), no verdict. --split-max-paths (1024): paths of an ite
+vc.split-check-unknown. --split-max-parts (64, untuned): more parts is an
+error (vc.split-max-parts), no verdict; raise it for nested levels or wide
+leaf sets (each part is one encoding and one solver run). --split-max-paths (1024): paths of an ite
 tree. --split-stop-on-sat. --split-smt2=<prefix>: <prefix>.part<N>.smt2
 per part (with --vcgen-only: nothing solved). Not with --smt2, --reach,
 --mem=lambda. Under --seam a split turns on --seam-stats (the per-part
@@ -2553,8 +3054,8 @@ Lines: every part prints its usual output between
   split.part: <N> choice=<name>=<case>#<k>/<n>[,...] result=... vc-time=
     solve-time= dag= alias-open= alias-open-pairs= alias-open-memop= rows=
     ack-reads= ack-pairs= ack-constraints= check=ok|unknown|off
-  (<case>: 1|0, true|false, leaf:<obj> or leaf:unknown(<op>), with
-  /paths=<n>; dag: nodes of the solver's query; rows: the row.* counters'
+  (<case>: 1|0, true|false, leaf:<obj> or leaf:unknown(<op>) (address),
+  leaf:<numeral, unsigned> or leaf:term(<op>) (integer), with /paths=<n>; dag: nodes of the solver's query; rows: the row.* counters'
   sum)
 then
   split.verdict: <v> parts= unsat= sat= unknown= none= hardest-part=
@@ -2617,9 +3118,33 @@ vc.split-max-paths).
     open-aliases=0: reads, cond-reads, covers, addrs, encoding order. Only
     those behind a question or in a read index; at most
     --split-candidates-max (20; 0: all). A guard's loc is its first op's.
+  split.arith-candidates: arith-nodes= int-values= candidates= listed=
+    dropped=
+    (arith-nodes: bvmul / bvudiv / bvsdiv / bvurem / bvsrem / bvsmod and
+    the multiplication overflow predicates of the query at the solver
+    boundary; int-values: integer values (iN, N > 1) whose term is an ite
+    tree; candidates: those and the i1 values / guards controlling at least
+    one node; dropped: cut by --split-candidates-max)
+  split.arith-candidate: name= target=int|value|guard arith= mul= div=
+    direct= feeds= cases= same= loc=
+    a value controlling arithmetic: an int (a --split-leaves selector)
+    counts a node with, in an operand, its term or an ite whose condition's
+    atoms are all atoms of its tree's conditions (the normalization folds
+    a compare of the term into its conditions); an i1 value or guard (a
+    --split selector) counts a node with it in an ite condition of an
+    operand. mul / div: of arith, products (and overflow predicates) /
+    quotients and remainders; direct: (int) nodes with the term itself in
+    an operand; feeds: (int) other int values whose term holds this one's;
+    cases: leaves (int; 0 with warning vc.split-max-paths: more than
+    --split-max-paths) or 2; same: other values with the same term (ints
+    too), as split.bool-candidate. Ranked by
+    arith, then ints first, then feeds, then direct, then cases, then
+    encoding order (untuned); at most --split-candidates-max. Values that
+    share the paths of a merge share the count (over-attribution).
   All rankings are heuristics (cheap counts, not a measure of hardness);
   reads is for queries whose residue is Ackermann pairs, not open alias
-  questions.
+  questions; arith for queries whose cost is products or quotients by
+  path-merged values.
 
 OUTPUT FORMATS (--format=text|jsonl; default text, the lines above):
 jsonl: every stdout line is one JSON object
@@ -2652,6 +3177,10 @@ Kinds and fields:
                 hardest_solve_time, check_unknown, check (on|off),
                 leaf_structural, [stopped]
   split-candidate name, loc, leaves, open_aliases
+  arith-total   ops, attributed, unattributed, locations, shared
+  arith-op      op, width, operands, count, unattributed, [conds, conds_max]
+  arith-loc     op, width, operands, count, [conds_max], loc [loc_inlined]
+                [loc_name] (--arith-stats)
   split-candidates open_aliases, leaves_candidates, bool_candidates,
                 bool_listed, bool_dropped, bool_values, reads,
                 same_object_open, memop_open, vc_time
@@ -2660,6 +3189,17 @@ Kinds and fields:
   split-bool-candidate name, loc, target (value|guard), open_aliases, addrs,
                 reads, cond_reads, covers, same (names, comma-separated;
                 - for none)
+  split-arith-candidates arith_nodes, int_values, candidates, listed,
+                dropped
+  split-arith-candidate name, loc, target (int|value|guard), arith, mul,
+                div, direct, feeds, cases, same
+  ite-values    value_kind (the text's kind=), values, over_guards, sites,
+                listed, dropped, leaves_max, capped
+  ite-site      value_kind, values, leaves, conds, guard_atoms, capped, name,
+                loc
+  ite-loads     loads, dynamic, ite, ite_index, from_bits, symbolic, sites,
+                listed, dropped
+  ite-load-site addr_kind (the text's kind=), loads, loc
   hint          topic (split), open_aliases, ackermann_constraints (only
                 with open_aliases 0), option (--split-candidates)
   nondet        site, callee, width, value
@@ -2847,6 +3387,157 @@ static int writeReachPrograms(ModuleOp module, sea::ProgramOp program,
   return 0;
 }
 
+// --ite-stats: the census of one encoding (sea::IteCensus), by kind and
+// source location
+// (toStderr: under --smt2 in text, where stdout is the query, the lines go
+// to stderr, as the other statistics)
+static void printIteStats(const sea::IteCensus &c, sea::ProgramOp program,
+                          bool toStderr) {
+  auto emit = [&](const sea::out::Record &rec) {
+    if (toStderr)
+      errs() << rec.text << "\n";
+    else
+      gOut->emit(rec);
+  };
+  sea::ValueNames vn(program);
+  const size_t cap = iteStatsMax ? size_t(iteStatsMax) : SIZE_MAX;
+  auto locOf = [](Value v) {
+    std::string l = sea::formatLoc(v.getLoc());
+    // a join's block argument without a position: its block's first op's
+    if (l.empty())
+      if (auto a = dyn_cast<BlockArgument>(v))
+        if (!a.getOwner()->empty())
+          l = sea::formatLoc(a.getOwner()->front().getLoc());
+    return l.empty() ? std::string("-") : l;
+  };
+  struct Site {
+    std::string loc, name;
+    unsigned values = 0, leaves = 0, conds = 0, guardAtoms = 0, capped = 0;
+  };
+  for (const char *kind : {"mem", "addr", "int"}) {
+    std::vector<Site> sites;
+    std::map<std::string, size_t> at;
+    unsigned n = 0, overGuards = 0, leavesMax = 0, capped = 0;
+    for (const sea::IteCensus::Value &v : c.values) {
+      if (StringRef(v.kind) != kind)
+        continue;
+      ++n;
+      overGuards += v.guardAtoms > 0;
+      capped += v.capped;
+      leavesMax = std::max(leavesMax, v.leaves);
+      std::string l = locOf(v.value);
+      auto [it, fresh] = at.try_emplace(l, sites.size());
+      if (fresh) {
+        Site st;
+        st.loc = l;
+        st.name = vn.name(v.value).str();
+        sites.push_back(st);
+      }
+      Site &st = sites[it->second];
+      ++st.values;
+      st.leaves = std::max(st.leaves, v.leaves);
+      st.conds = std::max(st.conds, v.conds);
+      st.guardAtoms = std::max(st.guardAtoms, v.guardAtoms);
+      st.capped += v.capped;
+    }
+    std::stable_sort(sites.begin(), sites.end(),
+                     [](const Site &a, const Site &b) {
+                       return a.leaves != b.leaves ? a.leaves > b.leaves
+                                                   : a.values > b.values;
+                     });
+    const size_t listed = std::min(sites.size(), cap);
+    {
+      sea::out::Record rec("ite-values");
+      rec.str("value_kind", kind)
+          .num("values", n)
+          .num("over_guards", overGuards)
+          .num("sites", sites.size())
+          .num("listed", listed)
+          .num("dropped", sites.size() - listed)
+          .num("leaves_max", leavesMax)
+          .num("capped", capped);
+      rec.text = std::string("ite.values: kind=") + kind +
+                 " values=" + std::to_string(n) +
+                 " over-guards=" + std::to_string(overGuards) +
+                 " sites=" + std::to_string(sites.size()) +
+                 " listed=" + std::to_string(listed) +
+                 " dropped=" + std::to_string(sites.size() - listed) +
+                 " leaves-max=" + std::to_string(leavesMax) +
+                 " capped=" + std::to_string(capped);
+      emit(rec);
+    }
+    for (size_t i = 0; i < listed; ++i) {
+      const Site &st = sites[i];
+      sea::out::Record rec("ite-site");
+      rec.str("value_kind", kind)
+          .num("values", st.values)
+          .num("leaves", st.leaves)
+          .num("conds", st.conds)
+          .num("guard_atoms", st.guardAtoms)
+          .num("capped", st.capped)
+          .str("name", st.name)
+          .str("loc", st.loc);
+      rec.text = std::string("ite.site: kind=") + kind +
+                 " values=" + std::to_string(st.values) +
+                 " leaves=" + std::to_string(st.leaves) +
+                 " conds=" + std::to_string(st.conds) +
+                 " guard-atoms=" + std::to_string(st.guardAtoms) +
+                 " capped=" + std::to_string(st.capped) + " name=" + st.name +
+                 " loc=" + st.loc;
+      emit(rec);
+    }
+  }
+  // the loads at non-ground addresses, by kind and location
+  std::map<std::string, uint64_t> byKind;
+  std::vector<std::tuple<std::string, std::string, uint64_t>> sites;
+  std::map<std::pair<std::string, std::string>, size_t> at;
+  for (const sea::IteCensus::Load &l : c.loads) {
+    ++byKind[l.kind];
+    std::string loc = sea::formatLoc(l.op->getLoc());
+    if (loc.empty())
+      loc = "-";
+    auto [it, fresh] = at.try_emplace({l.kind, loc}, sites.size());
+    if (fresh)
+      sites.emplace_back(l.kind, loc, 0);
+    ++std::get<2>(sites[it->second]);
+  }
+  std::stable_sort(sites.begin(), sites.end(),
+                   [](const auto &a, const auto &b) {
+                     return std::get<2>(a) > std::get<2>(b);
+                   });
+  const size_t listed = std::min(sites.size(), cap);
+  {
+    sea::out::Record rec("ite-loads");
+    rec.num("loads", c.allLoads)
+        .num("dynamic", c.loads.size())
+        .num("ite", byKind["ite"])
+        .num("ite_index", byKind["ite-index"])
+        .num("from_bits", byKind["from-bits"])
+        .num("symbolic", byKind["symbolic"])
+        .num("sites", sites.size())
+        .num("listed", listed)
+        .num("dropped", sites.size() - listed);
+    rec.text = "ite.loads: loads=" + std::to_string(c.allLoads) +
+               " dynamic=" + std::to_string(c.loads.size()) +
+               " ite=" + std::to_string(byKind["ite"]) +
+               " ite-index=" + std::to_string(byKind["ite-index"]) +
+               " from-bits=" + std::to_string(byKind["from-bits"]) +
+               " symbolic=" + std::to_string(byKind["symbolic"]) +
+               " sites=" + std::to_string(sites.size()) +
+               " listed=" + std::to_string(listed) +
+               " dropped=" + std::to_string(sites.size() - listed);
+    emit(rec);
+  }
+  for (size_t i = 0; i < listed; ++i) {
+    const auto &[kind, loc, k] = sites[i];
+    sea::out::Record rec("ite-load-site");
+    rec.str("addr_kind", kind).num("loads", k).str("loc", loc);
+    rec.text = "ite.load-site: kind=" + kind + " loads=" + std::to_string(k) +
+               " loc=" + loc;
+    emit(rec);
+  }
+}
+
 int main(int argc, char **argv) {
   InitLLVM y(argc, argv);
   // SEA_LOG / SEA_LOG_FILE, before --log entries override them
@@ -3011,7 +3702,10 @@ int main(int argc, char **argv) {
                 "(use exact or off)");
   if (reach && reachRlimit && backend != Backend::Z3)
     return fail("--reach-rlimit is a z3 limit (--solver=z3)");
+  if (memLimitPlant && !memLimit)
+    return fail("--mem-limit-plant needs --mem-limit");
   if (memLimit) {
+    memPhaseNote.set("mem-limit-phase: none");
     rlim_t bytes = rlim_t(memLimit) << 30;
     struct rlimit rl;
     if (getrlimit(RLIMIT_AS, &rl) == 0 &&
@@ -3030,6 +3724,7 @@ int main(int argc, char **argv) {
       Z3_global_param_set("memory_max_size",
                           std::to_string(uint64_t(memLimit) * 1024).c_str());
     std::set_new_handler(memLimitHit);
+    llvm::install_bad_alloc_error_handler(memLimitHitLlvm);
   }
 
   MLIRContext context;
@@ -3136,6 +3831,11 @@ int main(int argc, char **argv) {
                 "--split-check-rlimit, --split-stop-on-sat and --split-smt2 "
                 "need --split, --split-leaves or --split-auto "
                 "(--split-max-paths: or --split-candidates)");
+  if (iteStats && splitOn)
+    return fail("--ite-stats reports one encoding: not with --split, "
+                "--split-leaves or --split-auto (each part is an encoding)");
+  if (!iteStats && iteStatsMax.getNumOccurrences())
+    return fail("--ite-stats-max needs --ite-stats");
   if (splitOn && (smt2 || reach || lambdaMem))
     return fail("--split, --split-leaves and --split-auto: not with --smt2 "
                 "(use --split-smt2), --reach or --mem=lambda");
@@ -3553,6 +4253,21 @@ int main(int argc, char **argv) {
   // seam.alias.open.* / seam.alias.open-memop.* count)
   uint64_t splitReads = 0, splitSameObjectOpen = 0, splitMemopOpen = 0;
   double splitPickSeconds = 0;
+  // --split-candidates: the integer and Boolean candidates by the
+  // arithmetic nodes they control (SplitCensus::attributeArith), ranked;
+  // the arithmetic nodes of the query; the integer ite values recorded
+  struct SplitArithCandidate {
+    std::string name, loc, target;
+    uint64_t arith = 0, mul = 0, div = 0, direct = 0;
+    unsigned cases = 0, feeds = 0;
+    bool leavesCapped = false;
+    std::vector<std::string> same;
+  };
+  std::vector<SplitArithCandidate> splitArithCandidates;
+  // --ite-stats: printed for the first encoding only (a retry encodes again)
+  bool iteStatsDone = false;
+  uint64_t splitArithNodes = 0;
+  size_t splitIntRecorded = 0;
   // One run of the VC and the solver. Returns kRetryWithoutInb if A-INB
   // (assumed by the rewriting) is found not to hold.
   constexpr int kRetryWithoutInb = -1;
@@ -3794,7 +4509,14 @@ int main(int argc, char **argv) {
     seamOpts.simplify = simplify;
     seamOpts.plantBug = plantBug;
     seamOpts.maxRuleCalls = seamRuleLimit;
+    // the sea op of each arithmetic node and select (--arith-stats,
+    // --ack-dump-pairs; sea/VC/Origins.h), followed through the stages
+    // below; declared before sem, which holds it
+    sea::ExprOrigins origins;
+    const bool originsOn = arithStats || !ackDumpPairs.empty();
     sea::SeaOpSem sem(efac, names, nativeMulOverflow, seam, &seamOpts);
+    if (originsOn)
+      sem.setOrigins(&origins);
     sem.setAddressMode(addressMode);
     sem.setPtrCompanion(companionMode != CompanionMode::Off,
                         companionMode == CompanionMode::Assume,
@@ -3894,11 +4616,23 @@ int main(int argc, char **argv) {
       else if (splitPlant == "wrong-value")
         splitRun->setPlant(sea::SplitRun::Plant::WrongValue);
     }
+    // --ite-stats: after the hooks above (it chains to them)
+    std::unique_ptr<sea::IteCensus> iteCensus;
+    if (iteStats && !iteStatsDone) {
+      iteCensus = std::make_unique<sea::IteCensus>(program);
+      iteCensus->install(sem, ctx);
+    }
     sea::VCGen vcgen(sem, joinEncoding);
     vcgen.setReach(reach);
     vcgen.setJoinCases(vcJoinCases, {vcCasesReorder, vcCasesDropDefault});
     lap("setup");
     Phase encodePhase("encode", vcRuns);
+    std::optional<EncodeMeter> meter;
+    if (logPhase.on(sea::log::Flow) || memLimit) {
+      meter.emplace(efac, vcRuns);
+      vcgen.setProgress(
+          [&meter](const sea::EncodeProgress &p) { (*meter)(p); });
+    }
     if (failed(vcgen.genVc(program, ctx)))
       return 1;
     lap("encode");
@@ -3925,6 +4659,10 @@ int main(int argc, char **argv) {
                         "no split target was met by the encoding (each is "
                         "in a block no path reaches): the part is the "
                         "whole VC");
+    }
+    if (iteCensus) {
+      printIteStats(*iteCensus, program, smt2 && !gOut->jsonl());
+      iteStatsDone = true;
     }
     SEA_PHASE_END(encodePhase)
         .kv("nodes-made", efac.nodesMade())
@@ -3990,6 +4728,21 @@ int main(int argc, char **argv) {
     sem.setTrailContext("query");
     query = sem.simplify(query);
     lap("simplify-query");
+    // the origins of the simplified terms: the rewriter caches every term
+    // with its normal form (simplify is on)
+    if (originsOn && sem.simplifies() && sem.seamRewriter()) {
+      const expr::RewriteCache &cache = sem.seamRewriter()->cache();
+      origins = origins.through([&](const expr::Expr &n) {
+        expr::Expr r = n;
+        for (unsigned hop = 0; hop < 16; ++hop) {
+          const expr::Expr *f = cache.find(r, 0);
+          if (!f || f->get() == r.get())
+            break;
+          r = *f;
+        }
+        return r;
+      });
+    }
     // the unknown hint counts its open alias questions (only then: a DAG
     // walk after the solver); a reference, the nodes are hash-consed
     expr::Expr hintQuery;
@@ -4178,6 +4931,8 @@ int main(int argc, char **argv) {
         if (!solverQuery)
           return 1; // vc.memop-term-at-boundary
         splitReads = census->attributeReads(sem, solverQuery);
+        splitArithNodes =
+            census->attributeArith(sem, solverQuery, splitMaxPaths);
         splitMemopOpen = memOpOpen["all"];
       }
       sea::ValueNames vn(program);
@@ -4255,6 +5010,76 @@ int main(int argc, char **argv) {
             }
             return a.addrs > b.addrs;
           });
+      // the arithmetic they control: integer candidates (one part per
+      // leaf), then the Boolean ones (one line per term, as above); by the
+      // arithmetic nodes, then integers before Booleans, then (integers)
+      // the other integer candidates computed from it, then the nodes with
+      // its term itself in an operand, then more cases, then encoding order
+      // (untuned)
+      splitIntRecorded = census->ints.size();
+      std::vector<int> intAt(census->ints.size(), -1);
+      for (size_t i = 0; i < census->ints.size(); ++i) {
+        const sea::SplitIntCandidate &n = census->ints[i];
+        if (!n.arith || n.sameAs >= 0)
+          continue;
+        intAt[i] = splitArithCandidates.size();
+        SplitArithCandidate c;
+        c.name = vn.name(n.value).str();
+        c.loc = sea::formatLoc(n.value.getLoc());
+        c.target = "int";
+        c.arith = n.arith;
+        c.mul = n.arithMul;
+        c.div = n.arithDiv;
+        c.direct = n.arithDirect;
+        c.cases = n.leaves;
+        c.feeds = n.feeds;
+        c.leavesCapped = n.leavesCapped;
+        splitArithCandidates.push_back(std::move(c));
+      }
+      for (const sea::SplitIntCandidate &n : census->ints)
+        if (n.sameAs >= 0 && intAt[n.sameAs] >= 0)
+          splitArithCandidates[intAt[n.sameAs]].same.push_back(
+              vn.name(n.value).str());
+      {
+        std::vector<int> arithAt(census->boolCands.size(), -1);
+        for (size_t i = 0; i < census->boolCands.size(); ++i) {
+          const sea::SplitBoolCandidate &b = census->boolCands[i];
+          if (!b.arith || b.sameAs >= 0)
+            continue;
+          SplitArithCandidate c;
+          c.name = boolName(b);
+          if (b.block) {
+            if (!b.block->empty())
+              c.loc = sea::formatLoc(b.block->front().getLoc());
+          } else {
+            c.loc = sea::formatLoc(b.value.getLoc());
+          }
+          c.target = b.block ? "guard" : "value";
+          c.arith = b.arith;
+          c.mul = b.arithMul;
+          c.div = b.arithDiv;
+          c.cases = 2;
+          arithAt[i] = splitArithCandidates.size();
+          splitArithCandidates.push_back(std::move(c));
+        }
+        for (const sea::SplitBoolCandidate &b : census->boolCands)
+          if (b.sameAs >= 0 && arithAt[b.sameAs] >= 0)
+            splitArithCandidates[arithAt[b.sameAs]].same.push_back(boolName(b));
+      }
+      std::stable_sort(
+          splitArithCandidates.begin(), splitArithCandidates.end(),
+          [](const SplitArithCandidate &a, const SplitArithCandidate &b) {
+            if (a.arith != b.arith)
+              return a.arith > b.arith;
+            const bool ai = a.target == "int", bi = b.target == "int";
+            if (ai != bi)
+              return ai;
+            if (a.feeds != b.feeds)
+              return a.feeds > b.feeds;
+            if (a.direct != b.direct)
+              return a.direct > b.direct;
+            return a.cases > b.cases;
+          });
       splitOpenAliases = openOverlaps.size();
       splitPickSeconds = std::chrono::duration<double>(
                              std::chrono::steady_clock::now() - vcStart)
@@ -4293,6 +5118,8 @@ int main(int argc, char **argv) {
     std::unique_ptr<expr::xrt::Lowering> xlw;
     const bool xrtOn = !xReadTable.empty();
     uint64_t xrtDagStd = 0, xrtDagTranslated = 0;
+    // the origins follow the boundary along the structure it keeps
+    expr::Expr preBoundary = originsOn ? query : expr::Expr();
     Phase solverTermPhase("solver-term");
     if (xrtOn) {
       if (!sem.seam() || !sem.seamRewriter())
@@ -4415,6 +5242,12 @@ int main(int argc, char **argv) {
       lap("solver-term");
     }
     SEA_PHASE_END(solverTermPhase).kv("nodes-made", efac.nodesMade());
+    if (originsOn) {
+      origins = origins.along(preBoundary, query, [&](const expr::Expr &e) {
+        return sem.erasedImage(e);
+      });
+      preBoundary = expr::Expr();
+    }
     if (failed(sea::verifyUniqueNames(query, clash)))
       return fail("two distinct VC constants are both named '" + clash + "'");
     lap("unique-names");
@@ -4487,8 +5320,17 @@ int main(int argc, char **argv) {
     }
     if (ackOn && !ackDumpPairs.empty())
       ack.recordPairs(true);
+    if (ackOn && originsOn)
+      ack.keepImages(true);
+    // the origins of the lowering's input (the reads' selects)
+    sea::ExprOrigins preAckOrigins;
     if (ackOn)
       query = ack.lower(query);
+    if (ackOn && originsOn) {
+      preAckOrigins = origins;
+      origins =
+          origins.through([&](const expr::Expr &n) { return ack.image(n); });
+    }
     if (ackOn && !ackDumpPairs.empty()) {
       std::error_code ec;
       llvm::raw_fd_ostream os(ackDumpPairs, ec);
@@ -4498,9 +5340,25 @@ int main(int argc, char **argv) {
       for (size_t a = 0; a < arrs.size(); ++a) {
         os << "array " << a << " "
            << *expr::op::bind::fname(arrs[a].array->first()) << "\n";
-        for (size_t k = 0; k < arrs[a].reads.size(); ++k)
+        for (size_t k = 0; k < arrs[a].reads.size(); ++k) {
+          // the index, then the loads the read came from (the distinct
+          // locations of the selects merged into it; - for none)
           os << "read " << a << " " << k << " " << *arrs[a].reads[k].index
-             << "\n";
+             << " loc=";
+          std::vector<std::string> ls;
+          for (const expr::Expr &sel : arrs[a].reads[k].selects)
+            for (mlir::Location l : preAckOrigins.of(sel.get())) {
+              std::string t = sea::formatLoc(l);
+              if (t.empty())
+                t = "-";
+              if (!llvm::is_contained(ls, t))
+                ls.push_back(t);
+            }
+          if (ls.empty())
+            os << "-";
+          llvm::interleave(ls, os, ";");
+          os << "\n";
+        }
       }
       for (const auto &p : ack.constrainedPairs())
         os << "pair " << p.array << " " << p.k << " " << p.l << "\n";
@@ -4522,7 +5380,10 @@ int main(int argc, char **argv) {
         return fail("--x-read-table: plain|flat|arrays|objack|mux");
       xlw = std::make_unique<expr::xrt::Lowering>(efac, sem.baseRegistry(),
                                                   *xtr, mode, xReadTableMux);
+      expr::Expr preLower = query;
       query = xlw->lower(query);
+      if (originsOn)
+        origins = origins.along(preLower, query);
       lap("xrt-lower");
     }
     SEA_PHASE_END(ackPhase)
@@ -4548,6 +5409,18 @@ int main(int argc, char **argv) {
       }
       for (const auto &[op, n] : perOp)
         os << "vc.dag-op: " << op << " " << n << "\n";
+    }
+    // the multiplications, divisions and remainders of what the solver
+    // gets, by operand shape and source location (tools/sea-vc/ArithStats.h)
+    if (arithStats) {
+      sea::ArithStats census(query, origins);
+      census.emit([&](const sea::out::Record &rec) {
+        // with --smt2 (text) the statistics go to stderr
+        if (smt2 && !gOut->jsonl())
+          errs() << rec.text << "\n";
+        else
+          gOut->emit(rec);
+      });
     }
     // the VC is generated: encoding, with --seam the rewriting of every load
     // and store, and the query
@@ -5524,8 +6397,15 @@ int main(int argc, char **argv) {
       splitPart.dag = expr::dagSize(query);
     }
     if (vcgenOnly) {
-      // the VC is generated and checked; no solver (and none of the checks
-      // that run one: --seam-check, --eq-audit, --x-read-table-check)
+      // the VC is generated and checked; no solver of the query (and none
+      // of the checks on the run's solver: --seam-check,
+      // --x-read-table-check). --eq-audit runs: its checks are its own z3
+      // instance with their own timeout, on terms of the VC only
+      runEqAudit();
+      if (checkOn || xReadTableCheck)
+        sea::diag::warn("vc.vcgen-only-check-skipped",
+                        "--seam-check and --x-read-table-check do not run: "
+                        "--vcgen-only skips them");
       emitResult("none");
       brunchStat(vout(), "result", "none");
       return 0;
@@ -5717,6 +6597,8 @@ int main(int argc, char **argv) {
       if (memHit) {
         vout() << "mem-limit: hit\n";
         brunchStat(vout(), "mem-limit", "hit");
+        // the solver's own limit: in solve (the new-handler's note line)
+        vout() << "mem-limit-phase: solve\n";
       }
       // where to go next: the split targets, when the normalized query
       // has open alias questions to attribute, or else Ackermann
@@ -6301,6 +7183,55 @@ int main(int argc, char **argv) {
                    " cond-reads=" + std::to_string(c.condReads) +
                    " covers=" + std::to_string(c.covers) +
                    " same=" + (c.same.empty() ? "-" : llvm::join(c.same, ",")) +
+                   " loc=" + (c.loc.empty() ? "-" : c.loc);
+        gOut->emit(rec);
+      }
+      const size_t nArith = splitArithCandidates.size();
+      const size_t arithListed =
+          splitCandidatesMax ? std::min<size_t>(nArith, splitCandidatesMax)
+                             : nArith;
+      {
+        sea::out::Record rec("split-arith-candidates");
+        rec.num("arith_nodes", splitArithNodes)
+            .num("int_values", splitIntRecorded)
+            .num("candidates", nArith)
+            .num("listed", arithListed)
+            .num("dropped", nArith - arithListed);
+        rec.text = "split.arith-candidates: arith-nodes=" +
+                   std::to_string(splitArithNodes) +
+                   " int-values=" + std::to_string(splitIntRecorded) +
+                   " candidates=" + std::to_string(nArith) +
+                   " listed=" + std::to_string(arithListed) +
+                   " dropped=" + std::to_string(nArith - arithListed);
+        gOut->emit(rec);
+      }
+      for (size_t i = 0; i < arithListed; ++i) {
+        const SplitArithCandidate &c = splitArithCandidates[i];
+        if (c.leavesCapped)
+          sea::diag::warn("vc.split-max-paths",
+                          "a split candidate (an ite-valued integer, " +
+                              c.name +
+                              ") is listed without its leaves (cases=0): "
+                              "more than --split-max-paths distinct leaves");
+        std::string same = c.same.empty() ? "-" : llvm::join(c.same, ",");
+        sea::out::Record rec("split-arith-candidate");
+        rec.str("name", c.name)
+            .str("loc", c.loc)
+            .str("target", c.target)
+            .num("arith", c.arith)
+            .num("mul", c.mul)
+            .num("div", c.div)
+            .num("direct", c.direct)
+            .num("feeds", c.feeds)
+            .num("cases", c.cases)
+            .str("same", same);
+        rec.text = "split.arith-candidate: name=" + c.name +
+                   " target=" + c.target + " arith=" + std::to_string(c.arith) +
+                   " mul=" + std::to_string(c.mul) +
+                   " div=" + std::to_string(c.div) +
+                   " direct=" + std::to_string(c.direct) +
+                   " feeds=" + std::to_string(c.feeds) +
+                   " cases=" + std::to_string(c.cases) + " same=" + same +
                    " loc=" + (c.loc.empty() ? "-" : c.loc);
         gOut->emit(rec);
       }

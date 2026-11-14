@@ -6,6 +6,7 @@ add_mlir_library(SeaSupport
   Diag.cpp
   Log.cpp
   Output.cpp
+  ProcMem.cpp
   SeaLog.cpp
   Version.cpp
 

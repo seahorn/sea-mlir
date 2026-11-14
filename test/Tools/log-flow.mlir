@@ -5,19 +5,19 @@
 // phase's sizes; replay's end has the result of the validation.
 // RUN: sea-vc %s --lower --seam --log=vc.phase 2>&1 >/dev/null | FileCheck %s --check-prefix=PHASE
 // PHASE: log: vc.phase start phase=lower
-// PHASE-NEXT: log: vc.phase end phase=lower time={{[0-9.]+}} ops-before={{[0-9]+}} ops-after={{[0-9]+}}
+// PHASE-NEXT: log: vc.phase end phase=lower time={{[0-9.]+}}{{( rss-mb=[0-9]+ vm-mb=[0-9]+)?}} peak-rss-mb={{[0-9]+}} ops-before={{[0-9]+}} ops-after={{[0-9]+}}
 // PHASE-NEXT: log: vc.phase start phase=encode run=1{{$}}
-// PHASE-NEXT: log: vc.phase end phase=encode time={{[0-9.]+}} nodes-made={{[0-9]+}} sides={{[0-9]+}} guarantees={{[0-9]+}}
+// PHASE-NEXT: log: vc.phase end phase=encode time={{[0-9.]+}}{{( rss-mb=[0-9]+ vm-mb=[0-9]+)?}} peak-rss-mb={{[0-9]+}} nodes-made={{[0-9]+}} sides={{[0-9]+}} guarantees={{[0-9]+}}
 // PHASE-NEXT: log: vc.phase start phase=simplify
-// PHASE-NEXT: log: vc.phase end phase=simplify time={{[0-9.]+}} nodes-made={{[0-9]+}}
+// PHASE-NEXT: log: vc.phase end phase=simplify time={{[0-9.]+}}{{( rss-mb=[0-9]+ vm-mb=[0-9]+)?}} peak-rss-mb={{[0-9]+}} nodes-made={{[0-9]+}}
 // PHASE-NEXT: log: vc.phase start phase=solver-term
-// PHASE-NEXT: log: vc.phase end phase=solver-term time={{[0-9.]+}} nodes-made={{[0-9]+}}
+// PHASE-NEXT: log: vc.phase end phase=solver-term time={{[0-9.]+}}{{( rss-mb=[0-9]+ vm-mb=[0-9]+)?}} peak-rss-mb={{[0-9]+}} nodes-made={{[0-9]+}}
 // PHASE-NEXT: log: vc.phase start phase=ackermann
-// PHASE-NEXT: log: vc.phase end phase=ackermann time={{[0-9.]+}} on={{true|false}} arrays={{[0-9]+}} pairs={{[0-9]+}} nodes-made={{[0-9]+}}
+// PHASE-NEXT: log: vc.phase end phase=ackermann time={{[0-9.]+}}{{( rss-mb=[0-9]+ vm-mb=[0-9]+)?}} peak-rss-mb={{[0-9]+}} on={{true|false}} arrays={{[0-9]+}} pairs={{[0-9]+}} nodes-made={{[0-9]+}}
 // PHASE-NEXT: log: vc.phase start phase=solve
-// PHASE-NEXT: log: vc.phase end phase=solve time={{[0-9.]+}}{{$}}
+// PHASE-NEXT: log: vc.phase end phase=solve time={{[0-9.]+}}{{( rss-mb=[0-9]+ vm-mb=[0-9]+)?}} peak-rss-mb={{[0-9]+}}{{$}}
 // PHASE-NEXT: log: vc.phase start phase=replay
-// PHASE-NEXT: log: vc.phase end phase=replay time={{[0-9.]+}} status=assert-failed checked={{[0-9]+}} mismatches=0 validated=true{{$}}
+// PHASE-NEXT: log: vc.phase end phase=replay time={{[0-9.]+}}{{( rss-mb=[0-9]+ vm-mb=[0-9]+)?}} peak-rss-mb={{[0-9]+}} status=assert-failed checked={{[0-9]+}} mismatches=0 validated=true{{$}}
 // PHASE-NOT: log:
 
 // lower.pass: one event per pass of the lowering, between lower's start
@@ -65,7 +65,7 @@
 // jsonl: the same events, one object each.
 // RUN: sea-vc %s --format=jsonl --log=vc.phase 2>&1 >/dev/null | FileCheck %s --check-prefix=JSONL
 // JSONL: {"log":"vc.phase","level":1,"msg":"start","phase":"encode","run":1,"text":"log: vc.phase start phase=encode run=1"}
-// JSONL-NEXT: {"log":"vc.phase","level":1,"msg":"end","phase":"encode","time":{{[0-9.]+}},"nodes-made":{{[0-9]+}},
+// JSONL-NEXT: {"log":"vc.phase","level":1,"msg":"end","phase":"encode","time":{{[0-9.]+}},{{("rss-mb":[0-9]+,"vm-mb":[0-9]+,)?}}"peak-rss-mb":{{[0-9]+}},"nodes-made":{{[0-9]+}},
 
 sea.program @main {
   %x = sea.nondet "nondet_u8" [0] : i8

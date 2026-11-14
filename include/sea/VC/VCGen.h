@@ -26,6 +26,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 
+#include <functional>
 #include <memory>
 
 namespace sea {
@@ -50,6 +51,16 @@ enum class JoinEncoding {
   Ite,
   /// The argument is a fresh constant with e_j -> (arg = v_j) per edge.
   Eq,
+};
+
+/// Where genVc is (VCGen::setProgress): the reachable blocks and their ops
+/// (terminators excluded) in encoding order.
+struct EncodeProgress {
+  unsigned blocks = 0, blocksTotal = 0; ///< blocks encoded / to encode
+  uint64_t ops = 0, opsTotal = 0;       ///< ops whose encoding started
+  /// The op about to be encoded; null after a block is done (blocks counts
+  /// it then).
+  mlir::Operation *op = nullptr;
 };
 
 class VCGen {
@@ -96,6 +107,14 @@ public:
   void setJoinCases(bool on, JoinCases::Reorder reorder = {}) {
     cases = on ? std::make_unique<JoinCases>(reorder) : nullptr;
   }
+  /// Calls \p f before each op is encoded (through OpSemContext::opHook,
+  /// installed for the duration of genVc) and after each block (its join and
+  /// its ops); f must not change the encoding. Null: none (the default; no
+  /// counting). Set before genVc.
+  void setProgress(std::function<void(const EncodeProgress &)> f) {
+    progress = std::move(f);
+  }
+
   /// The counters of setJoinCases; null when off.
   const JoinCases *joinCases() const { return cases.get(); }
 
@@ -110,6 +129,7 @@ private:
   llvm::DenseMap<mlir::Block *, expr::Expr> guards;
   double execTime = 0, joinTime = 0;
   std::unique_ptr<JoinCases> cases;
+  std::function<void(const EncodeProgress &)> progress;
 };
 
 /// The query: satisfiable iff some execution fails the assertion.

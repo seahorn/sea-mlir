@@ -54,13 +54,13 @@ The input is a module with a `sea.program` in BMC form, or a program that
 |---|---|
 | `--solver=z3|yices|bitwuzla` | the solver; z3 is the default and the supported one |
 | `--timeout=<s>` | wall-clock limit of the solver's check; does not bound query generation |
-| `--mem-limit=<GB>` | address-space limit of the process (`RLIMIT_AS`) |
+| `--mem-limit=<GB>` | address-space limit of the process (`RLIMIT_AS`); a hit prints where it was (`mem-limit-phase:`, in encode also `mem-limit-progress:`, `mem-limit-op:`; [Output formats](output-formats.md)) |
 | `--z3-param=<key=value>` | a global z3 parameter (repeatable) |
 | `--z3-tactic=<tactic>` | z3's default tactic; `sls-smt` is z3's stochastic local search (see [Local search in the solver](fuzzing.md#local-search-in-the-solver)) |
 | `--yices-param=<key=value>` | a Yices search parameter (repeatable), e.g. `random-seed=N`; Yices times vary widely with the seed, so compare medians over several seeds |
 | `--yices-config=<key=value>`, `--yices-logic=<logic>` | the Yices context configuration and logic |
 | `--smt2` | print the query as SMT-LIB and exit |
-| `--vcgen-only` | build and check the query, print its statistics and `result: none`; no solver |
+| `--vcgen-only` | build and check the query, print its statistics and `result: none`; no solver of the query (`--eq-audit` still runs its own checks; `--vcgen-only` skips `--seam-check` and `--x-read-table-check`: warning `vc.vcgen-only-check-skipped`) |
 
 **Checks**
 
@@ -92,12 +92,14 @@ answered and counted)
 | option | effect |
 |---|---|
 | `--split=<sel,...>` | split on an i1 value (1, 0) or a block guard (true, false) |
-| `--split-leaves=<sel,...>` | split on an address whose term is an ite tree: one part per distinct leaf |
+| `--split-leaves=<sel,...>` | split on an address or integer (iN, N > 1) value whose term is an ite tree: one part per distinct leaf. `@<file>:<line>[:<col>]` prefers address op results, then address block arguments, then integer op results, then integer block arguments (`--split`: i1 op results, then block arguments); only the first non-empty class may be ambiguous, `:<col>` picks within it |
 | `--split-auto` | with `--seam`: pick the ite-valued address behind the most open alias questions, split on its leaves |
-| `--split-candidates` | with `--seam`: list the targets of `--split-leaves` (every ite-valued address) and of `--split` (i1 values and block guards in the ite conditions behind open alias questions or in the indices of array reads, the reads the Ackermann lowering pairs), ranked by the open questions, and when there are none by those reads; no split, no solver (`result: none`) |
-| `--split-candidates-max=<n>` | the most `split.bool-candidate` lines (default 20; 0: all); the dropped ones are counted |
+| `--split-candidates` | with `--seam`: list the targets of `--split-leaves` (every ite-valued address) and of `--split` (i1 values and block guards in the ite conditions behind open alias questions or in the indices of array reads, the reads the Ackermann lowering pairs), ranked by the open questions, and when there are none by those reads; also the integer and i1 values and guards by the multiplications and divisions they control (`split.arith-candidate`, a heuristic); no split, no solver (`result: none`) |
+| `--split-candidates-max=<n>` | the most `split.bool-candidate` and `split.arith-candidate` lines (default 20; 0: all); the dropped ones are counted |
 | `--split-check` | prove each split level exhaustive and exact with z3 (default on; `--split-check-rlimit=<n>`) |
-| `--split-max-parts=<n>`, `--split-max-paths=<n>` | the cap on the parts (default 64; more is an error) and on the paths of an ite tree |
+| `--split-max-parts=<n>`, `--split-max-paths=<n>` | the cap on the parts (default 64, untuned; more is an error) and on the paths of an ite tree |
+| `--ite-stats` | report the memories, addresses and integers feeding mul / div / rem whose terms are ite trees, per source location (leaves, conditions, guards among their atoms), and the loads at non-ground addresses by kind and location (`ite.*`; the first encoding, before any solver; also with `--vcgen-only`; stderr under `--smt2`; not with a split) |
+| `--ite-stats-max=<n>` | the most `ite.site` lines per kind and `ite.load-site` lines (default 40, untuned; 0: all) |
 | `--split-stop-on-sat` | stop at the first sat part |
 | `--split-smt2=<prefix>` | write each part's query to `<prefix>.part<N>.smt2` (with `--vcgen-only`: no solving) |
 
@@ -120,7 +122,9 @@ split: open-aliases=<n>; ...` line that points to it.
 | `--seam-stats` | print SeaM's rule counters |
 | `--brunch-stats` | also print `BRUNCH_STAT <key> <value>` lines |
 | `--dag-stats` | print the size of the query as a DAG |
-| `--progress` | log the start and end of each phase on stderr, or the log file (= `--log=vc.phase`) |
+| `--arith-stats` | print the multiplications, divisions and remainders of the query the solver gets, by operator, width and operand kind (numeral, ite of numerals, ite with a symbolic leaf, two non-constant terms), and per source location of the sea op that made them (`arith.*` lines; works with `--vcgen-only`) |
+| `--progress` | log the start and end of each phase on stderr, or the log file (= `--log=vc.phase`); the end with the memory; progress lines inside `encode` |
+| `--progress-interval=<s>` | the `vc.phase progress` lines inside `encode`: one every `s` seconds (default 10, not tuned); `0`: one after every block ([Logging](logging.md)) |
 | `--print=lines|tree|off` | how the program's prints are shown in a replay |
 | `--print-refs=asis|weak|strong` | convert the program's prints before the lowering |
 | `--print-limit=<n>`, `--print-locs` | limit the print lines; add the location of each print |

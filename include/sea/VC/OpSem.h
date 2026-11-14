@@ -24,6 +24,7 @@
 #include "sea/Expr/RewriteTrail.hh"
 #include "sea/VC/JoinCases.h"
 #include "sea/VC/Names.h"
+#include "sea/VC/Origins.h"
 #include "sea/VC/SymStore.hh"
 
 #include "llvm/ADT/SmallVector.h"
@@ -67,6 +68,9 @@ public:
   /// creates it; the result is the block's guard (case splitting). Null:
   /// none.
   std::function<expr::Expr(mlir::Block *b, expr::Expr guard)> guardHook;
+  /// Called by SeaOpSem::exec before each op of a block (the terminator
+  /// excluded) is encoded: progress reports (VCGen::setProgress). Null: none.
+  std::function<void(mlir::Operation &op)> opHook;
 
   OpSemContext &pc(expr::Expr cond) {
     pathCond = cond;
@@ -225,6 +229,10 @@ public:
   /// Null (with the error vc.memop-term-at-boundary) if a memory-operation
   /// term is in a position that is not read (MemOps.hh).
   expr::Expr solverTerm(expr::Expr e);
+  /// \p e with the pointer operators and sort erased (the last step of the
+  /// boundary), from the eraser's memo when the boundary saw \p e; for the
+  /// origin table (sea/VC/Origins.h). Null without an eraser.
+  expr::Expr erasedImage(const expr::Expr &e);
   /// solverTerm without the diagnostic: null and \p why on a refusal.
   expr::Expr solverTerm(expr::Expr e, std::string &why);
   /// the negated firing `lhs != rhs` of \p f as the solver gets it
@@ -235,6 +243,14 @@ public:
                               std::string &why);
 
   expr::ExprFactory &efac() const { return ef; }
+
+  /// The origin table (include/sea/VC/Origins.h): while set, every op
+  /// encoded adds the nodes it made to \p o with its location: the
+  /// arithmetic nodes (bvmul, bvudiv, bvsdiv, bvurem, bvsrem, the mul
+  /// overflow predicates) of mul / div / rem / umulo / smulo / ptr.index,
+  /// and the selects of a load's read structure (ite branches, concat,
+  /// extract, PTR_FROM_BITS from its result). Null: off.
+  void setOrigins(ExprOrigins *o) { origins = o; }
 
   /// The rule trail (include/sea/Expr/RewriteTrail.hh): every rule
   /// firing of the rewriter is recorded in \p t, with the operation being
@@ -348,6 +364,12 @@ private:
   void trailAccess(const char *kind, uint64_t units);
   /// the op exec() is executing (the trail's context)
   mlir::Operation *curOp = nullptr;
+  /// setOrigins; the nodes already walked by noteOrigins
+  ExprOrigins *origins = nullptr;
+  llvm::DenseSet<const expr::ENode *> originWalked;
+  /// adds the nodes \p op made (its results' values, down to its operands'
+  /// values) to the origin table
+  void noteOrigins(mlir::Operation &op, OpSemContext &ctx);
 
   llvm::DenseMap<mlir::Operation *, expr::Expr> havocs;
   /// mkSymbReg's results (one Expr per value / block for the VC).

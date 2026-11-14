@@ -9,10 +9,11 @@
 //   - Bool: an i1 value v with term t: case b in {1, 0} replaces v by the
 //     numeral b, with the part condition t = b; a block guard g: case b in
 //     {true, false} replaces g by b, with the condition g = b;
-//   - Leaves: a value whose term is an ite tree (or ptr-from-bits of one)
-//     over leaves: one case per distinct leaf l, the value replaced by l
-//     (ptr-from-bits(l)), with the disjunction of the path conditions of
-//     l's occurrences as the part condition.
+//   - Leaves: an address or integer (iN, N > 1) value whose term is an ite
+//     tree (an address: or ptr-from-bits of one) over leaves: one case per
+//     distinct leaf l, the value replaced by l (ptr-from-bits(l)), with the
+//     disjunction of the path conditions of l's occurrences as the part
+//     condition.
 // The replacement happens when the target is defined during the encoding
 // (OpSemContext::defHook / guardHook), so every later use, and SeaM's
 // rewriting of it, sees the fixed case. For every choice of cases the part
@@ -32,17 +33,26 @@
 #define SEA_VC_SPLIT_H
 
 #include "sea/Dialect/Sea/SeaOps.h"
+#include "sea/Expr/ArithShape.hh"
+#include "sea/Expr/BaseRegistry.hh"
 #include "sea/Expr/Expr.hh"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 
+#include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace sea {
 
 class SeaOpSem;
 class OpSemContext;
+
+/// The type of a --split-leaves target: an address, or an integer wider
+/// than i1 (an i1 value is a --split target).
+bool isLeavesType(mlir::Type t);
 
 /// A value or block to split on, found by a selector.
 struct SplitTarget {
@@ -59,9 +69,10 @@ struct SplitTarget {
 /// Finds the targets of `selectors` in `program` (the program the VC
 /// encodes, after the lowering). A selector is a VC name (`%x`, `nd.<site>`,
 /// `^bb3`) or `@<file>:<line>`: the op results (Bool: of type i1; Leaves:
-/// of an address type) with a file position (the op's own or an inlined
-/// call site) in a file whose path ends with <file>, on <line>. A selector
-/// must find exactly one target. Fails with `error` set.
+/// of an address type or an integer type wider than i1) with a file
+/// position (the op's own or an inlined call site) in a file whose path
+/// ends with <file>, on <line>. A selector must find exactly one target.
+/// Fails with `error` set.
 mlir::LogicalResult resolveSplitTargets(ProgramOp program,
                                         llvm::ArrayRef<std::string> selectors,
                                         SplitTarget::Kind kind,
@@ -133,8 +144,12 @@ public:
   /// The cases of a Leaves target's term `t`: the ite tree under at most one
   /// PTR_FROM_BITS, by distinct leaf (first occurrence order). False (with
   /// `why`) when `t` is not of that form or has more than `maxPaths` paths.
+  /// `isAddr`: the value is an address (leaf texts name objects); else an
+  /// integer (leaf texts are numerals, unsigned, constant names, or the
+  /// leaf's operator).
   static bool leafCases(expr::Expr t, SeaOpSem &sem, unsigned maxPaths,
-                        std::vector<SplitCase> &out, std::string &why);
+                        std::vector<SplitCase> &out, std::string &why,
+                        bool isAddr = true);
 
 private:
   void onValue(mlir::Value v, SeaOpSem &sem, OpSemContext &ctx);
@@ -201,11 +216,40 @@ struct SplitBoolCandidate {
   /// The other Boolean candidates in its Boolean structure (its
   /// connectives, down to the atoms; attributeReads), by distinct term.
   unsigned covers = 0;
+  /// --split-candidates: the arithmetic nodes of the query at the solver
+  /// boundary (SplitCensus::attributeArith) with the target in an ite
+  /// condition of an operand: all, multiplications (bvmul and the
+  /// multiplication overflow predicates), divisions and remainders.
+  uint64_t arith = 0, arithMul = 0, arithDiv = 0;
   /// The candidate (index in boolCands) listed for the term when another
   /// one has the same term, or -1 (attributeReads; the one with the most
   /// uses that reach a select condition, a branch condition or an address
   /// through i1 connectives, then the first).
   int sameAs = -1;
+};
+
+/// An integer (iN, N > 1) value whose term is an ite tree: a --split-leaves
+/// candidate of --split-candidates, ranked by the arithmetic it controls.
+struct SplitIntCandidate {
+  mlir::Value value;
+  /// The term as the encoding built it.
+  expr::Expr term;
+  /// Distinct leaves of its ite tree, counted for the candidates with
+  /// arith > 0 (0 with leavesCapped: more than --split-max-paths).
+  unsigned leaves = 0;
+  bool leavesCapped = false;
+  /// The candidate (index in ints) with the same term (listed with it,
+  /// same=), or -1.
+  int sameAs = -1;
+  /// The arithmetic nodes of the query at the solver boundary with, in an
+  /// operand, the term or an ite whose condition's atoms are all atoms of
+  /// the conditions of the term's (normalized) ite tree: all,
+  /// multiplications, divisions and remainders (SplitCensus::attributeArith);
+  /// of all, those with the term itself in an operand.
+  uint64_t arith = 0, arithMul = 0, arithDiv = 0, arithDirect = 0;
+  /// The other integer candidates whose term (as encoded) holds this one's:
+  /// the merged values computed from it, which its split fixes too.
+  unsigned feeds = 0;
 };
 
 /// The census of a solverless pick run (sea-vc --split-auto,
@@ -215,7 +259,7 @@ struct SplitBoolCandidate {
 class SplitCensus {
 public:
   /// `full` (--split-candidates): also collect the Boolean candidates (i1
-  /// values, guards) and count `direct`.
+  /// values, guards) and the integer ones, and count `direct`.
   explicit SplitCensus(bool full) : bools(full), direct(full) {}
   /// Installs the hooks on `ctx`; they record and change nothing.
   void install(SeaOpSem &sem, OpSemContext &ctx);
@@ -233,12 +277,87 @@ public:
   /// whose residue is index pairs, not open alias questions; call after
   /// attribute().
   uint64_t attributeReads(SeaOpSem &sem, const expr::Expr &solverQuery);
+  /// Attributes the arithmetic nodes (expr::arithKind, sea/Expr/ArithShape.hh)
+  /// of `solverQuery` (as for attributeReads): a Boolean candidate counts a
+  /// node when it is in an ite condition of one of its operands, an integer
+  /// candidate when its term is in one of its operands, or an ite whose
+  /// condition is over the atoms of the term's ite conditions (the
+  /// normalization may fold a compare of the term into its conditions: `ite(g,
+  /// 0, 1) = 0` to `g`). Also computes the integer candidates' leaves and
+  /// `feeds`. Returns the number of distinct arithmetic nodes. A heuristic for
+  /// queries whose cost is products or quotients by path-merged values; call
+  /// after attributeReads() (it sets sameAs).
+  uint64_t attributeArith(SeaOpSem &sem, const expr::Expr &solverQuery,
+                          unsigned maxPaths);
   /// In encoding order.
   std::vector<SplitAddrCandidate> addrs;
   std::vector<SplitBoolCandidate> boolCands;
+  /// Only with `full`.
+  std::vector<SplitIntCandidate> ints;
 
 private:
   bool bools, direct;
+};
+
+/// The census of sea-vc --ite-stats: the values whose terms are ite trees,
+/// and the loads whose address term is not ground, recorded as the
+/// encoding defines them (hooks; they change nothing and chain to the hooks
+/// installed before them). Kinds of values: `mem` (memory values), `addr`
+/// (addresses: an ite tree or ptr-from-bits of one), `int` (integers in the
+/// backward slice of an arithmetic op's operands: mul, udiv, sdiv, urem,
+/// srem, umulo, smulo, sdivo, through integer and i1 ops and block
+/// arguments, not through memory). Kinds of load addresses: `ite` (an ite
+/// tree, or ptr-from-bits of one), `from-bits` (ptr-from-bits of anything
+/// else: a pointer read back from memory), `ite-index` (an ite below the
+/// top: an index chosen by a path or a select), `symbolic` (any other term
+/// with a free constant); a ground address (numerals and object bases) is
+/// counted, not listed.
+class IteCensus {
+public:
+  explicit IteCensus(ProgramOp program);
+  void install(SeaOpSem &sem, OpSemContext &ctx);
+
+  struct Value {
+    const char *kind;
+    mlir::Value value;
+    /// Distinct leaves of the tree (DAG), distinct conditions, and the
+    /// block guards among the atoms of the conditions, each at most
+    /// kTreeCap (capped: one of them reached it).
+    unsigned leaves = 0, conds = 0, guardAtoms = 0;
+    bool capped = false;
+  };
+  struct Load {
+    const char *kind;
+    mlir::Operation *op;
+  };
+  std::vector<Value> values;
+  /// Loads at non-ground addresses.
+  std::vector<Load> loads;
+  /// All loads the encoding met.
+  uint64_t allLoads = 0;
+
+private:
+  /// No free constant but object bases (--seam's obj.<name>).
+  bool ground(expr::ENode *n, const expr::BaseRegistry &bases);
+  llvm::DenseSet<mlir::Value> feedsArith;
+  std::set<expr::ENode *> guards;
+  /// ValueTrees::iteBelow (an ite anywhere in the DAG, through every
+  /// operator): the ite-index load kind.
+  expr::ValueTrees trees;
+  /// The most leaves, conditions or guards a tree's sets keep (untuned):
+  /// the memo of a chain of N merges is then O(N) sets of bounded size.
+  static constexpr size_t kTreeCap = 256;
+  /// Per ite node: sorted sets of its tree.
+  struct TreeSets {
+    std::vector<expr::ENode *> leaves, conds, guards;
+    bool capped = false;
+  };
+  const TreeSets &treeOf(const expr::Expr &ite);
+  std::unordered_map<expr::ENode *, TreeSets> treeMemo;
+  expr::ExprVector keepTrees;
+  std::unordered_map<expr::ENode *, bool> groundMemo;
+  /// Keeps the guard terms alive (the set holds raw pointers).
+  expr::ExprVector keep;
 };
 
 } // namespace sea

@@ -4,6 +4,7 @@
 //===- OpSem.cpp - symbolic execution of sea programs -----------*- C++ -*-===//
 
 #include "sea/VC/OpSem.h"
+#include "sea/Expr/ArithShape.hh"
 #include "sea/Expr/ExprOpBinder.hh"
 #include "sea/Expr/ExprOverflow.hh"
 #include "sea/Expr/SeaMRules.hh"
@@ -92,6 +93,14 @@ Expr SeaOpSem::solverTerm(Expr e, std::string &why) {
     return e;
   if (!plainEraser)
     plainEraser = std::make_unique<PtrIndexExpander>();
+  return plainEraser->expand(e);
+}
+
+Expr SeaOpSem::erasedImage(const Expr &e) {
+  if (seamRw)
+    return seamRw->rules().erase(e);
+  if (!ptrSorted() || !plainEraser)
+    return Expr();
   return plainEraser->expand(e);
 }
 
@@ -587,6 +596,8 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
   // op at many places)
   Operation *defined = nullptr;
   auto runDefHook = [&]() {
+    if (defined && origins)
+      noteOrigins(*defined, ctx);
     if (defined && ctx.defHook)
       for (Value r : defined->getResults())
         ctx.defHook(r);
@@ -594,6 +605,8 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
   };
   for (Operation &op : b.without_terminator()) {
     runDefHook();
+    if (ctx.opHook)
+      ctx.opHook(op);
     // prints (weak or strong) encode nothing: no term, no side constraint
     // (docs/design/Print.md); their operands cost what their defs cost
     if (isPrintOp(&op))
@@ -890,6 +903,71 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
   runDefHook();
   settleKeyed(ctx);
   return success();
+}
+
+void SeaOpSem::noteOrigins(Operation &op, OpSemContext &ctx) {
+  const bool load = isa<LoadOp>(op);
+  if (!load &&
+      !isa<MulOp, UDivOp, SDivOp, URemOp, SRemOp, UMulOOp, SMulOOp, PtrIndexOp>(
+          op))
+    return;
+  if (load) {
+    // the read structure of the result: ite branches, concat parts, extract
+    // and PTR_FROM_BITS down to the selects; any other operator ends the
+    // walk (a value the load forwards from a store is another op's term).
+    // A forwarded value that is itself a bare select (a load's result stored
+    // and loaded again) still gets this load's location too.
+    llvm::DenseSet<const ENode *> seen;
+    std::vector<ENode *> stack;
+    if (Expr e = lookup(op.getResult(0), ctx))
+      stack.push_back(e.get());
+    while (!stack.empty()) {
+      ENode *n = stack.back();
+      stack.pop_back();
+      if (!seen.insert(n).second)
+        continue;
+      if (isOpX<SELECT>(n)) {
+        origins->add(Expr(n), op.getLoc());
+      } else if (isOpX<ITE>(n)) {
+        stack.push_back(n->arg(1));
+        stack.push_back(n->arg(2));
+      } else if (isOpX<BCONCAT>(n)) {
+        for (size_t i = 0; i < n->arity(); ++i)
+          stack.push_back(n->arg(i));
+      } else if (isOpX<BEXTRACT>(n)) {
+        stack.push_back(n->arg(2));
+      } else if (isOpX<PTR_FROM_BITS>(n)) {
+        stack.push_back(n->arg(0));
+      }
+    }
+    return;
+  }
+  // the walk stops at the operands' values (made by other ops) and at the
+  // memory of a select / store (earlier memory versions)
+  llvm::DenseSet<const ENode *> stops, seen;
+  for (Value v : op.getOperands())
+    if (Expr e = lookup(v, ctx))
+      stops.insert(e.get());
+  std::vector<ENode *> stack;
+  for (Value r : op.getResults())
+    if (Expr e = lookup(r, ctx))
+      stack.push_back(e.get());
+  while (!stack.empty()) {
+    ENode *n = stack.back();
+    stack.pop_back();
+    if (stops.count(n) || !seen.insert(n).second)
+      continue;
+    if (isArith(n))
+      origins->add(Expr(n), op.getLoc());
+    // a node an earlier op walked: its kids are that op's
+    if (!originWalked.insert(n).second)
+      continue;
+    for (size_t i = 0; i < n->arity(); ++i) {
+      if (i == 0 && (isOpX<SELECT>(n) || isOpX<STORE>(n)))
+        continue;
+      stack.push_back(n->arg(i));
+    }
+  }
 }
 
 /// The mirror check of the companion exemption: a keyed access is exempt

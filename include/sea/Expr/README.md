@@ -72,6 +72,12 @@ reductions by linear forms) and `AckermannModel`, a `solver::Model` that
 rebuilds the arrays from a model of the lowered query
 (`docs/design/Ackermann.md`; tests `unittests/Ackermann`).
 
+`ArithShape.hh`: the arithmetic nodes of a VC (`arithKind`, `isArith`) and
+the value tree of their operands (through ite, concat, extract, extensions,
+bvneg, bvnot; `ValueTrees`), shared by `sea-vc --arith-stats`,
+`--split-candidates`, `--ite-stats` and the origin table
+(`sea/VC/Origins.h`).
+
 Many headers are not self-contained (they compile only through
 `sea/Expr/Expr.hh`), as in SeaHorn. Include `Expr.hh`.
 

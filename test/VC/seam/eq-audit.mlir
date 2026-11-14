@@ -9,6 +9,11 @@
 // @reads: two reads of the initial memory at A + i and A + j: one Ackermann
 // pair, undecided at every level (the solver's search).
 // RUN: sea-vc %s --program=memset --lower --seam --eq-audit 2>&1 | FileCheck %s --check-prefix=MEMSET
+// --vcgen-only: no solve, the audit still runs (its own z3 checks)
+// RUN: sea-vc %s --program=memset --lower --seam --eq-audit --vcgen-only 2>&1 | FileCheck %s --check-prefix=MEMSET
+// --seam-check comes after a solve: under --vcgen-only, a warning
+// RUN: sea-vc %s --program=memset --lower --seam --seam-check --vcgen-only 2>&1 | FileCheck %s --check-prefix=SKIP
+// SKIP: [vc.vcgen-only-check-skipped]
 // RUN: %if yices %{ sea-vc %s --program=reads --lower --seam --eq-audit --solver=yices 2>&1 | FileCheck %s --check-prefix=READS %}
 // MEMSET: eq-audit: source=row-memop items=1 sampled=1 L0=0 L1=0 L2=1 undecided=0
 // MEMSET: eq-audit-shape: source=row-memop level=L2 count=1 {{.*}} shape=(bvult (bvsub (bvadd O X) O) K)

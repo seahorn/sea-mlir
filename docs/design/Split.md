@@ -1,8 +1,9 @@
 # Case splitting of the VC
 
 `include/sea/VC/Split.h`, `lib/VC/Split.cpp`; `sea-vc --split`,
-`--split-leaves`, `--split-auto`, `--split-candidates` (`sea-vc --agent`,
-section SPLIT); tests `test/VC/split/`.
+`--split-leaves`, `--split-auto`, `--split-candidates`, and the report
+`--ite-stats` (`sea-vc --agent`, section SPLIT and the `ite.*` lines); tests
+`test/VC/split/`, `test/VC/ite-stats.mlir`.
 
 ## Why
 
@@ -42,7 +43,16 @@ Targets:
   per distinct leaf `l` (hash-consed identity, first-occurrence order),
   `v = l` (`ptr-from-bits(l)`, normalized by the rewriter), `c` = the
   disjunction over the paths to `l` of the conjunction of the ite
-  conditions on the path.
+  conditions on the path;
+- an integer (`iN`, N > 1) whose term is an ite tree: the same, `v = l`.
+  A value merged over paths (a column index chosen by a branch, a
+  coefficient picked under `j == column`) is an ite of its per-path
+  values over the block guards; a product by it is a product by an ite,
+  which z3 bit-blasts as a multiplier where a product by a constant
+  cancels at the word level (a reduced kernel: 9-20 s whole, about 0.1 s
+  per case). Splitting on the merged integer gives each part one value.
+  The `@<file>:<line>` selector also matches block arguments (a join's
+  merged value), for addresses as well (selector policy below).
 
 ## Where: during the encoding
 
@@ -71,7 +81,8 @@ where that assumption would show.
 ## Checks
 
 `--split-check` (default on) states (E) for every level of a run and (X)
-for its chosen case, on the solver's terms, and asks z3 under an rlimit. For
+for its chosen case, on the solver's terms, and asks z3 under an rlimit
+(an integer level compares by `=`, an address level by address). For
 `--split-leaves`, (X) holds at the pointer level by construction (the value
 is a leaf of the term's ite tree, or the rewriter's normal form of
 ptr-from-bits of one; checked structurally, counted as `leaf-structural`,
@@ -113,7 +124,17 @@ prints without NameLoc prefixes, so its numbers name other values. The
 written file is input to sea-vc without `--lower`, with the same names
 (printing it again gives the same file).
 
-A selector `@<file>:<line>` that matches several values is an error that
+A selector `@<file>:<line>[:<col>]` takes its matches by kind preference,
+so that every selector that named one value before integers and block
+arguments were targets still names it: `--split-leaves` takes address op
+results, else address block arguments, else integer op results, else
+integer block arguments; `--split` takes i1 op results, else i1 block
+arguments (passes such as sea-merge-asserts, sea-lower-box-all and
+sea-sink-assumes create i1 block arguments with op locations, and the
+fat-pointer, struct and tracking lowerings copy block-argument locations to
+their companions). Only the first non-empty class counts; `:<col>` keeps the
+matches at that column.
+Within it, a selector that matches several values is an error that
 lists every match (up to 32, then a count) with its op, type and column;
 one that matches nothing lists the results of other types on that line
 and the nearest lines with results of the kind (three on each side), or,
@@ -196,6 +217,66 @@ whose index holds a condition need not be in a costly pair; it does not
 see a condition that SeaM moved out of the index (a read at an ite
 address that SeaM split into an ite of reads).
 
+### Arithmetic: products and quotients by path-merged values
+
+Neither an open alias question nor an array read: a query can be hard
+because it multiplies or divides by a value the VC merged over paths.
+`--split-candidates` also records every integer value (`iN`, N > 1) whose
+term is an ite tree, and looks at every distinct arithmetic node of the
+query at the solver boundary (`bvmul`, `bvudiv`, `bvsdiv`, `bvurem`,
+`bvsrem`, `bvsmod`, the multiplication overflow predicates; the
+`arith-nodes=` of the `split.arith-candidates` line):
+
+- an integer candidate counts a node (`arith=`) when an operand holds its
+  term (`direct=`), or an ite whose condition's atoms (below and / or /
+  not / ite and their bv1 forms) are all atoms of the conditions of the
+  candidate's normalized tree. The second rule is needed because the
+  normalization folds a compare of the merged value into its conditions
+  (`ite(g, 0, 1) = 0` becomes `g`), so the coefficient picked by
+  `j == 0` no longer holds `j`'s term. It over-attributes: every value
+  merged over the same paths shares the count;
+- a Boolean candidate (the `split.bool-candidate` keys) counts a node when
+  it is in an ite condition of an operand, as for the read indices.
+
+`feeds=` counts the other integer candidates whose term, as encoded,
+holds this one's (the coefficient and the variable chosen by the index
+hold the index): the values a split on it fixes too. One line per
+candidate with `arith > 0` (`split.arith-candidate`), ranked by `arith`,
+then integers before Booleans (one integer split covers the whole merge,
+a Boolean is one decision of it), then `feeds`, then `direct`, then
+cases, then encoding order; at most `--split-candidates-max`. Conditions
+with more than 64 atoms attribute nothing (an untuned bound on the cost).
+
+### The ite report (`--ite-stats`)
+
+What the triage of a cliff wants before any split: which values the
+encoding merged over paths, and where they are used. `--ite-stats`
+installs a census on the encoding's hooks (after the split or candidate
+hooks, chained, changing nothing) and reports, after the first encoding
+of a run and before any solver (so also under `--vcgen-only`):
+
+- values whose term is an ite tree (an address: or `ptr-from-bits` of
+  one), by kind: `mem` (memory values), `addr` (addresses), `int`
+  (integers in the backward slice of an operand of `mul`, `udiv`, `sdiv`,
+  `urem`, `srem`, `umulo`, `smulo`, `sdivo`, through integer and i1 ops and
+  block arguments, not through memory: an index used through compares and
+  selects counts). Per source location: the values, and the most distinct
+  leaves, distinct ite conditions, and block guards among the conditions'
+  atoms (`guard-atoms`: a tree over guards is a path merge; one over
+  program conditions is a select). The leaves are counted on the DAG, so a
+  tree with more paths than `--split-max-paths` is still counted;
+- loads whose address term has a free constant (numerals and SeaM's object
+  bases are ground), by kind (`ite`: an ite tree or ptr-from-bits of one;
+  `from-bits`: ptr-from-bits of anything else, a pointer read back from
+  memory; `ite-index`: an ite below the top, an index chosen by a path or
+  a select; `symbolic`: other) and location. Under `--seam` the address is
+  SeaM's normal form, so a pointer SeaM resolved to an object counts as
+  ground.
+
+Not with a split (each part is an encoding). Memory values are counted
+only when their term is an ite at the top: under `--seam` a merged memory
+may be a store-map over ites, and under `--mem=lambda` a lambda.
+
 ### The counts of open questions
 
 `open-aliases` counts the `IS_OVERLAP` nodes of the normalized query:
@@ -240,6 +321,21 @@ the candidate is listed (and ranked) with `leaves=0` and
 never picks it, and the census warns `vc.split-max-paths`.
 
 ## Open questions
+
+- The 64-part cap (`--split-max-parts`) is untuned and stays: a query
+  with hundreds of guards needs a target whose cases cover them (an
+  integer or address merged over them), not more parts.
+- Integer candidates with one term are one line (`same=`, the first in
+  encoding order named), as the Boolean ones; a split replaces the named
+  value only.
+- `--ite-stats` keeps at most 256 leaves, conditions and guards per tree
+  (memoized per ite node, so a chain of merges costs linear time);
+  `capped=` counts the values that reached the cap. Untuned.
+- The ranking of `split.arith-candidate` (integers first, then `feeds`,
+  then `direct`) is untuned, set on the reduced kernel. Whether the gate
+  query of that kernel ranks its merged column first is not measured.
+- The atom rule for integer candidates over-attributes along shared
+  paths, and the 64-atom bound is untuned.
 
 - The cap of the Boolean list (20) and the order of ties are untuned,
   as is the order of the read-index keys (`reads` before `cond-reads`

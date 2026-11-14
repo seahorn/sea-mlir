@@ -504,6 +504,8 @@ public:
     /// (setAccessOrigins): flagged nodes, plain if any was not one
     std::vector<Expr> nodes;
     bool plain = true;
+    /// the selects of the query merged into this read (keepImages)
+    std::vector<Expr> selects;
   };
   struct Array {
     Expr array; ///< the array constant A
@@ -567,8 +569,10 @@ public:
     using namespace ackermann_detail;
     if (!m_analyzed)
       analyze(root);
-    if (m_arrays.empty())
+    if (m_arrays.empty()) {
+      m_identity = true; // image(): every node is its own
       return root;
+    }
     // symbolic parts -> group number; 0 is the empty one (numerals)
     std::map<LinearForms::Key, size_t> groups{{LinearForms::Key(), 0}};
     // per group: its symbolic part (atoms with coefficients, ordered)
@@ -602,14 +606,23 @@ public:
                                              m_arrays[a].reads.size());
           if (!fresh) {
             noteOrigins(m_arrays[a].reads[p->second], n->arg(1), false);
+            if (m_keepImages)
+              m_arrays[a].reads[p->second].selects.push_back(Expr(n));
             return m_arrays[a].reads[p->second].value;
           }
           Expr r = freshConstant(a);
-          m_arrays[a].reads.push_back(Read{idx, r, g->second, off, {}, true});
+          m_arrays[a].reads.push_back(
+              Read{idx, r, g->second, off, {}, true, {}});
           noteOrigins(m_arrays[a].reads.back(), n->arg(1), true);
+          if (m_keepImages)
+            m_arrays[a].reads.back().selects.push_back(Expr(n));
           ++m_stats.reads;
           return r;
         });
+    if (m_keepImages) {
+      m_images = std::move(memo);
+      m_imageKeep = std::move(keep);
+    }
     std::vector<Expr> conj{body};
     for (const Array &arr : m_arrays) {
       unsigned w =
@@ -670,6 +683,20 @@ public:
   /// Record the constrained pairs in lower() (for the equality audit,
   /// sea-vc --eq-audit); off by default (a pair per constraint).
   void recordPairs(bool b) { m_recordPairs = b; }
+  /// Keep, after lower(), the image of every node of its input (image())
+  /// and the selects merged into each read (Read::selects): sea-vc
+  /// --arith-stats and --ack-dump-pairs follow the origins of the terms
+  /// through the lowering (sea/VC/Origins.h). The nodes are kept alive.
+  void keepImages(bool b) { m_keepImages = b; }
+  /// The node lower() made of \p n (keepImages; null: not in its input).
+  /// \p n must be alive: the memo is keyed by node address (its keys are
+  /// kept alive, so a live \p n is never confused with a freed one).
+  Expr image(const Expr &n) const {
+    if (m_identity)
+      return n;
+    auto it = m_images.find(n.get());
+    return it == m_images.end() ? Expr() : it->second;
+  }
   /// Constants whose value every model of the query fixes (the layout,
   /// obj.k = <numeral>: unconditional facts of the query); used only to drop
   /// pairs that are never equal (leafPairs), not to share reads.
@@ -851,6 +878,10 @@ private:
 
   bool m_analyzed = false;
   bool m_recordPairs = false;
+  bool m_keepImages = false;
+  bool m_identity = false;
+  std::unordered_map<ENode *, Expr> m_images;
+  std::vector<Expr> m_imageKeep;
   std::unordered_map<ENode *, mpz_class> m_values;
   std::vector<Pair> m_pairs;
   const AccessOrigins *m_origins = nullptr;
