@@ -1,0 +1,12 @@
+// The small-integer fast paths of include/sea/Expr/SmallArith.hh (SeaM
+// offset arithmetic, the bit-vector normal form) give the value of their GMP
+// definitions at the 64-bit boundaries (INT64_MIN / MAX, mixed signs, values
+// beyond 64 bits, widths up to 128). unittests/SmallArith.
+RUN: sea-small-arith-test | FileCheck %s
+CHECK: test: mod-pow2 ok
+CHECK: test: add-sub ok
+CHECK: test: circular ok
+CHECK: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

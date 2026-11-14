@@ -48,6 +48,7 @@ llvm_config.add_tool_substitutions(
         "sea-ackermann-test",
         "sea-expr-core-test",
         "sea-expr-api-test",
+        "sea-small-arith-test",
         "sea-join-cases-test",
         "sea-int-ranges-test",
     ],

@@ -119,6 +119,7 @@
 #include "sea/Expr/ExprRewriter.hh"
 #include "sea/Expr/InitialWords.hh"
 #include "sea/Expr/MemOps.hh"
+#include "sea/Expr/SmallArith.hh"
 #include "sea/Expr/StoreMap.hh"
 #include "sea/Expr/TypeChecker.hh"
 #include "sea/Support/Timer.h"
@@ -451,10 +452,7 @@ public:
   }
 
   static mpz_class modPow2(const mpz_class &v, unsigned w) {
-    mpz_class m, r;
-    mpz_ui_pow_ui(m.get_mpz_t(), 2, w);
-    mpz_fdiv_r(r.get_mpz_t(), v.get_mpz_t(), m.get_mpz_t());
-    return r;
+    return smallarith::modPow2(v, w);
   }
 
   /// The numeral v mod 2^w (bv::bvnum does not reduce).
@@ -534,7 +532,7 @@ public:
                     mpz_class &sum, bvnorm::Rules *bv = nullptr) const {
     unsigned tw;
     if (op::bv::isBvNum(e, tw)) {
-      sum = sum + numVal(e);
+      smallarith::addTo(sum, numVal(e));
       return;
     }
     if (isOpX<BADD>(e)) {
@@ -555,7 +553,8 @@ public:
       addrSummands(
           indexSummand(op::ptr::index(e, k), op::ptr::stride(e, k), n, bv),
           terms, sum, bv);
-    sum = sum + op::ptr::constant(e) + op::ptr::byteOffset(e);
+    smallarith::addTo(sum, op::ptr::constant(e));
+    smallarith::addTo(sum, op::ptr::byteOffset(e));
   }
 
   /// x * s as the rewriter normalizes the lowering's mul (bv.ac with
@@ -733,7 +732,7 @@ public:
       if (a == ptr)
         continue;
       if (op::bv::isBvNum(a, aw)) {
-        c = c + numVal(a);
+        smallarith::addTo(c, numVal(a));
       } else if (isOpX<BMUL>(a) && a->arity() == 2 &&
                  op::bv::isBvNum(a->arg(1), aw)) {
         idx.push_back({a->arg(0), numVal(a->arg(1))});
@@ -899,7 +898,8 @@ public:
     // built it. The same value; the promise is about b + O, without K.
     if (m_opts.simplify && !ptr::isFlagged(e.get()) &&
         ptr::numIndices(e) == 0 && ptr::isFlagged(ptr::base(e).get())) {
-      mpz_class k = modPow2(ptr::constant(e) + ptr::byteOffset(e), n);
+      mpz_class k =
+          smallarith::modPow2Add(ptr::constant(e), ptr::byteOffset(e), n);
       if (k >= pow2(n - 1))
         k = k - pow2(n);
       m_stats.count("ptrindex.absorb-k");
@@ -910,7 +910,7 @@ public:
     // ptrindex.trivial (S2c): an unflagged node that adds nothing is its
     // base; any other node stays a node, at every position
     if (!ptr::isFlagged(e.get()) && ptr::numIndices(e) == 0 &&
-        modPow2(ptr::constant(e) + ptr::byteOffset(e), n) == 0) {
+        smallarith::modPow2Add(ptr::constant(e), ptr::byteOffset(e), n) == 0) {
       m_stats.count("ptrindex.trivial");
       return {ptr::base(e), RWStatus::RW_DONE};
     }
@@ -1301,7 +1301,7 @@ public:
         for (const Expr &t : parts) {
           unsigned tw;
           if (op::bv::isBvNum(t, tw))
-            c = c + numVal(t);
+            smallarith::addTo(c, numVal(t));
           else
             terms.push_back(t);
         }
@@ -2028,7 +2028,8 @@ public:
       if (!numerals(vi->off, vj->off, x, y))
         return WRel::Unknown;
       unsigned n = widthOf(vi->off);
-      mpz_class kk = modPow2(y - x, n), back = modPow2(x - y, n);
+      mpz_class kk = smallarith::modPow2Sub(y, x, n),
+                back = smallarith::modPow2Sub(x, y, n);
       d.add("cmp.same-base");
       if (kk + r <= w) {
         k = kk.get_ui();
@@ -2513,7 +2514,7 @@ public:
     const Expr below = op::array::wselect(memOpBase(arr), j, sort, al);
     mpz_class nlo, nhi;
     const bool haveN = lenRange(n, nlo, nhi);
-    if (haveN && nhi == 0) {
+    if (haveN && nhi.sgn() == 0) {
       m_stats.count("wide.memop-empty");
       Decision de;
       de.add("mem.empty"); // as decideIn
@@ -3408,7 +3409,7 @@ public:
     unsigned tw;
     if (op::bv::isBvNum(e, tw)) {
       w = tw;
-      sum = sum + numVal(e);
+      smallarith::addTo(sum, numVal(e));
       return;
     }
     if (isOpX<BADD>(e)) {
@@ -3427,7 +3428,8 @@ public:
       deciderSummands(indexSummand(op::ptr::index(e, k), op::ptr::stride(e, k),
                                    n, &m_scratchBv),
                       terms, sum, w);
-    sum = sum + op::ptr::constant(e) + op::ptr::byteOffset(e);
+    smallarith::addTo(sum, op::ptr::constant(e));
+    smallarith::addTo(sum, op::ptr::byteOffset(e));
   }
 
   /// The OFFSET cancellation (rule cmp.cancel; PtrSort.md, pointer
@@ -3522,7 +3524,7 @@ public:
       return false;
     if (!w)
       w = widthOf(a);
-    d = modPow2(ca - cb, w);
+    d = smallarith::modPow2Sub(ca, cb, w);
     return true;
   }
 
@@ -3542,7 +3544,7 @@ public:
         unsigned tw;
         if (op::bv::isBvNum(t, tw)) {
           w = tw;
-          c = c + numVal(t);
+          smallarith::addTo(c, numVal(t));
         } else {
           terms.push_back(t);
         }
@@ -3573,7 +3575,7 @@ public:
       return false;
     if (!w)
       w = widthOf(a);
-    mpz_class d = modPow2(ca - cb, w);
+    mpz_class d = smallarith::modPow2Sub(ca, cb, w);
     if (d != 0)
       sa.push_back(num(d, w));
     l = sumOf(sa, w);
@@ -3888,7 +3890,8 @@ public:
       r = 0;
       return;
     }
-    mpz_class v = modPow2(ptr::constant(a) + ptr::byteOffset(a), n);
+    mpz_class v =
+        smallarith::modPow2Add(ptr::constant(a), ptr::byteOffset(a), n);
     if (v >= pow2(n - 1))
       v = v - pow2(n);
     if (ptr::numIndices(a) == 0) {
@@ -3999,7 +4002,7 @@ public:
       unsigned tw;
       if (op::bv::isBvNum(t, tw)) {
         w = tw;
-        sum = sum + numVal(t);
+        smallarith::addTo(sum, numVal(t));
       } else {
         terms.push_back(t);
       }
@@ -5228,7 +5231,7 @@ public:
     }
     mpz_class vj, vd;
     if (ptrNumerals(j, d, vj, vd)) {
-      lo = hi = modPow2(vj - vd, w);
+      lo = hi = smallarith::modPow2Sub(vj, vd, w);
       rule = "mem.in-exact";
       return true;
     }
@@ -5268,19 +5271,14 @@ public:
   static Range circularIn(const mpz_class &lo, const mpz_class &hi,
                           const mpz_class &nlo, const mpz_class &nhi,
                           unsigned w) {
-    mpz_class mod;
-    mpz_ui_pow_ui(mod.get_mpz_t(), 2, w);
-    mpz_class span = hi - lo;
-    if (span < mpz_class(0UL) || span >= mod)
-      return Range::Unknown;
-    mpz_class l = modPow2(lo, w), h = l + span;
-    if (h >= mod)
-      return Range::Unknown;
-    if (h < nlo)
+    switch (smallarith::circular(lo, hi, nlo, nhi, w)) {
+    case 1:
       return Range::In;
-    if (l >= nhi)
+    case 2:
       return Range::Out;
-    return Range::Unknown;
+    default:
+      return Range::Unknown;
+    }
   }
 
   /// in(j, d, n) for one leaf pair (j, d not ites); the rule and its premises
@@ -5366,7 +5364,7 @@ public:
                  Expr &k, bool inb = true) const {
     mpz_class nlo, nhi;
     bool haveN = lenRange(n, nlo, nhi);
-    if (haveN && nhi == 0) {
+    if (haveN && nhi.sgn() == 0) {
       dec.add("mem.empty");
       return Range::Out;
     }
@@ -5383,7 +5381,7 @@ public:
       Decision dp;
       mpz_class kv = -1;
       Range r = decideInPair(p.first, p.second, haveN, nlo, nhi, dp, &kv, inb);
-      if (kv < mpz_class(0UL) || (common && *common != kv))
+      if (kv.sgn() < 0 || (common && *common != kv))
         sameK = false;
       else
         common = kv;

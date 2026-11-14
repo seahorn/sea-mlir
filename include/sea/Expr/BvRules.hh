@@ -34,6 +34,7 @@
 #include "sea/Expr/BaseRegistry.hh"
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/ExprRewriter.hh"
+#include "sea/Expr/SmallArith.hh"
 #include "sea/Expr/TypeChecker.hh"
 
 #include "llvm/ADT/SmallVector.h"
@@ -62,10 +63,7 @@ public:
   //===------------------------------------------------------------------===//
 
   static mpz_class modPow2(const mpz_class &v, unsigned w) {
-    mpz_class m, r;
-    mpz_ui_pow_ui(m.get_mpz_t(), 2, w);
-    mpz_fdiv_r(r.get_mpz_t(), v.get_mpz_t(), m.get_mpz_t());
-    return r;
+    return smallarith::modPow2(v, w);
   }
 
   Expr num(const mpz_class &v, unsigned w) const {
