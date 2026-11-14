@@ -30,6 +30,8 @@
 #include "sea/Support/Log.h"
 #include "sea/Support/Output.h"
 #include "sea/Support/ProcMem.h"
+#include "sea/Support/Stats.h"
+#include "sea/Support/Timer.h"
 #include "sea/Support/Version.h"
 #include "sea/Transforms/Passes.h"
 #include "sea/Transforms/RangeFold.h"
@@ -41,7 +43,6 @@
 #include "sea/VC/VCGen.h"
 
 #include <atomic>
-#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -865,9 +866,23 @@ static cl::opt<bool> brunchStats(
     cl::desc("Also print BRUNCH_STAT <key> <value> lines (brunch's format)"),
     cl::init(false));
 
-static void brunchStat(raw_ostream &os, const Twine &key, const Twine &value) {
-  if (brunchStats)
-    os << "BRUNCH_STAT " << key << " " << value << "\n";
+/// The lines \p add adds to a report, on \p os (BRUNCH_STAT lines with
+/// --brunch-stats)
+static void printStats(raw_ostream &os,
+                       llvm::function_ref<void(sea::stats::Report &)> add) {
+  sea::stats::Report r;
+  add(r);
+  r.print(os, brunchStats);
+}
+/// The same on stdout.
+static void printStats(llvm::function_ref<void(sea::stats::Report &)> add) {
+  printStats(vout(), add);
+}
+
+/// The BRUNCH_STAT line of a verdict, \p v: the `result:` line is a
+/// record of its own (or a split part's `split.part-result:`)
+static void resultLine(sea::stats::Report &r, StringRef v) {
+  r.line("result").value(v).brunch(sea::stats::Brunch::Value).brunchOnly();
 }
 
 static cl::opt<unsigned> solveTimeout(
@@ -1185,35 +1200,32 @@ static void writeMemCurOp(int fd) {
   (void)!::write(fd, j.b, j.n);
 }
 
-/// The memory fields of vc.phase end and progress events: rss-mb vm-mb
-/// (Linux only) and peak-rss-mb.
+/// The memory fields (sea::memFields) of vc.phase end and progress
+/// events, read now.
 static sea::log::Event &withMem(sea::log::Event &e) {
-  const sea::ProcMem m = sea::readProcMem();
-  if (m.hasCurrent)
-    e.kv("rss-mb", sea::ProcMem::mb(m.rssKB))
-        .kv("vm-mb", sea::ProcMem::mb(m.vmKB));
-  if (m.hasPeak)
-    e.kv("peak-rss-mb", sea::ProcMem::mb(m.peakRssKB));
+  for (const auto &[k, v] : sea::memFields(sea::readProcMem()))
+    e.kv(k, v);
   return e;
 }
-static void memText(raw_ostream &os, const sea::ProcMem &m) {
-  if (m.hasCurrent)
-    os << " rss-mb=" << sea::ProcMem::mb(m.rssKB)
-       << " vm-mb=" << sea::ProcMem::mb(m.vmKB);
-  if (m.hasPeak)
-    os << " peak-rss-mb=" << sea::ProcMem::mb(m.peakRssKB);
-}
+
+/// MLIR's timing (--mlir-timing): the root scope of one report over every
+/// PassManager and the phases (Phase); set in main when timing is on
+static mlir::TimingScope *gTiming = nullptr;
 
 namespace {
 /// A phase of the run: the start event is written when it is made; the end
-/// event is SEA_PHASE_END(phase) with the phase's sizes after it.
+/// event is SEA_PHASE_END(phase) with the phase's sizes after it, which also
+/// ends the phase (else its end of scope does).
 /// \p run (encode only): the number of the VC run, 1, 2, ... (a fallback
-/// or a retry starts the VC again). The clock is read only when vc.phase
-/// is on. Under --mem-limit the phase is noted for the handler.
+/// or a retry starts the VC again). Timed (a sea::TimeScope) only when
+/// vc.phase or --mlir-timing is on, so the clock is read only then; under
+/// --mlir-timing the phase is a scope nested under the root (gTiming).
+/// Under --mem-limit the phase is noted for the handler.
 struct Phase {
   const char *name;
-  std::chrono::steady_clock::time_point t0;
-  explicit Phase(const char *name, unsigned run = 0) : name(name) {
+  sea::Timer timer;
+  std::optional<sea::TimeScope> scope;
+  explicit Phase(const char *name, unsigned run = 0) : name(name), timer(name) {
     if (memLimit) {
       std::string t = std::string("mem-limit-phase: ") + name;
       if (run)
@@ -1221,9 +1233,10 @@ struct Phase {
       memPhaseNote.set(t);
       memProgressNote.clear();
     }
+    if (gTiming || logPhase.on(sea::log::Flow))
+      scope.emplace(timer, gTiming);
     if (!logPhase.on(sea::log::Flow))
       return;
-    t0 = std::chrono::steady_clock::now();
     if (run)
       SEA_LOG(logPhase, sea::log::Flow)
           .msg("start")
@@ -1232,23 +1245,31 @@ struct Phase {
     else
       SEA_LOG(logPhase, sea::log::Flow).msg("start").kv("phase", name);
   }
-  double seconds() const {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
-        .count();
+  Phase(const Phase &) = delete;
+  Phase &operator=(const Phase &) = delete;
+  /// Ends the phase (once; a later call does nothing).
+  void end() { scope.reset(); }
+  /// The time of the ended phase.
+  double seconds() const { return timer.seconds(); }
+  /// The --mlir-timing scope of what runs inside the phase (a pass
+  /// manager's): the phase's own, else the root's (null: timing is off).
+  mlir::TimingScope *timing() {
+    return scope && scope->timing() ? &scope->timing() : gTiming;
   }
 };
 } // namespace
 
-/// The end event of phase P: the time, the memory (withMem), then the
-/// sizes the caller adds; evaluated only when vc.phase is on.
+/// Ends phase P, then its end event: the time, the memory (withMem), then
+/// the sizes the caller adds; the event is evaluated only when vc.phase is
+/// on.
 #define SEA_PHASE_END(P)                                                       \
-  !logPhase.on(sea::log::Flow)                                                 \
-      ? (void)0                                                                \
-      : ::sea::log::Voidify() &                                                \
-            withMem(::sea::log::Event(logPhase, sea::log::Flow)                \
-                        .msg("end")                                            \
-                        .kv("phase", (P).name)                                 \
-                        .kv("time", (P).seconds()))
+  (P).end(), !logPhase.on(sea::log::Flow)                                      \
+                 ? (void)0                                                     \
+                 : ::sea::log::Voidify() &                                     \
+                       withMem(::sea::log::Event(logPhase, sea::log::Flow)     \
+                                   .msg("end")                                 \
+                                   .kv("phase", (P).name)                      \
+                                   .kv("time", (P).seconds()))
 
 [[noreturn]] static void memLimitHit();
 
@@ -1261,11 +1282,11 @@ namespace {
 /// nodes so far: one op (a load the SeaM rewriter reads through a long
 /// store chain) can take most of the phase, and no tick fires inside it.
 class EncodeMeter {
-  using Clock = std::chrono::steady_clock;
+  using TimePoint = sea::SteadyClock::time_point;
 
 public:
   EncodeMeter(expr::ExprFactory &efac, unsigned run)
-      : efac(efac), run(run), t0(Clock::now()), lastTick(t0) {}
+      : efac(efac), run(run), t0(sea::wallNow()), lastTick(t0) {}
 
   ~EncodeMeter() { memCurOp.store(nullptr, std::memory_order_release); }
 
@@ -1277,10 +1298,11 @@ public:
         memLimitPlantLlvm ? llvm::report_bad_alloc_error("planted", false)
                           : memLimitHit();
     }
-    const Clock::time_point now = Clock::now();
+    // one clock read per op: the op's start, and the end of the one before
+    const TimePoint now = sea::wallNow();
     const uint64_t nodes = efac.nodesMade();
     if (prevOp) {
-      const double d = std::chrono::duration<double>(now - prevStart).count();
+      const double d = sea::secondsBetween(prevStart, now);
       if (d > slowest.amount)
         slowest = {d, prevOp};
       const uint64_t dn = nodes - prevNodes;
@@ -1293,12 +1315,11 @@ public:
     const bool due =
         progressInterval <= 0
             ? p.op == nullptr
-            : std::chrono::duration<double>(now - lastTick).count() >=
-                  progressInterval;
+            : sea::secondsBetween(lastTick, now) >= progressInterval;
     if (!due)
       return;
     lastTick = now;
-    tick(p, std::chrono::duration<double>(now - t0).count(), nodes);
+    tick(p, sea::secondsBetween(t0, now), nodes);
   }
 
 private:
@@ -1326,7 +1347,8 @@ private:
     os << "time=" << format("%.3f", secs) << " blocks=" << p.blocks
        << " blocks-total=" << p.blocksTotal << " ops=" << p.ops
        << " ops-total=" << p.opsTotal << " nodes-made=" << nodes;
-    memText(os, m);
+    for (const auto &[k, v] : sea::memFields(m))
+      os << " " << k << "=" << v;
     if (slowest.op)
       os << " slowest-op=" << slowest.op->getName().getStringRef()
          << " slowest-op-time=" << format("%.3f", slowest.amount)
@@ -1364,7 +1386,7 @@ private:
 
   expr::ExprFactory &efac;
   unsigned run;
-  Clock::time_point t0, lastTick, prevStart;
+  TimePoint t0, lastTick, prevStart;
   Operation *prevOp = nullptr;
   uint64_t prevNodes = 0;
   Top slowest, biggest;
@@ -2881,7 +2903,9 @@ Level-1 (flow) tags, `--log=*:1` for all:
               verdict
 MLIR's pass-manager options apply to the lowering: --mlir-print-ir-after-all,
 --mlir-print-ir-after-change, --mlir-timing, --mlir-pass-statistics;
---mlir-print-ir-module-scope needs --mlir-disable-threading.
+--mlir-print-ir-module-scope needs --mlir-disable-threading. --mlir-timing
+(stderr, at exit) also times sea-vc's phases (those of vc.phase), the
+lowering's passes nested under `lower`.
 
 REACH (--reach[=checks|blocks]): the VC without the exit requirement and
 without the ban on sea.unreachable blocks; sea-split-at-checks gives each
@@ -3322,18 +3346,17 @@ static void printValue(raw_ostream &os, Value v) {
     os << "block-arg " << v.getLoc();
 }
 
-/// MLIR's timing (--mlir-timing): the root scope of one report over every
-/// PassManager; set in main when timing is on
-static mlir::TimingScope *gTiming = nullptr;
-
 /// MLIR's pass-manager options (--mlir-print-ir-*, --mlir-pass-statistics,
-/// crash reproducers) and --mlir-timing, on a PassManager sea-vc built
-static LogicalResult configurePM(PassManager &pm) {
+/// crash reproducers) and --mlir-timing, on a PassManager sea-vc built;
+/// \p timing: the scope its pass timers nest in (the phase that runs it;
+/// default the root)
+static LogicalResult configurePM(PassManager &pm,
+                                 mlir::TimingScope *timing = gTiming) {
   if (failed(mlir::applyPassManagerCLOptions(pm)))
     return failure();
   sea::addPassLog(pm);
-  if (gTiming)
-    pm.enableTiming(*gTiming);
+  if (timing)
+    pm.enableTiming(*timing);
   return success();
 }
 
@@ -4001,7 +4024,9 @@ int main(int argc, char **argv) {
         memhavocNull == MemhavocNull::Noop, lowerDisableMask,
         sea::PlaceFiles{placeIn, placeOut}, rangeFoldOpt, expandMemMoveOpt,
         ptrCompanion != CompanionMode::Off, boxAllExpandOpt);
-    if (failed(configurePM(pm)) || failed(pm.run(*module)))
+    // pm keeps a reference to the phase's scope; SEA_PHASE_END resets it after
+    // pm.run, and the reference is not used after that
+    if (failed(configurePM(pm, lowerPhase.timing())) || failed(pm.run(*module)))
       return 1;
     SEA_PHASE_END(lowerPhase)
         .kv("ops-before", opsBefore)
@@ -4033,13 +4058,15 @@ int main(int argc, char **argv) {
   // every program of the file)
   const unsigned foldAssumeFalse = sea::diag::count("fold.assume-false");
   const unsigned foldAssertFalse = sea::diag::count("fold.assert-false");
-  auto foldLines = [&](raw_ostream &os) {
+  auto foldLines = [&](sea::stats::Report &r) {
     if (foldAssumeFalse || foldAssertFalse)
-      os << "vc.fold: assume-false=" << foldAssumeFalse
-         << " assert-false=" << foldAssertFalse << "\n";
+      r.line("vc.fold")
+          .kv("assume-false", foldAssumeFalse)
+          .kv("assert-false", foldAssertFalse);
     if (staticallySafe)
-      os << "vc.statically-safe: no reachable sea.halt (every path is "
-            "blocked; the assertion cannot fail)\n";
+      r.line("vc.statically-safe")
+          .value("no reachable sea.halt")
+          .note("every path is blocked; the assertion cannot fail");
   };
   // the bounded expansions of symbolic memset / memmove lengths
   // (sea-expand-memset, without --seam): assume(n <= K), an
@@ -4058,38 +4085,34 @@ int main(int argc, char **argv) {
     nullGuards = n.getInt();
   // the memhavocs sea-drop-fresh-memhavoc dropped under A-INB
   // the counters of the lowering passes: sea-range-fold (--range-fold)
-  std::string lowerStatLines;
+  sea::stats::Report lowerStats; // no BRUNCH_STAT lines
   if (auto d =
           program->getAttrOfType<DictionaryAttr>(sea::kRangeFoldStatsAttr)) {
-    raw_string_ostream os(lowerStatLines);
-    os << "vc.range-fold: mode="
-       << (rangeFoldOpt == sea::RangeFoldMode::Check ? "check" : "on");
+    sea::stats::Line &l =
+        lowerStats.line("vc.range-fold")
+            .kv("mode",
+                rangeFoldOpt == sea::RangeFoldMode::Check ? "check" : "on");
     for (NamedAttribute a : d)
       if (auto i = dyn_cast<IntegerAttr>(a.getValue()))
-        os << " " << a.getName().getValue() << "=" << i.getInt();
-    os << "\n";
+        l.kv(a.getName().getValue(), i.getInt());
   }
   // sea-expand-small-memmove's counters (--expand-memmove)
   if (auto d = program->getAttrOfType<DictionaryAttr>(
           sea::kExpandMemMoveStatsAttr)) {
-    raw_string_ostream os(lowerStatLines);
-    os << "vc.expand-memmove:";
+    sea::stats::Line &l = lowerStats.line("vc.expand-memmove");
     for (StringRef key :
          {"k", "expanded", "bytes", "kept-symbolic", "kept-over-k",
           "kept-word-layout", "kept-abstract", "kept-tracked",
           "kept-companion-mirror", "kept-ptr-companion"})
       if (auto i = d.getAs<IntegerAttr>(key))
-        os << " " << key << "=" << i.getInt();
-    os << "\n";
+        l.kv(key, i.getInt());
   }
   // sea-lower-box-all's counters (a program with sea.box.all ops)
   if (auto d = program->getAttrOfType<DictionaryAttr>(sea::kBoxAllStatsAttr)) {
-    raw_string_ostream os(lowerStatLines);
-    os << "vc.box-all:";
+    sea::stats::Line &l = lowerStats.line("vc.box-all");
     for (NamedAttribute a : d)
       if (auto i = dyn_cast<IntegerAttr>(a.getValue()))
-        os << " " << a.getName().getValue() << "=" << i.getInt();
-    os << "\n";
+        l.kv(a.getName().getValue(), i.getInt());
   }
   uint64_t dropFreshInb = 0;
   if (auto n = program->getAttrOfType<IntegerAttr>(sea::kDropFreshInbAttr))
@@ -4421,18 +4444,15 @@ int main(int argc, char **argv) {
       }
       gOut->emit(rec);
     }
-    if (o.run.addr0IsNullUses) {
-      gOut->emit(sea::out::parseLine("assume.addr0-is-null: uses=" +
-                                     std::to_string(o.run.addr0IsNullUses)));
-      brunchStat(vout(), "assume.addr0-is-null-uses",
-                 Twine(o.run.addr0IsNullUses));
-    }
-    if (o.run.memhavocNullNoopUses) {
-      gOut->emit(
-          sea::out::parseLine("assume.memhavoc-null-noop: uses=" +
-                              std::to_string(o.run.memhavocNullNoopUses)));
-      brunchStat(vout(), "assume.memhavoc-null-noop-uses",
-                 Twine(o.run.memhavocNullNoopUses));
+    {
+      // the assumptions the replay used: BRUNCH_STAT <key>-uses
+      sea::stats::Report r(sea::stats::Brunch::Parts);
+      if (o.run.addr0IsNullUses)
+        r.line("assume.addr0-is-null").kv("uses", o.run.addr0IsNullUses);
+      if (o.run.memhavocNullNoopUses)
+        r.line("assume.memhavoc-null-noop")
+            .kv("uses", o.run.memhavocNullNoopUses);
+      r.printEach(vout(), brunchStats);
     }
     gOut->flush();
     if (match)
@@ -4474,16 +4494,16 @@ int main(int argc, char **argv) {
   unsigned vcRuns = 0; // vc.phase run=
   auto runVc = [&](bool inb, bool mayRetry, const char *note) -> int {
     ++vcRuns;
-    auto vcStart = std::chrono::steady_clock::now();
-    // the phases of vc-time (--seam-stats: vc.<phase>-time)
-    using Clock = std::chrono::steady_clock;
-    auto lapStart = vcStart;
-    std::vector<std::pair<const char *, double>> phases;
+    // vc-time: this run's (a retry or a split part starts from zero)
+    sea::Stopwatch vcClock;
+    // the phases of vc-time (--seam-stats: vc.<phase>-time, in lap order).
+    // Each name is lapped at most once per run (the three solver-term laps
+    // are exclusive branches): the group would merge a repeated name into
+    // one line, where a list of laps printed it twice.
+    sea::TimerGroup vcLaps("vc", vcClock.startTime());
     auto lap = [&](const char *name) {
-      auto now = Clock::now();
-      phases.emplace_back(
-          name, std::chrono::duration<double>(now - lapStart).count());
-      lapStart = now;
+      assert(!vcLaps.find(name) && "a vc lap name used twice in one run");
+      vcLaps.lap(name);
     };
     expr::ExprFactory efac;
     sea::ValueNames names(program);
@@ -4527,7 +4547,21 @@ int main(int argc, char **argv) {
     // every value written to a register, memories coerced back to functions
     struct LambdaStats {
       uint64_t writes = 0, memory = 0, scalar = 0, skipped = 0;
-      double seconds = 0, finalSeconds = 0;
+      // the per-write simplifications; the final one of the query
+      sea::Timer simplify{"lambda.simplify"},
+          finalSimplify{"lambda.final-simplify"};
+      /// `<prefix>writes`, the simplifications by kind, their time; with
+      /// \p final also the time of the final simplification
+      void report(sea::stats::Report &r, StringRef prefix, bool final) const {
+        r.line((prefix + "writes").str()).value(writes);
+        r.line((prefix + "simplify.memory").str()).value(memory);
+        r.line((prefix + "simplify.scalar").str()).value(scalar);
+        r.line((prefix + "simplify.skipped").str()).value(skipped);
+        r.line((prefix + "simplify-time").str()).seconds(simplify.seconds());
+        if (final)
+          r.line((prefix + "final-simplify-time").str())
+              .seconds(finalSimplify.seconds());
+      }
     } lstats;
     std::unique_ptr<sea::EZ3> lz3;
     std::unique_ptr<sea::ZSimplifier<sea::EZ3>> lsimp;
@@ -4567,11 +4601,10 @@ int main(int argc, char **argv) {
         if (lsimp) {
           unsigned k = std::max(1u, (unsigned)lambdaSimplifyEvery);
           if ((lstats.writes - 1) % k == 0) {
-            auto t0 = std::chrono::steady_clock::now();
-            val = lsimp->simplify(val);
-            lstats.seconds += std::chrono::duration<double>(
-                                  std::chrono::steady_clock::now() - t0)
-                                  .count();
+            {
+              sea::TimeScope ts(lstats.simplify);
+              val = lsimp->simplify(val);
+            }
             ++(mem ? lstats.memory : lstats.scalar);
           } else {
             ++lstats.skipped;
@@ -4703,12 +4736,11 @@ int main(int argc, char **argv) {
         if (expr::Expr g = vcgen.guard(b))
           query = expr::mk<expr::AND>(query, expr::op::boolop::lneg(g));
     if (lambdaMem && lambdaFinalSimplify) {
-      auto t0 = std::chrono::steady_clock::now();
+      // the context's teardown is not counted
+      lstats.finalSimplify.start();
       sea::EZ3 fz3(efac);
       query = sea::z3_simplify(fz3, query);
-      lstats.finalSeconds =
-          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
-              .count();
+      lstats.finalSimplify.stop();
     }
     // names are checked on the query as encoded too: a constant the
     // normalization removes (x - x, x ^ x) still has its value evaluated on
@@ -4838,17 +4870,42 @@ int main(int argc, char **argv) {
           stack.push_back(n->arg(i));
       }
     }
-    auto companionLine = [&](llvm::raw_ostream &os) {
-      if (sem.ptrCompanion())
-        os << "vc.ptr-companion: loads=" << sem.companionLoads()
-           << " stores=" << sem.companionStores()
-           << " copies=" << sem.companionCopies()
-           << " fresh=" << sem.companionFresh() << "\n"
-           << "vc.ptr-companion-arrays: " << companionArrays << "\n";
+    auto companionLines = [&](sea::stats::Report &r) {
+      if (sem.ptrCompanion()) {
+        r.line("vc.ptr-companion")
+            .kv("loads", sem.companionLoads())
+            .kv("stores", sem.companionStores())
+            .kv("copies", sem.companionCopies())
+            .kv("fresh", sem.companionFresh());
+        r.line("vc.ptr-companion-arrays").value(companionArrays);
+      }
       if (sem.companionAssumed())
-        os << "seam.ptrint: assumed loads=" << sem.companionAssumed() << "\n";
+        r.line("seam.ptrint")
+            .value("assumed")
+            .kv("loads", sem.companionAssumed());
       if (sem.ptrIntChecking())
-        os << "seam.ptrint: checked loads=" << sem.companionChecked() << "\n";
+        r.line("seam.ptrint")
+            .value("checked")
+            .kv("loads", sem.companionChecked());
+    };
+    // the VC's lines before the objects: BRUNCH_STAT for vc.ptr-mode,
+    // vc.int-to-ptr and vc.ptr-from-int-opaque only
+    auto vcLines = [&](sea::stats::Report &r) {
+      using sea::stats::Brunch;
+      r.line("vc.ptr-mode")
+          .value(addressMode ? "address" : "opaque")
+          .brunch(Brunch::Value);
+      r.line("vc.int-to-ptr").value(intToPtr).brunch(Brunch::Value);
+      r.line("vc.ptr-from-int-opaque")
+          .value(sem.ptrFromIntOpaque())
+          .brunch(Brunch::Value);
+      if (sinkAssumes)
+        r.line("vc.sink-assumes").value(sunkAssumes);
+      r.append(lowerStats);
+      foldLines(r);
+      companionLines(r);
+      if (vcgen.joinCases())
+        vcgen.joinCases()->report(r);
     };
     // --split-auto's pick run: the open alias questions
     std::vector<expr::ENode *> openOverlaps;
@@ -5081,13 +5138,14 @@ int main(int argc, char **argv) {
             return a.cases > b.cases;
           });
       splitOpenAliases = openOverlaps.size();
-      splitPickSeconds = std::chrono::duration<double>(
-                             std::chrono::steady_clock::now() - vcStart)
-                             .count();
+      splitPickSeconds = vcClock.seconds();
       if (!splitCandidatesOpt)
-        vout() << "split.auto: open-aliases=" << openOverlaps.size()
-               << " candidates=" << splitCandidates.size()
-               << " vc-time=" << llvm::format("%.3f", splitPickSeconds) << "\n";
+        printStats([&](sea::stats::Report &r) {
+          r.line("split.auto")
+              .kv("open-aliases", openOverlaps.size())
+              .kv("candidates", splitCandidates.size())
+              .kv("vc-time", sea::secondsText(splitPickSeconds));
+        });
       return 0;
     }
     // the layout (obj.k = <numeral>: unconditional side conditions of the
@@ -5424,9 +5482,7 @@ int main(int argc, char **argv) {
     }
     // the VC is generated: encoding, with --seam the rewriting of every load
     // and store, and the query
-    double vcSeconds = std::chrono::duration<double>(
-                           std::chrono::steady_clock::now() - vcStart)
-                           .count();
+    double vcSeconds = vcClock.seconds();
 
     // Backend::Bitwuzla without the library is an error (null solver)
     // \p limits: --timeout / --mem-limit (the solver of the verdict only)
@@ -5546,10 +5602,14 @@ int main(int argc, char **argv) {
                   : expr::Expr(expr::mk<expr::EQ>(l.term, c.value));
         SR exact = unsatOf(
             expr::op::boolop::land(c.cond, expr::op::boolop::lneg(eq)), why2);
-        vout() << "split.check: level=" << i
-               << " target=" << splitTargets[l.target].name
-               << " cases=" << l.cases.size() << " exhaustive=" << word(ex)
-               << " exact=" << word(exact) << "\n";
+        printStats([&](sea::stats::Report &r) {
+          r.line("split.check")
+              .kv("level", i)
+              .kv("target", splitTargets[l.target].name)
+              .kv("cases", l.cases.size())
+              .kv("exhaustive", word(ex))
+              .kv("exact", word(exact));
+        });
         if (!why1.empty() || !why2.empty())
           sea::diag::warn("vc.split-check-unexpressible",
                           "--split-check: a check has no solver form: " + why1 +
@@ -5586,12 +5646,10 @@ int main(int argc, char **argv) {
                      expr::op::bv::bvnum(expr::mpz_class(1UL), 8, efac),
                      expr::op::bv::bvnum(expr::mpz_class(1UL), 16, efac)));
     if (vcTypecheck) {
-      auto t0 = std::chrono::steady_clock::now();
+      sea::Stopwatch watch;
       expr::TypeChecker tc;
       expr::TypeChecker::Result chk = tc.check(query);
-      double sec =
-          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
-              .count();
+      double sec = watch.seconds();
       statOut() << "vc.typecheck-time: " << llvm::format("%.3f", sec) << "\n";
       if (!chk) {
         std::string t;
@@ -5629,211 +5687,98 @@ int main(int argc, char **argv) {
       if (ec)
         return fail("--split-smt2: cannot write " + path + ": " + ec.message());
       ps->to_smt_lib(os);
-      vout() << "split.smt2: " << path << "\n";
+      printStats(
+          [&](sea::stats::Report &r) { r.line("split.smt2").value(path); });
     }
     // the SeaM counters: with --smt2 stdout is the query, so they go to stderr
-    auto printSeamStatsText = [&](raw_ostream &os) {
-      os << "vc-time: " << llvm::format("%.3f", vcSeconds) << "\n";
-      if (lambdaMem) {
-        os << "lambda.writes: " << lstats.writes << "\n";
-        os << "lambda.simplify.memory: " << lstats.memory << "\n";
-        os << "lambda.simplify.scalar: " << lstats.scalar << "\n";
-        os << "lambda.simplify.skipped: " << lstats.skipped << "\n";
-        os << "lambda.simplify-time: " << llvm::format("%.3f", lstats.seconds)
-           << "\n";
-        if (lambdaFinalSimplify)
-          os << "lambda.final-simplify-time: "
-             << llvm::format("%.3f", lstats.finalSeconds) << "\n";
-      }
-      if (words) {
-        const expr::InitialWords::Stats &ws = words->stats();
-        os << "words.candidates: " << ws.candidates << "\n";
-        os << "words.eligible: " << ws.eligible << "\n";
-        os << "words.chosen: " << ws.chosen << "\n";
-        os << "words.translated: " << ws.translated << "\n";
-        os << "words.word-reads: " << ws.wordReads << "\n";
-        os << "words.aligned-proved: " << ws.alignedProved << "\n";
-        os << "words.aligned-by-annotation: " << ws.alignedByAnnotation << "\n";
-        os << "words.aligned-partial: " << ws.alignedPartial << "\n";
-        os << "words.masked-reads: " << ws.maskedReads << "\n";
-        os << "words.masked-parts: " << ws.maskedParts << "\n";
-        for (const expr::InitialWords::Census &c : words->census()) {
-          os << "words.array: name=" << *expr::op::bind::fname(c.array->first())
-             << " chosen=" << (c.chosen ? 1 : 0) << " selects=" << c.selects
-             << " wselects=" << c.wselects
-             << " aligned-words=" << c.alignedWords
-             << " other-bytes=" << c.otherBytes;
-          if (!c.chosen)
-            os << " reason=" << (c.reason.empty() ? "-" : c.reason);
-          os << "\n";
-        }
-      }
+    auto seamReport = [&](sea::stats::Report &r) {
+      r.line("vc-time").seconds(vcSeconds);
+      if (lambdaMem)
+        lstats.report(r, "lambda.", lambdaFinalSimplify);
+      if (words)
+        words->report(r, "words.");
       {
-        const expr::Ackermannizer::Stats &as = ack.stats();
-        os << "vc.ackermann: " << (ackOn ? "on" : "off") << "\n";
-        if (ackOn) {
-          os << "vc.ackermann-arrays: " << as.lowered << "\n";
-          os << "vc.ackermann-kept: " << as.kept << "\n";
-          os << "vc.ackermann-reads: " << as.reads << "\n";
-          os << "vc.ackermann-pairs: " << as.pairs << "\n";
-          os << "vc.ackermann-numeral-pairs: " << as.numeralPairs << "\n";
-          os << "vc.ackermann-offset-pairs: " << as.offsetPairs << "\n";
-          os << "vc.ackermann-residue-pairs: " << as.residuePairs << "\n";
-          os << "vc.ackermann-leaf-pairs: " << as.leafPairs << "\n";
-          if (strideOn)
-            os << "vc.ackermann-stride-pairs: " << as.stridePairs << "\n"
-               << "vc.ackermann-stride-a-inb-pairs: " << as.strideAInbPairs
-               << "\n"
-               << "vc.ackermann-stride-not-eligible: " << as.strideNotEligible
-               << "\n"
-               << "vc.ackermann-stride-other-base: " << as.strideOtherBase
-               << "\n"
-               << "vc.ackermann-stride-divides: " << as.strideDivides << "\n";
-          else if (ackStride)
-            os << "vc.ackermann-stride: fallback\n";
-          os << "vc.ackermann-constraints: " << as.constraints << "\n";
-        }
+        using Stride = expr::Ackermannizer::Stats::Stride;
+        r.line("vc.ackermann").value(ackOn ? "on" : "off");
+        if (ackOn)
+          ack.stats().report(r, "vc.ackermann-",
+                             strideOn    ? Stride::On
+                             : ackStride ? Stride::Fallback
+                                         : Stride::Off);
       }
       if (xlw) {
-        const auto &ts = xtr->stats();
-        const auto &ls = xlw->stats();
-        os << "xrt.mode: " << xReadTable << "\n";
-        os << "xrt.reads: " << ts.reads << "\n";
-        os << "xrt.read-leaves: " << ts.leafSum << " max=" << ts.leafMax
-           << "\n";
-        os << "xrt.over-cap: " << xtr->overCap() << "\n";
-        os << "xrt.r-calls: " << ts.rCalls << " memo=" << ts.rMemo << "\n";
-        os << "xrt.stores: " << ts.stores << " leaf-pairs=" << ts.storePairs
-           << "\n";
-        os << "xrt.memops: " << ts.memops << " leaf-pairs=" << ts.memopPairs
-           << " src-leaves=" << ts.srcLeaves << " src-unknown=" << ts.srcUnknown
-           << "\n";
-        os << "xrt.leaf-pairs: same-object=" << ts.samePairs
-           << " unknown=" << ts.unknownPairs << " decided=" << ts.decided
-           << " other-memory=" << ts.other << "\n";
-        std::map<std::string, uint64_t> dk;
-        for (const auto &d : xtr->deads())
-          dk[d.kind]++;
-        os << "xrt.dead: " << xtr->deads().size();
-        for (auto &[k, n] : dk)
-          os << " " << k << "=" << n;
-        os << "\n";
-        os << "xrt.records: " << ls.records << " unknown=" << ls.unknown
-           << " unreached=" << ls.unreached << " arrays=" << ls.arrays << "\n";
-        for (auto &[b, n] : ls.perBucket)
-          os << "xrt.bucket: " << b << " " << n << "\n";
-        os << "xrt.pairs: " << ls.pairs << " exact-drop=" << ls.exactDrop
-           << " guard-drop=" << ls.guardDrop
-           << " disjoint-drop=" << ls.disjointDrop
-           << " solver-array=" << ls.arrayPairs << " mux=" << ls.muxPairs
-           << " constraints=" << ls.constraints
-           << " (offset=" << ls.constraintsOff
-           << " address=" << ls.constraintsAddr << ")\n";
-        os << "xrt.mux: objects=" << ls.muxObjects << " cells=" << ls.muxCells
-           << " records=" << ls.muxRecords << "\n";
-        os << "xrt.eq-widths:";
-        for (auto &[w, n] : ls.eqWidths)
-          os << " " << w << "x" << n;
-        os << "\n";
+        r.line("xrt.mode").value(xReadTable);
+        xtr->report(r, "xrt.");
+        xlw->stats().report(r, "xrt.");
         if (dagStats)
-          os << "xrt.dag: std-boundary=" << xrtDagStd
-             << " translated=" << xrtDagTranslated << "\n";
+          r.line("xrt.dag")
+              .kv("std-boundary", xrtDagStd)
+              .kv("translated", xrtDagTranslated);
       }
       if (memsetBounds)
-        os << "assume.memset-bound: count=" << memsetBounds
-           << " bound=" << memsetBoundK << "\n";
+        r.line("assume.memset-bound")
+            .kv("count", memsetBounds)
+            .kv("bound", memsetBoundK);
       // A-INB, also without --seam: the lowering dropped memhavocs that
       // are no-ops only if no access lands in their object from outside
       if (dropFreshInb)
-        os << "assume.a-inb: drop-fresh-memhavoc=" << dropFreshInb << "\n";
+        r.line("assume.a-inb").kv("drop-fresh-memhavoc", dropFreshInb);
       // placement makes null address 0 (the segment "null"): every VC of a
       // lowered program identifies null with address 0 (a fact of the
       // target: no check discharges it)
       if (lower)
-        os << "assume.addr0-is-null: vc null-uses=" << nullUses << "\n";
+        r.line("assume.addr0-is-null").value("vc").kv("null-uses", nullUses);
       // the open decision memhavoc(null) = no-op, in the VC: the memhavocs
       // whose pointer may be null run only when it is not
       if (nullGuards)
-        os << "assume.memhavoc-null-noop: vc sites=" << nullGuards << "\n";
+        r.line("assume.memhavoc-null-noop").value("vc").kv("sites", nullGuards);
       if (sem.seam()) {
         // the assumption the answer depends on, always visible
         if (inb)
-          os << "seam.inb: assumed accesses=" << sem.inbAccessCount()
-             << " conditions=" << sem.inbConditionCount() << "\n";
+          r.line("seam.inb")
+              .value("assumed")
+              .kv("accesses", sem.inbAccessCount())
+              .kv("conditions", sem.inbConditionCount());
         else {
-          os << "seam.inb: off" << note;
+          // note: the run's fallback note, " (...)" or empty
+          sea::stats::Line &l = r.line("seam.inb").value("off").text(note);
           // the lowering's drops rest on A-INB all the same
           if (dropFreshInb)
-            os << " (lowering: drop-fresh-memhavoc=" << dropFreshInb
-               << " rests on A-INB)";
-          os << "\n";
+            l.note("lowering: drop-fresh-memhavoc=" +
+                   std::to_string(dropFreshInb) + " rests on A-INB");
         }
       }
       for (const auto &[k, v] : fromBitsLeft)
-        os << "seam.ptr.from-bits-left." << k << ": " << v << "\n";
+        r.line("seam.ptr.from-bits-left." + k).value(v);
       for (const auto &[k, v] : aliasOpen)
-        os << "seam.alias.open." << k << ": " << v << "\n";
+        r.line("seam.alias.open." + k).value(v);
       for (const auto &[k, v] : aliasOpenPairs)
-        os << "seam.alias.open-pairs." << k << ": " << v << "\n";
+        r.line("seam.alias.open-pairs." + k).value(v);
       for (const auto &[k, v] : memOpOpen)
-        os << "seam.alias.open-memop." << k << ": " << v << "\n";
+        r.line("seam.alias.open-memop." + k).value(v);
       if (sameObjectReduced)
-        os << "seam.alias.same-object-reduced: " << sameObjectReduced << "\n";
+        r.line("seam.alias.same-object-reduced").value(sameObjectReduced);
       if (seamStats && sem.seamStats()) {
-        os << "seam.rewrite-time: "
-           << llvm::format("%.3f", sem.seamRewriteSeconds()) << "\n";
-        os << "seam.simplify-time: "
-           << llvm::format("%.3f", sem.simplifySeconds()) << "\n";
-        for (auto &[name, sec] : phases)
-          os << "vc." << name << "-time: " << llvm::format("%.3f", sec) << "\n";
-        os << "vc.exec-time: " << llvm::format("%.3f", vcgen.execSeconds())
-           << "\n";
-        os << "vc.join-time: " << llvm::format("%.3f", vcgen.joinSeconds())
-           << "\n";
-        sem.seamStats()->print(os, "seam.");
+        r.line("seam.rewrite-time").seconds(sem.seamRewriteSeconds());
+        r.line("seam.simplify-time").seconds(sem.simplifySeconds());
+        r.timers(vcLaps);
+        r.line("vc.exec-time").seconds(vcgen.execSeconds());
+        r.line("vc.join-time").seconds(vcgen.joinSeconds());
+        sem.seamStats()->report(r, "seam.");
       }
     };
+    // the SeaM counters, then (--brunch-stats) their BRUNCH_STAT lines
     auto printSeamStats = [&](raw_ostream &os) {
-      std::string text;
-      raw_string_ostream ts(text);
-      printSeamStatsText(ts);
-      os << ts.str();
-      if (!brunchStats)
-        return;
-      // every `key: value` line with a one-token value, plus the parts of
-      // seam.inb
-      for (StringRef rest = text; !rest.empty();) {
-        auto [line, tail] = rest.split('\n');
-        rest = tail;
-        auto [key, value] = line.split(": ");
-        if (key == "seam.inb" || key.starts_with("assume.")) {
-          // a leading state word (assumed / off / vc), then the k=v
-          // tokens: `<key> <state>`, `<key>-<k> <v>` (notes in
-          // parentheses are left out)
-          SmallVector<StringRef> words;
-          value.split(words, ' ', -1, /*KeepEmpty=*/false);
-          bool inNote = false; // a parenthesised note: left out whole
-          for (auto [i, w] : llvm::enumerate(words)) {
-            if (inNote || w.starts_with("(")) {
-              inNote = !w.ends_with(")");
-              continue;
-            }
-            auto [k, v] = w.split('=');
-            if (!v.empty())
-              brunchStat(os, key + "-" + k, v);
-            else if (i == 0)
-              brunchStat(os, key, w);
-          }
-        } else if (!value.empty() && !value.contains(' '))
-          brunchStat(os, key, value);
-      }
+      sea::stats::Report r(sea::stats::Brunch::Derived);
+      seamReport(r);
+      r.print(os, brunchStats);
     };
     // --eq-audit (tools/sea-vc/EqAudit.h): sampled undecided equalities,
     // each by the lowest level of facts that decides it. z3, with a timeout.
     auto runEqAudit = [&]() {
       if (!auditOn)
         return;
-      auto t0 = std::chrono::steady_clock::now();
+      sea::Stopwatch watch;
       auto z = std::make_unique<sea::solver::z3_solver_impl>(efac);
       if (eqAuditTimeout) {
         sea::ZParams<sea::EZ3> params(z->get_context());
@@ -5912,22 +5857,19 @@ int main(int argc, char **argv) {
       };
       run("row-store", stores, false);
       run("row-memop", memops, true);
-      raw_string_ostream os(auditReport);
-      audit.report(os, eqAuditShapes);
+      sea::stats::Report r;
+      audit.report(r, eqAuditShapes);
       // the pairs whose constraint the stride rule dropped are not audited
       // An audit under P3 is future work.
       if (ackOn && strideOn)
-        os << "eq-audit.ack-stride-dropped: " << ack.stats().stridePairs
-           << " (not audited)\n";
-      if (brunchStats)
-        audit.stats([&](const std::string &k, uint64_t v) {
-          os << "BRUNCH_STAT " << k << " " << v << "\n";
-        });
-      os << "eq-audit-time: "
-         << llvm::format("%.3f", std::chrono::duration<double>(
-                                     std::chrono::steady_clock::now() - t0)
-                                     .count())
-         << "\n";
+        r.line("eq-audit.ack-stride-dropped")
+            .value(ack.stats().stridePairs)
+            .note("not audited");
+      // the counters: BRUNCH_STAT lines only, before the time
+      audit.counters(r);
+      r.line("eq-audit-time").seconds(watch.seconds());
+      raw_string_ostream os(auditReport);
+      r.printEach(os, brunchStats);
     };
     // every recorded firing (or a sample) as a validity query,
     // `premise => lhs = rhs`, on the solver of the run. Runs after the
@@ -6095,7 +6037,11 @@ int main(int argc, char **argv) {
     auto runXrtCheck = [&]() {
       if (!xlw || !xReadTableCheck)
         return;
-      raw_ostream &os = statOut();
+      // each line as soon as it is known (a later check may crash); no
+      // BRUNCH_STAT lines
+      auto put = [&](llvm::function_ref<void(sea::stats::Report &)> add) {
+        printStats(statOut(), add);
+      };
       expr::SeaMRewriter *rw = sem.seamRewriter();
       xtr->freeze();
       std::string why;
@@ -6125,7 +6071,9 @@ int main(int argc, char **argv) {
       }
       expr::Expr sides = tl(expr::mknary<expr::AND>(tt, cfg));
       if (!prem || !sides) {
-        os << "xrt.check: unexpressible (" << why << ")\n";
+        put([&](sea::stats::Report &rep) {
+          rep.line("xrt.check").value("unexpressible").note(why);
+        });
         return;
       }
       expr::ExprVector lay;
@@ -6148,7 +6096,7 @@ int main(int argc, char **argv) {
       }
       if (!cs)
         return;
-      auto t0 = std::chrono::steady_clock::now();
+      sea::Stopwatch watch;
       if (xReadTableCheckPremise.find('l') == std::string::npos)
         layout = tt;
       if (xReadTableCheckPremise.find('s') == std::string::npos)
@@ -6157,14 +6105,17 @@ int main(int argc, char **argv) {
       // semantics, no table): for the context check only
       if (xReadTableCheckPremise.find('S') != std::string::npos)
         sides = sem.solverTerm(expr::mknary<expr::AND>(tt, side));
-      os << "xrt.check-premise: " << xReadTableCheckPremise << "\n";
+      put([&](sea::stats::Report &rep) {
+        rep.line("xrt.check-premise").value(xReadTableCheckPremise);
+      });
       cs->add(expr::mk<expr::AND>(sides, expr::mk<expr::AND>(prem, layout)));
       auto ctxRes = cs->check();
-      os << "xrt.check-context: "
-         << (ctxRes == sea::solver::SolverResult::SAT     ? "sat"
-             : ctxRes == sea::solver::SolverResult::UNSAT ? "unsat"
-                                                          : "unknown")
-         << "\n";
+      put([&](sea::stats::Report &rep) {
+        rep.line("xrt.check-context")
+            .value(ctxRes == sea::solver::SolverResult::SAT     ? "sat"
+                   : ctxRes == sea::solver::SolverResult::UNSAT ? "unsat"
+                                                                : "unknown");
+      });
       auto one = [&](expr::Expr ob, uint64_t &u, uint64_t &s, uint64_t &k) {
         cs->push();
         auto r = cs->add(ob) ? cs->check() : sea::solver::SolverResult::UNKNOWN;
@@ -6192,10 +6143,18 @@ int main(int argc, char **argv) {
                                  B.rel, expr::mk<expr::EQ>(A.addr, B.addr))),
                   u, s, k);
           if (r == sea::solver::SolverResult::SAT)
-            os << "xrt.check-omitted-sat: " << a << " " << b << "\n";
+            put([&, a = a, b = b](sea::stats::Report &rep) {
+              rep.line("xrt.check-omitted-sat").value(a).value(b);
+            });
         }
-        os << "xrt.check-omitted: total=" << n << " checked=" << m
-           << " unsat=" << u << " sat=" << s << " unknown=" << k << "\n";
+        put([&](sea::stats::Report &rep) {
+          rep.line("xrt.check-omitted")
+              .kv("total", n)
+              .kv("checked", m)
+              .kv("unsat", u)
+              .kv("sat", s)
+              .kv("unknown", k);
+        });
         // the same pairs without the address equality: how many are
         // exclusive by relevance alone (semantically, not syntactically)
         uint64_t u2 = 0, s2 = 0, k2 = 0;
@@ -6204,8 +6163,12 @@ int main(int argc, char **argv) {
           one(expr::mk<expr::AND>(xlw->low(a).rel, xlw->low(b).rel), u2, s2,
               k2);
         }
-        os << "xrt.check-omitted-relevance-only: unsat=" << u2 << " sat=" << s2
-           << " unknown=" << k2 << "\n";
+        put([&](sea::stats::Report &rep) {
+          rep.line("xrt.check-omitted-relevance-only")
+              .kv("unsat", u2)
+              .kv("sat", s2)
+              .kv("unknown", k2);
+        });
       }
       {
         const auto &ds = xtr->deads();
@@ -6219,11 +6182,19 @@ int main(int argc, char **argv) {
             continue;
           }
           if (one(xlw->lowerTerm(r), u, s, k) == sea::solver::SolverResult::SAT)
-            os << "xrt.check-dead-sat: " << *d.sym << " " << d.kind << "\n";
+            put([&](sea::stats::Report &rep) {
+              rep.line("xrt.check-dead-sat").value(*d.sym).value(d.kind);
+            });
         }
-        os << "xrt.check-dead: total=" << n << " checked=" << m
-           << " unsat=" << u << " sat=" << s << " unknown=" << k
-           << " unreached=" << unreached << "\n";
+        put([&](sea::stats::Report &rep) {
+          rep.line("xrt.check-dead")
+              .kv("total", n)
+              .kv("checked", m)
+              .kv("unsat", u)
+              .kv("sat", s)
+              .kv("unknown", k)
+              .kv("unreached", unreached);
+        });
       }
       {
         const auto &mr = xlw->muxRecords();
@@ -6240,8 +6211,14 @@ int main(int argc, char **argv) {
                                         w, efac)))),
               u, s, k);
         }
-        os << "xrt.check-mux-range: total=" << n << " checked=" << m
-           << " unsat=" << u << " sat=" << s << " unknown=" << k << "\n";
+        put([&](sea::stats::Report &rep) {
+          rep.line("xrt.check-mux-range")
+              .kv("total", n)
+              .kv("checked", m)
+              .kv("unsat", u)
+              .kv("sat", s)
+              .kv("unknown", k);
+        });
       }
       {
         // each lowered record: can it be relevant at all (under the premise)?
@@ -6260,17 +6237,19 @@ int main(int argc, char **argv) {
           auto &pb = perBucket[b];
           ++(r == sea::solver::SolverResult::UNSAT ? pb.first : pb.second);
         }
-        os << "xrt.check-record-relevant: unsat=" << u << " sat=" << s
-           << " unknown=" << k;
-        for (auto &[b, c] : perBucket)
-          os << " " << b << "=" << c.second << "/" << (c.first + c.second);
-        os << "\n";
+        put([&](sea::stats::Report &rep) {
+          sea::stats::Line &l = rep.line("xrt.check-record-relevant")
+                                    .kv("unsat", u)
+                                    .kv("sat", s)
+                                    .kv("unknown", k);
+          for (auto &[b, c] : perBucket)
+            l.kv(b, std::to_string(c.second) + "/" +
+                        std::to_string(c.first + c.second));
+        });
       }
-      os << "xrt.check-time: "
-         << llvm::format("%.3f", std::chrono::duration<double>(
-                                     std::chrono::steady_clock::now() - t0)
-                                     .count())
-         << "\n";
+      put([&](sea::stats::Report &rep) {
+        rep.line("xrt.check-time").seconds(watch.seconds());
+      });
     };
     if (smt2) {
       // the block ids of each guard (kBlockIdsAttr), as SMT-LIB comments:
@@ -6305,16 +6284,12 @@ int main(int argc, char **argv) {
         blockIdLines(outs());
       }
       gOut->flush();
-      statOut() << "vc.ptr-mode: " << (addressMode ? "address" : "opaque")
-                << "\nvc.int-to-ptr: " << intToPtr << "\n"
-                << "vc.ptr-from-int-opaque: " << sem.ptrFromIntOpaque() << "\n";
-      if (sinkAssumes)
-        statOut() << "vc.sink-assumes: " << sunkAssumes << "\n";
-      statOut() << lowerStatLines;
-      foldLines(statOut());
-      companionLine(statOut());
-      if (vcgen.joinCases())
-        vcgen.joinCases()->print(statOut());
+      {
+        // no BRUNCH_STAT lines with --smt2 (as before the port)
+        sea::stats::Report r;
+        vcLines(r);
+        r.print(statOut(), false);
+      }
       printSeamStats(statOut());
       runSeamCheck();
       runEqAudit();
@@ -6326,7 +6301,9 @@ int main(int argc, char **argv) {
       // a part's answer (the verdict of a split comes after its parts)
       if (splitOn) {
         splitPart.result = v.str();
-        vout() << "split.part-result: " << v << "\n";
+        printStats([&](sea::stats::Report &r) {
+          r.line("split.part-result").value(v);
+        });
         return;
       }
       sea::out::Record rec("result");
@@ -6340,20 +6317,11 @@ int main(int argc, char **argv) {
       rec.text = ("program: @" + program.getSymName()).str();
       gOut->emit(rec);
     }
-    vout() << "vc.ptr-mode: " << (addressMode ? "address" : "opaque")
-           << "\nvc.int-to-ptr: " << intToPtr
-           << "\nvc.ptr-from-int-opaque: " << sem.ptrFromIntOpaque() << "\n";
-    if (sinkAssumes)
-      vout() << "vc.sink-assumes: " << sunkAssumes << "\n";
-    vout() << lowerStatLines;
-    foldLines(vout());
-    companionLine(vout());
-    if (vcgen.joinCases())
-      vcgen.joinCases()->print(vout());
-    brunchStat(vout(), "vc.ptr-mode", addressMode ? "address" : "opaque");
-    brunchStat(vout(), "vc.int-to-ptr", llvm::Twine(intToPtr));
-    brunchStat(vout(), "vc.ptr-from-int-opaque",
-               llvm::Twine(sem.ptrFromIntOpaque()));
+    {
+      sea::stats::Report r;
+      vcLines(r);
+      r.print(vout(), brunchStats);
+    }
     // the base registry (SeaM), in allocation order
     for (const expr::ObjectBase &o : vcgen.baseRegistry().objects()) {
       sea::out::Record rec("object");
@@ -6407,7 +6375,7 @@ int main(int argc, char **argv) {
                         "--seam-check and --x-read-table-check do not run: "
                         "--vcgen-only skips them");
       emitResult("none");
-      brunchStat(vout(), "result", "none");
+      printStats([](sea::stats::Report &r) { resultLine(r, "none"); });
       return 0;
     }
     runSeamCheck();
@@ -6537,11 +6505,10 @@ int main(int argc, char **argv) {
       return rc;
     }
     Phase solvePhase("solve");
-    auto solveStart = std::chrono::steady_clock::now();
+    sea::Stopwatch solveClock;
     sea::solver::SolverResult res = solver->check();
-    const double solveSec = std::chrono::duration<double>(
-                                std::chrono::steady_clock::now() - solveStart)
-                                .count();
+    // read once: the log, solve-time and the split line show one value
+    const double solveSec = solveClock.seconds();
     SEA_LOG(logSolve, sea::log::Flow)
         .kv("backend", backend == Backend::Z3         ? "z3"
                        : backend == Backend::Bitwuzla ? "bitwuzla"
@@ -6553,34 +6520,33 @@ int main(int argc, char **argv) {
         .kv("nodes-made", efac.nodesMade());
     SEA_PHASE_END(solvePhase);
     splitPart.solveSeconds = solveSec;
-    std::string solveSeconds =
-        llvm::formatv("{0:f3}",
-                      std::chrono::duration<double>(
-                          std::chrono::steady_clock::now() - solveStart)
-                          .count())
-            .str();
-    vout() << "solve-time: " << solveSeconds << "\n";
-    if (backend == Backend::Z3 && z3Tactic != "default")
-      vout() << "solver.z3-tactic: " << z3Tactic << "\n";
-    if (backend == Backend::Yices) {
-      if (!yicesLogic.empty())
-        vout() << "solver.yices-logic: " << yicesLogic << "\n";
-      for (const std::string &kv : yicesConfig)
-        vout() << "solver.yices-config: " << kv << "\n";
-      for (const std::string &kv : yicesParams)
-        vout() << "solver.yices-param: " << kv << "\n";
+    {
+      // the solver's lines; BRUNCH_STAT solve-time only
+      sea::stats::Report r;
+      r.line("solve-time").seconds(solveSec).brunch(sea::stats::Brunch::Value);
+      if (backend == Backend::Z3 && z3Tactic != "default")
+        r.line("solver.z3-tactic").value(z3Tactic);
+      if (backend == Backend::Yices) {
+        if (!yicesLogic.empty())
+          r.line("solver.yices-logic").value(yicesLogic);
+        for (const std::string &kv : yicesConfig)
+          r.line("solver.yices-config").value(kv);
+        for (const std::string &kv : yicesParams)
+          r.line("solver.yices-param").value(kv);
+      }
+      r.print(vout(), brunchStats);
     }
-    brunchStat(vout(), "solve-time", solveSeconds);
     if (res == sea::solver::SolverResult::UNSAT) {
       emitResult("unsat");
+      sea::stats::Report r;
       if (sem.ptrIntChecking() && sem.companionChecked())
-        vout() << "seam.ptrint: holds\n";
-      brunchStat(vout(), "result", "unsat");
+        r.line("seam.ptrint").value("holds");
+      resultLine(r, "unsat");
+      r.print(vout(), brunchStats);
       return 0;
     }
     if (res != sea::solver::SolverResult::SAT) {
       emitResult("unknown");
-      brunchStat(vout(), "result", "unknown");
       // why, when a limit of the run explains it: the backend's reason
       // (z3, Yices' watchdog); else the time spent reached --timeout; for
       // Bitwuzla (complete for the VC's logics) an unknown under
@@ -6590,15 +6556,20 @@ int main(int argc, char **argv) {
           solveTimeout && (why == "timeout" || solveSec >= solveTimeout);
       const bool memHit = memLimit && !timedOut &&
                           (why == "memout" || backend == Backend::Bitwuzla);
-      if (timedOut) {
-        vout() << "solve-timeout: true\n";
-        brunchStat(vout(), "solve-timeout", "true");
-      }
-      if (memHit) {
-        vout() << "mem-limit: hit\n";
-        brunchStat(vout(), "mem-limit", "hit");
-        // the solver's own limit: in solve (the new-handler's note line)
-        vout() << "mem-limit-phase: solve\n";
+      {
+        // each line's BRUNCH_STAT line right after it
+        sea::stats::Report r;
+        resultLine(r, "unknown");
+        if (timedOut)
+          r.line("solve-timeout")
+              .value("true")
+              .brunch(sea::stats::Brunch::Value);
+        if (memHit) {
+          r.line("mem-limit").value("hit").brunch(sea::stats::Brunch::Value);
+          // the solver's own limit: in solve (the new-handler's note line)
+          r.line("mem-limit-phase").value("solve");
+        }
+        r.printEach(vout(), brunchStats);
       }
       // where to go next: the split targets, when the normalized query
       // has open alias questions to attribute, or else Ackermann
@@ -6651,11 +6622,12 @@ int main(int argc, char **argv) {
       for (size_t a = 0; a < ack.arrays().size(); ++a)
         (void)probe.function(a);
       if (probe.strideBroken()) {
-        vout() << "vc.ackermann-stride-broken: " << probe.strideBroken() << "\n"
-               << "vc.ackermann-stride-retry-solve-time: " << solveSeconds
-               << "\n";
-        brunchStat(vout(), "vc.ackermann-stride-retry-solve-time",
-                   solveSeconds);
+        sea::stats::Report r;
+        r.line("vc.ackermann-stride-broken").value(probe.strideBroken());
+        r.line("vc.ackermann-stride-retry-solve-time")
+            .seconds(solveSec)
+            .brunch(sea::stats::Brunch::Value);
+        r.print(vout(), brunchStats);
         sea::diag::warn("vc.ack-stride-promise-broken",
                         "the model breaks a GEP promise the stride rule "
                         "relied on (a wrapping offset: UB in LLVM); running "
@@ -6671,9 +6643,13 @@ int main(int argc, char **argv) {
       return kRetryExactCompanion;
     }
     emitResult("sat");
-    brunchStat(vout(), "result", "sat");
-    if (sem.ptrIntChecking() && sem.companionChecked())
-      vout() << "seam.ptrint: not discharged\n";
+    {
+      sea::stats::Report r;
+      resultLine(r, "sat");
+      if (sem.ptrIntChecking() && sem.companionChecked())
+        r.line("seam.ptrint").value("not discharged");
+      r.printEach(vout(), brunchStats);
+    }
 
     auto solverModel = solver->get_model();
     // the cells of the solver's arrays no constraint reads: defaults
@@ -7239,7 +7215,7 @@ int main(int argc, char **argv) {
       rec.str("value", "none");
       rec.text = "result: none";
       gOut->emit(rec);
-      brunchStat(vout(), "result", "none");
+      printStats([](sea::stats::Report &r) { resultLine(r, "none"); });
       gOut->flush();
       return 0;
     }();
@@ -7287,7 +7263,9 @@ int main(int argc, char **argv) {
           if (pick) {
             splitTargets.push_back({sea::SplitTarget::Kind::Leaves, pick->value,
                                     nullptr, pick->name, "auto"});
-            vout() << "split.auto-pick: " << pick->name << "\n";
+            printStats([&](sea::stats::Report &r) {
+              r.line("split.auto-pick").value(pick->name);
+            });
           }
         }
       }
@@ -7435,8 +7413,10 @@ int main(int argc, char **argv) {
                    " leaf-structural=" + std::to_string(nLeafStructural) +
                    (stopped ? " stopped=first-sat" : "");
         gOut->emit(rec);
-        for (const std::string &u : unknownParts)
-          vout() << "split.unknown-part: " << u << "\n";
+        printStats([&](sea::stats::Report &r) {
+          for (const std::string &u : unknownParts)
+            r.line("split.unknown-part").value(u);
+        });
       }
       sea::out::Record rec("result");
       rec.str("value", verdict);
@@ -7463,6 +7443,10 @@ int main(int argc, char **argv) {
     }
   }
   gOut->flush();
-  brunchStat(statOut(), "status", Twine(rc));
+  {
+    sea::stats::Report r;
+    r.line("status").value(rc).brunch(sea::stats::Brunch::Value).brunchOnly();
+    r.print(statOut(), brunchStats);
+  }
   return rc;
 }
