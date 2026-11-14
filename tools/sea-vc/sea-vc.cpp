@@ -918,13 +918,14 @@ static void printStats(raw_ostream &os,
   add(r);
   r.print(os, brunchStats);
 }
-/// The same on stdout.
+/// The same on vout(): the text lines, or the stat records of jsonl.
 static void printStats(llvm::function_ref<void(sea::stats::Report &)> add) {
   printStats(vout(), add);
 }
 
-/// The BRUNCH_STAT line of a verdict, \p v: the `result:` line is a
-/// record of its own (or a split part's `split.part-result:`)
+/// The BRUNCH_STAT line of a verdict \p v, alone (brunchOnly: it prints
+/// under --brunch-stats only): the `result:` line is a record of its own
+/// (emitResult), or a split part's `split.part-result:`
 static void resultLine(sea::stats::Report &r, StringRef v) {
   r.line("result").value(v).brunch(sea::stats::Brunch::Value).brunchOnly();
 }
@@ -4656,7 +4657,7 @@ int main(int argc, char **argv) {
         const bool mem = sea::SeaOpSem::isMemoryReg(reg);
         // a joined memory is one lambda before it is simplified (SeaHorn:
         // bind::lite at the phi, then write simplifies)
-        if (mem && isOpX<expr::ITE>(val))
+        if (mem && expr::isOpX<expr::ITE>(val))
           if (expr::Expr f = sem.coerceMemory(val, reg))
             val = f;
         if (lsimp) {
@@ -6505,11 +6506,9 @@ int main(int argc, char **argv) {
       if (backend == Backend::Z3)
         hooks.reasonUnknown = [](sea::solver::Solver &s,
                                  double sec) -> std::string {
-          std::string r = s.reason_unknown();
-          if (r == "timeout" && reachRlimit &&
-              !(solveTimeout && sec >= solveTimeout))
+          if (hitRlimit(s, reachRlimit, solveTimeout, sec))
             return "rlimit";
-          return r;
+          return s.reason_unknown();
         };
       sea::ReachOptions ropts;
       // concrete runs first leave mostly unreachable targets, which a
@@ -6594,6 +6593,7 @@ int main(int argc, char **argv) {
     }
     if (res != sea::solver::SolverResult::SAT) {
       emitResult("unknown");
+      printStats([](sea::stats::Report &r) { resultLine(r, "unknown"); });
       // why, when a limit of the run explains it: the backend's reason
       // (z3, Yices' watchdog); else the time spent reached --timeout; for
       // Bitwuzla (complete for the VC's logics) an unknown under
@@ -6606,7 +6606,6 @@ int main(int argc, char **argv) {
       {
         // each line's BRUNCH_STAT line right after it
         sea::stats::Report r;
-        resultLine(r, "unknown");
         if (timedOut)
           r.line("solve-timeout")
               .value("true")

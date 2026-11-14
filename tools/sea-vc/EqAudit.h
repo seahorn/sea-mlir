@@ -82,7 +82,7 @@ public:
     uint64_t before = m_rlimitUnknown;
     Level lvl = classify(it);
     ++src.count[lvl];
-    src.unknownRlimit += m_rlimitUnknown > before;
+    src.unknownRlimit += lvl == Unknown && m_rlimitUnknown > before;
     std::string key = shapeOf(it);
     auto &sh = src.shapes[lvl][key];
     if (sh.first++ == 0) {
