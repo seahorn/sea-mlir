@@ -269,6 +269,16 @@ Before any job, every flag of the matrix must be an option of both builds
 (`--help-hidden`): a flag that one build does not know would make both
 sides fail alike, which compares identical.
 
+`--quick` also leaves out, for six named slow programs (`QUICK_SLOW` in
+`utils/output-diff.py`: `VC/split/int-leaves`, `VC/intrinsics-unsat` and four
+`VC/seam/Inputs` programs, 40 to 215 s each over the matrix), every entry but
+`seam-stats`, `smt2`, `run` and `fuzz`, and defaults `--timeout` to 30
+seconds (300 otherwise); a timeout still makes the status `incomplete`. Each
+excluded program is a `quick-excluded:` line, and the `skipped:` line counts
+the jobs left out. The full mode runs everything. The list was measured once
+(one side, text, `--timeout 30`); re-measure when the quick run
+over `test/VC` and `test/Interp` grows well past ten minutes.
+
 An input that is neither a directory nor a file is an error
 (`error: no input <path>`, status 2).
 

@@ -47,6 +47,16 @@ RC: status: fail
 RUN: not %{od} --old %sea_bin --new %sea_bin %{m} %t/no-such.mlir 2>&1 | FileCheck %s --check-prefix=NOIN
 NOIN: error: no input {{.*}}no-such.mlir
 
+// Every program named in QUICK_SLOW exists, and --quick leaves out its
+// heavy entries (quick-excluded) while the light ones run.
+RUN: %python -c "import importlib.util as u,os,sys; s=u.spec_from_file_location('o',sys.argv[1]); m=u.module_from_spec(s); s.loader.exec_module(m); [print('slow-exists', n) for n in m.QUICK_SLOW if os.path.isfile(os.path.join(sys.argv[2], n.split('/',1)[0], n.split('/',1)[1] + '.mlir'))]" %sea_src_root/utils/output-diff.py %sea_src_root/test | FileCheck %s --check-prefix=SLOW
+SLOW-COUNT-6: slow-exists
+RUN: mkdir -p %t/VC && cp %sea_src_root/test/VC/intrinsics-unsat.mlir %t/VC/
+RUN: %{od} --quick --old %sea_bin --new %sea_bin --matrix %t/quickslow %t/VC | FileCheck %s --check-prefix=QSLOW
+QSLOW: quick-excluded: VC/intrinsics-unsat entries=other
+QSLOW: skipped: other=2
+QSLOW: status: pass
+
 // An entry whose every job fails on both sides checked nothing: incomplete.
 RUN: not %{od} --old %sea_bin --new %sea_bin --matrix %t/runonly %t/bad.mlir | FileCheck %s --check-prefix=ALLF
 ALLF: bad run text identical rc=1
@@ -78,6 +88,9 @@ plain sea-vc: --brunch-stats
 run sea-run: --missing=zero
 //--- heavy
 h sea-run heavy: --missing=zero
+//--- quickslow
+other sea-vc: --lower
+seam-stats sea-vc: --lower --seam --seam-stats
 //--- vconly
 plain sea-vc: --brunch-stats
 //--- runonly

@@ -33,7 +33,7 @@ WHY: the gate of a refactoring that must not change output (timers, the
   masking timings and memory sizes, and keep its stat and BRUNCH_STAT keys.
 USAGE:
   utils/output-diff.py --old <bin-dir> --new <bin-dir> [inputs...]
-      [--quick] [--par 2] [--timeout 300] [--jobs REGEX] [--sample N]
+      [--quick] [--par 2] [--timeout 300 (30 with --quick)] [--jobs REGEX] [--sample N]
       [--exclude REGEX (default ^VC/limits/: the --timeout tests)]
       [--matrix FILE] [--entry 'NAME TOOL [FLAGS]: ARGS']... [--select A,B]
       [--formats text,jsonl] [--vc-common ARGS] [--run-common ARGS]
@@ -46,6 +46,13 @@ CORPUS (no inputs): $SEA_BENCH_SUITES/vcc, and the standalone programs of
   Every input runs every matrix entry; --quick drops the heavy entries only
   for inputs under $SEA_BENCH_SUITES (the bench corpus): the small programs of
   test/VC and test/Interp run every entry, heavy ones included.
+  --quick also leaves out, for the programs of QUICK_SLOW (VC/split/int-leaves,
+  VC/seam/Inputs/{array_list_swap,nki-scatter-K4-int8,nki-dyn-add-M4H4-nopre,
+  nki-dyn-add-M4H4-good}, VC/intrinsics-unsat: 40-215 s each over the matrix),
+  every entry but seam-stats, smt2, run and fuzz, and defaults --timeout to 30
+  (a timeout still makes the status incomplete). The full mode runs them all.
+  Measured once; re-measure (one side, text, --timeout 30) when the
+  quick run grows past ~10 min.
   An input that is neither a directory nor a file: `error: no input <path>`.
 MATRIX: one entry per line, `NAME TOOL [FLAGS]: ARGS` (# comments);
   TOOL sea-vc | sea-run; FLAGS: heavy (skipped by --quick on bench inputs), text / jsonl
@@ -76,8 +83,9 @@ OUTPUT (stdout):
       secs=<run time of both sides>
   total: jobs=<n> identical=<n> diff=<n> keys-diff=<n> brunch-diff=<n>
       timeout=<n> error=<n>
-  skipped: <entry>=<n>,... (--quick: jobs of heavy entries left out, bench
-      inputs only)   [only with --quick]
+  quick-excluded: <input> entries=<e>,...   [--quick: a QUICK_SLOW program]
+  skipped: <entry>=<n>,... (--quick: jobs left out: heavy entries on bench
+      inputs, QUICK_SLOW programs)   [only with --quick]
   wall: <s>
   status: pass | fail | incomplete
   entry: <name> all-failed   (every job of the entry failed alike on both
@@ -89,6 +97,21 @@ STATUS: 0 pass (every job identical); 1 some job DIFF; 2 a timeout, an
   this order).
 --keep DIR writes both sides' stdout / stderr of every non-identical job.
 """
+
+# --quick: the test programs that take 40-215 s per side-format over the
+# matrix (measured once, one side, text, 30 s cap: 615 of 884 s over
+# test/VC + test/Interp). Quick mode runs only QUICK_LIGHT on them; the full
+# mode runs everything. Re-measure when the list looks stale.
+QUICK_SLOW = (
+    "VC/split/int-leaves",
+    "VC/seam/Inputs/array_list_swap",
+    "VC/seam/Inputs/nki-scatter-K4-int8",
+    "VC/seam/Inputs/nki-dyn-add-M4H4-nopre",
+    "VC/seam/Inputs/nki-dyn-add-M4H4-good",
+    "VC/intrinsics-unsat",
+)
+QUICK_LIGHT = ("seam-stats", "smt2", "run", "fuzz")
+QUICK_TIMEOUT = 30
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.dirname(HERE)
@@ -692,8 +715,8 @@ def main():
     ap.add_argument(
         "--timeout",
         type=int,
-        default=300,
-        help="seconds per run of one side (default: %(default)s)",
+        default=None,
+        help="seconds per run of one side (default: 300; 30 with --quick)",
     )
     ap.add_argument("--jobs", help="regex: only the inputs whose job name matches")
     ap.add_argument(
@@ -774,11 +797,18 @@ def main():
         flush=True,
     )
     # --quick: a heavy entry is dropped for the inputs of the bench corpus only
+    if a.timeout is None:
+        a.timeout = QUICK_TIMEOUT if a.quick else 300
     tasks, skipped = [], collections.Counter()
+    excluded = collections.defaultdict(list)
     for e in matrix:
         for j in jobs:
             if a.quick and e.heavy and is_bench(j[1]):
                 skipped[e.name] += len(e.formats(formats))
+                continue
+            if a.quick and j[0] in QUICK_SLOW and e.name not in QUICK_LIGHT:
+                skipped[e.name] += len(e.formats(formats))
+                excluded[j[0]].append(e.name)
                 continue
             tasks += [(j, e, f) for f in e.formats(formats)]
     t0 = time.monotonic()
@@ -821,6 +851,8 @@ def main():
         f"timeout={tot['timeout']} error={tot['error']}"
     )
     if a.quick:
+        for j, names in excluded.items():
+            print(f"quick-excluded: {j} entries={','.join(names)}")
         print("skipped: " + (",".join(f"{k}={v}" for k, v in skipped.items()) or "-"))
     print(f"wall: {time.monotonic() - t0:.0f}")
     if tot["DIFF"]:
