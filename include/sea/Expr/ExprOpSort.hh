@@ -88,15 +88,17 @@ inline Expr unintTy(ExprFactory &efac) { return mk<UNINT_TY>(efac); }
 inline Expr anyTy(ExprFactory &efac) { return mk<ANY_TY>(efac); }
 inline Expr errorTy(ExprFactory &efac) { return mk<ERROR_TY>(efac); }
 inline Expr typeTy(ExprFactory &efac) { return mk<TYPE_TY>(efac); }
-inline Expr arrayTy(Expr indexTy, Expr valTy) {
+inline Expr arrayTy(const Expr &indexTy, const Expr &valTy) {
   return mk<ARRAY_TY>(indexTy, valTy);
 }
-inline Expr arrayIndexTy(Expr a) { return a->left(); }
-inline Expr arrayValTy(Expr a) { return a->right(); }
+inline Expr arrayIndexTy(const Expr &a) { return a->left(); }
+inline Expr arrayValTy(const Expr &a) { return a->right(); }
 
-inline Expr structTy(Expr ty) { return mk<STRUCT_TY>(ty); }
-inline Expr structTy(Expr ty1, Expr ty2) { return mk<STRUCT_TY>(ty1, ty2); }
-inline Expr structTy(Expr ty1, Expr ty2, Expr ty3) {
+inline Expr structTy(const Expr &ty) { return mk<STRUCT_TY>(ty); }
+inline Expr structTy(const Expr &ty1, const Expr &ty2) {
+  return mk<STRUCT_TY>(ty1, ty2);
+}
+inline Expr structTy(const Expr &ty1, const Expr &ty2, const Expr &ty3) {
   return mk<STRUCT_TY>(ty1, ty2, ty3);
 }
 template <typename Range>
@@ -104,18 +106,18 @@ Expr structTy(const Range &ty) {
   return mknary<STRUCT_TY>(ty);
 }
 
-inline Expr finiteMapTy(Expr valTy, Expr k) {
+inline Expr finiteMapTy(const Expr &valTy, const Expr &k) {
   return mk<FINITE_MAP_TY>(valTy, mk<FINITE_MAP_KEYS_TY>(k));
 }
-inline Expr finiteMapTy(Expr valTy, Expr k1, Expr k2) {
+inline Expr finiteMapTy(const Expr &valTy, const Expr &k1, const Expr &k2) {
   return mk<FINITE_MAP_TY>(valTy, mk<FINITE_MAP_KEYS_TY>(k1, k2));
 }
 template <typename Range>
-Expr finiteMapTy(Expr valTy, const Range &ks) {
+Expr finiteMapTy(const Expr &valTy, const Range &ks) {
   return mk<FINITE_MAP_TY>(valTy, mknary<FINITE_MAP_KEYS_TY>(ks));
 }
-inline Expr finiteMapKeyTy(Expr fmapTy) { return fmapTy->right(); }
-inline Expr finiteMapValTy(Expr fmapTy) { return fmapTy->left(); }
+inline Expr finiteMapKeyTy(const Expr &fmapTy) { return fmapTy->right(); }
+inline Expr finiteMapValTy(const Expr &fmapTy) { return fmapTy->left(); }
 
 } // namespace sort
 } // namespace op

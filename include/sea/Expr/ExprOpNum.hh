@@ -31,7 +31,7 @@ enum class NumericOpKind {
 namespace typeCheck {
 namespace numType {
 
-static inline Expr returnType(Expr exp, TypeChecker &tc) {
+static inline Expr returnType(const Expr &exp, TypeChecker &tc) {
   return tc.typeOf(exp->first());
 }
 struct Unary : public TypeCheckBase {

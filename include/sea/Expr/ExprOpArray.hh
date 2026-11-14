@@ -32,12 +32,13 @@ enum class ArrayOpKind {
 namespace typeCheck {
 namespace arrayType {
 
-static inline bool checkArray(Expr exp, TypeChecker &tc, unsigned numChildren) {
+static inline bool checkArray(const Expr &exp, TypeChecker &tc,
+                              unsigned numChildren) {
   return exp->arity() == numChildren &&
          correctTypeAny<ARRAY_TY>(exp->first(), tc);
 }
 
-static inline void getArrayTypes(Expr exp, TypeChecker &tc, Expr &mapTy,
+static inline void getArrayTypes(const Expr &exp, TypeChecker &tc, Expr &mapTy,
                                  Expr &indexTy, Expr &valTy) {
   mapTy = tc.typeOf(exp->left());
   indexTy = sort::arrayIndexTy(mapTy);
@@ -186,37 +187,43 @@ inline Expr StoreMap::inferType(Expr exp, TypeChecker &tc) {
 
 namespace op {
 namespace array {
-inline Expr select(Expr a, Expr idx) { return mk<SELECT>(a, idx); }
-inline Expr store(Expr a, Expr idx, Expr v) { return mk<STORE>(a, idx, v); }
-inline Expr constArray(Expr domain, Expr v) {
+inline Expr select(const Expr &a, const Expr &idx) {
+  return mk<SELECT>(a, idx);
+}
+inline Expr store(const Expr &a, const Expr &idx, const Expr &v) {
+  return mk<STORE>(a, idx, v);
+}
+inline Expr constArray(const Expr &domain, const Expr &v) {
   return mk<CONST_ARRAY>(domain, v);
 }
-inline Expr aDefault(Expr a) { return mk<ARRAY_DEFAULT>(a); }
+inline Expr aDefault(const Expr &a) { return mk<ARRAY_DEFAULT>(a); }
 
 /// The empty offset-value list.
 inline Expr smapNil(ExprFactory &efac) { return mk<SMAP_NIL>(efac); }
 /// The list `rest` with the entry (offset, value) inserted in front.
-inline Expr smapCons(Expr offset, Expr value, Expr rest) {
+inline Expr smapCons(const Expr &offset, const Expr &value, const Expr &rest) {
   return mk<SMAP_CONS>(offset, value, rest);
 }
 /// store-map(a, base, ocl) (thesis Fig. 6.3 / 7.2).
-inline Expr storeMap(Expr a, Expr base, Expr ocl) {
+inline Expr storeMap(const Expr &a, const Expr &base, const Expr &ocl) {
   assert(isOpX<SMAP_CONS>(ocl) || isOpX<SMAP_NIL>(ocl));
   return mk<STORE_MAP>(a, base, ocl);
 }
 /// mcopy(Md, Ms, d, s, n): Md with [d, d + n) copied from Ms at s (Ms is the
 /// source as it was before the copy).
-inline Expr memCopy(Expr md, Expr ms, Expr d, Expr s, Expr n) {
+inline Expr memCopy(const Expr &md, const Expr &ms, const Expr &d,
+                    const Expr &s, const Expr &n) {
   ExprVector args{md, ms, d, s, n};
   return mknary<MEM_COPY>(args.begin(), args.end());
 }
 /// mset(M, d, n, v): M with [d, d + n) set to the cell value v.
-inline Expr memSet(Expr m, Expr d, Expr n, Expr v) {
+inline Expr memSet(const Expr &m, const Expr &d, const Expr &n, const Expr &v) {
   ExprVector args{m, d, n, v};
   return mknary<MEM_SET>(args.begin(), args.end());
 }
 /// mhavoc(M, H, d, n): M with [d, d + n) taken from the array H.
-inline Expr memHavoc(Expr m, Expr h, Expr d, Expr n) {
+inline Expr memHavoc(const Expr &m, const Expr &h, const Expr &d,
+                     const Expr &n) {
   ExprVector args{m, h, d, n};
   return mknary<MEM_HAVOC>(args.begin(), args.end());
 }
@@ -227,18 +234,20 @@ inline Expr alignArg(ExprFactory &ef, uint64_t align) {
 }
 /// wstore(M, a, v, al): the bytes of v at a .. (little endian); al is the
 /// access's promised alignment (meaning: not part of the value).
-inline Expr wstore(Expr m, Expr a, Expr v, uint64_t align = 1) {
+inline Expr wstore(const Expr &m, const Expr &a, const Expr &v,
+                   uint64_t align = 1) {
   ExprVector args{m, a, v, alignArg(m->efac(), align)};
   return mknary<W_STORE>(args.begin(), args.end());
 }
 /// wselect(M, a, S, al): the bytes at a .. as one value of the bit-vector
 /// sort S; al the access's promised alignment.
-inline Expr wselect(Expr m, Expr a, Expr resultSort, uint64_t align = 1) {
+inline Expr wselect(const Expr &m, const Expr &a, const Expr &resultSort,
+                    uint64_t align = 1) {
   ExprVector args{m, a, resultSort, alignArg(m->efac(), align)};
   return mknary<W_SELECT>(args.begin(), args.end());
 }
 /// The promised alignment of a width term (1 for anything else).
-inline uint64_t promisedAlign(Expr t) {
+inline uint64_t promisedAlign(const Expr &t) {
   if ((isOpX<W_SELECT>(t) || isOpX<W_STORE>(t)) && t->arity() == 4)
     return getTerm<unsigned>(t->arg(3));
   return 1;
