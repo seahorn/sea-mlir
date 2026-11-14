@@ -72,6 +72,11 @@ Scope, build, assumptions and known issues: [docs/Release.md](docs/Release.md).
     a regular file is written directly), and a failed write is an error of
     its own kind: `vc.print-lowered`, `place.out-file`, `vc.reach-programs`,
     `vc.ack-dump-pairs`, `vc.reach-witness`, `vc.split-smt2`.
+- z3 errors are reported. sea-mlir builds without exceptions, so z3++ ignored
+  them (and a failing call went on). `--z3-tactic` that z3 cannot parse
+  (`vc.z3-tactic`) and `--z3-param` that z3 rejects (`smt.z3-param`) are
+  errors; any other z3 error reaches a handler on every z3 context: kind
+  `smt.z3-internal`, non-zero exit.
 
 ### Tools and utilities
 - `sea-reduce` (mlir-reduce with sea patterns and the sea reduction tree)

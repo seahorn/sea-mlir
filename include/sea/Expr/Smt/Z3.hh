@@ -10,6 +10,7 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wsuggest-override"
 #pragma clang diagnostic ignored "-Wcast-qual"
+#include "sea/Expr/Smt/Z3Error.h"
 #include "z3++.h"
 #include "z3.h"
 
@@ -231,7 +232,12 @@ private:
 
   cache_type cache;
 
-  void init() { Z3_set_ast_print_mode(ctx, Z3_PRINT_SMTLIB2_COMPLIANT); }
+  void init() {
+    // z3++ cannot throw (no exceptions) and removes z3's own handler:
+    // without this, a z3 error would go unnoticed
+    installZ3ErrorHandler(ctx);
+    Z3_set_ast_print_mode(ctx, Z3_PRINT_SMTLIB2_COMPLIANT);
+  }
 
 protected:
   z3::context &get_ctx() { return ctx; }
@@ -314,6 +320,9 @@ public:
   ZContext(const ZContext &) = delete;
 
   ~ZContext() { cache.clear(); }
+
+  /// The C API context
+  Z3_context raw_context() { return ctx; }
 
   template <typename V>
   void set(char const *p, V v) {
@@ -733,6 +742,8 @@ public:
   /// the global parameters (the default tactic, sat.euf) when it does.
   /// Returns z3's message when that fails (an unknown tactic), else empty.
   std::string init() {
+    // the caller reports the error: not the internal-error handler
+    Z3ExpectErrors expect;
     Z3_solver_get_num_scopes(ctx, solver);
     Z3_error_code code = Z3_get_error_code(ctx);
     if (code == Z3_OK)
