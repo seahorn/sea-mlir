@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- LLVM/MLIR pin moved to `302c842d6601` (the upstream base of an IREE LLVM
+  integrate), from `93f05d753ad3`. The integer ranges of
+  `sea.sdiv` / `sea.srem` add sea's values for a zero divisor (upstream now
+  treats it as poison and bounds the nonzero divisors only).
+
 ## 0.1.1
 
 Same LLVM pin as 0.1.0. Verdicts are unchanged; the release adds reports
