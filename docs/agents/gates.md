@@ -259,7 +259,9 @@ entries (`--missing=zero`, `--fuzz=200 --seed=1`); each `sea-vc` run adds
 extra solver checks, the encodings without SeaM (`default`,
 `--mem=lambda`) and the read-table experiment (`xrt`), which take minutes
 on some vcc jobs, are `heavy`;
-`--quick` skips them. `--matrix FILE`
+`--quick` skips them for the inputs of `$SEA_BENCH_SUITES` (the bench
+corpus) only: the small programs of `test/VC` and `test/Interp` run every
+entry, heavy ones included. `--matrix FILE`
 or `--entry` replaces the matrix: one entry per line, `NAME TOOL [FLAGS]:
 ARGS`, with the flags `heavy`, `text` and `jsonl` (only that format).
 
@@ -267,24 +269,36 @@ Before any job, every flag of the matrix must be an option of both builds
 (`--help-hidden`): a flag that one build does not know would make both
 sides fail alike, which compares identical.
 
+An input that is neither a directory nor a file is an error
+(`error: no input <path>`, status 2).
+
 A job is `identical` when stdout, stderr and the exit status agree after
 masking, and the stat keys (`key: ...` lines, counted) and the BRUNCH_STAT
 keys agree. The masks are those of `utils/jsonl-check.py` (`<name>time
 <d.ddd>`, `time=`, `execs/s=`, `steps/s=`, `rss-mb=`, `vm-mb=`,
 `peak-rss-mb=`, `slowest-op=`), plus `<key>-mb <n>`, the `tool.version`
 line, the bin directory and the load address of each frame of a crash
-backtrace (it changes from run to run). In a JSON-object line (jsonl stdout, and the
+backtrace (it changes from run to run). A masked number keeps its shape:
+the sign and the number of fraction digits (`0.061` becomes `T.3`, `-0.1`
+`-T.1`, an integer `T`), so `time=2` and `time=0.002` differ, and so do
+`0.061` and `0.061000`. In a JSON-object line (jsonl stdout, and the
 jsonl log events on stderr) every string field is masked as text, a
-decimal field whose name contains `time` and a number field whose name
-ends in `-mb` are masked, and so is the value of a stat record with such a
-key. The stdout of a `--smt2` job is compared unmasked. A `DIFF` line
+decimal field whose name contains `time` and an integer field whose name
+ends in `-mb` or `_mb` are masked, and so is the value of a stat record
+with such a key. JSON types are kept (`3` and `"3"` differ); a line with a
+duplicate key is compared as text; the spacing between the tokens of a
+record is masked. The stdout of a `--smt2` job (the query) is compared
+unmasked; its stat lines are on stderr, which is compared as for any job,
+and its stat and BRUNCH_STAT key lists are taken from stderr. A `DIFF` line
 names what differs and the keys that moved (`keys=+added,-removed`,
 `brunch=...`), followed by the first differing lines; `--keep DIR` writes
 both sides' output.
 
 Each `entry:` line counts `rc-nonzero`, the jobs that failed alike on both
-sides: an entry whose jobs all fail checks nothing. The exit status is 1
-when a job is a `DIFF`, 2 on a timeout (`--timeout`, per run; NEW is not
+sides. Partial failures are allowed and reported; an entry whose every job
+failed alike checks nothing, so an `entry: <name> all-failed` line follows
+and the status is `incomplete`. The exit status is 1
+when a job is a `DIFF`, 2 on an all-failed entry, a timeout (`--timeout`, per run; NEW is not
 run after an OLD timeout), a run that
 could not start or a matrix flag a build refuses, and 0 when every job is
 identical. `--self-test` checks the masks and key lists without a build.

@@ -29,15 +29,45 @@ KEY-DAG: abs run text identical
 KEY: total: jobs=12 identical=4 diff=8 keys-diff=8 brunch-diff=0
 KEY: status: fail
 
+// A NEW sea-vc that only writes one extra stderr line: DIFF stderr, status fail.
+RUN: mkdir -p %t/err && ln -s %sea_bin/sea-run %t/err/sea-run
+RUN: sed 's|@BIN@|%sea_bin|' %t/wrap-err.sh > %t/err/sea-vc && chmod +x %t/err/sea-vc
+RUN: not %{od} --old %sea_bin --new %t/err --matrix %t/vconly %sea_src_root/test/VC/abs.mlir | FileCheck %s --check-prefix=ERR
+ERR: abs plain text DIFF stderr
+ERR: status: fail
+
+// A NEW sea-vc that only changes the exit status: DIFF rc=, status fail.
+RUN: mkdir -p %t/rc && ln -s %sea_bin/sea-run %t/rc/sea-run
+RUN: sed 's|@BIN@|%sea_bin|' %t/wrap-rc.sh > %t/rc/sea-vc && chmod +x %t/rc/sea-vc
+RUN: not %{od} --old %sea_bin --new %t/rc --matrix %t/vconly %sea_src_root/test/VC/abs.mlir | FileCheck %s --check-prefix=RC
+RC: abs plain text DIFF rc=
+RC: status: fail
+
+// A missing input is an error, not an empty corpus.
+RUN: not %{od} --old %sea_bin --new %sea_bin %{m} %t/no-such.mlir 2>&1 | FileCheck %s --check-prefix=NOIN
+NOIN: error: no input {{.*}}no-such.mlir
+
+// An entry whose every job fails on both sides checked nothing: incomplete.
+RUN: not %{od} --old %sea_bin --new %sea_bin --matrix %t/runonly %t/bad.mlir | FileCheck %s --check-prefix=ALLF
+ALLF: bad run text identical rc=1
+ALLF: entry: run tool=sea-run jobs=2 identical=2 diff=0 rc-nonzero=2
+ALLF-NEXT: entry: run all-failed
+ALLF: status: incomplete
+
 // A flag one build does not accept is refused before any job (both sides
 // would fail alike and compare identical).
 RUN: not %{od} --old %sea_bin --new %sea_bin --matrix %t/bad %{in} 2>&1 | FileCheck %s --check-prefix=FLAG
 FLAG: error: old: sea-vc does not accept --no-such-flag (entry x)
 
-// --quick drops the heavy entries of the built-in matrix.
-RUN: %{od} --quick --print-matrix | FileCheck %s --check-prefix=QUICK
-QUICK: matrix: seam-stats sea-vc: --lower --widen-memory=8 --seam --seam-stats --brunch-stats
-QUICK-NOT: eq-audit
+// --quick drops the heavy entries only for bench-corpus inputs: here
+// (inputs outside $SEA_BENCH_SUITES) every entry runs, so none is skipped.
+RUN: env SEA_BENCH_SUITES=%t/none %{od} --quick --old %sea_bin --new %sea_bin --matrix %t/heavy %sea_src_root/test/Interp/ptr/segment.mlir | FileCheck %s --check-prefix=QUICK
+QUICK: segment h text identical
+QUICK: skipped: -
+RUN: mkdir -p %t/suites/vcc && cp %sea_src_root/test/Interp/ptr/segment.mlir %t/suites/vcc/b.mlir
+RUN: env SEA_BENCH_SUITES=%t/suites %{od} --quick --old %sea_bin --new %sea_bin --matrix %t/heavy %t/suites/vcc | FileCheck %s --check-prefix=QUICKB
+QUICKB: entry: h tool=sea-run jobs=0
+QUICKB: skipped: h=2
 
 RUN: %{od} --agent | FileCheck %s --check-prefix=AGENT
 AGENT: STATUS:
@@ -46,6 +76,14 @@ AGENT: STATUS:
 seam sea-vc: --lower --seam --seam-stats --brunch-stats
 plain sea-vc: --brunch-stats
 run sea-run: --missing=zero
+//--- heavy
+h sea-run heavy: --missing=zero
+//--- vconly
+plain sea-vc: --brunch-stats
+//--- runonly
+run sea-run: --missing=zero
+//--- bad.mlir
+not a program
 //--- bad
 x sea-vc: --no-such-flag
 //--- wrap.sh
@@ -57,6 +95,17 @@ case " $* " in
 *) echo 'extra.key: 1' ;;
 esac
 exit $rc
+
+//--- wrap-err.sh
+#!/bin/sh
+"@BIN@/sea-vc" "$@"
+rc=$?
+echo 'one extra line' >&2
+exit $rc
+//--- wrap-rc.sh
+#!/bin/sh
+"@BIN@/sea-vc" "$@"
+exit 7
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
