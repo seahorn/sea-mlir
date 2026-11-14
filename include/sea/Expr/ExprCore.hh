@@ -9,10 +9,15 @@
 #include <boost/intrusive_ptr.hpp>
 #include <boost/pool/pool.hpp>
 
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Compiler.h"
+
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <set>
+#include <type_traits>
 #include <unordered_set>
 #include <vector>
 namespace expr {
@@ -97,6 +102,9 @@ public:
    **/
   virtual void Print(std::ostream &OS, const std::vector<ENode *> &args,
                      int depth = 0, bool brkt = true) const = 0;
+  /// Equality of operators; false for operators of different classes (one
+  /// unique table holds the nodes of all operators, ExprFactory). Terminals
+  /// rely on their TerminalKind for this: one kind per terminal type.
   virtual bool operator==(const Operator &rhs) const = 0;
   virtual bool operator<(const Operator &rhs) const = 0;
   virtual size_t hash() const = 0;
@@ -145,10 +153,8 @@ protected:
   std::unique_ptr<Operator, EFADeleter> m_oper;
 
   /// Release one reference. Releasing a node whose count is 0 is a bug
-  /// (expr.refcount-underflow): an unowned candidate is disposed of by
-  /// ExprFactory::freeNode, never released; a published node in its
-  /// adoption interval (count 0 until the first Expr wraps it) has no
-  /// reference to release.
+  /// (expr.refcount-underflow): a published node in its adoption interval
+  /// (count 0 until the first Expr wraps it) has no reference to release.
   void Deref() {
     if (count == 0)
       fatalCounter("expr.refcount-underflow", fac, this, count, 0);
@@ -171,12 +177,22 @@ public:
   /** returns the unique id of this expression */
   unsigned int getId() const { return id; }
 
-  void Ref() {
-    if (count == std::numeric_limits<unsigned int>::max())
+  LLVM_ATTRIBUTE_ALWAYS_INLINE void Ref() {
+    if (LLVM_UNLIKELY(count == std::numeric_limits<unsigned int>::max()))
       fatalCounter("expr.refcount-overflow", fac, this, count, count);
     ++count;
   }
   bool isGarbage() const { return count == 0; }
+  /// Release a reference that is not the last one: true when done (count was
+  /// > 1); false leaves the count unchanged for ExprFactory::derefLast (the
+  /// last reference, and an underflow).
+  LLVM_ATTRIBUTE_ALWAYS_INLINE bool releaseShared() {
+    if (count > 1) {
+      --count;
+      return true;
+    }
+    return false;
+  }
   bool isMutable() const { return m_oper->isMutable(); }
 
   unsigned int use_count() { return count; }
@@ -236,34 +252,64 @@ inline std::ostream &operator<<(std::ostream &OS, const ENode *v) {
   return OS;
 }
 
-/// \brief Hash function used by ExprFactory
-struct ENodeUniqueHash {
-  std::size_t operator()(const ENode *e) const {
-    size_t res = e->op().hash();
-
-    size_t a = e->arity();
-    if (a == 0)
-      return res;
-
-    auto it = e->args_begin();
-    if (a >= 1)
-      boost::hash_combine(res, *it);
-
-    if (a >= 2)
-      boost::hash_combine(res, boost::hash_range(it, e->args_end()));
-
+/// The hash of the unique table: operator \p op applied to the arguments
+/// [b, e). One definition for the nodes in the table and for lookup keys.
+template <typename iterator>
+size_t uniqueHash(const Operator &op, iterator b, iterator e) {
+  size_t res = op.hash();
+  if (b == e)
     return res;
+  boost::hash_combine(res, *b);
+  if (std::next(b) != e)
+    boost::hash_combine(res, boost::hash_range(b, e));
+  return res;
+}
+
+/// The structure the unique table compares: an operator applied to the
+/// argument pointers [b, e) (a node, or a candidate no node holds yet).
+struct UniqueProbe {
+  const Operator *op;
+  ENode *const *b;
+  ENode *const *e;
+  size_t hash;
+};
+
+/// An element of the unique table (\p node set), or a lookup key that
+/// borrows a candidate's operator and arguments for one lookup (\p probe
+/// set): ExprFactory looks a candidate up before it builds a node.
+struct UniqueKey {
+  ENode *node = nullptr;
+  const UniqueProbe *probe = nullptr;
+};
+
+struct UniqueKeyHash {
+  size_t operator()(const UniqueKey &k) const {
+    if (k.probe)
+      return k.probe->hash;
+    return uniqueHash(k.node->op(), k.node->args_begin(), k.node->args_end());
   }
 };
 
-/// \brief Equality function used by ExprFactory
-struct ENodeUniqueEqual {
-  bool operator()(ENode *const &e1, ENode *const &e2) const {
-    // same arity, same operator, identical children
-    if (e1->arity() == e2->arity() && e1->op() == e2->op())
-      return std::equal(e1->args_begin(), e1->args_end(), e2->args_begin());
+/// Same arity, same operator, identical children.
+struct UniqueKeyEqual {
+  bool operator()(const UniqueKey &x, const UniqueKey &y) const {
+    if (x.probe)
+      return y.probe ? equal(*x.probe, *y.probe) : equal(*x.probe, y.node);
+    return y.probe ? equal(*y.probe, x.node) : equal(x.node, y.node);
+  }
 
-    return false;
+private:
+  static bool equal(const UniqueProbe &p, const ENode *n) {
+    return size_t(p.e - p.b) == n->arity() && *p.op == n->op() &&
+           std::equal(p.b, p.e, n->args_begin());
+  }
+  static bool equal(const UniqueProbe &p, const UniqueProbe &q) {
+    return p.e - p.b == q.e - q.b && *p.op == *q.op &&
+           std::equal(p.b, p.e, q.b);
+  }
+  static bool equal(const ENode *n, const ENode *m) {
+    return n->arity() == m->arity() && n->op() == m->op() &&
+           std::equal(n->args_begin(), n->args_end(), m->args_begin());
   }
 };
 
@@ -310,12 +356,10 @@ public:
 
 class ExprFactory : boost::noncopyable {
 protected:
-  using unique_entry_type =
-      std::unordered_set<ENode *, ENodeUniqueHash, ENodeUniqueEqual>;
-
-  using unique_key_type = std::string;
-  // -- type of the unique table
-  using unique_type = std::map<unique_key_type, unique_entry_type>;
+  // -- type of the unique table: one set for all operators (the hash and
+  // -- the equality include the operator, Operator::operator==)
+  using unique_type =
+      std::unordered_set<UniqueKey, UniqueKeyHash, UniqueKeyEqual>;
 
   using caches_type = boost::ptr_vector<CacheStub>;
 
@@ -345,12 +389,9 @@ protected:
   void Remove(ENode *val) {
     clearCaches(val);
     if (!val->isMutable()) {
-      unique_type::iterator it = unique.find(val->op().name());
       // -- can only remove things that have been inserted before
-      assert(it != unique.end());
-      it->second.erase(val);
-      if (it->second.empty())
-        unique.erase(it);
+      [[maybe_unused]] size_t n = unique.erase(UniqueKey{val});
+      assert(n == 1);
     }
     freeNode(val);
   }
@@ -363,63 +404,75 @@ protected:
       c.erase(val);
   }
 
-  /**
-   * Return the canonical (unique) representative of the given ENode \p v
-   * The node \p v should not be used after the call
-   */
-  ENode *canonize(ENode *v) {
-    if (v->isMutable()) {
-      v->setId(uniqueId());
-      return v;
+  /// The node \p op applied to the arguments [b, e): the node of the unique
+  /// table if there is one (a lookup: no operator clone, no allocation, no
+  /// reference counting), else a new node (the operator cloned, a reference
+  /// to every argument, the next id). Nodes of mutable operators are never
+  /// shared: always new, never in the table.
+  ENode *mkNode(const Operator &op, ENode *const *b, ENode *const *e) {
+    const bool shared = !op.isMutable();
+    if (shared) {
+      UniqueProbe p{&op, b, e, uniqueHash(op, b, e)};
+      auto it = unique.find(UniqueKey{nullptr, &p});
+      if (it != unique.end())
+        return it->node;
     }
-
-    auto x = unique[v->op().name()].insert(v);
-    if (x.second) {
-      v->setId(uniqueId());
-      return v;
-    } else {
-      freeNode(v);
-      return *x.first;
+    ENode *v = allocNode(op);
+    for (; b != e; ++b)
+      v->push_back(*b);
+    if (shared) {
+      [[maybe_unused]] bool inserted = unique.insert(UniqueKey{v}).second;
+      assert(inserted);
     }
+    v->setId(uniqueId());
+    return v;
   }
 
-  ENode *mkExpr(const Operator &op) { return canonize(allocNode(op)); }
+  ENode *mkExpr(const Operator &op) { return mkNode(op, nullptr, nullptr); }
 
   template <typename etype>
   ENode *mkExpr(const Operator &op, etype e) {
-    ENode *eVal = allocNode(op);
-    eVal->push_back(eptr(e));
-    return canonize(eVal);
+    ENode *a[] = {eptr(e)};
+    return mkNode(op, std::begin(a), std::end(a));
   }
 
   /** binary */
   template <typename etype>
   ENode *mkExpr(const Operator &op, etype e1, etype e2) {
-    ENode *eVal = allocNode(op);
-    eVal->push_back(eptr(e1));
-    eVal->push_back(eptr(e2));
-    return canonize(eVal);
+    ENode *a[] = {eptr(e1), eptr(e2)};
+    return mkNode(op, std::begin(a), std::end(a));
   }
 
   /** ternary */
   template <typename etype>
   ENode *mkExpr(const Operator &op, etype e1, etype e2, etype e3) {
-    ENode *eVal = allocNode(op);
-    eVal->push_back(eptr(e1));
-    eVal->push_back(eptr(e2));
-    eVal->push_back(eptr(e3));
-    return canonize(eVal);
+    ENode *a[] = {eptr(e1), eptr(e2), eptr(e3)};
+    return mkNode(op, std::begin(a), std::end(a));
   }
 
   /** n-ary
-     iterator ranges over cost ENode*
+     iterator ranges over ENode* or Expr. Each element is dereferenced once
+     here; callers may dereference or traverse the range again. An iterator that
+     yields values (e.g. an Expr made on the fly) has them held here until the
+     node holds its own references.
   */
   template <typename iterator>
   ENode *mkNExpr(const Operator &op, iterator begin, iterator end) {
-    ENode *eVal = allocNode(op);
-    for (; begin != end; ++begin)
-      eVal->push_back(eptr(*begin));
-    return canonize(eVal);
+    if constexpr (std::is_lvalue_reference_v<decltype(*begin)>) {
+      // the range owns its elements: plain pointers suffice
+      llvm::SmallVector<ENode *, 8> a;
+      for (; begin != end; ++begin)
+        a.push_back(eptr(*begin));
+      return mkNode(op, a.begin(), a.end());
+    } else {
+      llvm::SmallVector<Expr, 8> held;
+      llvm::SmallVector<ENode *, 8> a;
+      for (; begin != end; ++begin) {
+        held.push_back(Expr(eptr(*begin)));
+        a.push_back(held.back().get());
+      }
+      return mkNode(op, a.begin(), a.end());
+    }
   }
 
 private:
@@ -444,8 +497,17 @@ public:
       removed and recycled, and the references it held are released in turn.
       Iterative: releasing the root of a deep chain (a VC store chain) does
       not recurse once per level; nodes that die during a release are queued
-      and removed by the outermost call. */
-  void Deref(ENode *val) {
+      and removed by the outermost call. A reference that is not the last one
+      is released inline (the common case); the rest goes out of line. */
+  LLVM_ATTRIBUTE_ALWAYS_INLINE void Deref(ENode *val) {
+    if (LLVM_LIKELY(val->releaseShared()))
+      return;
+    derefLast(val);
+  }
+
+  /// The slow path of Deref: the last reference (or an underflow, which
+  /// aborts in ENode::Deref).
+  [[gnu::cold]] LLVM_ATTRIBUTE_NOINLINE void derefLast(ENode *val) {
     val->Deref();
     if (!val->isGarbage())
       return;
@@ -464,11 +526,14 @@ public:
   /*===================== PUBLIC API ========================================*/
 
   Expr mkTerm(const Operator &o) { return Expr(mkExpr(o)); }
-  Expr mkUnary(const Operator &o, Expr e) { return Expr(mkExpr(o, e.get())); }
-  Expr mkBin(const Operator &o, Expr e1, Expr e2) {
+  Expr mkUnary(const Operator &o, const Expr &e) {
+    return Expr(mkExpr(o, e.get()));
+  }
+  Expr mkBin(const Operator &o, const Expr &e1, const Expr &e2) {
     return Expr(mkExpr(o, e1.get(), e2.get()));
   }
-  Expr mkTern(const Operator &o, Expr e1, Expr e2, Expr e3) {
+  Expr mkTern(const Operator &o, const Expr &e1, const Expr &e2,
+              const Expr &e3) {
     return Expr(mkExpr(o, e1.get(), e2.get(), e3.get()));
   }
   template <typename iterator>
@@ -526,7 +591,7 @@ inline void operator delete(void *p, expr::ExprFactoryAllocator &alloc) {
 
 namespace expr {
 
-/// Disposes of a dead node or of a duplicate candidate: always releases the
+/// Disposes of a dead node (removed from the unique table): releases the
 /// references it holds and destroys its operator; then keeps the storage on
 /// the free list (with its argument vector's capacity) or, with a full list,
 /// destroys the node and frees it.
@@ -536,7 +601,7 @@ inline void ExprFactory::freeNode(ENode *n) {
     Deref(a);
   n->args.clear();
   n->m_oper.reset();
-  n->id = 0; // unassigned until canonize gives it a new one
+  n->id = 0; // unassigned until mkNode gives it a new one
   if (freeList.size() < FREE_LIST_MAX_SIZE) {
     freeList.push_back(n);
     return;
@@ -611,9 +676,15 @@ inline ENode::~ENode() {
 }
 
 /** Required by boost::intrusive_ptr */
-inline void intrusive_ptr_add_ref(ENode *v) { v->Ref(); }
+LLVM_ATTRIBUTE_ALWAYS_INLINE void intrusive_ptr_add_ref(ENode *v) { v->Ref(); }
 
-inline void intrusive_ptr_release(ENode *v) { v->efac().Deref(v); }
+LLVM_ATTRIBUTE_ALWAYS_INLINE void intrusive_ptr_release(ENode *v) {
+  // fast path: a reference that is not the last one is released inline; the
+  // last one (and an underflow) goes through the factory
+  if (LLVM_LIKELY(v->releaseShared()))
+    return;
+  v->efac().derefLast(v);
+}
 
 } // namespace expr
 

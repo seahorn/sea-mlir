@@ -38,7 +38,7 @@ namespace op {
 namespace boolop {
 /// size of an expression in terms of ANDs, ORs, and inputs.
 /// NEG is not counted, other BoolOps are treated as inputs.
-unsigned circSize(Expr e) {
+unsigned circSize(const Expr &e) {
   CIRCSIZE csz;
   dagVisit(csz, e);
   return csz.size();

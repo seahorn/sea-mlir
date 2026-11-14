@@ -62,8 +62,8 @@ Scope, build, assumptions and known issues: [docs/Release.md](docs/Release.md).
   - `--seam-check` on a build without Bitwuzla (`--solver=bitwuzla`) now
     reports `vc.solver-unavailable` under `--smt2` and `--vcgen-only`; it was
     skipped silently there.
-  - `--x-read-table-check-timeout=0` no longer sets z3's `timeout=0`: the
-    same behaviour (no timeout), no parameter set.
+  - Removed the hidden `--x-read-table*` experiment (a guarded read table at
+    the solver boundary; design and data are in the project notes).
   - `--z3-tactic` applies to the solver of the verdict only, no longer to
     the auxiliary checks; a tactic z3 rejects is the error `vc.z3-tactic`.
   - Output files (`--print-lowered`, `--place-out`, `--reach-programs`,
@@ -72,6 +72,12 @@ Scope, build, assumptions and known issues: [docs/Release.md](docs/Release.md).
     a regular file is written directly), and a failed write is an error of
     its own kind: `vc.print-lowered`, `place.out-file`, `vc.reach-programs`,
     `vc.ack-dump-pairs`, `vc.reach-witness`, `vc.split-smt2`.
+- z3 errors are reported. sea-mlir builds without exceptions, so z3++ ignored
+  them (and a failing call went on). `--z3-tactic` that z3 cannot parse
+  (`vc.z3-tactic`) and `--z3-param` that z3 rejects (`smt.z3-param`) are
+  errors; any other z3 error reaches a handler on every z3 context: kind
+  `smt.z3-internal`, non-zero exit. A z3 memory-out is not one of
+  these: it ends as unknown (exit 3), as a memory limit does.
 
 ### Tools and utilities
 - `sea-reduce` (mlir-reduce with sea patterns and the sea reduction tree)

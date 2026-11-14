@@ -72,7 +72,6 @@
 // --brunch-stats gives the result as --vcgen-only does.
 // RUN: not sea-vc %s --lower --program=alias --seam --split-candidates --seam-check 2>&1 | FileCheck %s --check-prefix=SOLVES
 // RUN: not sea-vc %s --lower --program=alias --seam --split-candidates --eq-audit 2>&1 | FileCheck %s --check-prefix=SOLVES
-// RUN: not sea-vc %s --lower --program=alias --seam --split-candidates --x-read-table-check=1 2>&1 | FileCheck %s --check-prefix=SOLVES
 // RUN: sea-vc %s --lower --program=alias --seam --split-candidates --brunch-stats | FileCheck %s --check-prefix=BRUNCH
 // SOLVES: --split-candidates solves nothing
 // BRUNCH: BRUNCH_STAT result none

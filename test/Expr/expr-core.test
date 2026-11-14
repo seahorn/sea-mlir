@@ -1,12 +1,14 @@
 // Counter invariants of the Expr core (include/sea/Expr/ExprCore.hh,
 // fatalCounter): always checked (Release too), fail at the cause, no
 // recovery. unittests/ExprCore: the last allowed count and id, ordinary
-// release, duplicate candidates, id reset on recycling; then each broken
+// release, duplicate terms, id reset on recycling, lookup before
+// building (no operator clone, no id on a hit); then each broken
 // invariant aborts before the counter changes.
 RUN: sea-expr-core-test | FileCheck %s
 CHECK: test: limits ok
 CHECK: test: lifecycle ok
 CHECK: test: reclamation ok
+CHECK: test: lookup ok
 CHECK: failures: 0
 RUN: not --crash sea-expr-core-test refcount-overflow 2>&1 | FileCheck %s --check-prefix=OVF
 OVF: error: [expr.refcount-overflow] Expr counter invariant broken: {{.*}} value=4294967295

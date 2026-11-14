@@ -2051,12 +2051,15 @@ public:
     auto tz = [&](const mpz_class &x) { return LeafDecider::tz(x, n); };
     if (tz(mpz_class(a.c - b.c)) < t)
       return false;
+    // the atoms in the maps' order (by id)
+    const std::less<ENode *> before;
     auto ia = a.coef.begin(), ib = b.coef.begin();
     while (ia != a.coef.end() || ib != b.coef.end()) {
       mpz_class c;
-      if (ib == b.coef.end() || (ia != a.coef.end() && ia->first < ib->first))
+      if (ib == b.coef.end() ||
+          (ia != a.coef.end() && before(ia->first, ib->first)))
         c = (ia++)->second;
-      else if (ia == a.coef.end() || ib->first < ia->first)
+      else if (ia == a.coef.end() || before(ib->first, ia->first))
         c = (ib++)->second;
       else
         c = (ia++)->second - (ib++)->second;
@@ -3140,12 +3143,15 @@ public:
     auto tz = [&](const mpz_class &x) { return LeafDecider::tz(x, n); };
     unsigned t = n;
     bool any = false;
+    // the atoms in the maps' order (by id)
+    const std::less<ENode *> before;
     auto ia = la.coef.begin(), ib = lb.coef.begin();
     while (ia != la.coef.end() || ib != lb.coef.end()) {
       mpz_class c;
-      if (ib == lb.coef.end() || (ia != la.coef.end() && ia->first < ib->first))
+      if (ib == lb.coef.end() ||
+          (ia != la.coef.end() && before(ia->first, ib->first)))
         c = (ia++)->second;
-      else if (ia == la.coef.end() || ib->first < ia->first)
+      else if (ia == la.coef.end() || before(ib->first, ia->first))
         c = mpz_class(0L) - (ib++)->second;
       else
         c = (ia++)->second - (ib++)->second;

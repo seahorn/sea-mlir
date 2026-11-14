@@ -134,7 +134,7 @@ NOP(CASES, "cases", FUNCTIONAL, BoolOp, typeCheck::boolType::Cases)
 namespace boolop {
 /// e1 && e2. Folds: x && x = x; true && x = x; x && true = x;
 /// false && x = x && false = false.
-inline Expr land(Expr e1, Expr e2) {
+inline Expr land(const Expr &e1, const Expr &e2) {
   if (e1 == e2)
     return e1;
 
@@ -150,7 +150,7 @@ inline Expr land(Expr e1, Expr e2) {
 
 /// e1 || e2. Folds: x || x = x; false || x = x; x || false = x;
 /// true || x = x || true = true.
-inline Expr lor(Expr e1, Expr e2) {
+inline Expr lor(const Expr &e1, const Expr &e2) {
   if (e1 == e2)
     return e1;
 
@@ -165,7 +165,7 @@ inline Expr lor(Expr e1, Expr e2) {
 
 /// e1 -> e2. Folds: true -> x = x; x -> true = true; false -> x = true;
 /// x -> x = true. (x -> false is not folded to !x: it would add a negation.)
-inline Expr limp(Expr e1, Expr e2) {
+inline Expr limp(const Expr &e1, const Expr &e2) {
   // TRUE -> x  IS x
   if (isOpX<TRUE>(e1))
     return e2;
@@ -186,7 +186,7 @@ inline Expr limp(Expr e1, Expr e2) {
 
 /// ite(c, t, e) of any sort. Folds: ite(true, t, e) = t; ite(false, t, e) =
 /// e; ite(c, t, t) = t.
-inline Expr lite(Expr c, Expr t, Expr e) {
+inline Expr lite(const Expr &c, const Expr &t, const Expr &e) {
   if (isOpX<TRUE>(c))
     return t;
   if (isOpX<FALSE>(c))
@@ -198,7 +198,7 @@ inline Expr lite(Expr c, Expr t, Expr e) {
 }
 
 /// !e1. Folds: !true = false; !false = true; !!x = x.
-inline Expr lneg(Expr e1) {
+inline Expr lneg(const Expr &e1) {
   if (isOpX<TRUE>(e1))
     return mk<FALSE>(e1->efac());
   if (isOpX<FALSE>(e1))
@@ -239,7 +239,7 @@ Expr naryFold(const R &r, ExprFactory &efac, Bin binary) {
 template <typename R>
 Expr land(const R &r, ExprFactory &efac) {
   return detail::naryFold<AND, TRUE, FALSE>(
-      r, efac, [](Expr a, Expr b) { return land(a, b); });
+      r, efac, [](const Expr &a, const Expr &b) { return land(a, b); });
 }
 
 /// The disjunction of a range of Boolean terms; the empty range is false.
@@ -247,7 +247,7 @@ Expr land(const R &r, ExprFactory &efac) {
 template <typename R>
 Expr lor(const R &r, ExprFactory &efac) {
   return detail::naryFold<OR, FALSE, TRUE>(
-      r, efac, [](Expr a, Expr b) { return lor(a, b); });
+      r, efac, [](const Expr &a, const Expr &b) { return lor(a, b); });
 }
 
 /// The conjunction of a nonempty range (the factory is taken from its first
@@ -258,13 +258,13 @@ Expr land(const R &r) {
   return land(r, (*std::begin(r))->efac());
 }
 
-unsigned circSize(Expr e);
+unsigned circSize(const Expr &e);
 unsigned circSize(const ExprVector &vec);
 
 /**
  * Very simple simplifier for Boolean Operators
  */
-Expr simplify(Expr exp);
+Expr simplify(const Expr &exp);
 
 /**
  * Very simple normalizer for AND/OR expressions
@@ -322,7 +322,7 @@ inline Expr make(const ExprVector &args, TypeChecker &tc, std::string &why) {
 /// boolop::lite: lite(c0, v0, lite(c1, v1, ... lite(ck, vk, vdefault))).
 /// Equal to the chain VCGen builds for a join with the same edges and values
 /// (VCGen.cpp, computePathCondForBb).
-inline Expr expand(Expr e) {
+inline Expr expand(const Expr &e) {
   assert(isOpX<CASES>(e) && e->arity() >= 3 && e->arity() % 2 == 1);
   Expr val = e->last();
   for (size_t j = e->arity() - 1; j >= 2; j -= 2)

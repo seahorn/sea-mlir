@@ -5,18 +5,20 @@
 //
 // Plain-main driver (no gtest), run by test/Expr/expr-core.test. Without an
 // argument: the boundary cases that must work (the last allowed reference
-// count and id, ordinary final release, duplicate candidates, id reset on
-// recycling); prints `test: <name> ok` lines, exits non-zero on a failed
-// check. With one argument, a crash mode that must abort at its cause
-// (lit: `not --crash`): refcount-overflow, refcount-underflow, id-exhausted.
-// Counters are set near their limits through ExprCoreTestAccess (never by
-// building billions of nodes).
+// count and id, ordinary final release, duplicate terms, id reset on
+// recycling, lookup of an existing term before building one); prints `test:
+// <name> ok` lines, exits non-zero on a failed check. With one argument, a
+// crash mode that must abort at its cause (lit: `not --crash`):
+// refcount-overflow, refcount-underflow, id-exhausted. Counters are set near
+// their limits through ExprCoreTestAccess (never by building billions of
+// nodes).
 //
 //===----------------------------------------------------------------------===//
 
 #include "sea/Expr/Expr.hh"
 #include <boost/functional/hash.hpp>
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstring>
@@ -71,17 +73,17 @@ void testLimits() {
 
 void testLifecycle() {
   ExprFactory f;
-  // duplicate candidates: the same term twice is one node (the second
-  // candidate is disposed of, its children released)
+  // duplicate terms: the same term twice is one node, and the second mk
+  // leaves the children's counts as they were
   Expr x = var(f, "x");
   const unsigned x0 = A::count(x.get());
   Expr a = mk<BADD>(x, x);
   CHECK(A::count(x.get()) == x0 + 2,
         "two child edges of the new node: " << A::count(x.get()) - x0);
   Expr b = mk<BADD>(x, x);
-  CHECK(a == b, "duplicate candidate canonized");
+  CHECK(a == b, "duplicate term is the same node");
   CHECK(A::count(x.get()) == x0 + 2,
-        "the duplicate candidate released its child edges: "
+        "the duplicate term holds no child edges of its own: "
             << A::count(x.get()) - x0);
   // ordinary final release: the node goes to the free list with id 0
   size_t before = A::freeListSize(f);
@@ -102,12 +104,17 @@ void testLifecycle() {
 /// are destroyed, not only their storage freed).
 struct Counted {
   static long live;
+  static long copies;
   int v;
   explicit Counted(int x) : v(x) { ++live; }
-  Counted(const Counted &o) : v(o.v) { ++live; }
+  Counted(const Counted &o) : v(o.v) {
+    ++live;
+    ++copies;
+  }
   ~Counted() { --live; }
 };
 long Counted::live = 0;
+long Counted::copies = 0;
 struct CountedTrait {
   static void print(std::ostream &OS, const Counted &c, int, bool) {
     OS << "counted" << c.v;
@@ -117,7 +124,7 @@ struct CountedTrait {
     return a.v == b.v;
   }
   static size_t hash(const Counted &c) { return std::hash<int>()(c.v); }
-  static TerminalKind getKind() { return TerminalKind::UINT; }
+  static TerminalKind getKind() { return TerminalKind::TEST_ONLY; }
   static std::string name() { return "test::Counted"; }
   static Expr inferType(Expr exp, TypeChecker &) { return Expr(); }
 };
@@ -134,10 +141,10 @@ void testReclamation() {
       for (int i = 0; i < 10000; ++i)
         keep.push_back(f.mkTerm(CountedOp(Counted(i))));
       CHECK(Counted::live == base + 10000, "one operator per node");
-      // a duplicate candidate's operator is destroyed too
+      // a duplicate term leaves no operator copy behind
       Expr d = f.mkTerm(CountedOp(Counted(7)));
       CHECK(d == keep[7] && Counted::live == base + 10000,
-            "duplicate candidate operator destroyed: " << Counted::live);
+            "duplicate term operator not kept: " << Counted::live);
     }
     CHECK(Counted::live == base, "operators destroyed on release: "
                                      << Counted::live - base << " left");
@@ -167,6 +174,39 @@ void testReclamation() {
   llvm::outs() << "test: reclamation ok\n";
 }
 
+/// A term that exists already is found before anything is built: no
+/// operator clone (a copy of the terminal value), no new id. An argument
+/// range that yields fresh terms by value keeps them alive until the node
+/// holds them.
+void testLookup() {
+  ExprFactory f;
+  CountedOp o(Counted(7));
+  Expr t = f.mkTerm(o);
+  const long c0 = Counted::copies;
+  const unsigned made = f.nodesMade();
+  Expr u = f.mkTerm(o);
+  CHECK(u == t, "the existing node");
+  CHECK(Counted::copies == c0,
+        "no operator clone on a hit: " << Counted::copies - c0 << " copies");
+  CHECK(f.nodesMade() == made, "no id on a hit");
+  Expr x = var(f, "x");
+  Expr s = mk<BADD>(x, x);
+  const unsigned x0 = A::count(x.get());
+  CHECK(mk<BADD>(x, x) == s && A::count(x.get()) == x0,
+        "a hit leaves the argument counts");
+
+  std::vector<std::string> names = {"p", "q"};
+  auto fresh = llvm::map_range(
+      names, [&f](const std::string &n) { return var(f, n.c_str()); });
+  Expr sum = mknary<BADD>(fresh);
+  CHECK(sum->arity() == 2, "two arguments");
+  CHECK(sum->arg(0) == var(f, "p").get() && sum->arg(1) == var(f, "q").get(),
+        "the arguments made by the range are the node's");
+  CHECK(A::id(sum->arg(0)) != 0 && A::count(sum->arg(0)) == 1,
+        "an argument made by the range is held by the node only");
+  llvm::outs() << "test: lookup ok\n";
+}
+
 int crash(const char *mode) {
   ExprFactory f;
   if (!std::strcmp(mode, "refcount-overflow")) {
@@ -194,6 +234,7 @@ int main(int argc, char **argv) {
   testLimits();
   testLifecycle();
   testReclamation();
+  testLookup();
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

@@ -87,7 +87,7 @@ inline Expr unintBVar(unsigned idx, ExprFactory &efac) {
   return unintVar(mkTerm(BoundVar(idx), efac));
 }
 
-inline bool isBVar(Expr e) {
+inline bool isBVar(const Expr &e) {
   return isOpX<BIND>(e) && isOpX<BVAR>(bind::name(e));
 }
 

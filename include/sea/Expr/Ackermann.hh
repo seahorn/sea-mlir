@@ -352,12 +352,15 @@ private:
   bool apart(const Linear &x, const Linear &y) const {
     const unsigned w = m_lf.width();
     unsigned t = w;
+    // the atoms in the maps' order (by id)
+    const std::less<ENode *> before;
     auto i = x.coef.begin(), j = y.coef.begin();
     while ((i != x.coef.end() || j != y.coef.end()) && t > 0) {
-      if (j == y.coef.end() || (i != x.coef.end() && i->first < j->first)) {
+      if (j == y.coef.end() ||
+          (i != x.coef.end() && before(i->first, j->first))) {
         t = std::min(t, tz(i->second, w));
         ++i;
-      } else if (i == x.coef.end() || j->first < i->first) {
+      } else if (i == x.coef.end() || before(j->first, i->first)) {
         t = std::min(t, tz(j->second, w));
         ++j;
       } else {
@@ -879,12 +882,14 @@ private:
   template <typename Key>
   static unsigned diffTrailingZeros(const Key &a, const Key &b, unsigned w) {
     unsigned t = w;
+    // the atoms in the keys' order (by id, LinearForms::key)
+    const std::less<ENode *> before;
     auto i = a.begin(), j = b.begin();
     while ((i != a.end() || j != b.end()) && t > 0) {
-      if (j == b.end() || (i != a.end() && i->first < j->first)) {
+      if (j == b.end() || (i != a.end() && before(i->first, j->first))) {
         t = std::min(t, mpzTrailingZeros(i->second, w));
         ++i;
-      } else if (i == a.end() || j->first < i->first) {
+      } else if (i == a.end() || before(j->first, i->first)) {
         t = std::min(t, mpzTrailingZeros(j->second, w));
         ++j;
       } else {

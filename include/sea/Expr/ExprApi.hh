@@ -16,14 +16,14 @@ namespace expr {
 // -- usage isOp<TYPE>(EXPR) . Returns true if top operator of
 // -- expression is a subclass of TYPE.
 template <typename O, typename T>
-bool isOp(T e) {
+bool isOp(const T &e) {
   return llvm::isa<O>(&eptr(e)->op());
 }
 
 // -- usage isOpX<TYPE>(EXPR) . Returns true if top operator of
 // -- expression is of type TYPE.
 template <typename O, typename T>
-bool isOpX(T e) {
+bool isOpX(const T &e) {
   return isOp<O>(e);
 }
 
@@ -49,7 +49,7 @@ Expr mkTerm(T v, ExprFactory &f) {
 }
 
 template <typename T>
-T getTerm(Expr e) {
+T getTerm(const Expr &e) {
   using term_type = Terminal<T>;
   assert(llvm::isa<term_type>(e->op()));
   return llvm::dyn_cast<const term_type>(&e->op())->get();
@@ -59,17 +59,17 @@ T getTerm(Expr e) {
  * Usage: mk<NEG> (exp)
  */
 template <typename T>
-Expr mk(Expr e) {
+Expr mk(const Expr &e) {
   return e->efac().mkUnary(T(), e);
 }
 
 template <typename T>
-Expr mk(Expr e1, Expr e2) {
+Expr mk(const Expr &e1, const Expr &e2) {
   return e1->efac().mkBin(T(), e1, e2);
 }
 
 template <typename T>
-Expr mk(Expr e1, Expr e2, Expr e3) {
+Expr mk(const Expr &e1, const Expr &e2, const Expr &e3) {
   return e1->efac().mkTern(T(), e1, e2, e3);
 }
 
@@ -86,7 +86,7 @@ Expr mknary(iterator bgn, iterator end) {
 }
 
 template <typename T, typename iterator>
-Expr mknary(Expr base, iterator bgn, iterator end) {
+Expr mknary(const Expr &base, iterator bgn, iterator end) {
   if (bgn == end)
     return base;
   if (std::distance(bgn, end) == 1)
@@ -102,7 +102,7 @@ Expr mknary(const Range &r) {
 }
 
 template <typename T, typename Range>
-Expr mknary(Expr base, const Range &r) {
+Expr mknary(const Expr &base, const Range &r) {
   return mknary<T>(base, std::begin(r), std::end(r));
 }
 
@@ -116,13 +116,16 @@ Expr mknary(Expr base, const Range &r) {
  */
 inline Expr mk(const Operator &op, ExprFactory &f) { return f.mkTerm(op); }
 
-inline Expr mk(const Operator &o, Expr e) { return e->efac().mkUnary(o, e); }
+inline Expr mk(const Operator &o, const Expr &e) {
+  return e->efac().mkUnary(o, e);
+}
 
-inline Expr mk(const Operator &o, Expr e1, Expr e2) {
+inline Expr mk(const Operator &o, const Expr &e1, const Expr &e2) {
   return e1->efac().mkBin(o, e1, e2);
 }
 
-inline Expr mk(const Operator &o, Expr e1, Expr e2, Expr e3) {
+inline Expr mk(const Operator &o, const Expr &e1, const Expr &e2,
+               const Expr &e3) {
   return e1->efac().mkTern(o, e1, e2, e3);
 }
 

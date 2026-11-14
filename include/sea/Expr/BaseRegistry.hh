@@ -78,7 +78,7 @@ public:
 
   /// \p twin names the object of base constant \p constant too: the
   /// erased bv(w) constant of a ptr(w) base (PtrSort S2e), so the readers of
-  /// the solver's terms (eq-audit's shapes, xrt) know the object.
+  /// the solver's terms (eq-audit's shapes) know the object.
   void addAlias(const Expr &twin, const Expr &constant) {
     auto it = m_index.find(constant);
     if (it != m_index.end() && twin != constant)

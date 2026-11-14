@@ -6,6 +6,7 @@
 #include "sea/Expr/Smt/SolverFactory.h"
 
 #include "sea/Expr/Smt/EZ3.hh"
+#include "sea/Expr/Smt/Z3Error.h"
 #include "sea/Expr/Smt/Z3SolverImpl.hh"
 #include "sea/Support/Diag.h"
 #ifdef WITH_YICES2
@@ -131,7 +132,21 @@ std::unique_ptr<Solver> makeSolver(expr::ExprFactory &efac, Backend backend,
   switch (backend) {
   case Backend::Z3: {
     auto z = std::make_unique<z3_solver_impl>(efac);
+    if (config.z3PlantError)
+      plantZ3Error(z->get_context().raw_context());
     z3Limits(*z, limits, config, config.z3Relevancy0Push);
+    // z3 reports a tactic it cannot parse on its own output only and goes on
+    // with its default: check it first (z3CheckTactic runs the check once
+    // per tactic, not per solver)
+    if (!config.z3Tactic.empty()) {
+      std::string terr;
+      if (!z3CheckTactic(config.z3Tactic, terr)) {
+        sea::diag::error(config.kindPrefix + "z3-tactic",
+                         "z3 rejects --z3-tactic '" + config.z3Tactic +
+                             "': " + terr);
+        return nullptr;
+      }
+    }
     // the global parameters z3 reads when it builds the solver: for this
     // solver only
     if (!config.z3Tactic.empty() || config.z3SatEuf) {
@@ -140,13 +155,7 @@ std::unique_ptr<Solver> makeSolver(expr::ExprFactory &efac, Backend backend,
         tactic.emplace("tactic.default_tactic", config.z3Tactic.c_str());
       if (config.z3SatEuf)
         euf.emplace("sat.euf", "true");
-      std::string err = z->get_solver().init();
-      if (!err.empty()) {
-        sea::diag::error(config.kindPrefix + "z3-tactic",
-                         "z3 rejects --z3-tactic '" + config.z3Tactic +
-                             "': " + err);
-        return nullptr;
-      }
+      z->get_solver().init();
     }
     // after the parameters, before anything is asserted
     if (config.z3Relevancy0Push)

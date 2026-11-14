@@ -46,7 +46,9 @@ enum class TerminalKind {
   // mlir::Value (sea-mlir, see ExprMlir.hh)
   MLIR_VALUE,
   // mlir::Block * (sea-mlir, see ExprMlir.hh)
-  MLIR_BLOCK
+  MLIR_BLOCK,
+  // Reserved for unit tests: test-only terminal types (unittests/)
+  TEST_ONLY
 };
 
 // \brief Base class for implementing a Terminal
@@ -125,7 +127,13 @@ public:
     return terminal_type::getKind() < llvm::cast<TerminalBase>(&rhs)->m_kind;
   }
 
-  size_t hash() const override { return terminal_type::hash(val); }
+  size_t hash() const override {
+    // the kind is part of the hash: terminals of different kinds share one
+    // unique table and should not share buckets
+    size_t seed = terminal_type::hash(val);
+    boost::hash_combine(seed, static_cast<unsigned>(terminal_type::getKind()));
+    return seed;
+  }
 
   static bool classof(Operator const *op) {
     return llvm::isa<TerminalBase>(op) &&
@@ -210,8 +218,12 @@ struct TerminalTrait<expr::mpz_class> {
   }
 
   static inline size_t hash(const expr::mpz_class &v) {
-    std::hash<std::string> hasher;
-    return hasher(v.to_string());
+    // the sign and the limbs, no string conversion
+    mpz_srcptr z = v.get_mpz_t();
+    size_t seed = static_cast<size_t>(mpz_sgn(z) + 1);
+    for (size_t i = 0, n = mpz_size(z); i < n; ++i)
+      boost::hash_combine(seed, mpz_getlimbn(z, i));
+    return seed;
   }
 
   static TerminalKind getKind() { return TerminalKind::MPZ; }

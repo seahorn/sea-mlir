@@ -16,7 +16,6 @@
 #include "sea/Expr/ExprAPInt.hh"
 #include "sea/Expr/InitialWords.hh"
 #include "sea/Expr/ReadCells.hh"
-#include "sea/Expr/ReadTable.hh"
 #include "sea/Expr/SeaMRules.hh"
 #include "sea/Expr/Smt/Yices2SolverImpl.hh"
 #ifdef WITH_BITWUZLA
@@ -25,6 +24,7 @@
 #include "sea/Expr/Smt/EZ3.hh"
 #include "sea/Expr/Smt/SolverFactory.h"
 #include "sea/Expr/Smt/Z3.hh"
+#include "sea/Expr/Smt/Z3Error.h"
 #include "sea/Interp/ParseInput.h"
 #include "sea/Support/Assume.h"
 #include "sea/Support/Diag.h"
@@ -384,6 +384,13 @@ static cl::opt<std::string> z3Tactic(
              "sat.euf=true, as SeaHorn). Applies to the solver of the verdict "
              "only, not to the auxiliary checks. default: z3's own"),
     cl::init("default"));
+
+static cl::opt<bool> z3PlantError(
+    "z3-plant-error",
+    cl::desc("Testing only: make an invalid z3 API call when every z3 "
+             "solver is made (the first exits), as a z3 error of sea-vc's "
+             "own would"),
+    cl::init(false), cl::Hidden);
 
 static cl::list<std::string>
     z3Params("z3-param",
@@ -832,50 +839,6 @@ static cl::opt<unsigned> seamRuleLimit(
     cl::desc("Test only: stop each rewrite after this many rule calls (the "
              "rewriter's maxRuleCalls; 0 = no limit), to show that the "
              "solver boundary does not depend on the rewriting finishing"),
-    cl::init(0), cl::Hidden);
-
-// EXPERIMENT (hidden):
-// a guarded read table at the solver boundary (include/sea/Expr/ReadTable.hh)
-// in place of the semantics-only translation and the Ackermann lowering.
-static cl::opt<std::string> xReadTable(
-    "x-read-table",
-    cl::desc("Experiment: plain|flat|arrays|objack|mux (needs --seam; "
-             "include/sea/Expr/ReadTable.hh)"),
-    cl::init(""), cl::Hidden);
-static cl::opt<unsigned>
-    xReadTableCap("x-read-table-cap",
-                  cl::desc("Experiment: leaves per address term"), cl::init(64),
-                  cl::Hidden);
-static cl::opt<bool> xReadTableInb(
-    "x-read-table-inb",
-    cl::desc("Experiment: dead branches by A-INB become fresh constants "
-             "(default on; off: every branch translated exactly)"),
-    cl::init(true), cl::Hidden);
-static cl::opt<unsigned> xReadTableMux(
-    "x-read-table-mux",
-    cl::desc("Experiment: objects of at most this many cells get a mux"),
-    cl::init(128), cl::Hidden);
-static cl::opt<unsigned> xReadTableCheck(
-    "x-read-table-check",
-    cl::desc("Experiment: premise checks per class (omitted pairs, dead "
-             "branches, mux out-of-range), sampled; 0 = none"),
-    cl::init(0), cl::Hidden);
-static cl::opt<std::string> xReadTableCheckPremise(
-    "x-read-table-check-premise",
-    cl::desc("Experiment: the premise of the checks, letters i (A-INB of "
-             "every access), l (layout), s (side conditions without the "
-             "assumes), a (with the assumes too); default ils. "
-             "Fewer letters show which part the checks need"),
-    cl::init("ils"), cl::Hidden);
-static cl::opt<unsigned> xReadTableCheckTimeout(
-    "x-read-table-check-timeout",
-    cl::desc("Experiment: seconds per premise check (z3 only)"), cl::init(30),
-    cl::Hidden);
-static cl::opt<unsigned> xReadTableCheckRlimit(
-    "x-read-table-check-rlimit",
-    cl::desc("Experiment: z3's resource limit per premise check (0: none; "
-             "untuned, unset by default); exhausted checks are counted in "
-             "xrt.check-unknown reason=rlimit"),
     cl::init(0), cl::Hidden);
 
 /// Whether the last unknown of \p s, after a check of \p sec seconds, is z3's
@@ -1468,6 +1431,27 @@ static uint64_t countOps(Operation *op) {
   ::_exit(3);
 }
 
+/// z3 ran out of memory outside a check (its memory_max_size, or an
+/// allocation that failed): the outcome of a memory limit. Under --mem-limit
+/// that is memLimitHit's; else unknown, with the reason a check gives
+/// (memout). Writes without allocating.
+[[noreturn]] static void z3MemoutHit() {
+  if (memLimit)
+    memLimitHit();
+  outs().flush();
+  static const char msg[] = "result: unknown\n";
+  static const char jmsg[] = "{\"kind\":\"result\",\"value\":\"unknown\","
+                             "\"text\":\"result: unknown\"}\n";
+  if (outFormat == sea::out::Format::Jsonl)
+    (void)!::write(1, jmsg, sizeof(jmsg) - 1);
+  else
+    (void)!::write(1, msg, sizeof(msg) - 1);
+  static const char err[] =
+      "Warning: the solver returned unknown (memout) [vc.unknown]\n";
+  (void)!::write(2, err, sizeof(err) - 1);
+  ::_exit(3);
+}
+
 /// The LLVM bad-alloc handler (llvm::safe_malloc, SmallVector growth, ...);
 /// it must not return.
 [[noreturn]] static void memLimitHitLlvm(void *, const char *, bool) {
@@ -1864,7 +1848,7 @@ TYPICAL:
                                  #   statistics and result: none; no solver
                                  #   of the query; --eq-audit runs (its own
                                  #   z3 checks); --vcgen-only skips
-                                 #   --seam-check and --x-read-table-check
+                                 #   --seam-check
                                  #   (warning vc.vcgen-only-check-skipped);
                                  #   not with
                                  #   --smt2
@@ -3244,7 +3228,7 @@ memread / mismatch; join on it. Addresses (base, addr) are numbers.
 Kinds and fields:
   stat          key, value (a number when the text is one), plus one field
                 per k=v of the line: every `key: value [k=v ...]` line
-                that is not below (vc-time, seam.*, vc.ackermann-*, xrt.*,
+                that is not below (vc-time, seam.*, vc.ackermann-*,
                 seam.inb: value=assumed accesses= conditions=, seam-check:
                 firings= ..., vc.ptr-companion: loads= ...); a field named
                 kind/text/value twice gets a `_` suffix. BRUNCH_STAT lines
@@ -3659,13 +3643,25 @@ int main(int argc, char **argv) {
       return 1;
     }
   }
+  sea::setZ3ErrorHooks(
+      [] {
+        if (gOut)
+          gOut->flush();
+      },
+      z3MemoutHit);
   for (const std::string &kv : z3Params) {
     auto [k, v] = StringRef(kv).split('=');
     if (k.empty() || v.empty()) {
       errs() << "sea-vc: --z3-param wants key=value, got '" << kv << "'\n";
       return 1;
     }
-    Z3_global_param_set(k.str().c_str(), v.str().c_str());
+    // z3 only warns about an unknown name or a bad value: report it
+    std::string perr;
+    if (!sea::z3SetGlobalParam(k.str(), v.str(), perr)) {
+      sea::diag::error("smt.z3-param",
+                       "z3 rejects --z3-param " + kv + ": " + perr);
+      return 1;
+    }
   }
   if (agent) {
     outs() << agentGuide;
@@ -3850,8 +3846,6 @@ int main(int argc, char **argv) {
     return fail("--seam-words needs --seam");
   if (wordsCheck && seamWords == WordsMode::Off)
     return fail("--words-check needs --seam-words");
-  if (seamWords != WordsMode::Off && !xReadTable.empty())
-    return fail("--seam-words and --x-read-table exclude each other");
   if (vcJoinCases && joinEncoding != sea::JoinEncoding::Ite)
     return fail("--vc-join-cases builds the ite joins: needs --vc-join=ite");
   if ((vcCasesReorder || vcCasesDropDefault) && !vcJoinCases)
@@ -3896,10 +3890,9 @@ int main(int argc, char **argv) {
                   "and --split-smt2 need --split, --split-leaves or "
                   "--split-auto");
     // they run after a solve, which --split-candidates never reaches
-    if (seamCheck.getNumOccurrences() || eqAudit.getNumOccurrences() ||
-        xReadTableCheck.getNumOccurrences())
-      return fail("--split-candidates solves nothing: not with --seam-check, "
-                  "--eq-audit or --x-read-table-check");
+    if (seamCheck.getNumOccurrences() || eqAudit.getNumOccurrences())
+      return fail("--split-candidates solves nothing: not with --seam-check "
+                  "or --eq-audit");
   } else if (splitCandidatesMax.getNumOccurrences()) {
     return fail("--split-candidates-max needs --split-candidates");
   }
@@ -5220,7 +5213,7 @@ int main(int argc, char **argv) {
     }
     std::unique_ptr<expr::InitialWords> words;
     // the stride rule's record (--ack-stride; the plain boundary only: the
-    // words and xrt paths expand the nodes first and record nothing)
+    // words path expands the nodes first and record nothing)
     expr::AccessOrigins accessOrigins;
     if (seamWords != WordsMode::Off)
       words = std::make_unique<expr::InitialWords>(
@@ -5228,37 +5221,10 @@ int main(int argc, char **argv) {
           seamWords == WordsMode::All ? expr::InitialWords::Mode::All
                                       : expr::InitialWords::Mode::Auto,
           &layoutValues);
-    // EXPERIMENT: the guarded read table in place of the boundary
-    std::unique_ptr<expr::xrt::Translator> xtr;
-    std::unique_ptr<expr::xrt::Lowering> xlw;
-    const bool xrtOn = !xReadTable.empty();
-    uint64_t xrtDagStd = 0, xrtDagTranslated = 0;
     // the origins follow the boundary along the structure it keeps
     expr::Expr preBoundary = originsOn ? query : expr::Expr();
     Phase solverTermPhase("solver-term");
-    if (xrtOn) {
-      if (!sem.seam() || !sem.seamRewriter())
-        return fail("--x-read-table needs --seam");
-      expr::SeaMRewriter *rw = sem.seamRewriter();
-      query =
-          rw->expandPtrIndex(rw->expandStoreMaps(rw->expandPtrIndex(query)));
-      if (dagStats) {
-        std::string why;
-        expr::Expr std = sem.solverTerm(query, why);
-        xrtDagStd = std ? expr::dagSize(std) : 0;
-      }
-      lap("solver-term");
-      xtr = std::make_unique<expr::xrt::Translator>(efac, sem.baseRegistry(),
-                                                    rw->rules(), xReadTableCap,
-                                                    inb && xReadTableInb);
-      std::string why;
-      query = xtr->translate(query, why);
-      if (!query)
-        return fail("--x-read-table: " + why);
-      if (dagStats)
-        xrtDagTranslated = expr::dagSize(query);
-      lap("xrt-translate");
-    } else if (seamWords != WordsMode::Off) {
+    if (seamWords != WordsMode::Off) {
       if (!sem.seamRewriter())
         return fail("--seam-words needs --seam");
       std::string why;
@@ -5421,10 +5387,9 @@ int main(int argc, char **argv) {
     ack.analyze(query);
     // auto: not for Bitwuzla, whose own array handling (lemmas on demand)
     // beat the eager constraints on every measured query (Ackermann.md)
-    const bool ackOn =
-        !xrtOn && (ackermannize == AckMode::On ||
-                   (ackermannize == AckMode::Auto && !ack.hasStore() &&
-                    backend != Backend::Bitwuzla));
+    const bool ackOn = (ackermannize == AckMode::On ||
+                        (ackermannize == AckMode::Auto && !ack.hasStore() &&
+                         backend != Backend::Bitwuzla));
     // --eq-audit: the constrained pairs (of the lowering itself, or of a
     // lowering made only for the audit when this run does not lower)
     std::unique_ptr<expr::Ackermannizer> auditAck;
@@ -5486,28 +5451,6 @@ int main(int argc, char **argv) {
         return 1;
     }
     lap("ackermannize");
-    if (xrtOn) {
-      expr::xrt::Mode mode;
-      if (xReadTable == "plain")
-        mode = expr::xrt::Mode::Plain;
-      else if (xReadTable == "flat")
-        mode = expr::xrt::Mode::Flat;
-      else if (xReadTable == "arrays")
-        mode = expr::xrt::Mode::Arrays;
-      else if (xReadTable == "objack")
-        mode = expr::xrt::Mode::ObjAck;
-      else if (xReadTable == "mux")
-        mode = expr::xrt::Mode::Mux;
-      else
-        return fail("--x-read-table: plain|flat|arrays|objack|mux");
-      xlw = std::make_unique<expr::xrt::Lowering>(efac, sem.baseRegistry(),
-                                                  *xtr, mode, xReadTableMux);
-      expr::Expr preLower = query;
-      query = xlw->lower(query);
-      if (originsOn)
-        origins = origins.along(preLower, query);
-      lap("xrt-lower");
-    }
     SEA_PHASE_END(ackPhase)
         .kv("on", ackOn)
         .kv("arrays", ack.stats().lowered)
@@ -5555,6 +5498,7 @@ int main(int argc, char **argv) {
     solverConfig.yicesLogic = yicesLogic;
     solverConfig.yicesConfig = yicesConfig;
     solverConfig.yicesParams = yicesParams;
+    solverConfig.z3PlantError = z3PlantError;
     // Backend::Bitwuzla without the library is an error (null solver)
     // \p limits: --timeout / --mem-limit (the solver of the verdict only)
     auto makeSolver = [&](bool limits =
@@ -5739,15 +5683,6 @@ int main(int argc, char **argv) {
                              strideOn    ? Stride::On
                              : ackStride ? Stride::Fallback
                                          : Stride::Off);
-      }
-      if (xlw) {
-        r.line("xrt.mode").value(xReadTable);
-        xtr->report(r, "xrt.");
-        xlw->stats().report(r, "xrt.");
-        if (dagStats)
-          r.line("xrt.dag")
-              .kv("std-boundary", xrtDagStd)
-              .kv("translated", xrtDagTranslated);
       }
       // the named assumptions of the VC (BRUNCH_STAT <key>-<field>)
       sea::assume::Ledger vcAssumes;
@@ -6067,243 +6002,6 @@ int main(int argc, char **argv) {
       os << "\n";
       checkInvalid += invalid;
     };
-    // EXPERIMENT: premise checks of the read table (sampled): under A-INB
-    // of every access (path => in bounds), the layout and the side
-    // conditions of the lowered query, an omitted pair is never relevant and
-    // equal, a dead branch never relevant, a mux read never out of range
-    auto runXrtCheck = [&]() {
-      if (!xlw || !xReadTableCheck)
-        return;
-      // each line as soon as it is known (a later check may crash); no
-      // BRUNCH_STAT lines
-      auto put = [&](llvm::function_ref<void(sea::stats::Report &)> add) {
-        printStats(statOut(), add);
-      };
-      expr::SeaMRewriter *rw = sem.seamRewriter();
-      xtr->freeze();
-      std::string why;
-      auto tl = [&](expr::Expr e) -> expr::Expr {
-        e = rw->expandStoreMaps(e);
-        e = xtr->translate(e, why);
-        return e ? xlw->lowerTerm(e) : e;
-      };
-      expr::ExprVector pv;
-      for (const expr::Expr &v : sem.inbViolationTerms())
-        if (xReadTableCheckPremise.find('i') != std::string::npos)
-          pv.push_back(expr::op::boolop::lneg(v));
-      expr::Expr tt = expr::mk<expr::TRUE>(efac);
-      expr::Expr prem = tl(expr::mknary<expr::AND>(tt, pv));
-      // the side conditions without the sea.assume facts (C): the CFG, the
-      // phis, the layout equations; the assumes carry the negated property
-      // (SeaHorn's encoding: assume(!prop); assert(false)), so with them
-      // (letter a) the premise may be the whole problem
-      expr::ExprVector cfg;
-      {
-        const auto &ap = sem.assumeSidePositions();
-        std::set<size_t> skip(ap.begin(), ap.end());
-        for (size_t x = 0; x < side.size(); ++x)
-          if (xReadTableCheckPremise.find('a') != std::string::npos ||
-              !skip.count(x))
-            cfg.push_back(side[x]);
-      }
-      expr::Expr sides = tl(expr::mknary<expr::AND>(tt, cfg));
-      if (!prem || !sides) {
-        put([&](sea::stats::Report &rep) {
-          rep.line("xrt.check").value("unexpressible").note(why);
-        });
-        return;
-      }
-      expr::ExprVector lay;
-      for (const expr::ObjectBase &o : sem.baseRegistry().objects())
-        lay.push_back(expr::mk<expr::EQ>(
-            o.constant,
-            expr::op::bv::bvnum(expr::toMpz(o.base),
-                                sem.seamRewriter()->rules().widthOf(o.constant),
-                                efac)));
-      expr::Expr layout = expr::mknary<expr::AND>(tt, lay);
-      // z3: the timeout (0: none, as z3 reads a timeout of 0); else
-      // unlimited
-      sea::solver::Limits xl;
-      if (backend == Backend::Z3)
-        xl.timeoutMs = xReadTableCheckTimeout * 1000;
-      xl.rlimit = xReadTableCheckRlimit;
-      std::unique_ptr<sea::solver::Solver> cs =
-          sea::solver::makeSolver(efac, backend, xl, solverConfig);
-      if (!cs)
-        return;
-      sea::Stopwatch watch;
-      if (xReadTableCheckPremise.find('l') == std::string::npos)
-        layout = tt;
-      if (xReadTableCheckPremise.find('s') == std::string::npos)
-        sides = tt;
-      // S: the side conditions through the standard boundary (the original
-      // semantics, no table): for the context check only
-      if (xReadTableCheckPremise.find('S') != std::string::npos)
-        sides = sem.solverTerm(expr::mknary<expr::AND>(tt, side));
-      put([&](sea::stats::Report &rep) {
-        rep.line("xrt.check-premise").value(xReadTableCheckPremise);
-      });
-      cs->add(expr::mk<expr::AND>(sides, expr::mk<expr::AND>(prem, layout)));
-      uint64_t xrtRlimit = 0;
-      sea::Stopwatch cwatch;
-      auto ctxRes = cs->check();
-      if (ctxRes == sea::solver::SolverResult::UNKNOWN &&
-          backend == Backend::Z3 &&
-          hitRlimit(*cs, xReadTableCheckRlimit, xReadTableCheckTimeout,
-                    cwatch.seconds()))
-        ++xrtRlimit;
-      put([&](sea::stats::Report &rep) {
-        rep.line("xrt.check-context")
-            .value(ctxRes == sea::solver::SolverResult::SAT     ? "sat"
-                   : ctxRes == sea::solver::SolverResult::UNSAT ? "unsat"
-                                                                : "unknown");
-      });
-      auto one = [&](expr::Expr ob, uint64_t &u, uint64_t &s, uint64_t &k) {
-        cs->push();
-        sea::Stopwatch owatch;
-        auto r = cs->add(ob) ? cs->check() : sea::solver::SolverResult::UNKNOWN;
-        if (r == sea::solver::SolverResult::UNKNOWN && backend == Backend::Z3 &&
-            hitRlimit(*cs, xReadTableCheckRlimit, xReadTableCheckTimeout,
-                      owatch.seconds()))
-          ++xrtRlimit;
-        cs->pop();
-        if (r == sea::solver::SolverResult::UNSAT)
-          ++u;
-        else if (r == sea::solver::SolverResult::SAT)
-          ++s;
-        else
-          ++k;
-        return r;
-      };
-      const auto &recs = xtr->records();
-      const auto &rel = xlw->relevance();
-      {
-        const auto &om = xlw->omitted();
-        size_t n = om.size(), m = std::min<size_t>(n, xReadTableCheck);
-        uint64_t u = 0, s = 0, k = 0;
-        for (size_t x = 0; x < m; ++x) {
-          auto [a, b] = om[m == n ? x : x * n / m];
-          const auto &A = xlw->low(a), &B = xlw->low(b);
-          auto r =
-              one(expr::mk<expr::AND>(
-                      A.rel, expr::mk<expr::AND>(
-                                 B.rel, expr::mk<expr::EQ>(A.addr, B.addr))),
-                  u, s, k);
-          if (r == sea::solver::SolverResult::SAT)
-            put([&, a = a, b = b](sea::stats::Report &rep) {
-              rep.line("xrt.check-omitted-sat").value(a).value(b);
-            });
-        }
-        put([&](sea::stats::Report &rep) {
-          rep.line("xrt.check-omitted")
-              .kv("total", n)
-              .kv("checked", m)
-              .kv("unsat", u)
-              .kv("sat", s)
-              .kv("unknown", k);
-        });
-        // the same pairs without the address equality: how many are
-        // exclusive by relevance alone (semantically, not syntactically)
-        uint64_t u2 = 0, s2 = 0, k2 = 0;
-        for (size_t x = 0; x < m; ++x) {
-          auto [a, b] = om[m == n ? x : x * n / m];
-          one(expr::mk<expr::AND>(xlw->low(a).rel, xlw->low(b).rel), u2, s2,
-              k2);
-        }
-        put([&](sea::stats::Report &rep) {
-          rep.line("xrt.check-omitted-relevance-only")
-              .kv("unsat", u2)
-              .kv("sat", s2)
-              .kv("unknown", k2);
-        });
-      }
-      {
-        const auto &ds = xtr->deads();
-        size_t n = ds.size(), m = std::min<size_t>(n, xReadTableCheck);
-        uint64_t u = 0, s = 0, k = 0, unreached = 0;
-        for (size_t x = 0; x < m; ++x) {
-          const auto &d = ds[m == n ? x : x * n / m];
-          expr::Expr r = rel.rel(d.sym.get());
-          if (!r) {
-            ++unreached;
-            continue;
-          }
-          if (one(xlw->lowerTerm(r), u, s, k) == sea::solver::SolverResult::SAT)
-            put([&](sea::stats::Report &rep) {
-              rep.line("xrt.check-dead-sat").value(*d.sym).value(d.kind);
-            });
-        }
-        put([&](sea::stats::Report &rep) {
-          rep.line("xrt.check-dead")
-              .kv("total", n)
-              .kv("checked", m)
-              .kv("unsat", u)
-              .kv("sat", s)
-              .kv("unknown", k)
-              .kv("unreached", unreached);
-        });
-      }
-      {
-        const auto &mr = xlw->muxRecords();
-        size_t n = mr.size(), m = std::min<size_t>(n, xReadTableCheck);
-        uint64_t u = 0, s = 0, k = 0;
-        for (size_t x = 0; x < m; ++x) {
-          size_t a = mr[m == n ? x : x * n / m];
-          const auto &A = xlw->low(a);
-          unsigned w = sem.seamRewriter()->rules().widthOf(A.off);
-          one(expr::mk<expr::AND>(
-                  A.rel, expr::mk<expr::NEG>(expr::mk<expr::BULT>(
-                             A.off, expr::op::bv::bvnum(
-                                        expr::mpz_class((unsigned long)A.size),
-                                        w, efac)))),
-              u, s, k);
-        }
-        put([&](sea::stats::Report &rep) {
-          rep.line("xrt.check-mux-range")
-              .kv("total", n)
-              .kv("checked", m)
-              .kv("unsat", u)
-              .kv("sat", s)
-              .kv("unknown", k);
-        });
-      }
-      {
-        // each lowered record: can it be relevant at all (under the premise)?
-        uint64_t u = 0, s = 0, k = 0;
-        std::map<std::string, std::pair<uint64_t, uint64_t>> perBucket;
-        for (size_t x = 0; x < recs.size(); ++x) {
-          if (!xlw->lowered(x))
-            continue;
-          auto r = one(xlw->low(x).rel, u, s, k);
-          std::string b = "unknown";
-          if (recs[x].leaf.base) {
-            std::ostringstream bs;
-            bs << *expr::op::bind::fname(recs[x].leaf.base->first());
-            b = bs.str();
-          }
-          auto &pb = perBucket[b];
-          ++(r == sea::solver::SolverResult::UNSAT ? pb.first : pb.second);
-        }
-        put([&](sea::stats::Report &rep) {
-          sea::stats::Line &l = rep.line("xrt.check-record-relevant")
-                                    .kv("unsat", u)
-                                    .kv("sat", s)
-                                    .kv("unknown", k);
-          for (auto &[b, c] : perBucket)
-            l.kv(b, std::to_string(c.second) + "/" +
-                        std::to_string(c.first + c.second));
-        });
-      }
-      if (xReadTableCheckRlimit)
-        put([&](sea::stats::Report &rep) {
-          rep.line("xrt.check-unknown")
-              .kv("reason", "rlimit")
-              .kv("n", xrtRlimit);
-        });
-      put([&](sea::stats::Report &rep) {
-        rep.line("xrt.check-time").seconds(watch.seconds());
-      });
-    };
     if (smt2) {
       // the block ids of each guard (kBlockIdsAttr), as SMT-LIB comments:
       // `; sea.block-ids <guard> <id>,<id>...` (utils/query-diff.py's
@@ -6346,7 +6044,6 @@ int main(int argc, char **argv) {
       printSeamStats(statOut());
       runSeamCheck();
       runEqAudit();
-      runXrtCheck();
       return 0;
     }
 
@@ -6419,21 +6116,19 @@ int main(int argc, char **argv) {
     }
     if (vcgenOnly) {
       // the VC is generated and checked; no solver of the query (and none
-      // of the checks on the run's solver: --seam-check,
-      // --x-read-table-check). --eq-audit runs: its checks are its own z3
-      // instance with their own timeout, on terms of the VC only
+      // of the check on the run's solver: --seam-check). --eq-audit runs:
+      // its checks are its own z3 instance with their own timeout, on terms
+      // of the VC only
       runEqAudit();
-      if (checkOn || xReadTableCheck)
+      if (checkOn)
         sea::diag::warn("vc.vcgen-only-check-skipped",
-                        "--seam-check and --x-read-table-check do not run: "
-                        "--vcgen-only skips them");
+                        "--seam-check does not run: --vcgen-only skips it");
       emitResult("none");
       printStats([](sea::stats::Report &r) { resultLine(r, "none"); });
       return 0;
     }
     runSeamCheck();
     runEqAudit();
-    runXrtCheck();
     if (reach) {
       // the reach queries (lib/VC/Reach.cpp); the solver above holds the
       // query. --reach-rlimit is z3's (refused for other backends)
@@ -6485,13 +6180,8 @@ int main(int argc, char **argv) {
         std::unique_ptr<expr::AckermannModel> am;
         if (ackOn)
           am = std::make_unique<expr::AckermannModel>(cells, ack);
-        std::unique_ptr<expr::xrt::TableModel> xm;
-        if (xlw)
-          xm = std::make_unique<expr::xrt::TableModel>(cells, *xtr, *xlw);
         sea::solver::Model &solved =
-            am   ? static_cast<sea::solver::Model &>(*am)
-            : xm ? static_cast<sea::solver::Model &>(*xm)
-                 : cells;
+            am ? static_cast<sea::solver::Model &>(*am) : cells;
         std::unique_ptr<expr::WordsModel> wm;
         if (words && words->stats().chosen)
           wm = std::make_unique<expr::WordsModel>(solved, *words);
@@ -6709,13 +6399,8 @@ int main(int argc, char **argv) {
     std::unique_ptr<expr::AckermannModel> ackModel;
     if (ackOn)
       ackModel = std::make_unique<expr::AckermannModel>(model, ack);
-    std::unique_ptr<expr::xrt::TableModel> xrtModel;
-    if (xlw)
-      xrtModel = std::make_unique<expr::xrt::TableModel>(model, *xtr, *xlw);
     sea::solver::Model &solvedModel =
-        ackModel   ? static_cast<sea::solver::Model &>(*ackModel)
-        : xrtModel ? static_cast<sea::solver::Model &>(*xrtModel)
-                   : model;
+        ackModel ? static_cast<sea::solver::Model &>(*ackModel) : model;
     // initial words: the byte arrays read back from the word arrays
     std::unique_ptr<expr::WordsModel> wordsModel;
     if (words && words->stats().chosen)
@@ -6732,13 +6417,6 @@ int main(int argc, char **argv) {
         .kv("checked", replay.checked)
         .kv("mismatches", replay.mismatches.size())
         .kv("validated", replay.mismatches.empty());
-    if (xrtModel)
-      vout() << "xrt.model: relevant=" << xrtModel->relevant()
-             << " inconsistent-relevant=" << xrtModel->inconsistentRelevant()
-             << " inconsistent-irrelevant="
-             << xrtModel->inconsistentIrrelevant()
-             << " defaulted=" << xrtModel->defaulted()
-             << " broken=" << xrtModel->broken() << "\n";
     if (wordsModel)
       vout() << "words.model: decoded=" << wordsModel->decoded()
              << " defaulted=" << wordsModel->defaulted() << "\n";
