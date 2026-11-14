@@ -26,10 +26,15 @@
 //                        divisor may be 0, ~0 is added
 //   urem                 upstream; x % 0 = x in sea: when the divisor may be
 //                        0, the dividend's range is added
-//   sdiv, srem           upstream; a divisor that may be 0 gives the full
-//                        range there already; INT_MIN / -1 (INT_MIN in sea)
-//                        is an overflow upstream: full range; srem's
-//                        INT_MIN % -1 = 0 is inside its bound
+//   sdiv                 upstream; x / 0 is -1 when x >= 0 and 1 when
+//                        x < 0 in sea (arith: poison; upstream bounds the
+//                        nonzero divisors only since llvm-project
+//                        35bf6e7d2acb): when the divisor may be 0, those
+//                        values are added; INT_MIN / -1 (INT_MIN in sea) is
+//                        an overflow upstream: full range
+//   srem                 upstream; x % 0 = x in sea: when the divisor may be
+//                        0, the dividend's range is added; INT_MIN % -1 = 0
+//                        is inside its bound
 //   and, or, xor, umin, umax, smin, smax, zext, sext, trunc: upstream
 //                        (total there too)
 //   icmp                 intrange::evaluatePred: 0 or 1 when the ranges
@@ -123,8 +128,6 @@ void ShlOp::inferResultRanges(ArrayRef<ConstantIntRanges> argRanges,
                              SetIntRangeFn setResultRange) {                   \
     setResultRange(getResult(), fn(argRanges));                                \
   }
-SEA_TOTAL_RANGE(SDivOp, inferDivS)
-SEA_TOTAL_RANGE(SRemOp, inferRemS)
 SEA_TOTAL_RANGE(AndOp, inferAnd)
 SEA_TOTAL_RANGE(OrOp, inferOr)
 SEA_TOTAL_RANGE(XorOp, inferXor)
@@ -150,6 +153,30 @@ void URemOp::inferResultRanges(ArrayRef<ConstantIntRanges> argRanges,
                                SetIntRangeFn setResultRange) {
   ConstantIntRanges r = inferRemU(argRanges);
   // bvurem x 0 = x
+  if (mayBeZero(argRanges[1]))
+    r = r.rangeUnion(argRanges[0]);
+  setResultRange(getResult(), r);
+}
+
+void SDivOp::inferResultRanges(ArrayRef<ConstantIntRanges> argRanges,
+                               SetIntRangeFn setResultRange) {
+  ConstantIntRanges r = inferDivS(argRanges);
+  // bvsdiv x 0 = ~0 (-1) when x >= 0, 1 when x < 0
+  if (mayBeZero(argRanges[1])) {
+    const ConstantIntRanges &x = argRanges[0];
+    unsigned w = x.smin().getBitWidth();
+    if (!x.smax().isNegative())
+      r = r.rangeUnion(ConstantIntRanges::constant(APInt::getAllOnes(w)));
+    if (x.smin().isNegative())
+      r = r.rangeUnion(ConstantIntRanges::constant(APInt(w, 1)));
+  }
+  setResultRange(getResult(), r);
+}
+
+void SRemOp::inferResultRanges(ArrayRef<ConstantIntRanges> argRanges,
+                               SetIntRangeFn setResultRange) {
+  ConstantIntRanges r = inferRemS(argRanges);
+  // bvsrem x 0 = x
   if (mayBeZero(argRanges[1]))
     r = r.rangeUnion(argRanges[0]);
   setResultRange(getResult(), r);

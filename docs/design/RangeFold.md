@@ -107,7 +107,8 @@ SMT-LIB bit-vector ops. Per op:
 | lshr, ashr | inferShrU / inferShrS | shift by >= width: full range |
 | udiv | inferDivU | `x / 0 = ~0`: added when the divisor may be 0 |
 | urem | inferRemU | `x % 0 = x`: the dividend's range added when the divisor may be 0 |
-| sdiv, srem | inferDivS / inferRemS | a divisor that may be 0: full range already; `INT_MIN / -1` is an overflow: full range |
+| sdiv | inferDivS | `x / 0` is -1 for `x >= 0`, 1 for `x < 0` (upstream bounds the nonzero divisors only, since llvm-project 35bf6e7d2acb): added when the divisor may be 0; `INT_MIN / -1` is an overflow: full range |
+| srem | inferRemS | `x % 0 = x`: the dividend's range added when the divisor may be 0 |
 | and, or, xor, umin, umax, smin, smax | upstream | total |
 | zext, sext, trunc | extUIRange / extSIRange / truncRange | total |
 | icmp | evaluatePred | 0 or 1 when the ranges decide, else [0, 1] |
