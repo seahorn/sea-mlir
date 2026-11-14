@@ -162,7 +162,7 @@ The invariant after a cancel:
 ```console
 $ sea-vc firedancer/step-inv-cancel.mlir --lower --seam --widen-memory=4
 Warning: an access leaves its object (7 access(es) with no alternative inside its object: a numeral offset or an offset range wholly outside it, or an object of size 0 such as null): --seam's A-INB does not hold; running without it [vc.seam-inb-violated]
-tool.version: sea-mlir 0.1.0 (...)
+tool.version: sea-mlir 0.1.1 (...)
 ...
 vc.seam-inb-violated: at .../reasm_inv.h:92:7 load: numeral offset outside: offset 5 + 1 unit(s) > size 5 of object global.in_map
 ...

@@ -38,7 +38,7 @@ recorded and reused:
 
 ```console
 $ sea-vc firedancer/step-mut-bounds-1.mlir --config=./fd-reasm.cfg --timeout=900 --mem-limit=16
-tool.version: sea-mlir 0.1.0 (...)
+tool.version: sea-mlir 0.1.1 (...)
 vc.config: .../fd-reasm.cfg
 ...
 seam.inb: assumed accesses=152 conditions=66
