@@ -53,6 +53,7 @@
 // consumer of the model (replay, validation) sees the same array.
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/Smt/Model.hh"
+#include "sea/Support/Stats.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
@@ -492,6 +493,37 @@ public:
     /// also rest on that access's A-INB (its span is in the space)
     uint64_t strideAInbPairs = 0;
     uint64_t constraints = 0; ///< constraints added (the other pairs)
+
+    /// What report() says of the stride rule: not asked (no line), used
+    /// (its counters), asked but not used by this lowering (`stride:
+    /// fallback`).
+    enum class Stride { Off, On, Fallback };
+    /// The `<prefix><counter>: <n>` lines of a lowering (sea-vc
+    /// `vc.ackermann-`): arrays (= lowered), kept, reads, pairs, the
+    /// dropped pairs by reason, the stride rule (\p stride), constraints.
+    void report(sea::stats::Report &r, llvm::StringRef prefix,
+                Stride stride) const {
+      auto line = [&](const llvm::Twine &k) -> sea::stats::Line & {
+        return r.line((prefix + k).str());
+      };
+      line("arrays").value(lowered);
+      line("kept").value(kept);
+      line("reads").value(reads);
+      line("pairs").value(pairs);
+      line("numeral-pairs").value(numeralPairs);
+      line("offset-pairs").value(offsetPairs);
+      line("residue-pairs").value(residuePairs);
+      line("leaf-pairs").value(leafPairs);
+      if (stride == Stride::On) {
+        line("stride-pairs").value(stridePairs);
+        line("stride-a-inb-pairs").value(strideAInbPairs);
+        line("stride-not-eligible").value(strideNotEligible);
+        line("stride-other-base").value(strideOtherBase);
+        line("stride-divides").value(strideDivides);
+      } else if (stride == Stride::Fallback)
+        line("stride").value("fallback");
+      line("constraints").value(constraints);
+    }
   };
   /// One distinct read of a lowered array: its index (lowered: in terms of
   /// the fresh constants) and the fresh constant r standing for the cell.

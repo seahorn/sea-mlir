@@ -130,7 +130,7 @@ split: open-aliases=<n>; ...` line that points to it.
 | `--print-limit=<n>`, `--print-locs` | limit the print lines; add the location of each print |
 | `--log=<pattern>[:<level>],...` | select logs; `--log=help` lists the tags; `--log=warn.<kind>:2` prints every occurrence of a warning kind ([Logging](logging.md)) |
 | `--log-file=<path>` | append log events to a file instead of stderr |
-| `--mlir-print-ir-after-all`, `--mlir-timing`, ... | MLIR's pass-manager options, on the lowering pipeline |
+| `--mlir-print-ir-after-all`, `--mlir-timing`, ... | MLIR's pass-manager options, on the lowering pipeline; `--mlir-timing` also times sea-vc's phases ([Logging](logging.md)) |
 
 ## sea-run
 

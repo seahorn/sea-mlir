@@ -11,6 +11,7 @@
 
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
+#include "sea/Support/Timer.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -23,7 +24,6 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <optional>
 #include <random>
@@ -1071,7 +1071,7 @@ private:
   llvm::DenseSet<uint64_t> paths;
   uint64_t failingTrials = 0;
   /// the run's start (failure times, progress)
-  std::chrono::steady_clock::time_point start;
+  Stopwatch start;
   llvm::DenseSet<Operation *> assumes;
   llvm::DenseMap<Operation *, uint64_t> blockedBy;
   /// FuzzOptions::reachTargets: op -> index; the targets the current run
@@ -1252,9 +1252,7 @@ LogicalResult Fuzzer::trial(Entry preset,
     f.message = r.message;
     f.input = assignmentsOf(source.used);
     f.count = 1;
-    f.seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-            .count();
+    f.seconds = start.seconds();
     if (!options.outDir.empty()) {
       FailureOr<std::string> p = write(failing       ? "failure"
                                        : memoryCheck ? "memory-check"
@@ -1437,12 +1435,8 @@ FailureOr<FuzzReport> Fuzzer::run(llvm::ArrayRef<CorpusEntryText> seeds,
       .kv("seconds", options.seconds)
       .kv("seed", options.seed)
       .kv("dictionary", options.dictionary ? dict.size() : 0);
-  start = std::chrono::steady_clock::now();
-  auto elapsed = [&] {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                         start)
-        .count();
-  };
+  start.restart();
+  auto elapsed = [&] { return start.seconds(); };
   auto budgetLeft = [&] {
     if (options.trials && report.trials >= options.trials)
       return false;
