@@ -27,9 +27,11 @@
 //             different objects touch different cells, whatever their sizes
 //             (`cmp.diff-base`, `arm.skip` across bases, R-SKIP, WOW-COMMUTE /
 //             WOSMAP-COMMUTE, the range tests of memory operations). Not
-//             "a write never reaches another object": two accesses that both
-//             leave their objects into the same gap would satisfy that and
-//             still share a cell.
+//             "a write never reaches another object", and not "an access
+//             that lands in no object is harmless": two accesses through
+//             different provenances that both leave their objects into the
+//             same gap cell satisfy both and still share a cell (sea-vc's
+//             static report classifies such a pair `shared`).
 //   A-NULL:   no access of positive width (no range of positive length) is
 //             made through an object of size 0 (the null object of
 //             sea.ptr.null, zero-sized allocations; docs/design/SeaM-null.md).
@@ -1472,24 +1474,21 @@ public:
     return os.str();
   }
 
-  /// Where an access judged violated (inBounds / rangeInBounds false: no
-  /// alternative inside its object) lands, for the premises that remain
-  /// (sea-vc's static out-of-object report). Per leaf of the address's ite
-  /// tree, the span [placed base + off, + width) against every other placed
-  /// object of nonzero size (modulo 2^n: a span that wraps is tested at both
-  /// images). The access gets the first class that one of its leaves has,
-  /// in this order:
-  ///   Object   a leaf's span meets another object: A-SEP fails if the
-  ///            access executes (and is paired with an access of that one);
-  ///   Unknown  a leaf whose span is not known (no pointer view, a symbolic
-  ///            offset or length): it may land anywhere;
-  ///   Null     a leaf through an object of size 0 (null): A-NULL fails if
-  ///            the access executes;
-  ///   Gap      every leaf lands in no object: A-SEP and A-NULL hold, only
-  ///            A-INB (the property) fails.
+  /// The placement facts of an access judged violated (inBounds /
+  /// rangeInBounds false: no alternative inside its object), for the
+  /// premises that remain (sea-vc's static out-of-object report; SeaOpSem
+  /// classifies the accesses pairwise, seam::Landing). Per leaf of the
+  /// address's ite tree, the span [placed base + off, + width) against every
+  /// other placed object of nonzero size (modulo 2^n: a span that wraps is
+  /// tested at both images): `object` if it meets one; `unknown` for a leaf
+  /// whose span is not known (no pointer view, a symbolic offset or
+  /// length); `null` for a leaf through an object of size 0; a span that
+  /// meets no object is a gap span, kept with its provenance (two of them
+  /// through different provenances in one cell break A-SEP).
   /// \p units: the width of an access; 0 for a range of length \p n.
-  Landing classifyOutOfObject(const Expr &addr, uint64_t units,
-                              const Expr &n = Expr()) const {
+  OutOfObjectSpans outOfObjectSpans(const Expr &addr, uint64_t units,
+                                    const Expr &n = Expr()) const {
+    OutOfObjectSpans res;
     llvm::SmallVector<Expr, 8> leaves;
     llvm::SmallVector<Expr, 32> stack{addr};
     std::unordered_set<Expr> seen;
@@ -1509,15 +1508,14 @@ public:
     mpz_class span = mpz_class((unsigned long)units);
     if (!units)
       span = n && op::bv::isBvNum(n, nw) ? numVal(n) : mpz_class(0L);
-    bool unknown = false, null = false;
     for (const Expr &leaf : leaves) {
       std::optional<PtrView> v = view(leaf);
       const ObjectBase *o = v ? m_bases.lookup(v->base) : nullptr;
+      res.null = res.null || (o && o->size.isZero());
       if (!o || !op::bv::isBvNum(v->off, nw) || span == 0) {
-        unknown = true;
+        res.unknown = true;
         continue;
       }
-      null = null || o->size.isZero();
       const unsigned w = o->base.getBitWidth();
       mpz_class mod = pow2(w), lo = toMpz(o->base.zext(w + 1));
       lo = modPow2(lo + numVal(v->off), w);
@@ -1526,19 +1524,23 @@ public:
       mpz_class lo2 = lo, hi2 = hi; // the image one space down
       lo2 = lo2 - mod;
       hi2 = hi2 - mod;
+      bool meets = false;
       for (const ObjectBase &q : m_bases.objects()) {
         if (&q == o || q.size.isZero() || q.base.getBitWidth() != w)
           continue;
         mpz_class qlo = toMpz(q.base.zext(w + 1)), qhi = qlo;
         qhi = qhi + toMpz(q.size.zext(q.size.getBitWidth() + 1));
         if ((lo < qhi && qlo < hi) || (lo2 < qhi && qlo < hi2))
-          return Landing::Object;
+          meets = true;
       }
+      if (meets)
+        res.object = true;
+      else
+        res.gaps.push_back({o, lo, hi, lo2, hi2});
     }
-    if (unknown)
-      return Landing::Unknown;
-    return null ? Landing::Null : Landing::Gap;
+    return res;
   }
+
   /// ite(c, t, e) for conditions, with ite(c, t, t) = t.
   static Expr iteCond(const Expr &c, const Expr &t, const Expr &e) {
     return t == e ? t : mk<ITE>(c, t, e);

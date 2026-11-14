@@ -16,7 +16,7 @@
 // PLAIN: replay: assert-failed
 // SEAM: Warning: {{.*}}[vc.seam-out-of-object]
 // SEAM: seam.premises: assumed
-// SEAM: seam.out-of-object: accesses=1 object=0 unknown=0 null=1
+// SEAM: seam.out-of-object: accesses=1 object=0 shared=0 unknown=0 null=1
 // SEAM: result: sat
 // SEAM: replay: assert-failed
 // SEAM: seam-check: {{.*}} invalid=0 unknown=0

@@ -320,19 +320,22 @@ the check jobs below is run.
   longer an encoding mode. **The premises are not discharged in this
   release.** That needs a separate memory-safety (bounds) check of the
   program, which sea-mlir does not provide yet; a null-dereference check
-  alone discharges A-NULL. A sat that needs an out-of-object access does
+  alone discharges A-NULL when null is the only object of size 0
+  (zero-sized allocations need their own check). A sat that needs an out-of-object access does
   not replay, and `sea-vc` exits 4. `--seam-premises=0` assumes nothing (it
   is slower). `--seam-check-inb-premise` (off) is a partial check that
   SeaM's cross-object decisions used only recorded in-bounds conditions.
 - **Static out-of-object accesses** (since 0.2.0): an access whose every
   address alternative lies outside its object is reported (warning
   `vc.seam-out-of-object`, `seam.out-of-object: accesses=<n> object=<a>
-  unknown=<u> null=<z> gap=<g>`, by where each lands in the placement) and
-  the premises stay. The check is path-insensitive, so the access may sit
-  on a path that never executes. An `unsat` with `object`, `unknown` or
-  `null` above 0 holds only for the executions that reach none of those
-  accesses; if one is reached, A-SEP or A-NULL fails and the answer says
-  nothing. Before 0.2.0 such a run started again without the assumption;
+  shared=<s> unknown=<u> null=<z> gap=<g>`, by where each lands in the
+  placement, pairwise: `shared` is a gap cell that out-of-object accesses
+  through two provenances reach) and the premises stay. The check is
+  path-insensitive, so the access may sit on a path that never executes.
+  An `unsat` with `object`, `shared`, `unknown` or `null` above 0 holds
+  only for the executions that reach none of those accesses; if one is
+  reached, A-SEP or A-NULL fails and the answer says nothing. `gap`
+  accesses keep A-SEP and A-NULL (only A-INB fails). Before 0.2.0 such a run started again without the assumption;
   `--seam-out-of-object=fallback` does that now.
 - **Front-end annotations are trusted.** They are named premises of the
   rewrites, not assumptions about the program:
@@ -398,8 +401,9 @@ affected.
 - A static out-of-object access (`vc.seam-out-of-object`) can lie on an
   infeasible (unrolled, speculative) path; the report cannot tell. A
   counterexample that leaves its object only into a gap between objects
-  keeps A-SEP but is still reported as a memory-safety error (exit 4): the
-  replay check is of bounds, not of separation.
+  keeps A-NULL, and keeps A-SEP unless another provenance reaches the same
+  cell (classified `shared`), but is still reported as a memory-safety
+  error (exit 4): the replay check is of bounds, not of separation.
 - `--ptr-mode=address` can be much slower on code that aligns pointers by
   integer arithmetic.
 - Release binaries do not include Yices (GPLv3; see

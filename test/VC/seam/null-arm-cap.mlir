@@ -3,7 +3,7 @@
 // leaves (> maxPullLeaves: the sum is not pulled through the ite), so it has
 // no pointer view and ARM decides the read of q over a store to E: the null
 // provenance of q is vacuous for a read (size 0: dropped, cmp.size0-vacuous),
-// the others are other objects than E (A-INB): arm.skip. The same
+// the others are other objects than E (A-SEP): arm.skip. The same
 // conditional answer as the view case: the access condition of q is guarded
 // (the null provenance false, the others live), no fallback. Unsat with and
 // without --seam (k < 8).

@@ -137,12 +137,12 @@ ORDER: identical, order, sat(OLD) + sat(NEW), then (distinct OLD NEW)
 OUTPUT (stdout, one line per job, then totals):
   <job> <class> [reason=<r>] [old=<verdict> new=<verdict>] [subst=<n>]
       [by=hints|by=exists [hints=<old-new|new-old>:<answer>|incomplete:<n>|none:<why>]]
-      [inb old=<acc>/<cond> new=<acc>/<cond>]
+      [premises old=<acc>/<cond> new=<acc>/<cond>]
   total: identical=<n> order=<n> both-unsat=<n> equiv-sat=<n> diff=<n> unknown=<n> error=<n> [by-hints=<n> by-exists=<n>]
   evidence: equiv-sat=<n> identical+order=<n> both-unsat=<n> (verdict only)
   limits: rlimit=<n> timeout=<s> project-blocks=<0|1>
   [strict: fail both-unsat=<n> (verdict only, no evidence about the change)]
-  inb: accesses <old> -> <new> conditions <old> -> <new>
+  premises: accesses <old> -> <new> conditions <old> -> <new>
 STATUS: 0 if every job is identical / order / both-unsat / equiv-sat;
   1 if some job is DIFF or error; 2 if some is unknown; 3 with --strict
   if some job is both-unsat (checked in this order).
@@ -765,7 +765,7 @@ def main():
             by_hints += cls == "equiv-sat" and "by=hints" in details
             line = " ".join([job, cls] + details)
             if io and iN:
-                line += f" inb old={io[0]}/{io[1]} new={iN[0]}/{iN[1]}"
+                line += f" premises old={io[0]}/{io[1]} new={iN[0]}/{iN[1]}"
                 inb = [inb[0] + io[0], inb[1] + iN[0], inb[2] + io[1], inb[3] + iN[1]]
             print(line, flush=True)
     total = " ".join(f"{k.lower()}={v}" for k, v in counts.items())
@@ -781,7 +781,7 @@ def main():
         f"limits: rlimit={a.rlimit} timeout={a.timeout} "
         f"project-blocks={int(a.project_blocks)}"
     )
-    print(f"inb: accesses {inb[0]} -> {inb[1]} conditions {inb[2]} -> {inb[3]}")
+    print(f"premises: accesses {inb[0]} -> {inb[1]} conditions {inb[2]} -> {inb[3]}")
     if a.strict and counts["both-unsat"]:
         print(
             f"strict: fail both-unsat={counts['both-unsat']} "

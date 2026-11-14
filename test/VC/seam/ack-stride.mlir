@@ -69,8 +69,9 @@ sea.program @wrap {
 // is the node with K = k (the K writers); 24 never divides 8 + K_g - K_f
 // for K in [0, 8), so no byte pair keeps a constraint (the exact tests
 // decide some first; the stride rule the rest, under the wide accesses'
-// A-INB too).
+// A-NOWRAP too: byte K != 0, counted stride-a-nowrap-pairs).
 // WIDE: vc.ackermann-stride-pairs: {{[1-9][0-9]*}}
+// WIDE: vc.ackermann-stride-a-nowrap-pairs: {{[1-9][0-9]*}}
 // WIDE: vc.ackermann-constraints: 0
 // WIDE: result: sat
 sea.program @wide {

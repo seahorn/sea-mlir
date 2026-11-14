@@ -105,8 +105,9 @@ placement's disjoint objects (`--seam` rejects overlapping or equally named
 segments; placement refuses an object that wraps the space), A-INB implies
 all three premises. A bounds check of the program discharges A-INB, and with
 it the premises (below). Each premise is weaker than A-INB: a program that
-overflows into the padding after an object breaks A-INB and keeps A-SEP and
-A-NULL.
+overflows into the padding after an object breaks A-INB and keeps A-NULL,
+and keeps A-SEP unless an access through another provenance reaches the
+same padding cell.
 
 The premises are used only by the compares of a ROW step (store address
 against read address), by access addresses (the pruning) and by the commutes
@@ -165,7 +166,8 @@ object, sea-vc prints `seam.inb-violation: <message>` and
 (inconclusive; the program has a memory-safety error). This is the
 spurious-counterexample case a CEGAR loop would refine on. Otherwise exit 2
 as before. The check is of bounds (A-INB), not of separation: a run that
-leaves its object only into a gap keeps A-SEP, and a VC bug on such a run
+leaves its object only into a gap keeps A-NULL, and A-SEP unless another
+provenance reaches the same cell, and a VC bug on such a run
 would be labelled spurious too (a separation check of the run, an owner per
 cell, is a follow-up). The run must be the model's execution: it gets the
 model's nondet values, and nondet memory cells are not given (the model has
@@ -193,21 +195,41 @@ whose every address alternative is outside its object (a numeral offset
 outside it, an object smaller than the access or of size 0, an ARM entry
 wholly outside it) is flagged by `Rules::inBounds` while encoding. sea-vc
 classifies each one by where it lands in the placement
-(`Rules::classifyOutOfObject`): in another object (A-SEP fails if the
-access executes), unknown (a symbolic offset or length), through null (an
-object of size 0: A-NULL fails if it executes), in a gap between objects
-(only A-INB fails). It warns `vc.seam-out-of-object`, names the first 8 as
-`seam.out-of-object-at: <loc> <op>: <reason> lands=<class>` and prints
+(`Rules::outOfObjectSpans`, then pairwise over all of them,
+`SeaOpSem::classifyOutOfObject`), worst first:
 
-    seam.out-of-object: accesses=<n> object=<a> unknown=<u> null=<z> gap=<g>
+- `object`: a span meets another object (A-SEP fails if the access
+  executes);
+- `shared`: a span lands in a gap cell that an out-of-object access through
+  another provenance also reaches, one of the two a write (A-SEP fails if
+  both execute; a load and a load do not break it). A-SEP is pairwise, so
+  "lands in no object" is not enough;
+- `unknown`: a symbolic offset or length, an ARM-only leaf, or a gap span
+  while some access of unknown landing exists (it may reach that cell);
+- `null`: through an object of size 0 (A-NULL fails if it executes);
+- `gap`: cells no other out-of-object access reaches through another
+  provenance; in-bounds accesses never reach them, so A-SEP and A-NULL hold
+  and only A-INB fails.
+
+The pairs cover the accesses the encoding flagged; an access with a symbolic
+offset that leaves its object is not flagged and not paired (it is covered by
+A-SEP as an assumption, like every access). Different memories are not told
+apart (conservative: a pair in two memories is reported shared). It warns
+`vc.seam-out-of-object` (saying, per class present, which premise breaks
+when what executes), names the first 8 as `seam.out-of-object-at: <loc>
+<op>: <reason> lands=<class> [with=<loc>]` (`with`: the other access of a
+shared pair) and prints
+
+    seam.out-of-object: accesses=<n> object=<a> shared=<s> unknown=<u> null=<z> gap=<g>
 
 and keeps the premises. The check is path independent (an unreachable leaf
 also triggers it, `arm-unreach.mlir`; the speculative random-access paths of
 an STL algorithm trigger it in programs that never execute them), and sees
 only what is visible while encoding (`inb-ptrmem-static.mlir` is caught,
 `inb-ptrmem.mlir` with a symbolic `n` is not). So an unsat with `object`,
-`unknown` or `null` above 0 holds only if those accesses do not execute; one
-with only `gap` accesses rests on its premises as any other.
+`shared`, `unknown` or `null` above 0 holds only if those accesses do not
+execute; one with only `gap` accesses rests on its premises as any other
+(`out-of-object-shared.mlir` shows both).
 `--seam-out-of-object=fallback` restores the behaviour before v0.2.0: the
 run starts again without the premises (`seam.premises: off (fallback: an
 access leaves its object)`), the plain answer.
@@ -216,8 +238,12 @@ Discharging the premises is a separate memory-safety job: instrument the
 program with a bounds check before every access (the object its pointer came
 from, as SeaHorn's `sea fpf` does), and verify the instrumented program; an
 unsat of the instrumented job (A-INB holds) together with an unsat of the
-original one gives the unconditional claim. A-NULL alone is a null-dereference
-check, cheaper and more common. Future work: a sea-mlir pass could check
+original one gives the unconditional claim. A-NULL alone is a
+null-dereference check when null is the only object of size 0 (zero-sized
+allocations need their own check), cheaper and more common. `--seam-check`
+states every premise firing as the in-bounds conditions of its accesses;
+per-premise statements (A-SEP, A-NULL, A-NOWRAP each on its own) are an open
+follow-up. Future work: a sea-mlir pass could check
 using only the object information it knows (the registry, allocation ops,
 and provenance of pointers stored in memory). It could minimize checks by
 omitting accesses the rules already show are in bounds and reusing one check

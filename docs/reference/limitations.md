@@ -69,8 +69,12 @@
   an unrolled loop that cannot execute, or on a path that does execute.
   `--seam-out-of-object=fallback` runs again without the premises.
 - A counterexample that leaves its object only into a gap between objects
-  keeps A-SEP, but `sea-vc` still reports it as a memory-safety error
-  (exit 4): its replay check is of bounds, not of separation.
+  keeps A-NULL, and keeps A-SEP unless another provenance reaches the same
+  cell (classified `shared`), but `sea-vc` still reports it as a
+  memory-safety error (exit 4): its replay check is of bounds, not of
+  separation.
+- `--seam-check` states every premise firing as the in-bounds conditions of
+  its accesses; checks stated per premise are an open follow-up.
 - `--ptr-mode=address` can be much slower on code that aligns pointers by
   integer arithmetic.
 

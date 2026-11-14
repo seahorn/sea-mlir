@@ -2,7 +2,7 @@
 // W-ROW-ALIGNED (--seam-wide, both accesses align 8) builds
 // ite(overlap(i, 1, j, 1), v, below) for a store at i = ite(c, A + 8x,
 // B + 8y) and a load at j = C + 8z. The leaves are in other objects than C,
-// so under A-INB neither overlaps j: the question is false (premise.a-inb).
+// so under A-SEP neither overlaps j: the question is false (premise.a-sep).
 // Decided as the program compare PTR_EQ(i, j) it stayed open (a one-past-
 // the-end pointer may equal the next object's base). With W-ITE (wide ROW
 // per ite leaf pair, decided in the access context) the read is decided per

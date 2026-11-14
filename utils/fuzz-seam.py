@@ -125,7 +125,8 @@ another reason (the abstract interpreter has no address of a pointer:
 ptr.to_int / ptr.from_int); a run that reaches the end or the failed assertion
 without leaving an object is a failure (the counterexample is in bounds, so
 --seam's unsat is wrong; this tests bounds, not separation: a counterexample
-that leaves its object only into a gap keeps A-SEP, and is not flagged yet).
+that leaves its object only into a gap keeps A-NULL, and A-SEP unless another
+provenance reaches the same cell; it is not flagged yet).
 Every --seam run has --seam-stats; the summary reports
 the counts of the final run of the seam variant, summed over the programs:
 wow.commute, smap.commute, the cross-base skips (cmp.diff-base,
@@ -1183,6 +1184,7 @@ COUNTERS = [
     "row.smap-skip",
     "premise.a-sep",
     "premise.a-null",
+    "premise.a-nowrap",
     "wide.hit",
     "wide.sub",
     "wide.skip",

@@ -177,13 +177,99 @@ static std::string locText(Location loc) {
 }
 
 void SeaOpSem::noteInbViolation(Location loc, llvm::StringRef kind,
-                                seam::Landing landing,
+                                seam::OutOfObjectSpans spans,
                                 llvm::function_ref<std::string()> reason) {
-  ++oobLanding[static_cast<unsigned>(landing)];
+  OutOfObject r;
+  r.loc = locText(loc);
+  r.kind = kind.str();
+  r.write = kind != "load";
   // the reason (a walk of the address) only for the notes printed
   if (++inbStaticViolations <= kInbViolationNotes)
-    inbNotes.push_back(locText(loc) + " " + kind.str() + ": " + reason() +
-                       " lands=" + seam::landingName(landing));
+    r.reason = reason();
+  r.spans = std::move(spans);
+  oob.push_back(std::move(r));
+  oobClassified = false;
+}
+
+/// The pairwise step of the static out-of-object report. A-SEP is pairwise:
+/// two accesses through different provenances that both leave their objects
+/// into the same gap cell break it, though each lands "in no object". So:
+///  - Object: some span meets another object;
+///  - Shared: a gap span meets a gap span of another access through another
+///    provenance, one of the two a write (a load and a load do not break
+///    A-SEP); both accesses are Shared, each names the other (with=);
+///  - Unknown: some leaf's span is unknown; or a gap span while some access
+///    has an unknown leaf (it may reach that cell through any provenance);
+///  - Null: some leaf through an object of size 0;
+///  - Gap: the rest. In-bounds accesses never reach a gap cell, so a gap
+///    access meets no other access.
+/// Only what the encoding saw: accesses that are not definite violations
+/// (a symbolic offset that may leave its object) are not in the pairs.
+void SeaOpSem::classifyOutOfObject() {
+  if (oobClassified)
+    return;
+  oobClassified = true;
+  using seam::Landing;
+  using Spans = seam::OutOfObjectSpans;
+  bool anyUnknown = false;
+  for (const OutOfObject &r : oob)
+    anyUnknown = anyUnknown || r.spans.unknown;
+  std::vector<bool> shared(oob.size(), false);
+  std::vector<std::string> with(oob.size());
+  for (size_t i = 0; i < oob.size(); ++i)
+    for (size_t j = i + 1; j < oob.size(); ++j) {
+      if (!oob[i].write && !oob[j].write)
+        continue;
+      bool meet = false;
+      for (const Spans::Span &a : oob[i].spans.gaps)
+        for (const Spans::Span &b : oob[j].spans.gaps)
+          meet = meet || (a.base != b.base && Spans::overlap(a, b));
+      if (!meet)
+        continue;
+      if (!shared[i])
+        with[i] = oob[j].loc;
+      if (!shared[j])
+        with[j] = oob[i].loc;
+      shared[i] = shared[j] = true;
+    }
+  for (size_t i = 0; i < oob.size(); ++i) {
+    OutOfObject &r = oob[i];
+    r.with.clear();
+    if (r.spans.object)
+      r.landing = Landing::Object;
+    else if (shared[i]) {
+      r.landing = Landing::Shared;
+      r.with = with[i];
+    } else if (r.spans.unknown || (anyUnknown && !r.spans.gaps.empty()))
+      r.landing = Landing::Unknown;
+    else if (r.spans.null)
+      r.landing = Landing::Null;
+    else
+      r.landing = Landing::Gap;
+  }
+}
+
+unsigned SeaOpSem::outOfObjectCount(seam::Landing l) {
+  classifyOutOfObject();
+  unsigned n = 0;
+  for (const OutOfObject &r : oob)
+    n += r.landing == l;
+  return n;
+}
+
+std::vector<std::string> SeaOpSem::inbViolationNotes() {
+  classifyOutOfObject();
+  std::vector<std::string> notes;
+  for (const OutOfObject &r : oob) {
+    if (notes.size() == kInbViolationNotes)
+      break;
+    std::string n = r.loc + " " + r.kind + ": " + r.reason +
+                    " lands=" + seam::landingName(r.landing);
+    if (!r.with.empty())
+      n += " with=" + r.with;
+    notes.push_back(std::move(n));
+  }
+  return notes;
 }
 
 void SeaOpSem::trailAccess(const char *kind, uint64_t units) {
@@ -329,7 +415,8 @@ Expr SeaOpSem::accessPremise(const RewriteTrail &trail,
 /// access whose every leaf is out of its object (a numeral offset out of
 /// bounds, an object smaller than the access) is a static out-of-object
 /// access: sea-vc reports it, classified by where it lands
-/// (seam::Rules::classifyOutOfObject), and keeps the premises (they fail
+/// (seam::Rules::outOfObjectSpans, then pairwise: classifyOutOfObject),
+/// and keeps the premises (they fail
 /// only if the access executes).
 Expr SeaOpSem::accessAddr(Expr mem, Expr ptr, uint64_t units,
                           OpSemContext &ctx) {
@@ -358,7 +445,7 @@ Expr SeaOpSem::accessAddr(Expr mem, Expr ptr, uint64_t units,
   if (violated)
     noteInbViolation(
         curOp->getLoc(), curOp->getName().stripDialect(),
-        seamRw->rules().classifyOutOfObject(ptr, units),
+        seamRw->rules().outOfObjectSpans(ptr, units),
         [&] { return seamRw->rules().explainViolation(ptr, units, false); });
   if (!isOpX<TRUE>(inb))
     inbSeen.insert(mk<AND>(ctx.getPathCond(), boolop::lneg(inb)));
@@ -1008,7 +1095,7 @@ void SeaOpSem::settleKeyed(OpSemContext &ctx) {
       fallback(seamRw->rules().inBounds(p, 1, violated), loc);
       if (violated)
         noteInbViolation(
-            loc, "companion", seamRw->rules().classifyOutOfObject(p, 1),
+            loc, "companion", seamRw->rules().outOfObjectSpans(p, 1),
             [&] { return seamRw->rules().explainViolation(p, 1, false); });
     }
   for (const auto &[dv, nv, loc] : pendingKeyedRanges)
@@ -1019,7 +1106,7 @@ void SeaOpSem::settleKeyed(OpSemContext &ctx) {
       fallback(seamRw->rules().rangeInBounds(d, n, violated), loc);
       if (violated)
         noteInbViolation(
-            loc, "companion", seamRw->rules().classifyOutOfObject(d, 0, n),
+            loc, "companion", seamRw->rules().outOfObjectSpans(d, 0, n),
             [&] { return seamRw->rules().explainViolation(d, 0, true, n); });
     }
   pendingKeyed.clear();
@@ -1137,7 +1224,7 @@ void SeaOpSem::accessRange(Expr d, Expr n, OpSemContext &ctx) {
   Expr inb = seamRw->rules().rangeInBounds(d, n, violated);
   if (violated)
     noteInbViolation(curOp->getLoc(), curOp->getName().stripDialect(),
-                     seamRw->rules().classifyOutOfObject(d, 0, n), [&] {
+                     seamRw->rules().outOfObjectSpans(d, 0, n), [&] {
                        return seamRw->rules().explainViolation(d, 0, true, n);
                      });
   if (!isOpX<TRUE>(inb))

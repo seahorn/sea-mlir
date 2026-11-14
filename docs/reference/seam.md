@@ -89,8 +89,8 @@ takes a separate memory-safety check of the program (a bounds check
 discharges all three). A `sat` that needs an out-of-object access does not
 replay, and `sea-vc` exits with status 4 instead of reporting it. When an
 access can be shown statically to leave its object, `sea-vc` reports it
-(`seam.out-of-object:`, with where it lands: another object, null, a gap,
-unknown) and keeps the premises: the `unsat` then holds only if that access
+(`seam.out-of-object:`, with where it lands: another object, a gap cell
+another provenance also reaches (`shared`), unknown, null, a gap) and keeps the premises: the `unsat` then holds only if that access
 does not execute. `--seam-out-of-object=fallback` runs again without the
 premises instead. `--seam-check` checks each rewrite against its premises
 with the solver. It finds rewriting bugs; it does not discharge a premise.

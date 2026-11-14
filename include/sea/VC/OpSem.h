@@ -329,16 +329,16 @@ public:
   unsigned inbAccessCount() const { return inbAccesses; }
   unsigned inbStaticViolationCount() const { return inbStaticViolations; }
   unsigned inbConditionCount() const { return inbSeen.size(); }
-  /// The static out-of-object accesses by where they land
-  /// (seam::Landing, indexed by its value).
-  unsigned outOfObjectCount(expr::seam::Landing l) const {
-    return oobLanding[static_cast<unsigned>(l)];
-  }
+  /// The static out-of-object accesses by where they land (seam::Landing),
+  /// classified pairwise over all of them (classifyOutOfObject): ask after
+  /// the encoding.
+  unsigned outOfObjectCount(expr::seam::Landing l);
   /// The first kInbViolationNotes static out-of-object accesses, as
-  /// `<file:line:col> <kind>: <reason> lands=<class>` (sea-vc prints them
-  /// as seam.out-of-object-at).
+  /// `<file:line:col> <kind>: <reason> lands=<class>[ with=<file:line:col>]`
+  /// (with: the access of another provenance a `shared` one meets; sea-vc
+  /// prints them as seam.out-of-object-at). Ask after the encoding.
   static constexpr unsigned kInbViolationNotes = 8;
-  const std::vector<std::string> &inbViolationNotes() const { return inbNotes; }
+  std::vector<std::string> inbViolationNotes();
   /// The SeaM rewriter (null without --seam).
   expr::SeaMRewriter *seamRewriter() { return seamRw.get(); }
   /// Positions in the side conditions of the sea.assume facts (the
@@ -393,14 +393,25 @@ private:
   /// registers a shadow memory start (BaseRegistry::addShadowRoot)
   void addShadowRoot(expr::Expr start);
   unsigned inbAccesses = 0, inbStaticViolations = 0;
-  std::array<unsigned, 4> oobLanding{};
-  std::vector<std::string> inbNotes;
-  /// counts a static out-of-object access (a definite A-INB violation) by
-  /// where it lands (\p landing); notes the first ones (\p loc, the access
-  /// \p kind, the reason)
+  /// one static out-of-object access
+  struct OutOfObject {
+    std::string loc, kind;
+    std::string reason; ///< the first kInbViolationNotes only
+    bool write;         ///< not a load (a memmove's source counts as one)
+    expr::seam::OutOfObjectSpans spans;
+    expr::seam::Landing landing = expr::seam::Landing::Gap;
+    std::string with; ///< Shared: the location of the other access
+  };
+  std::vector<OutOfObject> oob;
+  bool oobClassified = false;
+  /// records a static out-of-object access (a definite A-INB violation)
+  /// with its placement facts \p spans (\p loc, the access \p kind, the
+  /// reason for the first ones)
   void noteInbViolation(mlir::Location loc, llvm::StringRef kind,
-                        expr::seam::Landing landing,
+                        expr::seam::OutOfObjectSpans spans,
                         llvm::function_ref<std::string()> reason);
+  /// the pairwise step: each access's Landing (seam::Landing)
+  void classifyOutOfObject();
   expr::ExprSet inbSeen;
   std::vector<size_t> assumeSides;
   /// sea.ptr.index (docs/design/PtrIndex.md): with

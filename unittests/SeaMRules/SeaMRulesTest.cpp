@@ -1638,6 +1638,22 @@ void testProvenance() {
               hasReason(d, "arm.skip", seam::PremASep) &&
               d.premises == seam::PremASep,
           "provenance: ARM across bases uses A-INB");
+    // a size-0 provenance dropped by ARM (cmp.size0-vacuous): A-SEP when it
+    // faces only other bases, A-NULL when it faces the same size-0 base
+    Expr bigN = mk<ITE>(F.a, mk<ITE>(F.b, F.o1, F.nul),
+                        mk<ITE>(F.c, F.o3, mk<ITE>(F.b, F.o1, F.o4)));
+    Expr sumN = F.add({bigN, F.num(8)});
+    seam::Decision dS;
+    CHECK(rules.decideEq(sumN, F.add({F.o5, F.y}), dS, true) == seam::Tri::No &&
+              hasReason(dS, "cmp.size0-vacuous", seam::PremASep) &&
+              !dS.uses(seam::PremANull),
+          "provenance: ARM size-0 drop across bases uses A-SEP");
+    seam::Decision dN;
+    CHECK(rules.decideEq(sumN, F.add({F.nul, F.num(8)}), dN, true) ==
+                  seam::Tri::No &&
+              hasReason(dN, "cmp.size0-vacuous", seam::PremANull),
+          "provenance: ARM size-0 drop against the same size-0 base uses "
+          "A-NULL");
     Expr offs =
         mk<ITE>(F.a, mk<ITE>(F.b, F.num(4), F.num(8)),
                 mk<ITE>(F.c, F.num(12), mk<ITE>(F.b, F.num(16), F.num(20))));

@@ -595,9 +595,11 @@ static cl::opt<OutOfObject> seamOutOfObject(
              "access whose every address alternative is outside its "
              "object). report (default): warning vc.seam-out-of-object and "
              "the seam.out-of-object lines (where each lands: another "
-             "object, a gap, null, unknown); the premises stay, so an unsat "
-             "holds for the executions that do not reach such an access "
-             "(one that lands in another object breaks A-SEP if reached). "
+             "object, a gap cell another provenance also reaches (shared), "
+             "unknown, null, a gap); the premises stay, so an unsat holds "
+             "for the executions that do not reach such an access (object, "
+             "shared and unknown ones break A-SEP if reached, null ones "
+             "A-NULL). "
              "fallback: run again without the premises (as --seam-premises=0)"),
     cl::values(clEnumValN(OutOfObject::Report, "report",
                           "report and keep the premises (default)"),
@@ -2751,27 +2753,37 @@ OUTPUT (stdout, `key: value` lines):
                                   memhavocs still rest on A-SEP; after the
                                   opt-in fallback, warning
                                   vc.seam-fallback-conditional)
-  seam.out-of-object: accesses=<n> object=<a> unknown=<u> null=<z> gap=<g>
+  seam.out-of-object: accesses=<n> object=<a> shared=<s> unknown=<u> null=<z> gap=<g>
                                   (--seam, n > 0: n accesses leave their
                                   object on every address alternative
                                   (warning vc.seam-out-of-object), by where
-                                  they land in the placement: another
-                                  object (A-SEP fails if one executes),
-                                  unknown (a symbolic offset or length),
+                                  they land in the placement, classified
+                                  pairwise: another object (A-SEP fails if
+                                  one executes), shared (a gap cell an
+                                  out-of-object access through another
+                                  provenance also reaches, one of the two a
+                                  write: A-SEP fails if both execute),
+                                  unknown (a symbolic offset or length, or
+                                  a gap cell such an access may reach),
                                   null (an object of size 0: A-NULL fails if
-                                  one executes), a gap between objects (only
-                                  A-INB fails). The premises stay: an unsat
-                                  holds for the executions that reach none
-                                  of them; --seam-out-of-object=fallback
-                                  runs again without the premises)
-  seam.out-of-object-at: <file:line:col> <op>: <reason> lands=<class>
+                                  one executes), gap (a cell no other
+                                  provenance reaches: keeps A-NULL and
+                                  A-SEP, only A-INB fails). The premises
+                                  stay: an unsat holds for the executions
+                                  that reach none of the object / shared /
+                                  unknown / null ones;
+                                  --seam-out-of-object=fallback runs again
+                                  without the premises)
+  seam.out-of-object-at: <file:line:col> <op>: <reason> lands=<class> [with=<file:line:col>]
                                   (the first 8 of them: op load / store /
                                   memset / memmove / companion, reason the
                                   check that failed: numeral offset
                                   outside, range outside, object of size 0
                                   or smaller than the access, ARM range
-                                  outside; class object / unknown / null /
-                                  gap; with --smt2 on stderr)
+                                  outside; class object / shared / unknown /
+                                  null / gap; with: for shared, the access
+                                  of another provenance in the same cell;
+                                  with --smt2 on stderr)
   seam.alias.open.<kind>: <n>     (--seam-stats: the alias questions the
                                   rewriter left to the solver, IS_OVERLAP
                                   terms of the query; kind all,
@@ -3411,7 +3423,9 @@ version whose cell was clobbered (the in-place interpreter sees the new
 value, the VC the old one); 3 unknown; 4 (--seam) sat that does not replay
 because the program leaves an object with the model's inputs: A-INB does not
 hold (A-SEP or A-NULL may: the check is of bounds, not of separation, so a
-run that only leaves into a gap is reported here as well), the answer is
+run that only leaves into a gap is reported here as well, though it keeps
+A-NULL, and A-SEP unless another provenance reaches the same cell), the
+answer is
 inconclusive, the program has a memory-safety error
 (`seam.inb-violation: <message>`, `seam.inb-violation-at: <loc>`; the
 abstract program is run with the model's nondet values, and only a run that
@@ -5600,26 +5614,37 @@ int main(int argc, char **argv) {
     if (inb && sem.seam() && sem.inbStaticViolationCount()) {
       using expr::seam::Landing;
       const unsigned inObj = sem.outOfObjectCount(Landing::Object);
+      const unsigned shr = sem.outOfObjectCount(Landing::Shared);
       const unsigned unk = sem.outOfObjectCount(Landing::Unknown);
       const unsigned nul = sem.outOfObjectCount(Landing::Null);
+      const unsigned gap = sem.outOfObjectCount(Landing::Gap);
+      // what the verdict rests on, by class
       std::string what;
       if (mayRetry)
         what = "running without the premises (--seam-out-of-object=fallback)";
       else {
-        what = "the premises stay: the answer holds for the executions that "
-               "reach none of them";
-        if (inObj + unk + nul)
-          what += " (one that is reached and lands in another object, "
-                  "somewhere unknown or through null breaks A-SEP or A-NULL)";
+        what = "the premises stay";
+        if (inObj + shr + unk)
+          what += "; A-SEP is broken if one that lands in another object, "
+                  "both of a shared pair, or (maybe) one of unknown landing "
+                  "executes: an unsat holds only for the executions that "
+                  "reach none of those";
+        if (nul)
+          what += "; A-NULL is broken if one through null executes: an "
+                  "unsat holds only for the executions that reach none of "
+                  "those";
+        if (gap)
+          what += "; the gap ones keep A-SEP and A-NULL (no other access "
+                  "the encoding sees reaches their cells) and break A-INB "
+                  "only: the answer rests on the premises as reported";
       }
-      sea::diag::warn(
-          "vc.seam-out-of-object",
-          Twine(sem.inbStaticViolationCount()) +
-              " access(es) leave their object on every address alternative "
-              "(object=" +
-              Twine(inObj) + " unknown=" + Twine(unk) + " null=" + Twine(nul) +
-              " gap=" + Twine(sem.outOfObjectCount(Landing::Gap)) + "); " +
-              what);
+      sea::diag::warn("vc.seam-out-of-object",
+                      Twine(sem.inbStaticViolationCount()) +
+                          " access(es) leave their object on every address "
+                          "alternative (object=" +
+                          Twine(inObj) + " shared=" + Twine(shr) +
+                          " unknown=" + Twine(unk) + " null=" + Twine(nul) +
+                          " gap=" + Twine(gap) + "); " + what);
       // name the accesses (the first few): where, which check failed, and
       // where the access lands
       raw_ostream &os = statOut();
@@ -5828,6 +5853,7 @@ int main(int argc, char **argv) {
           r.line("seam.out-of-object")
               .kv("accesses", n)
               .kv("object", sem.outOfObjectCount(Landing::Object))
+              .kv("shared", sem.outOfObjectCount(Landing::Shared))
               .kv("unknown", sem.outOfObjectCount(Landing::Unknown))
               .kv("null", sem.outOfObjectCount(Landing::Null))
               .kv("gap", sem.outOfObjectCount(Landing::Gap));
@@ -6757,7 +6783,8 @@ int main(int argc, char **argv) {
     // premise (conditional soundness: the answer holds only for executions
     // that satisfy them). This tests bounds (A-INB, which implies the
     // premises), not separation: a run whose access only lands in a gap
-    // keeps A-SEP, and is labelled here as well (a VC bug would hide behind
+    // keeps A-NULL, and A-SEP unless another provenance reaches the same
+    // cell, and is labelled here as well (a VC bug would hide behind
     // it; a separation check of the run is a follow-up). Discharging the
     // premises is a separate memory-safety check's work.
     bool replayFailed = replay.run.status == sea::RunStatus::Error ||

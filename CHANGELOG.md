@@ -18,14 +18,17 @@ out-of-object access.
 - **Verdict change.** A static out-of-object access (an access whose every
   address alternative lies outside its object) no longer makes `sea-vc`
   encode again without the assumption. It is reported, classified by where
-  it lands (another object, unknown, null, a gap), and the premises stay:
+  it lands (another object; a gap cell that another provenance also
+  reaches, `shared`, since A-SEP is pairwise; unknown; null; a gap), and the
+  premises stay:
   an unsat then holds for the executions that reach none of those accesses.
   A program that does overflow into a neighbour can therefore change from
   sat to unsat (conditional on a premise it breaks if the access executes);
   programs whose flagged accesses sit on paths that never execute keep
   their verdict and solve faster. `--seam-out-of-object=fallback` restores
   the old rerun.
-- Output changes (consumers: `utils/query-diff.py` and `utils/fuzz-seam.py`
+- Output changes (consumers: `utils/query-diff.py`, whose summary line `inb:` is
+  now `premises:`, and `utils/fuzz-seam.py`
   read the new lines; query-diff still reads `seam.inb:` of an older
   binary):
   - `seam.inb: assumed|off ...` is now `seam.premises: assumed|off ...`
@@ -37,8 +40,8 @@ out-of-object access.
   - The warning `vc.seam-inb-violated` and the lines `vc.seam-inb-violated:
     at ...` / `vc.seam-inb-violated-count:` are now the warning
     `vc.seam-out-of-object`, `seam.out-of-object-at: <loc> <op>: <reason>
-    lands=<class>` and `seam.out-of-object: accesses= object= unknown=
-    null= gap=`. `vc.seam-inb-fallback-conditional` is now
+    lands=<class> [with=<loc>]` and `seam.out-of-object: accesses= object=
+    shared= unknown= null= gap=`. `vc.seam-inb-fallback-conditional` is now
     `vc.seam-fallback-conditional` (with the opt-in fallback only).
   - Counters: `seam.rule.premise.a-inb` is split into `premise.a-sep`,
     `premise.a-null`, `premise.a-nowrap`; `vc.ackermann-stride-a-inb-pairs`

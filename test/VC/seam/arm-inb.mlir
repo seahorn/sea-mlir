@@ -14,7 +14,7 @@
 // STATIC: [vc.seam-out-of-object]
 // STATIC: seam.out-of-object-at: {{.*}} store: {{.*}}(ARM) lies outside its object lands=unknown
 // STATIC: seam.premises: assumed
-// STATIC: seam.out-of-object: accesses=1 object=0 unknown=1
+// STATIC: seam.out-of-object: accesses=1 object=0 shared=0 unknown=1
 // STATIC: result: unsat
 // SAT: result: sat
 !m = !sea.mem<!sea.ptr<64>, i8>
