@@ -41,7 +41,9 @@ USAGE:
   utils/output-diff.py --self-test     (the masks and the key lists; no build)
   <bin-dir> holds sea-vc and sea-run (OLD = NEW: the noise floor).
 CORPUS (no inputs): $SEA_BENCH_SUITES/vcc, and the standalone programs of
-  test/VC and test/Interp (no split markers). A directory is searched
+  test/VC and test/Interp (no split markers) of the source tree the --new
+  build was configured from (--old, then the working directory, then this
+  script's tree, when it has none). A directory is searched
   recursively for *.mlir; files with `// -----` or `//---` are skipped.
   Every input runs every matrix entry; --quick drops the heavy entries only
   for inputs under $SEA_BENCH_SUITES (the bench corpus): the small programs of
@@ -66,14 +68,16 @@ MASKS (both sides): a number keeps its shape: sign and number of fraction
   `time=0.002` differ, and so do 0.061 and 0.061000.
   <name>time[:] <d.ddd>, time= execs/s= steps/s=, rss-mb= vm-mb= peak-rss-mb=,
   slowest-op[-at]=, `<key>-mb[:] <n>`, the tool.version line, the bin dir,
-  the load address of a crash backtrace frame (` #N 0x...`);
+  the load address and the module offset of a crash backtrace frame
+  (` #N 0x...`, `(<bin>/sea-vc+0x...)`; macOS `N  sea-vc  0x...`);
   JSON-object lines (jsonl stdout, jsonl log events on stderr): every
   string field masked as text, a decimal field whose name contains `time`
   (timeout stays), an integer field whose name ends in -mb / _mb, and the
   value of a stat record whose key does. Types are kept (3 and "3" differ);
   a line with a duplicate key is compared as text; spacing between tokens of
-  a record is masked. --smt2 jobs: stdout unmasked, the stat lines (stderr)
-  are compared and their key lists taken from stderr.
+  a record is masked. --smt2 jobs: the query on stdout unmasked, the stat
+  lines (stderr; under jsonl, the stat records among the stdout lines, masked
+  like any record) compared and their key lists taken from there.
 OUTPUT (stdout):
   <job> <entry> <format> identical [rc=<n>]
   <job> <entry> <format> DIFF [stdout] [stderr] [rc=<old>/<new>]
@@ -148,6 +152,11 @@ MB_LINE = re.compile(r"(\S*-mb:? )[0-9]+")
 VERSION = re.compile(r"^(tool\.version: ).*$", re.M)
 # a frame of LLVM's crash backtrace: the load address differs per run (ASLR)
 FRAME = re.compile(r"^( *#[0-9]+ )0x[0-9a-f]+", re.M)
+# the module offset of a frame (`(<bin>/sea-vc+0x8f5a1b)`, `(libc.so.6+0x45330)`
+# on Linux): a different binary has other offsets
+FRAME_OFFSET = re.compile(r"^( *#[0-9]+ .*\([^()\s]*\+)0x[0-9a-f]+(\))$", re.M)
+# macOS style: `3  sea-vc  0x0000000104a3c1b0 symbol + 56`
+FRAME_MAC = re.compile(r"^([0-9]+ +\S+ +)0x[0-9a-f]+", re.M)
 KEY = re.compile(r"^([A-Za-z_][\w.\-/]*):(?: |$)")
 BRUNCH = re.compile(r"^BRUNCH_STAT (\S+)")
 DECIMAL = re.compile(r"(-?)[0-9]+\.([0-9]+)")
@@ -174,6 +183,8 @@ def mask_text(s, bindir=None):
     s = mask_numbers(s)
     s = MB_LINE.sub(r"\1M", s)
     s = FRAME.sub(r"\1ADDR", s)
+    s = FRAME_OFFSET.sub(r"\1OFF\2", s)
+    s = FRAME_MAC.sub(r"\1ADDR", s)
     return VERSION.sub(r"\1V", s)
 
 
@@ -270,21 +281,24 @@ def parse_record(line):
     return r if isinstance(r, dict) else None
 
 
-def mask_lines(text, bindir):
+def mask_lines(text, bindir, raw_text=False):
     """Text with every JSON-object line masked as a record, the other
-    lines as text (jsonl stdout, and the jsonl log events on stderr)."""
+    lines as text (jsonl stdout, and the jsonl log events on stderr), or
+    as they are (raw_text: the query of --smt2)."""
     lines = []
     for line in text.splitlines():
         r = parse_record(line) if line.startswith("{") else None
-        lines.append(
-            dump(mask_json(r, bindir)) if r is not None else mask_text(line, bindir)
-        )
+        if r is not None:
+            lines.append(dump(mask_json(r, bindir)))
+        else:
+            lines.append(line if raw_text else mask_text(line, bindir))
     return "".join(x + "\n" for x in lines)
 
 
 def normalize(stdout, stderr, smt2, bindir):
-    """(stdout, stderr) as compared."""
-    return (stdout if smt2 else mask_lines(stdout, bindir)), mask_lines(stderr, bindir)
+    """(stdout, stderr) as compared. --smt2: stdout is the query, kept as
+    it is; the jsonl records among its lines (the stat records) are masked."""
+    return mask_lines(stdout, bindir, raw_text=smt2), mask_lines(stderr, bindir)
 
 
 def stdout_texts(stdout, fmt):
@@ -465,12 +479,46 @@ def is_bench(path):
     return bool(root) and (os.path.realpath(path) + os.sep).startswith(root)
 
 
-def default_inputs():
+def _is_root(d):
+    return os.path.isdir(os.path.join(d, "test", "VC")) and os.path.isdir(
+        os.path.join(d, "test", "Interp")
+    )
+
+
+def repo_root(bindirs):
+    """The source tree of the default inputs: the one the --new (then
+    --old) build was configured from (CMAKE_HOME_DIRECTORY of the
+    CMakeCache.txt above its bin directory), else the tree of the working
+    directory (the nearest parent with test/VC), else the one of this
+    script. The inputs belong to the build under test, not to wherever the
+    script is run from."""
+    for b in bindirs:
+        d = os.path.abspath(b) if b else None
+        for _ in range(3 if d else 0):
+            cache = os.path.join(d, "CMakeCache.txt")
+            if os.path.isfile(cache):
+                for line in open(cache, errors="replace"):
+                    if line.startswith("CMAKE_HOME_DIRECTORY:"):
+                        home = line.split("=", 1)[1].strip()
+                        if _is_root(home):
+                            return home
+                break
+            d = os.path.dirname(d)
+    d = os.getcwd()
+    while True:
+        if _is_root(d):
+            return d
+        if os.path.dirname(d) == d:
+            return SRC
+        d = os.path.dirname(d)
+
+
+def default_inputs(root):
     suites = os.environ.get("SEA_BENCH_SUITES")
     vcc = os.path.join(suites, "vcc") if suites else None
     if not vcc or not os.path.isdir(vcc):
         return None
-    return [vcc, os.path.join(SRC, "test", "VC"), os.path.join(SRC, "test", "Interp")]
+    return [vcc, os.path.join(root, "test", "VC"), os.path.join(root, "test", "Interp")]
 
 
 # --------------------------------------------------------------------- jobs
@@ -519,9 +567,11 @@ def one(task, a):
         return r
     no, eo = normalize(out_o, err_o, smt2, a.old)
     nn, en = normalize(out_n, err_n, smt2, a.new)
-    # --smt2: stdout is the query; the stat lines are on stderr (text)
-    ko, bo = keys(err_o if smt2 else out_o, fmt)
-    kn, bn = keys(err_n if smt2 else out_n, fmt)
+    # --smt2: stdout is the query; the stat lines are on stderr (text), or
+    # records among the stdout lines (jsonl)
+    stat_err = smt2 and fmt != "jsonl"
+    ko, bo = keys(err_o if stat_err else out_o, fmt)
+    kn, bn = keys(err_n if stat_err else out_n, fmt)
     kd, bd = key_diff(ko, kn), key_diff(bo, bn)
     r["keys_diff"], r["brunch_diff"] = bool(kd), bool(bd)
     r["rc"] = rc_o
@@ -585,11 +635,29 @@ def self_test():
     f1 = " #0 0x00005aa9d1551a1b llvm::sys::PrintStackTrace() (sea-vc+0x8f5a1b)"
     f2 = f1.replace("5aa9d1551a1b", "5937c34c6a1b")
     check("crash frame", mask_text(f1), mask_text(f2))
+    # the module offset differs between two builds: masked, the module kept
+    check("frame offset", mask_text(f1), mask_text(f1.replace("8f5a1b", "8f5a1c")))
+    f3 = " #4 0x0000584f2c6a1b1b main (<bin>/sea-vc+0x9c1b1b)\n"
     check(
-        "frame offset kept",
-        mask_text(f1) != mask_text(f1.replace("8f5a1b", "8f5a1c")),
+        "frame bin offset",
+        mask_text(f3),
+        mask_text(
+            f3.replace("9c1b1b", "7d0002").replace("584f2c6a1b1b", "5937c34c6a1b")
+        ),
+    )
+    check(
+        "frame module kept",
+        mask_text(f1) != mask_text(f1.replace("(sea-vc+", "(libc.so.6+")),
         True,
     )
+    m1 = "3  sea-vc  0x0000000104a3c1b0 llvm::sys::RunSignalHandlers() + 56\n"
+    check("mac frame", mask_text(m1), mask_text(m1.replace("104a3c1b0", "1042f01b0")))
+    check(
+        "mac frame symbol kept",
+        mask_text(m1) != mask_text(m1.replace("RunSignal", "PrintStack")),
+        True,
+    )
+    check("offset elsewhere kept", mask_text("x+0x10\n"), "x+0x10\n")
     # jsonl: string fields, time-named decimals, stat values by key
     j1 = (
         '{"kind":"stat","key":"tool.version","value":"sea-mlir 0.1.0 (a)",'
@@ -647,9 +715,42 @@ def self_test():
         same('{"a": 1, "b":[1, 2]}\n', '{"a":1,"b":[1,2]}\n'),
         True,
     )
-    # smt2: stdout unmasked
+    # smt2: the query unmasked; jsonl stat records among its lines masked
     s = "; time 0.5\n(check-sat)\n"
     check("smt2 raw", normalize(s, "", True, None)[0], s)
+    r1 = '{"kind":"stat","key":"vc-time","value":0.061,"text":"vc-time: 0.061"}\n'
+    r2 = r1.replace("0.061", "0.172")
+    check(
+        "smt2 jsonl stat masked",
+        normalize(s + r1, "", True, None),
+        normalize(s + r2, "", True, None),
+    )
+    check(
+        "smt2 jsonl query kept",
+        normalize(s + r1, "", True, None)
+        != normalize(s.replace("0.5", "0.6") + r1, "", True, None),
+        True,
+    )
+    check(
+        "smt2 jsonl shape kept",
+        normalize(r1, "", True, None)
+        != normalize(r1.replace("0.061", "0.06"), "", True, None),
+        True,
+    )
+    # the repository root: the build's CMAKE_HOME_DIRECTORY, not the script's
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "src")
+        os.makedirs(os.path.join(src, "test", "VC"))
+        os.makedirs(os.path.join(src, "test", "Interp"))
+        bindir = os.path.join(tmp, "build", "bin")
+        os.makedirs(bindir)
+        with open(os.path.join(tmp, "build", "CMakeCache.txt"), "w") as fh:
+            fh.write(f"CMAKE_HOME_DIRECTORY:INTERNAL={src}\n")
+        check("root of a build", repo_root((bindir, None)), src)
+        check("root of the second build", repo_root((None, bindir)), src)
+        check("root of no build: a tree", _is_root(repo_root((None, None))), True)
     # keys, text and jsonl alike
     txt = "program: @main\nvc.reads: 3\nBRUNCH_STAT vc.reads 3\nobject: a\nobject: b\n"
     k, b = keys(txt, "text")
@@ -765,7 +866,7 @@ def main():
     if not formats or any(f not in ("text", "jsonl") for f in formats):
         print(f"error: --formats {a.formats}: text and/or jsonl", file=sys.stderr)
         return 2
-    inputs = a.inputs or default_inputs()
+    inputs = a.inputs or default_inputs(repo_root((a.new, a.old)))
     if not inputs:
         print(
             "error: no inputs and no $SEA_BENCH_SUITES/vcc (just bench-connect)",
