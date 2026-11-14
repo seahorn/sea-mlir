@@ -91,6 +91,8 @@ jobs:
         run: python test/Tools/Inputs/publish.py utils/publish.py
       - name: attest self-test (no build, no GitHub)
         run: python utils/attest.py --self-test
+      - name: output-diff self-test (no build)
+        run: python utils/output-diff.py --self-test
       - name: query-diff classes (test/Tools/query-diff.test without lit)
         run: |
           sudo apt-get update -q

@@ -4,6 +4,7 @@
 //===- JoinCases.cpp - joins built as cases terms -------------*- C++ -*-===//
 
 #include "sea/VC/JoinCases.h"
+#include "sea/Support/Stats.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -153,10 +154,13 @@ void JoinCases::count(llvm::ArrayRef<Expr> edges, llvm::ArrayRef<Expr> vals,
     ++defaultNotMostFrequent[k];
 }
 
-void JoinCases::print(llvm::raw_ostream &os) const {
+void JoinCases::report(stats::Report &r) const {
   auto line = [&](llvm::StringRef name, const Count &c) {
-    os << "cases." << name << ": " << (c[0] + c[1] + c[2]) << " scalar=" << c[0]
-       << " memory=" << c[1] << " companion=" << c[2] << "\n";
+    r.line(("cases." + name).str())
+        .value(c[0] + c[1] + c[2])
+        .kv("scalar", c[0])
+        .kv("memory", c[1])
+        .kv("companion", c[2]);
   };
   // the joins built as cases (one per block argument or companion at a
   // block with two or more incoming edges)

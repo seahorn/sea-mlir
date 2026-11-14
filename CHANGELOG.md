@@ -49,6 +49,9 @@ Scope, build, assumptions and known issues: [docs/Release.md](docs/Release.md).
   read-only arrays with the stride rule (`--ackermannize`, `--ack-stride`).
 - Assurance: the per-firing rule check (`--seam-check`), the rule trail
   (`--seam-trail`), `--eq-audit`, `--dag-stats`.
+- `--words-check-rlimit`, `--eq-audit-rlimit`, `--seam-check-rlimit`: z3
+  resource limit per auxiliary check (deterministic; unset by default, untuned
+  until a corpus sweep); an exhausted check is `unknown`, `reason=rlimit`.
 - Limits and progress: `--timeout`, `--mem-limit`, `--vcgen-only`,
   `--progress` (= `--log=vc.phase`).
 - Logs (`--log`, `SEA_LOG`; docs/reference/logging.md): tagged, leveled
@@ -65,5 +68,6 @@ Scope, build, assumptions and known issues: [docs/Release.md](docs/Release.md).
   Lean conformance checks of seam-lean ([docs/SeamExport.md](docs/SeamExport.md)).
 - `--version` for every tool; `sea-vc` prints `tool.version:` first.
 - Source tree only: `utils/bench.py` (benchmark suites in separate
-  repositories, tiers and gates), `utils/query-diff.py`, the fuzzers and
+  repositories, tiers and gates), `utils/query-diff.py`,
+  `utils/output-diff.py` (tool output of two builds), the fuzzers and
   semantic oracles; `just release-check`.
