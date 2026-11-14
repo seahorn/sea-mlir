@@ -9,6 +9,8 @@
 #include <boost/intrusive_ptr.hpp>
 #include <boost/pool/pool.hpp>
 
+#include "llvm/Support/Compiler.h"
+
 #include <iostream>
 #include <limits>
 #include <map>
@@ -171,12 +173,22 @@ public:
   /** returns the unique id of this expression */
   unsigned int getId() const { return id; }
 
-  void Ref() {
-    if (count == std::numeric_limits<unsigned int>::max())
+  LLVM_ATTRIBUTE_ALWAYS_INLINE void Ref() {
+    if (LLVM_UNLIKELY(count == std::numeric_limits<unsigned int>::max()))
       fatalCounter("expr.refcount-overflow", fac, this, count, count);
     ++count;
   }
   bool isGarbage() const { return count == 0; }
+  /// Release a reference that is not the last one: true when done (count was
+  /// > 1); false leaves the count unchanged for ExprFactory::derefLast (the
+  /// last reference, and an underflow).
+  LLVM_ATTRIBUTE_ALWAYS_INLINE bool releaseShared() {
+    if (count > 1) {
+      --count;
+      return true;
+    }
+    return false;
+  }
   bool isMutable() const { return m_oper->isMutable(); }
 
   unsigned int use_count() { return count; }
@@ -444,8 +456,17 @@ public:
       removed and recycled, and the references it held are released in turn.
       Iterative: releasing the root of a deep chain (a VC store chain) does
       not recurse once per level; nodes that die during a release are queued
-      and removed by the outermost call. */
-  void Deref(ENode *val) {
+      and removed by the outermost call. A reference that is not the last one
+      is released inline (the common case); the rest goes out of line. */
+  LLVM_ATTRIBUTE_ALWAYS_INLINE void Deref(ENode *val) {
+    if (LLVM_LIKELY(val->releaseShared()))
+      return;
+    derefLast(val);
+  }
+
+  /// The slow path of Deref: the last reference (or an underflow, which
+  /// aborts in ENode::Deref).
+  [[gnu::cold]] LLVM_ATTRIBUTE_NOINLINE void derefLast(ENode *val) {
     val->Deref();
     if (!val->isGarbage())
       return;
@@ -611,9 +632,15 @@ inline ENode::~ENode() {
 }
 
 /** Required by boost::intrusive_ptr */
-inline void intrusive_ptr_add_ref(ENode *v) { v->Ref(); }
+LLVM_ATTRIBUTE_ALWAYS_INLINE void intrusive_ptr_add_ref(ENode *v) { v->Ref(); }
 
-inline void intrusive_ptr_release(ENode *v) { v->efac().Deref(v); }
+LLVM_ATTRIBUTE_ALWAYS_INLINE void intrusive_ptr_release(ENode *v) {
+  // fast path: a reference that is not the last one is released inline; the
+  // last one (and an underflow) goes through the factory
+  if (LLVM_LIKELY(v->releaseShared()))
+    return;
+  v->efac().derefLast(v);
+}
 
 } // namespace expr
 

@@ -16,14 +16,14 @@ namespace expr {
 // -- usage isOp<TYPE>(EXPR) . Returns true if top operator of
 // -- expression is a subclass of TYPE.
 template <typename O, typename T>
-bool isOp(T e) {
+bool isOp(const T &e) {
   return llvm::isa<O>(&eptr(e)->op());
 }
 
 // -- usage isOpX<TYPE>(EXPR) . Returns true if top operator of
 // -- expression is of type TYPE.
 template <typename O, typename T>
-bool isOpX(T e) {
+bool isOpX(const T &e) {
   return isOp<O>(e);
 }
 
