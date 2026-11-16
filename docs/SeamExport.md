@@ -56,7 +56,9 @@ the `sea-vc` command whose VC terms the lane builds. It is empty when no
 | `seam-inb0-pull-concat` | `sea-vc --seam --seam-premises=0 --seam-pull-concat=4` | split (byte) pointer loads resolved; the only lane where `ptr.load-resolve-concat` can fire |
 | `seam-wide` | `sea-vc --seam --seam-wide` | under the premises (`"ainb": true`) |
 | `seam` | `sea-vc --seam` | under the premises (`"ainb": true`) |
-| `seam-stride` | `sea-vc --seam --seam-stride` | under the premises (`"ainb": true`); the only lane where R-STRIDE can fire |
+| `seam-stride` | `sea-vc --seam --seam-stride` | under the premises (`"ainb": true`); R-STRIDE can fire |
+| `seam-inb0-stride` | `sea-vc --seam --seam-premises=0 --seam-stride` | byte accesses, no premises; R-STRIDE can fire |
+| `seam-wide-stride` | `sea-vc --seam --seam-wide --seam-stride` | wide accesses, under the premises (`"ainb": true`); R-STRIDE can fire |
 | `plain` | `sea-vc` | no SeaM and no rewriter. The boundary is `PtrIndexExpander` (the lowering's arithmetic) |
 | `simplify` | `sea-vc --simplify` | no SeaM: the bit-vector and Boolean rules only |
 
@@ -68,10 +70,10 @@ Notes:
 - Lanes with simplification also normalize the side conditions and the
   registers with `SeaOpSem::simplify`, as `sea-vc` normalizes its side
   conditions and query.
-- Lanes without wide accesses (`raw`, `seam-inb0`, `seam-inb0-pull-concat`, `seam`, `seam-stride`, `plain`,
+- Lanes without wide accesses (`raw`, `seam-inb0`, `seam-inb0-pull-concat`, `seam`, `seam-stride`, `seam-inb0-stride`, `plain`,
   `simplify`) refuse a multi-byte access (`vc.wide-access`). `sea-vc
   --lower` would split it.
-- A premise lane is an error when the program has a static out-of-object
+- A premise lane (`seam-wide`, `seam`, `seam-stride`, `seam-wide-stride`) is an error when the program has a static out-of-object
   access (its firings would rest on a premise the program may break;
   `sea-vc` reports it and keeps the premises).
 - In `plain` and `simplify`, an object is its placed address

@@ -84,9 +84,16 @@ const Lane kLanes[] = {
      "SeaM as sea-vc --seam runs it, under the premises (ainb: true)", true,
      false, true, true, true, true, true},
     {"seam-stride", "sea-vc --seam --seam-stride",
-     "SeaM with R-STRIDE, under the premises (ainb: true); the only lane "
-     "where R-STRIDE can fire",
+     "SeaM with R-STRIDE, under the premises (ainb: true); R-STRIDE can "
+     "fire",
      true, false, true, true, true, true, true, 0, true},
+    {"seam-inb0-stride", "sea-vc --seam --seam-premises=0 --seam-stride",
+     "SeaM with R-STRIDE, byte accesses, no premises; R-STRIDE can fire "
+     "(row.smap-abort-stride / cmp.stride)",
+     true, false, false, true, true, true, true, 0, true},
+    {"seam-wide-stride", "sea-vc --seam --seam-wide --seam-stride",
+     "SeaM with R-STRIDE, wide accesses, under the premises (ainb: true)", true,
+     true, true, true, true, true, true, 0, true},
     {"plain", "sea-vc",
      "no SeaM, no rewriter: the boundary is PtrIndexExpander's arithmetic",
      false, false, false, false, false, false, false},
@@ -167,10 +174,14 @@ builds, the "sea_vc" key; "-": no sea-vc run builds them):
   seam             sea-vc --seam               (premises: "ainb": true)
   seam-stride      sea-vc --seam --seam-stride (premises: "ainb": true;
         R-STRIDE on: the lane where row.smap-abort-stride / cmp.stride fire)
+  seam-inb0-stride sea-vc --seam --seam-premises=0 --seam-stride
+        (byte accesses, no premises, R-STRIDE on)
+  seam-wide-stride sea-vc --seam --seam-wide --seam-stride (premises:
+        "ainb": true; wide accesses, R-STRIDE on)
   plain            sea-vc (no --seam): boundary = PtrIndexExpander
   simplify         sea-vc --simplify (bit-vector rules only)
 Lanes without wide accesses (raw, seam-inb0, seam-inb0-pull-concat, seam,
-seam-stride, plain, simplify) refuse
+seam-stride, seam-inb0-stride, plain, simplify) refuse
 a multi-byte access (vc.wide-access): sea-vc --lower would split it.
 Lanes with simplification also normalize the roots, probes and side
 conditions with SeaOpSem::simplify, as sea-vc normalizes its query.
