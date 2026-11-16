@@ -308,14 +308,16 @@ Expr SeaOpSem::firingPremise(const RewriteTrail &trail,
   }
   if (f.premises & seam::PremPtrIndex) {
     // the promises of the read's address nodes (PtrIndex.md section 5),
-    // guarded by the address's ite conditions (the selected leaf's promise),
-    // over expanded terms
+    // guarded by the address's ite conditions (the selected leaf's promise).
+    // Raw terms, as the rest of the premise and the firing's two sides: a
+    // consumer erases the whole statement at once (--seam-check: solverTerm,
+    // which expands the PTR_INDEX nodes; sea-seam-export: raw, as is)
     Expr prom = seamRw->rules().accessPtrIndexPremise(f.lhs);
     if (!prom) {
       why = "a PTR_INDEX firing with no promised node at its read";
       return Expr();
     }
-    base = mk<AND>(base, seamRw->expandPtrIndex(prom));
+    base = mk<AND>(base, prom);
   }
   if (!(f.premises & seam::PremAlign))
     return base;
@@ -324,9 +326,9 @@ Expr SeaOpSem::firingPremise(const RewriteTrail &trail,
   ExprVector conj{base};
   for (const auto &[a, al] : aligns) {
     unsigned w = seamRw->rules().widthOf(a);
-    conj.push_back(seamRw->expandPtrIndex(
+    conj.push_back(
         mk<EQ>(mk<BAND>(mk<ADDR>(a), bv::bvnum(mpz_class(al - 1), w, ef)),
-               bv::bvnum(mpz_class(0UL), w, ef))));
+               bv::bvnum(mpz_class(0UL), w, ef)));
   }
   return mknary<AND>(trueE, conj);
 }
