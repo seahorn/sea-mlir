@@ -124,6 +124,11 @@ decimal.
 | `add`, `sub`, `mul`, `concat` | `args`; `add` and `mul` may be n-ary (left to right) |
 | `extract` | one arg; `start`, `length` (bits) |
 | `slt`, `sle` | two bit-vector args of one width; a `bool` term: signed (two's complement) less-than, less-or-equal |
+| `ne` | the arguments of `eq`; a `bool` term: the negation of `eq` |
+| `ugt`, `uge`, `sgt`, `sge` | two bit-vector args of one width; a `bool` term: unsigned / signed (two's complement) greater-than, greater-or-equal |
+| `udiv`, `sdiv`, `urem`, `srem` | two bit-vector args of one width; a bit-vector of that width. SMT-LIB total: x `udiv` 0 is all ones, x `urem` 0 is x; `sdiv` and `srem` are the signed forms by the sign cases of SMT-LIB `bvsdiv` / `bvsrem` (x `sdiv` 0 is -1 for x >= 0 and 1 for x < 0, x `srem` 0 is x; the `srem` result has the sign of x (when nonzero); INT_MIN `sdiv` -1 is INT_MIN and INT_MIN `srem` -1 is 0, the wrapped results) |
+| `bvand`, `bvor`, `bvxor` | bit-vector args of one width, at least two, in order (n-ary is allowed, as `add`); a bit-vector of that width |
+| `shl`, `lshr`, `ashr` | two bit-vector args of one width: the value and the shift amount (unsigned, same width); a bit-vector of that width. A shift amount of at least the width gives 0 (`shl`, `lshr`) or the sign fill, all ones for a negative value and 0 otherwise (`ashr`; below the width it fills with the sign bit) |
 | `sext`, `zext` | one bit-vector arg; the result's `bits` (at least the arg's `bits`): the arg sign- or zero-extended |
 | `select`, `store` | memory, address[, value] |
 | `constMem` | one arg: the value of every cell |
@@ -150,7 +155,7 @@ rule call that changed its term gives one record, in order:
 | `op` | the VC operation: `load`, `store`, `addr` (an access address), or `side` / `query` (the final normalization) |
 | `loc`, `units` | the operation's location and access size (when it has them) |
 | `lhs`, `rhs` | raw terms. `lhs` is the term the rule was given, with its kids already rewritten |
-| `premise` | a term: `SeaOpSem::firingPremise`, which is true, or the layout and the in-bounds conditions the rule relies on; a raw term like `lhs` and `rhs` (with `PTR-INDEX`: the `sea.ptr.index` promise, `sle` over `sext` / `zext` at a wider width) |
+| `premise` | a term: `SeaOpSem::firingPremise`, which is true, or the layout and the in-bounds conditions the rule relies on; a raw term like `lhs` and `rhs` (with `PTR-INDEX`: the `sea.ptr.index` promise, `sle` over `sext` / `zext` at a wider width; with `ALIGN`: `eq(bvand(addr(p), al - 1), 0)` per promised alignment `al`) |
 
 The statement is `premise -> lhs = rhs`, with pointers compared by address
 and memories cell by cell. `sea-vc --seam-check` checks the same statement

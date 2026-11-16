@@ -209,7 +209,10 @@ OUTPUT (stdout, one JSON document, schema 3; keys sorted):
                         premise} | {id, rules, premises, op, unexpressible}]
   firings_unexpressible (--firings): count
 Terms: {sort: bv|bool|ptr|memory, [bits], op, args, ...}; ops and their
-fields are listed in docs/SeamExport.md. Additions are new keys / ops;
+fields are listed in docs/SeamExport.md (bit-vector operators as in
+SMT-LIB, total: udiv x 0 = all ones, urem x 0 = x, shift >= width gives 0
+(ashr: the sign fill); compares ne ugt uge sgt sge slt sle are bool
+terms). Additions are new keys / ops;
 an incompatible change bumps schema.
 
 FIRINGS (--firings; the rewrite trail, include/sea/Expr/RewriteTrail.hh):
@@ -223,7 +226,7 @@ premise: SeaOpSem::firingPremise, the statement sea-vc --seam-check
 checks (`premise -> lhs = rhs`, there after the boundary): true, or the
 layout (addr(obj) = base) and the in-bounds conditions the rule relies
 on; a raw term like lhs and rhs (PTR-INDEX: the sea.ptr.index promise,
-sle over sext / zext at a wider width; ALIGN: the address's low bits).
+sle over sext / zext at a wider width; ALIGN: eq(bvand(addr, al-1), 0)).
 Pointers compare by address, memories cell by cell. A firing whose
 premise or terms cannot be expressed has `unexpressible: <why>` instead
 (warning export.firing-unexpressible) and makes the status 3.
@@ -236,6 +239,45 @@ vc.unsupported-op, vc.intrinsic, vc.wide-access); 3 exported, but some
 firings are unexpressible (their records say why; a witness check must not
 count them).
 )";
+
+// The export node of a bit-vector operator that is a plain `children` node.
+static const char *bvNodeName(Expr e) {
+  if (isOpX<NEQ>(e))
+    return "ne";
+  if (isOpX<BSLT>(e))
+    return "slt";
+  if (isOpX<BSLE>(e))
+    return "sle";
+  if (isOpX<BSGT>(e))
+    return "sgt";
+  if (isOpX<BSGE>(e))
+    return "sge";
+  if (isOpX<BUGT>(e))
+    return "ugt";
+  if (isOpX<BUGE>(e))
+    return "uge";
+  if (isOpX<BUDIV>(e))
+    return "udiv";
+  if (isOpX<BSDIV>(e))
+    return "sdiv";
+  if (isOpX<BUREM>(e))
+    return "urem";
+  if (isOpX<BSREM>(e))
+    return "srem";
+  if (isOpX<BAND>(e))
+    return "bvand";
+  if (isOpX<BOR>(e))
+    return "bvor";
+  if (isOpX<BXOR>(e))
+    return "bvxor";
+  if (isOpX<BSHL>(e))
+    return "shl";
+  if (isOpX<BLSHR>(e))
+    return "lshr";
+  if (isOpX<BASHR>(e))
+    return "ashr";
+  return nullptr;
+}
 
 static std::string printed(Expr e) {
   std::ostringstream s;
@@ -380,12 +422,13 @@ struct Exporter {
       o["op"] = "constMem";
       args.push_back(rec(e->arg(1)));
     }
-    else if (isOpX<BSLT>(e) || isOpX<BSLE>(e)) {
-      // signed compares: the sea.ptr.index promise (ptr::promise), the
-      // premise of an R-STRIDE firing
-      o["op"] = isOpX<BSLT>(e) ? "slt" : "sle";
-      args.push_back(rec(e->arg(0)));
-      args.push_back(rec(e->arg(1)));
+    else if (const char *name = bvNodeName(e)) {
+      // bit-vector operators OpSem makes from the arith ops and icmp
+      // predicates, and the premises of the firings (sle: the
+      // sea.ptr.index promise, ptr::promise; slt: icmp / addr.cmp slt;
+      // bvand: the ALIGN premise). Operands in order; the compares are
+      // bool-sorted by the term's own sort.
+      children(name);
     }
     else if (isOpX<BSEXT>(e) || isOpX<BZEXT>(e)) {
       // the result width is the node's `bits`; the second Expr argument
