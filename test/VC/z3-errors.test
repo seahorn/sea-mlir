@@ -23,16 +23,20 @@ OK: result: sat
 
 A z3 memory-out is not an internal error: it is the memory limit's outcome
 (unknown, exit 3), in a check, outside one (reach: the memout is z3's error
-code), and when z3 cannot even make a context (memory_max_size at most 16):
-RUN: sh -c 'sea-vc "$0" --program=memset --lower --seam --z3-param=memory_max_size=18 >%t.plain 2>&1; test $? -eq 3' %S/seam/eq-audit.mlir
+code), and when z3 cannot even make a context. The limits sit far from z3's
+baseline (a context and a solver need under 30 MB, by host): the queries of
+Inputs/z3-memout.mlir need far more than the limit (@check: hundreds of MB in
+the check; @sort: a 128 MB sort table when the first term is translated), and
+the context case uses 1 MB.
+RUN: sh -c 'sea-vc "$0" --program=check --z3-param=memory_max_size=48 >%t.plain 2>&1; test $? -eq 3' %S/Inputs/z3-memout.mlir
 RUN: FileCheck %s --check-prefix=MEMOUT < %t.plain
-RUN: sh -c 'sea-vc "$0" --program=memset --lower --seam --reach --z3-param=memory_max_size=18 >%t.reach 2>&1; test $? -eq 3' %S/seam/eq-audit.mlir
+RUN: sh -c 'sea-vc "$0" --program=sort --reach --z3-param=memory_max_size=48 >%t.reach 2>&1; test $? -eq 3' %S/Inputs/z3-memout.mlir
 RUN: FileCheck %s --check-prefix=MEMOUT < %t.reach
-RUN: sh -c 'sea-vc "$0" --program=memset --lower --seam --z3-param=memory_max_size=16 >%t.ctx 2>&1; test $? -eq 3' %S/seam/eq-audit.mlir
+RUN: sh -c 'sea-vc "$0" --program=check --z3-param=memory_max_size=1 >%t.ctx 2>&1; test $? -eq 3' %S/Inputs/z3-memout.mlir
 RUN: FileCheck %s --check-prefix=MEMOUT < %t.ctx
-RUN: sh -c 'sea-vc "$0" --program=memset --lower --seam --z3-tactic=qfbv --z3-param=memory_max_size=20 >%t.tac 2>&1; test $? -eq 3' %S/seam/eq-audit.mlir
+RUN: sh -c 'sea-vc "$0" --program=check --z3-tactic=qfbv --z3-param=memory_max_size=48 >%t.tac 2>&1; test $? -eq 3' %S/Inputs/z3-memout.mlir
 RUN: FileCheck %s --check-prefix=MEMOUT < %t.tac
-RUN: sh -c 'sea-vc "$0" --program=memset --lower --seam --reach --z3-param=memory_max_size=18 --mem-limit=2000 >%t.lim 2>&1; test $? -eq 3' %S/seam/eq-audit.mlir
+RUN: sh -c 'sea-vc "$0" --program=sort --reach --z3-param=memory_max_size=48 --mem-limit=2000 >%t.lim 2>&1; test $? -eq 3' %S/Inputs/z3-memout.mlir
 RUN: FileCheck %s --check-prefix=MEMLIM < %t.lim
 MEMOUT: result: unknown
 MEMOUT-NOT: smt.z3-internal
