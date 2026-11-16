@@ -76,7 +76,10 @@ SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SE
   overlaid by bench/sources.local.yaml and $SEA_BENCH_SOURCE_<NAME>; local path -> symlink, URL -> clone / pull).
   A family is <root>/<family>/{manifest.yaml, <job>.mlir}; manifest: defaults {args, timeout, mem},
   jobs.<job> {expected sat|unsat|unknown-ok, tier smoke|quick|full|hard, time (s), args, tags, export, counters,
-  replay: impossible (the only value: a sat of this job may end in vc.replay-impossible)}.
+  replay: impossible (the only value: a sat of this job may end in vc.replay-impossible),
+  premise-class: B | C (absent: A, the --seam premises hold on every run; B: some counterexample keeps them,
+  sat required; C: every counterexample violates them: unsat, or a sat with a premise signal; docs/Benchmarks.md,
+  premise classes)}.
   Counter expectations (completeness): counters: {<stat>: {max: N | min: N | exact: N, why: text, seeded: stamp}};
   <stat> = a BRUNCH_STAT key or a `key: value` stdout line of sea-vc (seam.rule.* needs --seam-stats in args),
   or <line>.<field> for a `<line>: k=v k=v ...` line (vc.box-all.expanded, vc.expand-memmove.kept-over-k: the
@@ -100,6 +103,17 @@ SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SE
     and (`FAIL: counter ...`, counted apart as counter-failures) a solved job of config `default` whose
     counter breaks its bound or is missing from the output (--no-counters: skip). --tag T: only jobs tagged T
     (`canary`: the small cross-family set, `just bench-canary`).
+    premise-class B / C jobs pass a sat whose replay failed in a way a premise violation explains: rc 2 with
+    `replay: assert-failed`, a `seam.inb-violation:` line and error vc.replay-mismatch (`premise-unconfirmed:
+    <job> ... log=... rerun: ...`) or rc 4 (`premise-inb-violation:`); a run with `replay: no-clobber-violated:`
+    is never explained. Unsat fails on B, passes on C. A confirmed sat whose original-program run left its
+    object (replay.original status=memory-error) counts as left-object. On C a sat needs one of these signals:
+    a clean sat fails (`misclassified`, declare B), and DISAGREE-SAT-UNSAT is waived only when every sat run
+    of the job has a signal. Undeclared jobs are
+    judged as before; a run with one of these signals gets `premise may fail on this job: declare it` (on its
+    FAIL line, or a `premise-hint:` line). Summary: `premises: declared-runs=N left-object=N unconfirmed=N
+    inb-violation=N unsat-c=N hints=N`. rows.jsonl: replay_original_status, replay_status, seam_inb,
+    replay_no_clobber, replay_mismatch_diag.
     Reports (no failure): `slow:` wall > F x the manifest time (default 2, and +1 s), `solved:` an unknown-ok job solved,
     `replayed:` a `replay: impossible` job whose sat replayed (the field is stale); `replay-impossible: N allowed=M`.
     Writes logs to $SEA_BENCH_HOME/results/<stamp>-gate-<tier>/ and appends the record to
@@ -114,6 +128,9 @@ SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SE
     {max: value, seeded: <date> <sea-vc sha>} (replacing an older seeded bound); a deliberate bound (no
     `seeded`) is never changed: a run that breaks it prints COUNTER-OVER. --counters-only: only that.
     A sat that cannot be replayed prints `replay-impossible:`; establish never writes `replay` (curation).
+    A premise signal on an undeclared job prints `premise-hint:`; establish never writes `premise-class`. A
+    declared job's explained sat (rc 2 / 4, as in gate) is recorded as sat; unsat on a class B job prints
+    PREMISE-B-UNSAT and leaves `expected` as is; a clean sat on a class C job prints PREMISE-C-MISCLASSIFIED.
 """
 
 
@@ -406,6 +423,20 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
         r"^replay\.original: (?:status=\S+ at=\S+ match=(\S+)|(skipped))", out, re.M
     )
     replay_original = (m.group(1) or m.group(2)) if m else None
+    # premise signals (docs/Benchmarks.md, premise classes): the original program's run status
+    # (`memory-error`: it left its object), the lowered replay's status, and the A-INB fallback check
+    # after a replay mismatch (`seam.inb-violation: undetermined (...)`, or found: its message, rc 4)
+    m = re.search(r"^replay\.original: status=(\S+)", out, re.M)
+    replay_original_status = m.group(1) if m else None
+    m = re.search(r"^replay: ([a-z-]+)$", out, re.M)
+    replay_status = m.group(1) if m else None
+    m = re.search(r"^seam\.inb-violation: (undetermined\b)?", out, re.M)
+    seam_inb = ("undetermined" if m.group(1) else "found") if m else None
+    # a mismatch explained by a Mem-SSA no-clobber claim is not a premise question
+    replay_no_clobber = (
+        re.search(r"^replay: no-clobber-violated:", out, re.M) is not None
+    )
+    replay_mismatch_diag = "[vc.replay-mismatch]" in err + out
     # classify by what sea-vc printed, not by the exit code alone: a run that
     # printed a verdict and then exited 1 ended in an error after its answer
     # (never a memout); a resource outcome needs evidence of one
@@ -451,6 +482,11 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
         "status": rc,
         "verdict": verdict,
         "replay_original": replay_original,
+        "replay_original_status": replay_original_status,
+        "replay_status": replay_status,
+        "seam_inb": seam_inb,
+        "replay_no_clobber": replay_no_clobber,
+        "replay_mismatch_diag": replay_mismatch_diag,
         "replay": replay,
         "maxrss_mb": round(ru.ru_maxrss / 1024),
         "log": base,
@@ -698,7 +734,8 @@ MANIFEST_HEADER = """# Benchmark family manifest (sea-mlir utils/bench.py; docs/
 # (tracked, not gated); time: wall seconds when established; args: per-job sea-vc args
 # appended to the configuration's. counters: {<stat>: {max | min | exact: N, why, seeded}} completeness bounds
 # (defaults.counters, counter-rules [{jobs: regex, counters, why}], job counters; a bound without `seeded`
-# is deliberate: establish never changes it).
+# is deliberate: establish never changes it). premise-class: B | C (absent: A), the --seam premises on the
+# job's counterexamples (curated, establish never writes it).
 """
 
 
@@ -960,6 +997,58 @@ def check_replay_fields(tasks):
         )
 
 
+PREMISE_CLASSES = ("B", "C")
+PREMISE_DOC = "docs/Benchmarks.md, premise classes"
+
+
+def check_premise_fields(tasks):
+    """`premise-class` is B or C (absent: class A); class B requires a sat, so not on an unsat job."""
+    bad = []
+    for sn, fam, _, _, j, v in tasks:
+        pc = v.get("premise-class")
+        if pc is not None and pc not in PREMISE_CLASSES:
+            bad.append(f"{sn}/{fam}/{j}: premise-class: {pc!r} (B or C)")
+        elif pc == "B" and v.get("expected") == "unsat":
+            bad.append(
+                f"{sn}/{fam}/{j}: premise-class: B on an expected unsat job (class B requires a sat)"
+            )
+    if bad:
+        sys.exit("bench: manifest field `premise-class`: " + "; ".join(bad))
+
+
+def premise_signal(r):
+    """What a run shows of the --seam premises on its counterexample: `left-object` (a sat confirmed by
+    the replay whose original-program run left its object: replay.original status=memory-error),
+    `unconfirmed` (rc 2: the replay reached the failing assertion, the values differ, and the A-INB
+    fallback check ran: found or undetermined; the vc.replay-mismatch error, not vc.replay-no-failure),
+    `inb-violation` (rc 4: the check found an access outside an object), else None. A run whose replay
+    reports a violated Mem-SSA no-clobber claim (`replay: no-clobber-violated:`) shows none."""
+    if r.get("replay_no_clobber"):
+        return None
+    if r["verdict"] == "sat" and r.get("replay_original_status") == "memory-error":
+        return "left-object"
+    if (
+        r["verdict"] == "replay-mismatch"
+        and r.get("replay_status") == "assert-failed"
+        and r.get("seam_inb")
+        and r.get("replay_mismatch_diag")
+    ):
+        return "unconfirmed"
+    if r["verdict"] == "inb-violation":
+        return "inb-violation"
+    return None
+
+
+def premise_hint(r, sig):
+    """The hint for a run of an undeclared job (class A) that shows a premise signal."""
+    what = {
+        "left-object": "replay.original status=memory-error",
+        "unconfirmed": f"replay: assert-failed, seam.inb-violation: {r.get('seam_inb')}",
+        "inb-violation": "seam.inb-violation (rc 4)",
+    }[sig]
+    return f"{what}: premise may fail on this job: declare it (premise-class, {PREMISE_DOC})"
+
+
 def mem_available_gb():
     try:
         for line in open("/proc/meminfo"):
@@ -1040,6 +1129,7 @@ def run_suite(
             timeout=to,
             counters=job_counters(m, j, v),
             replay_expected=v.get("replay"),
+            premise_class=v.get("premise-class"),
         )
         with lock:
             rows.append(row)
@@ -1094,6 +1184,7 @@ def cmd_gate(a):
     cfgs = [c for c in a.config.split(",") if c]
     tasks = suite_tasks(a.suite, tiers, a.jobs, a.tag)
     check_replay_fields(tasks)
+    check_premise_fields(tasks)
     if not tasks:
         sys.exit(
             "bench: no jobs (connect suites with `bench.py connect`, or check the tier / --suite / --jobs)"
@@ -1140,15 +1231,40 @@ def cmd_gate(a):
     )
     write_csv(outdir, rows)
     fails, slow, solved, cfails, replayed = [], [], [], [], []
+    # premise classes (docs/Benchmarks.md): outcomes of declared jobs, hints on undeclared ones
+    premise = {"left-object": [], "unconfirmed": [], "inb-violation": [], "unsat-c": []}
+    hints = []
     nbounds = 0
     by_job = {}
     for r in sorted(rows, key=lambda r: (r["job"], r["config"])):
         by_job.setdefault(r["job"], []).append(r)
         exp, v, tier = r["expected"], r["verdict"], r["tier"]
         key = f"{r['job']} config={r['config']}"
-        if v in ("replay-mismatch", "lowering-mismatch"):
+        pc, sig = r.get("premise_class"), premise_signal(r)
+        nfails = len(fails)
+        if pc and sig in ("unconfirmed", "inb-violation"):
+            # sat whose replay failed in a way a premise violation explains: a pass for B and C
+            rerun = (
+                f"python3 utils/bench.py gate {tier} --jobs '^{r['suite']}/{r['family']}/{r['name']}$'"
+                + (f" --config {r['config']}" if r["config"] != "default" else "")
+                + " --no-record"
+            )
+            premise[sig].append(f"{key} class={pc} log={r['log']}.out rerun: {rerun}")
+        elif pc == "B" and v == "unsat":
+            fails.append(
+                f"WRONG {key} verdict=unsat expected={exp}"
+                " (premise-class B: a counterexample that keeps the premises exists)"
+            )
+        elif v in ("replay-mismatch", "lowering-mismatch"):
             fails.append(f"{v} {key} expected={exp}")
-        elif exp in SOLVED and v != exp:
+        elif pc == "C" and v == "sat" and not sig:
+            # class C: every counterexample violates the premises; a clean confirmed sat refutes that
+            fails.append(
+                f"misclassified {key} verdict=sat expected={exp} (premise-class C, but the sat replayed"
+                " clean with no premise signal: declare B)"
+            )
+        elif exp in SOLVED and v != exp and not (pc == "C" and v in SOLVED):
+            # class C: unsat, or a sat with a premise signal (above)
             fails.append(
                 f"{'WRONG' if v in SOLVED else 'unsolved'} {key} verdict={v} expected={exp}"
             )
@@ -1167,6 +1283,15 @@ def cmd_gate(a):
             and tier != "hard"
         ):
             fails.append(f"{v} {key} expected={exp}")
+        if pc and sig == "left-object":
+            premise["left-object"].append(key)
+        if pc == "C" and v == "unsat":
+            premise["unsat-c"].append(key)
+        if not pc and sig:
+            if len(fails) > nfails:  # the failure line names the cause
+                fails[-1] += " -- " + premise_hint(r, sig)
+            else:
+                hints.append(f"{key} {premise_hint(r, sig)}")
         # completeness: counter bounds, for a run that answered as expected (a wrong or missing verdict is
         # reported above); the default configuration only (other options change the counts)
         if (
@@ -1208,7 +1333,11 @@ def cmd_gate(a):
             )
     for j, rs in by_job.items():
         vs = {r["verdict"] for r in rs if r["verdict"] in SOLVED}
-        if len(vs) > 1:
+        # class C allows both verdicts when every sat run shows a premise signal
+        exempt = rs[0].get("premise_class") == "C" and all(
+            premise_signal(r) for r in rs if r["verdict"] == "sat"
+        )
+        if len(vs) > 1 and not exempt:
             fails.append(
                 f"DISAGREE-SAT-UNSAT {j} "
                 + " ".join(f"{r['config']}={r['verdict']}" for r in rs)
@@ -1224,6 +1353,12 @@ def cmd_gate(a):
         print(f"solved: {s_}")
     for s_ in replayed:
         print(f"replayed: {s_}")
+    for s_ in premise["unconfirmed"]:
+        print(f"premise-unconfirmed: {s_}")
+    for s_ in premise["inb-violation"]:
+        print(f"premise-inb-violation: {s_}")
+    for s_ in hints:
+        print(f"premise-hint: {s_}")
     counts = {}
     for r in rows:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
@@ -1237,6 +1372,12 @@ def cmd_gate(a):
         )
     ri = [r.get("replay_expected") for r in rows if r.get("replay") == "impossible"]
     print(f"replay-impossible: {len(ri)} allowed={ri.count('impossible')}")
+    pruns = sum(1 for r in rows if r.get("premise_class"))
+    print(
+        f"premises: declared-runs={pruns}"
+        + "".join(f" {k}={len(x)}" for k, x in premise.items())
+        + f" hints={len(hints)}"
+    )
     print(f"failures: {len(fails)}")
     print(f"counter-bounds: {nbounds}")
     print(f"counter-failures: {len(cfails)}")
@@ -1269,6 +1410,11 @@ def cmd_gate(a):
         "solved": solved,
         "replay-impossible": len(ri),
         "replayed": replayed,
+        "premises": dict(
+            {"declared-runs": pruns}, **{k: len(x) for k, x in premise.items()}
+        ),
+        "premise-unconfirmed": premise["unconfirmed"] + premise["inb-violation"],
+        "premise-hints": hints,
         "results": outdir,
         "command": " ".join(shlex.quote(x) for x in sys.argv),
     }
@@ -1320,6 +1466,7 @@ def cmd_establish(a):
     vc = find_vc(a)
     tasks = suite_tasks(a.sel, TIERS + [None], a.jobs)
     check_replay_fields(tasks)
+    check_premise_fields(tasks)
     stamp = datetime.datetime.now()
     outdir = os.path.join(
         HOME, "results", stamp.strftime("%Y-%m-%d_%H%M%S") + "-establish"
@@ -1392,10 +1539,27 @@ def cmd_establish(a):
                 print(
                     f"replay-impossible: {sn}/{fam}/{j} (sat; the gate fails without `replay: impossible`)"
                 )
+            sig = premise_signal(r)
+            if sig and not v.get("premise-class"):
+                # deliberate: establish never writes `premise-class` (curation)
+                print(f"premise-hint: {sn}/{fam}/{j} {premise_hint(r, sig)}")
             if a.counters_only:
                 continue
-            if r["verdict"] in SOLVED:
-                v["expected"] = r["verdict"]
+            verdict = r["verdict"]
+            if v.get("premise-class") and sig in ("unconfirmed", "inb-violation"):
+                verdict = "sat"  # the gate passes it as a sat of a declared job
+            if v.get("premise-class") == "C" and verdict == "sat" and not sig:
+                print(
+                    f"PREMISE-C-MISCLASSIFIED: {sn}/{fam}/{j} (a clean confirmed sat on premise-class C: declare B)"
+                )
+            if v.get("premise-class") == "B" and verdict == "unsat":
+                # class B requires a sat: keep the manifest's verdict, the gate fails the job
+                print(
+                    f"PREMISE-B-UNSAT: {sn}/{fam}/{j} (premise-class B requires a sat; expected left as is)"
+                )
+                continue
+            if verdict in SOLVED:
+                v["expected"] = verdict
                 v["tier"] = next(
                     t for t in TIERS if t == "hard" or r["wall"] < TIER_LIMIT[t]
                 )

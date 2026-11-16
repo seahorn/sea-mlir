@@ -54,6 +54,7 @@ frag-reach-busy-K1:
   export: {...}               # how the .mlir was made (repo, commit, command, bound, patches)
   counters: {...}             # completeness bounds, below
   replay: impossible          # a sat of this job may not replay (below); the only value
+  premise-class: B            # B | C: the --seam premises may fail on its counterexamples (below)
   sha256: ...
 ```
 
@@ -66,6 +67,68 @@ bench.py records such a run as verdict `sat` with `replay=impossible` (the
 `replay` column of `stats.csv`); the gate fails on it (`FAIL:
 replay-impossible ...`) unless the job carries the field, and reports
 `replayed:` (no failure) when a job with the field replayed after all.
+
+### Premise classes
+
+`--seam` assumes the pointer premises A-SEP, A-NULL and A-NOWRAP
+([SeaM](design/SeaM.md)); its promise is conditional: if the program
+satisfies them and the VC is sat, the program has a counterexample. A
+program whose counterexamples may leave their object (a mutant that drops a
+precondition, an out-of-range index) gives the solver a choice: one model
+keeps the premises and replays, another runs into a different object's
+cells, where the VC (which assumed A-SEP) and the interpreter disagree.
+Which model the solver returns changes with its version, seed or the
+encoding, so an exact verdict with a clean replay is the wrong expectation
+for such a job. `premise-class` states what the job may do:
+
+| class | field | the premises on the job's counterexamples | the gate accepts |
+|---|---|---|---|
+| A | absent | hold on every run | the expected verdict, clean replay (as for every job without the field) |
+| B | `premise-class: B` | some counterexample keeps them | sat: confirmed, or a replay failure a premise violation explains; unsat fails |
+| C | `premise-class: C` | every counterexample violates them | unsat, or a sat with a premise signal (below); a clean confirmed sat fails |
+
+A replay failure a premise violation explains is one of
+
+- sea-vc rc 2 with `replay: assert-failed` (the interpreter, which does not
+  use the premises, reached the failing assertion on the model's inputs) and
+  a `seam.inb-violation:` line (the A-INB check of the model's run: found,
+  or `undetermined (...)` when the run reads a memory cell that check is not
+  given), with the error `vc.replay-mismatch` (not `vc.replay-no-failure`
+  of `--ptr-companion=check`): `premise-unconfirmed: <job> ... log=<path>
+  rerun: <command>`;
+- rc 4 (`vc.seam-inb-spurious`: the run accesses memory outside an object):
+  `premise-inb-violation: ...`.
+
+A run whose replay prints `replay: no-clobber-violated:` (a load of an
+earlier memory version whose cell was overwritten: the program's Mem-SSA
+claim, [Memory](design/Memory.md)) is never explained by a premise: it
+fails on a declared job, and an undeclared job gets no hint for it.
+
+A sat whose replay was clean but whose run of the original program left its
+object (`replay.original: status=memory-error`, rc 0) counts as
+`left-object` (outside an object is A-INB, stronger than A-SEP: such a
+run may keep A-SEP). These three (left-object, unconfirmed,
+inb-violation) are the premise signals. Any other replay failure of a declared job (rc 2
+without those lines, rc 6, `original-memory-error`) fails as for every job.
+The gate prints `premises: declared-runs=N left-object=N unconfirmed=N
+inb-violation=N unsat-c=N hints=N` and records the counts; `rows.jsonl`
+carries `replay_original_status`, `replay_status`, `seam_inb`,
+`replay_no_clobber` and `replay_mismatch_diag` for every run.
+
+On a class C job a sat needs a premise signal: a clean confirmed sat
+refutes "every counterexample violates the premises" and fails as
+`misclassified ... declare B`. `DISAGREE-SAT-UNSAT` between configurations
+is waived for a class C job only when every sat run of it has a signal.
+
+A job without the field is judged as before. When one of its runs shows a
+signal above (rc 2 with both lines, rc 4, or rc 0 with
+`replay.original: status=memory-error`), its `FAIL:` line ends with
+`premise may fail on this job: declare it`, or, for a passing run, a
+`premise-hint:` line says so. `establish` prints the same `premise-hint:`
+and never writes the field. It records a declared job's explained sat
+(rc 2 / 4 as above) as sat; for an unsat of a class B job it prints
+`PREMISE-B-UNSAT:` and leaves `expected` as it was, and for a clean sat of
+a class C job it prints `PREMISE-C-MISCLASSIFIED:`.
 
 ### Counter expectations (completeness)
 
@@ -171,8 +234,11 @@ host, and use `--par` and `--mem` to control concurrency and per-job memory
 The gate fails (exit 1) on
 
 - a verdict other than `expected` for a sat / unsat job (a flip is `WRONG`,
-  a timeout / unknown / error is `unsolved`);
-- `replay-mismatch` (sea-vc rc 2: the model does not replay);
+  a timeout / unknown / error is `unsolved`); a class C job passes unsat
+  and a sat with a premise signal and fails a clean sat (`misclassified`),
+  a class B job fails unsat ([premise classes](#premise-classes));
+- `replay-mismatch` (sea-vc rc 2: the model does not replay), unless a
+  premise violation explains it on a job with `premise-class`;
 - `replay-impossible` (a sat whose model the interpreter cannot run) on a
   job without `replay: impossible`;
 - `lowering-mismatch` (sea-vc rc 6: the program before the lowering does
@@ -182,9 +248,11 @@ The gate fails (exit 1) on
   counted as `counter-failures`; see counter expectations above).
 
 It reports, without failing, `slow:` (wall > `--slow` (2) x the manifest
-time and at least 1 s more), `solved:` (an `unknown-ok` job solved) and
+time and at least 1 s more), `solved:` (an `unknown-ok` job solved),
 `replayed:` (a job with `replay: impossible` whose sat replayed: the field
-is stale).
+is stale), `premise-unconfirmed:` / `premise-inb-violation:` (a declared
+job's explained sat, with its log and the command that reruns it) and
+`premise-hint:` (a premise signal on a job without `premise-class`).
 
 Logs and `rows.jsonl` go to `$SEA_BENCH_HOME/results/<stamp>-gate-<tier>/`.
 With `--no-record`, no gate record is written; logs and results stay in
@@ -220,3 +288,16 @@ provenance under `export`), run `establish` for that family (`--jobs` to
 limit it), check the verdicts against the harness, commit in the benchmark
 repository. A new family goes to the public set only after its license is
 checked. Mutants (expected sat) are jobs tagged `mutant`.
+
+A job whose counterexamples may leave their object declares it with
+`premise-class` ([premise classes](#premise-classes)): mutants that drop a
+precondition (a range check of an index, a length check),
+mutants that shift or corrupt an index or offset, and harnesses that pass
+out-of-range indices. Class B when a counterexample inside the objects
+exists (the bug shows without leaving an object), class C when every
+counterexample needs an access outside one; a class C job shows its bug
+only conditionally, so prefer a job that shows it in bounds (for example
+with the bounds check as the assertion). Undecided: B, and record why in
+the job's `note`. `establish` prints `premise-hint:` when a run of an
+undeclared job shows a premise signal; the field is curation, establish does
+not write it.

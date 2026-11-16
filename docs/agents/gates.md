@@ -109,6 +109,7 @@ $ python3 utils/bench.py gate smoke --suite public/nki --jobs 'gather-hw-N4D3K2'
 gate: smoke configs=default jobs=6 runs=6 par=4
 ...
 verdicts: sat=2 unsat=4
+premises: declared-runs=0 left-object=0 unconfirmed=0 inb-violation=0 unsat-c=0 hints=0
 failures: 0
 counter-bounds: 12
 counter-failures: 0

@@ -1,0 +1,82 @@
+// bench.py premise classes (docs/Benchmarks.md) on a fake sea-vc
+// (Inputs/fake-sea-vc.py; each job file scripts what it prints and how it
+// ends). A premise-class B / C job passes a sat whose replay failed in a way
+// a premise violation explains (rc 2 with `replay: assert-failed` and a
+// `seam.inb-violation:` line, or rc 4); B fails on unsat, C passes it. An
+// undeclared job is judged as before, its failure line names the cause.
+// RUN: rm -rf %t && mkdir -p %t/s/fam %t/home/bench/configs
+// RUN: cp %S/Inputs/bench-premise/* %t/s/fam/
+// RUN: echo 'args: [--alt]' > %t/home/bench/configs/alt.yaml
+// RUN: env SEA_BENCH_SUITES=%t/s SEA_BENCH_HOME=%t/home not python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %S/Inputs/fake-sea-vc.py --min-free-gb 0 --no-record --jobs '^s/fam/[abc]-(?!dis)' | FileCheck %s --check-prefix=GATE
+// Undeclared: judged as before, the cause named; a no-clobber mismatch gets no hint.
+// GATE: FAIL: unsolved s.fam.a-inb config=default verdict=inb-violation expected=sat -- {{.*}}premise may fail on this job: declare it
+// GATE-NEXT: FAIL: replay-mismatch s.fam.a-noclob config=default expected=sat{{$}}
+// GATE-NEXT: FAIL: replay-mismatch s.fam.a-unconf config=default expected=sat -- {{.*}}premise may fail on this job: declare it
+// Declared B: replay failures no premise violation explains still fail (no
+// inb line; a no-clobber violation; vc.replay-no-failure instead of
+// vc.replay-mismatch; original-memory-error; rc 6; `replay: ok`), and unsat.
+// GATE-NEXT: FAIL: replay-mismatch s.fam.b-mismatch config=default expected=sat{{$}}
+// GATE-NEXT: FAIL: replay-mismatch s.fam.b-noclob config=default expected=sat{{$}}
+// GATE-NEXT: FAIL: replay-mismatch s.fam.b-nofail config=default expected=sat{{$}}
+// GATE-NEXT: FAIL: unsolved s.fam.b-origmem config=default verdict=original-memory-error expected=sat{{$}}
+// GATE-NEXT: FAIL: replay-mismatch s.fam.b-r2ok config=default expected=sat{{$}}
+// GATE-NEXT: FAIL: lowering-mismatch s.fam.b-rc6 config=default expected=sat{{$}}
+// GATE-NEXT: FAIL: WRONG s.fam.b-unsat config=default verdict=unsat expected=sat
+// Declared C: a clean confirmed sat is misclassified; c-left (sat with a signal) passes.
+// GATE-NEXT: FAIL: misclassified s.fam.c-clean config=default verdict=sat expected=sat {{.*}}declare B
+// GATE-NOT: FAIL:
+// GATE: premise-unconfirmed: s.fam.b-unconf config=default class=B log={{.*}}/s.fam.b-unconf.0.out rerun: python3 utils/bench.py gate smoke --jobs '^s/fam/b-unconf$' --no-record
+// GATE-NEXT: premise-unconfirmed: s.fam.c-unconf config=default class=C
+// GATE-NEXT: premise-inb-violation: s.fam.b-inb config=default class=B
+// GATE-NEXT: premise-hint: s.fam.a-left config=default replay.original status=memory-error: premise may fail on this job: declare it
+// GATE-NOT: premise-hint:
+// GATE: premises: declared-runs=14 left-object=2 unconfirmed=2 inb-violation=1 unsat-c=1 hints=1
+// GATE: failures: 11
+// GATE: gate: fail
+// Two configurations: DISAGREE-SAT-UNSAT fires on a class B job and on a class
+// C job whose sat has no premise signal; it is waived on a class C job whose
+// every sat has one.
+// RUN: env SEA_BENCH_SUITES=%t/s SEA_BENCH_HOME=%t/home not python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %S/Inputs/fake-sea-vc.py --min-free-gb 0 --no-record --jobs 'dis' --config default,default+alt | FileCheck %s --check-prefix=DIS
+// DIS: FAIL: WRONG s.fam.b-dis config=default+alt verdict=unsat expected=sat
+// DIS-NEXT: FAIL: misclassified s.fam.c-dis-clean config=default
+// DIS-NEXT: FAIL: DISAGREE-SAT-UNSAT s.fam.b-dis default=sat default+alt=unsat
+// DIS-NEXT: FAIL: DISAGREE-SAT-UNSAT s.fam.c-dis-clean default=sat default+alt=unsat
+// DIS-NOT: FAIL:
+// DIS: premises: declared-runs=6 left-object=1 unconfirmed=0 inb-violation=0 unsat-c=2 hints=0
+// DIS: failures: 4
+// rows.jsonl records the signals.
+// RUN: cat %t/home/results/*/rows.jsonl | grep '"name": "b-left"'  | FileCheck %s --check-prefix=ROW
+// ROW: "replay_original_status": "memory-error", "replay_status": "assert-failed", "seam_inb": null
+// RUN: cat %t/home/results/*/rows.jsonl | grep '"name": "b-unconf"'  | FileCheck %s --check-prefix=ROW2
+// ROW2: "replay_status": "assert-failed", "seam_inb": "undetermined", "replay_no_clobber": false, "replay_mismatch_diag": true
+
+// establish: a hint on undeclared jobs, a declared job's explained sat is
+// recorded as sat (an unexplained one is not), an unsat of a class B job leaves
+// `expected` as is, a clean sat of a class C job is named.
+// RUN: env SEA_BENCH_SUITES=%t/s SEA_BENCH_HOME=%t/home python3 %sea_src_root/utils/bench.py establish s --sea-vc %S/Inputs/fake-sea-vc.py --min-free-gb 0 > %t/est.out
+// RUN: FileCheck %s --check-prefix=EST < %t/est.out
+// RUN: not grep 'premise-hint: s/fam/a-noclob' %t/est.out
+// EST-DAG: premise-hint: s/fam/a-left replay.original status=memory-error: premise may fail
+// EST-DAG: premise-hint: s/fam/a-unconf replay: assert-failed, seam.inb-violation: undetermined: premise may fail
+// EST-DAG: PREMISE-B-UNSAT: s/fam/b-unsat
+// EST-DAG: PREMISE-C-MISCLASSIFIED: s/fam/c-clean
+// RUN: python3 -c "import yaml,sys; j=yaml.safe_load(open(sys.argv[1]))['jobs']; print(*(f'{n} {j[n][\"expected\"]} {j[n].get(\"premise-class\")}' for n in ('b-unconf','b-inb','b-unsat','a-unconf','c-unsat','b-noclob','b-nofail')), sep='\n')" %t/s/fam/manifest.yaml | FileCheck %s --check-prefix=MAN
+// MAN: b-unconf sat B
+// MAN-NEXT: b-inb sat B
+// MAN-NEXT: b-unsat sat B
+// MAN-NEXT: a-unconf unknown-ok None
+// MAN-NEXT: c-unsat unsat C
+// MAN-NEXT: b-noclob unknown-ok B
+// MAN-NEXT: b-nofail unknown-ok B
+
+// The field takes B or C; B on an unsat job is an error.
+// RUN: cp %S/Inputs/bench-premise/manifest.yaml %t/m.yaml
+// RUN: sed -e 's/premise-class: B}/premise-class: maybe}/' %t/m.yaml > %t/s/fam/manifest.yaml
+// RUN: env SEA_BENCH_SUITES=%t/s SEA_BENCH_HOME=%t/home not python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %S/Inputs/fake-sea-vc.py --min-free-gb 0 --no-record 2>&1 | FileCheck %s --check-prefix=BAD
+// BAD: bench: manifest field `premise-class`: s/fam/b-left: premise-class: 'maybe' (B or C)
+// RUN: sed -e 's/c-unsat: {expected: sat, tier: smoke, premise-class: C}/c-unsat: {expected: unsat, tier: smoke, premise-class: B}/' %t/m.yaml > %t/s/fam/manifest.yaml
+// RUN: env SEA_BENCH_SUITES=%t/s SEA_BENCH_HOME=%t/home not python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %S/Inputs/fake-sea-vc.py --min-free-gb 0 --no-record 2>&1 | FileCheck %s --check-prefix=BADB
+// BADB: bench: manifest field `premise-class`: s/fam/c-unsat: premise-class: B on an expected unsat job
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

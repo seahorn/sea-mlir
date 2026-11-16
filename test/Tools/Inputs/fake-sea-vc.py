@@ -5,7 +5,9 @@
 """A stand-in for sea-vc in bench.py tests: the job file is not a program but a
 script of what to print and how to end. Lines `out: <text>` / `err: <text>`
 print to stdout / stderr, `rc: <n>` exits with n, `signal: <NAME>` kills the
-process with SIGNAME. Other options (--help-hidden, sea-vc args) are ignored."""
+process with SIGNAME. A key `<key>@<arg>` applies only when the command line
+has <arg>, `<key>@!<arg>` only when it has not (a configuration-dependent
+run). Other options (--help-hidden, sea-vc args) are ignored."""
 
 import os
 import signal
@@ -17,6 +19,9 @@ if job is None:
 rc, sig = 0, None
 for line in open(job):
     key, _, val = line.rstrip("\n").partition(": ")
+    key, _, cond = key.partition("@")
+    if cond and (cond.lstrip("!") in sys.argv[1:]) == cond.startswith("!"):
+        continue
     if key == "out":
         sys.stdout.write(val + "\n")
     elif key == "err":
