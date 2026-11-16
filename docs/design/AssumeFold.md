@@ -301,3 +301,6 @@ with the flag). The pipeline `sea-vc-lower{reach=true}` is the reach lowering
   (`vc.assumed-branches`), not folded.
 - Integer facts other than equalities (`x ult K`) are not used here;
   `sea-range-fold` settles comparisons under such assumes.
+
+The rule table of all fact folds, with the regions where each fact holds, is in
+[FactFolds.md](FactFolds.md).
