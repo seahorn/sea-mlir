@@ -35,6 +35,7 @@
 #include "sea/Support/Timer.h"
 #include "sea/Support/Version.h"
 #include "sea/Support/WriteFile.h"
+#include "sea/Transforms/AssumeFold.h"
 #include "sea/Transforms/Passes.h"
 #include "sea/Transforms/RangeFold.h"
 
@@ -163,7 +164,7 @@ static cl::opt<unsigned> boxAllExpandOpt(
 static cl::list<std::string> lowerDisable(
     "lower-disable",
     cl::desc("With --lower: leave these optimization passes out of the "
-             "lowering (sccp, cse, canonicalize; "
+             "lowering (sccp, cse, canonicalize, assume-fold; "
              "comma-separated): a lowering with and without one, compared "
              "by utils/cover-diff.py, validates it"),
     cl::value_desc("pass,..."), cl::CommaSeparated);
@@ -1025,6 +1026,15 @@ static cl::opt<bool> reachKeepSites(
              "assume / assert of the constant true by a reach-site marker "
              "(sea.print with its sea.reach_site; inert in the VC) instead "
              "of erasing it, so the site stays a target (utils/cover-diff.py)"),
+    cl::init(false));
+static cl::opt<bool> reachFoldFacts(
+    "reach-fold-facts",
+    cl::desc("With --reach and --lower: run sea-assume-fold (off under --reach "
+             "by default: everything stays visible). Exact for the safety "
+             "query only: it can make checks constant (canonicalize erases "
+             "them with their reach sites) and blocks dead (erased with "
+             "their checks), so targets disappear; an opt-in for "
+             "performance (docs/design/AssumeFold.md)"),
     cl::init(false));
 static cl::opt<bool> reachFailures(
     "reach-failures",
@@ -1919,7 +1929,8 @@ TYPICAL:
                                  #   the clean-up)
   sea-vc p.mlir --lower --lower-disable=canonicalize  # leave
                                  #   optimization passes out (sccp, cse,
-                                 #   canonicalize; comma-separated): the A
+                                 #   canonicalize, assume-fold;
+                                 #   comma-separated): the A
                                  #   side of a pass validation
                                  #   (utils/cover-diff.py). Not
                                  #   sea-drop-fresh-memhavoc: it decides
@@ -1951,6 +1962,12 @@ TYPICAL:
                                  #   marker (sea.print, op=sea.print
                                  #   of=<op>), a target, instead of
                                  #   erasing it
+  sea-vc p.mlir --lower --reach --reach-fold-facts  # also run
+                                 #   sea-assume-fold (off under --reach:
+                                 #   it erases the checks it makes
+                                 #   constant and the blocks it makes
+                                 #   dead, so their targets disappear;
+                                 #   exact for the safety query only)
   sea-vc p.mlir --lower --widen-memory=8 --widen-memory-report  # a remark
                                  #   per memory: widened, or kept as bytes
                                  #   and the first reason (remark: <loc>:
@@ -2379,6 +2396,26 @@ OUTPUT (stdout, `key: value` lines):
   vc.config: <path>               (--config: each config loaded, in order,
                                   first; with --smt2 on stderr)
   program: @<name>
+  vc.assume-fold: uses=<n> by-assume=<n> by-assert=<n> values=<n>
+      branches=<n> selects=<n> asserts-held=<n> asserts-failed=<n>
+      blocks=<n>                  (--lower, when it folded a use:
+                                  sea-assume-fold, on by default, exact;
+                                  uses of an i1 a dominating assume or
+                                  assert fixes (its condition, conjuncts,
+                                  negations) became constants, by-*: by
+                                  which kind of check; branches / selects:
+                                  ops whose condition did; asserts-held /
+                                  -failed: asserts made 1 (dropped) / 0
+                                  (a direct failure); blocks: no
+                                  longer reachable, erased by canonicalize;
+                                  off: --lower-disable=assume-fold;
+                                  docs/design/AssumeFold.md)
+  vc.assumed-branches: branches=<n> selects=<n> values=<n>
+                                  (cond_br / select ops left whose condition
+                                  an assume fixes: not under the assume, or
+                                  the fold is off; only when there is one;
+                                  each value is a split.assumed-candidate
+                                  of --split-candidates)
   vc.box-all: dead=<n> empty=<n> expand-max=<K> expanded=<n> guarded=<n>
       lowered=<n> nondets=<n>     (--lower, a program with sea.box.all:
                                   ops erased unused, constant empty boxes
@@ -3280,6 +3317,10 @@ vc.split-max-paths).
     open-aliases=0: reads, cond-reads, covers, addrs, encoding order. Only
     those behind a question or in a read index; at most
     --split-candidates-max (20; 0: all). A guard's loc is its first op's.
+  split.assumed-candidate: name= assumed=1|0 branches= selects= loc=
+    an i1 value an assume fixes (to assumed) that still guards branches /
+    selects (vc.assumed-branches; name: a --split selector); a split on it
+    keeps the assumed case in one part. Program order, not ranked.
   split.arith-candidates: arith-nodes= int-values= candidates= listed=
     dropped=
     (arith-nodes: bvmul / bvudiv / bvsdiv / bvurem / bvsrem / bvsmod and
@@ -3352,6 +3393,7 @@ Kinds and fields:
   split-bool-candidate name, loc, target (value|guard), open_aliases, addrs,
                 reads, cond_reads, covers, same (names, comma-separated;
                 - for none)
+  split-assumed-candidate name, loc, assumed, branches, selects
   split-arith-candidates arith_nodes, int_values, candidates, listed,
                 dropped
   split-arith-candidate name, loc, target (int|value|guard), arith, mul,
@@ -3802,12 +3844,15 @@ int main(int argc, char **argv) {
        reachIncremental.getNumOccurrences() || !reachCorpus.empty() ||
        reachModelRuns.getNumOccurrences() || reachOrder.getNumOccurrences() ||
        reachFuzz || reachSeed.getNumOccurrences() || !reachPrograms.empty() ||
-       reachQuery.getNumOccurrences() || reachKeepSites || reachFailures))
+       reachQuery.getNumOccurrences() || reachKeepSites || reachFailures ||
+       reachFoldFacts))
     return fail("--reach-rlimit, --reach-witness, --reach-incremental, "
                 "--reach-model-runs, --reach-order, --reach-corpus, "
                 "--reach-fuzz, --reach-seed, --reach-programs, "
-                "--reach-query, --reach-keep-sites and --reach-failures "
-                "need --reach");
+                "--reach-query, --reach-keep-sites, --reach-failures and "
+                "--reach-fold-facts need --reach");
+  if (reachFoldFacts && !lower)
+    return fail("--reach-fold-facts needs --lower");
   if (!reachQuery && reachCorpus.empty() && !reachFuzz)
     return fail("--reach-query=false decides by runs only: give "
                 "--reach-corpus or --reach-fuzz");
@@ -3817,6 +3862,7 @@ int main(int argc, char **argv) {
                        .Case("sccp", sea::LowerDisableSccp)
                        .Case("cse", sea::LowerDisableCse)
                        .Case("canonicalize", sea::LowerDisableCanonicalize)
+                       .Case("assume-fold", sea::LowerDisableAssumeFold)
                        .Default(0);
     if (p == "sea-drop-fresh-memhavoc")
       return fail("--lower-disable: sea-drop-fresh-memhavoc is a semantics "
@@ -3825,11 +3871,15 @@ int main(int argc, char **argv) {
                   "so the lowering without it means something else");
     if (!bit)
       return fail("--lower-disable: '" + p +
-                  "' is not one of sccp, cse, canonicalize");
+                  "' is not one of sccp, cse, canonicalize, assume-fold");
     lowerDisableMask |= bit;
   }
   if (!lowerDisable.empty() && !lower)
     return fail("--lower-disable needs --lower");
+  // --reach: everything visible by default (vacuity-safe); the fold of
+  // facts can erase checks and blocks, so it runs only on request
+  if (reach && !reachFoldFacts)
+    lowerDisableMask |= sea::LowerDisableAssumeFold;
   if (rangeFoldOpt != sea::RangeFoldMode::Off && !lower)
     return fail("--range-fold needs --lower");
   if (expandMemMoveOpt && !lower)
@@ -4249,6 +4299,47 @@ int main(int argc, char **argv) {
     for (NamedAttribute a : d)
       if (auto i = dyn_cast<IntegerAttr>(a.getValue()))
         l.kv(a.getName().getValue(), i.getInt());
+  }
+  // sea-assume-fold's counters (on by default with --lower; the line only
+  // when it folded a use)
+  if (auto d =
+          program->getAttrOfType<DictionaryAttr>(sea::kAssumeFoldStatsAttr)) {
+    sea::stats::Line &l = lowerStats.line("vc.assume-fold");
+    for (StringRef key :
+         {"uses", "by-assume", "by-assert", "values", "branches", "selects",
+          "asserts-held", "asserts-failed", "blocks"})
+      if (auto i = d.getAs<IntegerAttr>(key))
+        l.kv(key, i.getInt());
+  }
+  // the branches and selects on assumed i1 values the program still has
+  // (the assume does not dominate them, sea-assume-fold is off, or the
+  // program was not lowered): each one a --split candidate
+  struct AssumedCandidate {
+    Value value;
+    bool truth;
+    unsigned branches = 0, selects = 0;
+  };
+  std::vector<AssumedCandidate> assumedCandidates;
+  {
+    SmallVector<sea::BranchOnAssumed> left;
+    sea::findBranchesOnAssumed(program, left);
+    llvm::DenseMap<Value, unsigned> at;
+    unsigned branches = 0, selects = 0;
+    for (const sea::BranchOnAssumed &b : left) {
+      auto [it, fresh] =
+          at.try_emplace(b.fact.value, unsigned(assumedCandidates.size()));
+      if (fresh)
+        assumedCandidates.push_back({b.fact.value, b.fact.truth});
+      bool br = isa<sea::CondBrOp>(b.op);
+      ++(br ? assumedCandidates[it->second].branches
+            : assumedCandidates[it->second].selects);
+      ++(br ? branches : selects);
+    }
+    if (!left.empty())
+      lowerStats.line("vc.assumed-branches")
+          .kv("branches", branches)
+          .kv("selects", selects)
+          .kv("values", uint64_t(assumedCandidates.size()));
   }
   // sea-expand-small-memmove's counters (--expand-memmove)
   if (auto d = program->getAttrOfType<DictionaryAttr>(
@@ -7066,6 +7157,28 @@ int main(int argc, char **argv) {
                    " same=" + (c.same.empty() ? "-" : llvm::join(c.same, ",")) +
                    " loc=" + (c.loc.empty() ? "-" : c.loc);
         gOut->emit(rec);
+      }
+      // the assumed i1 values that still guard a branch or select: a split
+      // on one keeps only the case the assume allows
+      // (vc.assumed-branches), not ranked by the query
+      if (!assumedCandidates.empty()) {
+        sea::ValueNames avn(program);
+        for (const AssumedCandidate &c : assumedCandidates) {
+          std::string name = avn.name(c.value).str();
+          std::string loc = sea::formatLoc(c.value.getLoc());
+          sea::out::Record rec("split-assumed-candidate");
+          rec.str("name", name)
+              .str("loc", loc)
+              .num("assumed", c.truth ? 1 : 0)
+              .num("branches", c.branches)
+              .num("selects", c.selects);
+          rec.text = "split.assumed-candidate: name=" + name +
+                     " assumed=" + (c.truth ? "1" : "0") +
+                     " branches=" + std::to_string(c.branches) +
+                     " selects=" + std::to_string(c.selects) +
+                     " loc=" + (loc.empty() ? "-" : loc);
+          gOut->emit(rec);
+        }
       }
       const size_t nArith = splitArithCandidates.size();
       const size_t arithListed =

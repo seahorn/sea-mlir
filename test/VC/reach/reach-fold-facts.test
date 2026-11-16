@@ -1,0 +1,66 @@
+// Under --reach, sea-assume-fold does not run unless --reach-fold-facts
+// (docs/design/AssumeFold.md, "Under --reach"): the fold is exact for the
+// safety query only. It would make the repeated checks of @dup constant
+// (canonicalize erases them with their sites) and the assume behind the
+// branch on the assumed %c in @dead0 dead (erased with its block), so
+// those targets disappear. Default: every site is a target; with the
+// flag, they are gone. The flag needs --reach.
+// RUN: split-file %s %t
+
+// RUN: sea-vc %t/dup.mlir --lower --reach 2>&1 | FileCheck %s --check-prefix=DUP
+// DUP-NOT: vc.assume-fold
+// DUP: reach: d.c:4:2 reachable op=sea.assume {{.*}} site=1
+// DUP: reach: d.c:5:2 reachable op=sea.assert {{.*}} site=2
+// RUN: sea-vc %t/dup.mlir --lower --reach --reach-fold-facts 2>&1 | FileCheck %s --check-prefix=DUP-FOLD
+// DUP-FOLD: vc.assume-fold:
+// DUP-FOLD-NOT: site=1
+// DUP-FOLD-NOT: site=2
+
+// RUN: sea-vc %t/dead0.mlir --lower --reach 2>&1 | FileCheck %s --check-prefix=DEAD
+// DEAD-NOT: vc.assume-fold
+// DEAD: reach: k.c:4:2 unreachable op=sea.assume {{.*}} site=1
+// RUN: sea-vc %t/dead0.mlir --lower --reach --reach-keep-sites --reach-fold-facts 2>&1 | FileCheck %s --check-prefix=DEAD-FOLD
+// DEAD-FOLD: vc.assume-fold: {{.*}}blocks=1
+// DEAD-FOLD-NOT: k.c:4:2
+
+// RUN: not sea-vc %t/dup.mlir --lower --reach-fold-facts 2>&1 | FileCheck %s --check-prefix=NOREACH
+// NOREACH: --reach-fold-facts need --reach
+
+// The pipeline option of sea-opt: reach=true leaves the fold out.
+// RUN: sea-opt %t/dup.mlir --pass-pipeline='builtin.module(sea-vc-lower{reach=true})' | FileCheck %s --check-prefix=PIPE
+// PIPE-NOT: sea.assume_fold
+// RUN: sea-opt %t/dup.mlir --pass-pipeline='builtin.module(sea-vc-lower{reach=true reach-fold-facts=true})' | FileCheck %s --check-prefix=PIPE-FOLD
+// PIPE-FOLD: sea.assume_fold
+
+//--- dup.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("d.c":1:1)
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8 loc("d.c":2:1)
+  sea.assume %big loc("d.c":3:2)
+  sea.assume %big loc("d.c":4:2)
+  sea.assert %big loc("d.c":5:2)
+  sea.halt
+}
+//--- dead0.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("k.c":1:1)
+  %y = sea.nondet "y" [1] : i8 loc("k.c":1:2)
+  %c5 = sea.const 5 : i8
+  %c = sea.icmp ult, %x, %c5 : i8 loc("k.c":2:1)
+  sea.assume %c loc("k.c":2:2)
+  sea.br ^a
+^a:
+  sea.cond_br %c, ^j, ^a2 loc("k.c":3:1)
+^a2:
+  %q = sea.icmp ult, %y, %c5 : i8 loc("k.c":4:1)
+  sea.assume %q loc("k.c":4:2)
+  sea.br ^j
+^j:
+  %e = sea.icmp ne, %x, %y : i8
+  sea.assert %e loc("k.c":9:1)
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

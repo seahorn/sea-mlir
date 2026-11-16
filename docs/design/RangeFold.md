@@ -202,6 +202,9 @@ after a load-over-store pass.
   it). A range the cap cut is not memoized within a candidate's walk, so a
   value reached first at the cap is computed again when reached shallower;
   there is no cache across candidates.
+- i1 facts (`assume %c`, then a branch or select on `%c`) are
+  `sea-assume-fold`'s, on by default (docs/design/AssumeFold.md); this pass
+  folds a select on such a value too when it runs.
 - A use-point fold (a fact between a value's definition and one of its uses
   folds that use only) is not done: the point is the candidate's
   definition.

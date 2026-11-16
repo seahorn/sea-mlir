@@ -82,6 +82,11 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   semantics in `lib/Dialect/Sea/SeaIntRanges.cpp`, intersected with the
   simple bounds of dominating assumes, at the candidate's definition; `sea-vc --range-fold`,
   off by default; `check`: the paranoid job; docs/design/RangeFold.md),
+  `sea-assume-fold` (uses of an i1 that a dominating assume or assert
+  fixes, its conjuncts and negations -> constants: exact, on by default in
+  the lowering right before sea-merge-asserts, `sea-vc
+  --lower-disable=assume-fold`; not under `--reach` unless
+  `--reach-fold-facts`; docs/design/AssumeFold.md),
   `sea-widen-memory` (byte
   memory -> aligned k-byte words when every access provably fits; in the
   lowering with `sea-vc --widen-memory=k`), `sea-apply-tracking`

@@ -45,6 +45,21 @@
 //                                struct fields included: sea::isAbstract)
 //   3. sea-expand-memset         symbolic lengths (the array encoding has
 //                                only store chains); adds blocks, so before 4
+//   3'. sea-assume-fold          (with sccp's switch, fold; sea-vc
+//                                --lower-disable=assume-fold) uses of an i1
+//                                that a dominating assume or assert fixes
+//                                (its condition, conjuncts, negations)
+//                                become constants: exact (an assert is an
+//                                assume for the code it dominates); the
+//                                constant branches and dead blocks go at 7
+//                                (docs/design/AssumeFold.md). Before 4:
+//                                the program's asserts are still in place,
+//                                so a later check of a condition an
+//                                earlier one fixed becomes constant and 4
+//                                drops it (1) or makes it a failure (0);
+//                                the fold needs no merged form. After the
+//                                lowerings before it (their assumes:
+//                                expand-memset's bounds)
 //   4. sea-merge-asserts         BMC form: one assert before the halt
 //                                (an assert of constant 1 is dropped, one
 //                                of constant 0 is a branch to its failure
@@ -100,6 +115,7 @@
 #include "PassUtils.h"
 #include "sea/Dialect/Sea/SeaOps.h"
 #include "sea/Support/Diag.h"
+#include "sea/Transforms/AssumeFold.h"
 #include "sea/Transforms/RangeFold.h"
 
 #include "mlir/Pass/PassManager.h"
@@ -213,6 +229,16 @@ struct VCLowerOptions : public PassPipelineOptions<VCLowerOptions> {
                                   "opt=false keeps every op (with fold=false: "
                                   "every op's location)"),
                    llvm::cl::init(true)};
+  Option<bool> reach{*this, "reach",
+                     llvm::cl::desc("The lowering of sea-vc --reach: no "
+                                    "sea-assume-fold (it can erase checks "
+                                    "and blocks) unless reach-fold-facts"),
+                     llvm::cl::init(false)};
+  Option<bool> reachFoldFacts{
+      *this, "reach-fold-facts",
+      llvm::cl::desc("With reach=true: run sea-assume-fold anyway (sea-vc "
+                     "--reach-fold-facts)"),
+      llvm::cl::init(false)};
 };
 } // namespace
 
@@ -235,6 +261,7 @@ void registerPasses() {
   registerPass([] { return createMergeAssertsPass(); });
   registerPass([] { return createSinkAssumesPass(); });
   registerPass([] { return createRangeFoldPass(); });
+  registerPass([] { return createAssumeFoldPass(); });
   registerPass([] { return createLowerBoxAllPass(); });
   registerPass([] { return createLowerPtrIndexPass(); });
   registerPass([] { return createCheckAlignPass(); });
@@ -249,8 +276,13 @@ void registerPasses() {
       "The lowering sea-vc --lower runs on a placed program (abstract "
       "programs: run sea-place-static first)",
       [](OpPassManager &pm, const VCLowerOptions &o) {
+        if (o.reachFoldFacts && !o.reach)
+          llvm::report_fatal_error(
+              "sea-vc-lower: reach-fold-facts needs reach=true");
+        unsigned disable =
+            o.reach && !o.reachFoldFacts ? LowerDisableAssumeFold : 0;
         buildVCLoweringPipeline(pm, false, false, o.fold, 0, true, false, false,
-                                false, 0, o.opt);
+                                false, 0, o.opt, true, disable);
       });
 }
 
@@ -326,6 +358,11 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
   // (sea-vc --seam), which are exact for every length
   if (expandMemSet)
     prog.addPass(createExpandMemSetPass());
+  // uses of i1 values that dominating assumes and asserts fix: constants,
+  // on the program's own asserts (before they are merged); canonicalize
+  // folds the branches and erases the dead blocks
+  if (fold && !(disable & LowerDisableAssumeFold))
+    prog.addPass(createAssumeFoldPass());
   // multi-assert: BMC form (one assert before the one halt)
   prog.addPass(createMergeAssertsPass());
   prog.addPass(createSplitWideAccessPass(keepByteWide));

@@ -327,7 +327,9 @@ python3 utils/cover-diff.py --sea-vc <build>/bin/sea-vc \
 ```
 
 `--a` and `--b` are the arguments of each side (`--lower-opt=false`,
-`--lower-disable=sccp|cse|canonicalize`), `--args` those of both.
+`--lower-disable=sccp|cse|canonicalize`; sea-assume-fold does not run
+under `--reach` unless `--reach-fold-facts`, which changes the targets:
+compare it with `--b=--reach-fold-facts`), `--args` those of both.
 
 What is compared, per input:
 
