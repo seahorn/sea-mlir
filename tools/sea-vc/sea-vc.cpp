@@ -2396,14 +2396,18 @@ OUTPUT (stdout, `key: value` lines):
   vc.config: <path>               (--config: each config loaded, in order,
                                   first; with --smt2 on stderr)
   program: @<name>
-  vc.assume-fold: uses=<n> by-assume=<n> by-assert=<n> values=<n>
-      branches=<n> selects=<n> asserts-held=<n> asserts-failed=<n>
-      blocks=<n>                  (--lower, when it folded a use:
+  vc.assume-fold: uses=<n> by-assume=<n> by-assert=<n> by-edge=<n>
+      values=<n> branches=<n> selects=<n> asserts-held=<n>
+      asserts-failed=<n> blocks=<n>
+                                  (--lower, when it folded a use:
                                   sea-assume-fold, on by default, exact;
                                   uses of an i1 a dominating assume or
                                   assert fixes (its condition, conjuncts,
-                                  negations) became constants, by-*: by
-                                  which kind of check; branches / selects:
+                                  negations), or every edge into a
+                                  dominating block fixes (cond_br %c: 1 on
+                                  the true edge, 0 on the false one),
+                                  became constants, by-*: by which kind of
+                                  fact; branches / selects:
                                   ops whose condition did; asserts-held /
                                   -failed: asserts made 1 (dropped) / 0
                                   (a direct failure); blocks: no
@@ -4306,8 +4310,8 @@ int main(int argc, char **argv) {
           program->getAttrOfType<DictionaryAttr>(sea::kAssumeFoldStatsAttr)) {
     sea::stats::Line &l = lowerStats.line("vc.assume-fold");
     for (StringRef key :
-         {"uses", "by-assume", "by-assert", "values", "branches", "selects",
-          "asserts-held", "asserts-failed", "blocks"})
+         {"uses", "by-assume", "by-assert", "by-edge", "values", "branches",
+          "selects", "asserts-held", "asserts-failed", "blocks"})
       if (auto i = d.getAs<IntegerAttr>(key))
         l.kv(key, i.getInt());
   }

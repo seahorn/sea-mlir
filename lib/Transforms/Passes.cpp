@@ -48,8 +48,13 @@
 //   3'. sea-assume-fold          (with sccp's switch, fold; sea-vc
 //                                --lower-disable=assume-fold) uses of an i1
 //                                that a dominating assume or assert fixes
-//                                (its condition, conjuncts, negations)
-//                                become constants: exact (an assert is an
+//                                (its condition, conjuncts, negations;
+//                                `select c, x, false` is a conjunction,
+//                                `select c, true, x` a disjunction), or
+//                                that every edge into a dominating block
+//                                fixes (cond_br %c: 1 on the true edge, 0
+//                                on the false one), become constants:
+//                                exact (an assert is an
 //                                assume for the code it dominates); the
 //                                constant branches and dead blocks go at 7
 //                                (docs/design/AssumeFold.md). Before 4:
@@ -358,9 +363,10 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
   // (sea-vc --seam), which are exact for every length
   if (expandMemSet)
     prog.addPass(createExpandMemSetPass());
-  // uses of i1 values that dominating assumes and asserts fix: constants,
-  // on the program's own asserts (before they are merged); canonicalize
-  // folds the branches and erases the dead blocks
+  // uses of i1 values that dominating assumes and asserts, or the edges
+  // into a block, fix: constants, on the program's own asserts (before
+  // they are merged); canonicalize folds the branches and erases the dead
+  // blocks
   if (fold && !(disable & LowerDisableAssumeFold))
     prog.addPass(createAssumeFoldPass());
   // multi-assert: BMC form (one assert before the one halt)

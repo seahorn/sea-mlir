@@ -45,6 +45,31 @@ folded (the check does not dominate itself). The values a check fixes
   and `icmp eq|ne v, k` (the negations), `and v, w` with `v` false, `or v,
   w` with `v` true.
 
+Edge facts: the true edge of `sea.cond_br %c` fixes `%c` to 1, the false
+edge to 0, with the same derivations. A fact holds on entry of a block if
+it holds on every edge into it that can execute (its source reachable from
+the entry), and then at every point the block dominates, the block itself
+included (`collectEdgeFacts`):
+
+- one such edge (every cond_br target of the BMC form, which has no
+  critical edges): what that edge fixes;
+- several (a join, or a critical edge: at the fold's position
+  sea-split-critical-edges has not run yet, and expand-memset adds
+  blocks): a fact some edge fixes, kept only if every other edge fixes it
+  too or it holds at the end of that edge's source (a check that
+  dominates the source's terminator, or the entry fact of a block that
+  dominates the source). `@join_no_fold` in the transform test: ^bb3 is
+  entered on `%c`'s true edge and from a block where `%c` is 0, so `%c` is
+  not fixed there; `@join_agree`: `or %c, %d` is 1 on the true edges of
+  `%c` and of `%d`, so in their join;
+- a cond_br whose two edges enter one block fixes nothing.
+
+Blocks are visited in reverse post-order, so a source's entry facts are
+known before its successors'; the source of a back edge (not in the
+lowering, which is loop-free) is visited later and counts with the checks
+and the entry facts of blocks already visited (its target's strict
+dominators): fewer facts, never a wrong one.
+
 Every use is replaced: branch and select conditions, connective operands,
 block-argument values on edges the check dominates, later asserts and
 assumes. The pass changes operands only; sea-merge-asserts drops an assert
@@ -62,7 +87,13 @@ bit-vector identity (`and a, b = 1` implies `a = b = 1`, `xor a, 1 = 1`
 implies `a = 0`, ...), and SSA values do not change, so v = b at U. The
 program after the fold has the same executions with the same values up to
 their end, and they fail the same asserts; only paths that already end at A
-lose branches they could not take. No premise,
+lose branches they could not take. An edge fact is a check placed on the
+edge: every execution that enters the block B took one of its executable
+edges, on each of which the fact holds (by the branch's condition, or by a
+check or entry fact that dominates the edge's source), and an execution at
+a point B dominates entered B last with no redefinition of the value since
+(a redefinition would pass the value's definition, which dominates B, and
+then B again). No premise,
 no entry of the assumption ledger, no `assume.*` line. When one assume
 fixes a value both ways (a contradiction), every point it dominates is
 unreachable and either constant is exact; the first is kept.
@@ -85,7 +116,8 @@ A pass of its own, not an extension of `sea-range-fold`:
   simple bounds and it folds at a candidate's definition, not at a use.
 
 Position: right before the first `sea-merge-asserts` (step 3' of the
-lowering, `lib/Transforms/Passes.cpp`), after sccp, cse and the lowerings
+lowering, `lib/Transforms/Passes.cpp`),
+after sccp, cse and the lowerings
 before it (placement, widening, `sea-expand-memset`, whose bound assumes
 it sees). Before the merge, because the simplification must not depend on
 it: sea-merge-asserts is a helper of the BMC form (until asserts stay in
@@ -115,13 +147,16 @@ accesses unaligned.
 ## Counters
 
 On the program as the attribute `sea.assume_fold` (only when a use was
-folded), printed by sea-vc as `vc.assume-fold: uses= by-assume= by-assert= values=
-branches= selects= asserts-held= asserts-failed= blocks=` and by the log
-`lower.assume-fold` (level 1 per run, level 2 per folded use):
+folded), printed by sea-vc as `vc.assume-fold: uses= by-assume= by-assert=
+by-edge= values= branches= selects= asserts-held= asserts-failed= blocks=`
+and by the log `lower.assume-fold` (level 1 per run, level 2 per folded
+use):
 
-- `uses`: operands replaced; of them `by-assume` / `by-assert`: by the
-  fact of an assume / an assert (the first dominating fact in program
-  order); `values`: distinct values with a replaced use;
+- `uses`: operands replaced; of them `by-assume` / `by-assert` /
+  `by-edge`: by the fact of an assume / an assert (the first dominating
+  one in program order) / of the edges into a dominating block (only
+  uses no check fixes: the checks' facts are applied first); `values`:
+  distinct values with a replaced use;
 - `branches`, `selects`: cond_br / select ops whose condition was replaced;
 - `asserts-held`, `asserts-failed`: asserts whose condition became 1 / 0
   (dropped / direct failures in sea-merge-asserts);
@@ -129,13 +164,41 @@ branches= selects= asserts-held= asserts-failed= blocks=` and by the log
   cond_br on a constant takes its one edge (what canonicalize then
   erases; blocks sccp's constants already cut off are not counted).
 
-The postcondition collects the facts again on the rewritten program, with
-a fresh dominance analysis, and checks that no use a dominating check fixes
-is left.
+The postcondition collects the facts again (checks and edges) on the
+rewritten program, with a fresh dominance analysis, and checks that no use
+a dominating fact fixes is left.
 
 Cost: `collectAssumedValues` walks, per check, the values it fixes; an
 assert of each prefix of a long `and` chain fixes the whole prefix, so
-that case is quadratic in the chain length (not capped).
+that case is quadratic in the chain length (not capped). The edge facts
+derive once per cond_br edge; a join checks each candidate on each other
+edge (a dominance query per check of the value and a walk up the
+dominator tree).
+
+## Select form
+
+LLVM writes a short-circuit `a && b` as the i1 `select a, b, false` and
+`a || b` as `select a, true, b` (its `and` / `or` would let poison of `b`
+through when `a` decides). sea has no poison: the select and the
+connective are the same function (Semantics.cpp; z3: `(ite (= c #b1) x
+#b0) = (bvand c x)` and `(ite (= c #b1) #b1 x) = (bvor c x)` over
+`(_ BitVec 1)`, unsat negations). `matchConnective` (AssumeFold.h) reads
+both forms as `and` / `or`; the derivations above and sea-range-fold's
+conjuncts of an assume use it. Selects with both arms constant, the other
+constant arms (`select c, false, x`, `select c, x, true`: a negation of
+`c`) and non-i1 selects are not connectives.
+
+The program keeps the selects. A first version rewrote them to `and` /
+`or` (a pass before the fold, in the canonicalize sense); on the public
+and private suites that cost more than it gave: the select folders fold
+`select c, false, false` (equal arms) and `select true, x, false` (constant
+condition) once a later lowering makes an arm or the condition constant,
+`and c, false` and `and true, x` have no folder (identity folders are a
+separate step), so 6 stellar-batch / stellar-split jobs kept up to 6
+blocks more; the VC grew in every firedancer job (bv1 `bvand` plus the
+Bool conversions, about 0.01%); and two stellar-split jobs whose
+`--split-leaves=%1575` names a printed SSA number of the lowered program
+failed (the rewrite renumbers values).
 
 ## What it leaves: `vc.assumed-branches`, `split.assumed-candidate`
 
@@ -164,7 +227,9 @@ erased with their checks and block ids (also with `--reach-keep-sites`).
 So under `--reach` it does not run by default (everything visible: an
 unreachable check is reported, not removed). `--reach-fold-facts` runs it
 anyway, an opt-in for performance whose targets are a subset of the
-default's. The pipeline `sea-vc-lower{reach=true}` is the reach lowering
+default's (an edge-dead block's checks go too: `if (c) { if (c) ... else
+{ assume q } }` lists the `assume q` unreachable by default, and not at all
+with the flag). The pipeline `sea-vc-lower{reach=true}` is the reach lowering
 (no fold), `reach-fold-facts=true` adds it.
 `test/VC/reach/reach-fold-facts.test`.
 
@@ -178,6 +243,10 @@ default's. The pipeline `sea-vc-lower{reach=true}` is the reach lowering
   an assume of the other condition), a different transformation; measured
   on that job without this pass it did not change the cost (10,466
   constraints).
+- The cond_br's own edge operands: `cond_br %c, ^a(%c), ^b` passes 1,
+  but the operand is not under the edge's block and is not folded.
+- A join whose edges fix a value by checks only (each sibling assumes
+  `%c`) gets no fact: candidates come from cond_br edges.
 - An assume that post-dominates a branch on its value with no assert in
   between makes the other edge infeasible too; such branches are reported
   (`vc.assumed-branches`), not folded.

@@ -68,7 +68,9 @@ signed range, otherwise it is a hole and skipped. Every other conjunct
 the comparison) is not a fact and is counted (`facts-skipped`). A bound on
 `sext(y)` or `zext(y)` is also one on `y`, inverted exactly
 (`rangeBeforeExt`), so a fact on `sext(slot)` applies where the walk reaches
-`slot`.
+`slot`. LLVM's short-circuit `a && b`, the i1 `select a, b, false`, is a
+conjunction too (`matchConnective`, docs/design/AssumeFold.md, "Select
+form"; `test/VC/assume-fold.mlir` @select_and).
 
 No per-value cache of facts. Caching a fact as a value's range for all uses
 when its assume "dominates every use" is not sound as stated: the assume's

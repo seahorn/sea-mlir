@@ -214,7 +214,8 @@ std::unique_ptr<mlir::Pass> createWidenMemoryPass();
 /// without them. sccp also folds constant conditions (fold=false of the
 /// pipeline); cse and canonicalize are each of their runs (--lower-opt=false
 /// leaves out all three runs). sea-assume-fold: the uses of i1 values that
-/// dominating assumes and asserts fix (on with the fold of the pipeline). Not
+/// dominating assumes and asserts or the edges into a block fix (on with
+/// the fold of the pipeline). Not
 /// sea-drop-fresh-memhavoc: it also decides
 /// that a memhavoc of a fresh object is no modification (tracking), a
 /// semantics decision.

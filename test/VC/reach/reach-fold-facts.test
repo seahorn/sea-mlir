@@ -26,6 +26,18 @@
 // RUN: not sea-vc %t/dup.mlir --lower --reach-fold-facts 2>&1 | FileCheck %s --check-prefix=NOREACH
 // NOREACH: --reach-fold-facts need --reach
 
+// Edge-dead block (@dead1): the inner `cond_br %c` is inside the true edge
+// of `cond_br %c`, so its false edge is never taken and ^a2's assume
+// (k.c:4:2) can never run. Default: the site is listed, unreachable. With
+// --reach-fold-facts the edge fact folds the inner branch and canonicalize
+// erases ^a2 with its site: the target is gone (a subset of the default's).
+// RUN: sea-vc %t/dead1.mlir --lower --reach 2>&1 | FileCheck %s --check-prefix=EDEAD
+// EDEAD-NOT: vc.assume-fold
+// EDEAD: reach: k.c:4:2 unreachable op=sea.assume {{.*}} site=0
+// RUN: sea-vc %t/dead1.mlir --lower --reach --reach-fold-facts 2>&1 | FileCheck %s --check-prefix=EDEAD-FOLD
+// EDEAD-FOLD: vc.assume-fold:
+// EDEAD-FOLD-NOT: k.c:4:2
+
 // The pipeline option of sea-opt: reach=true leaves the fold out.
 // RUN: sea-opt %t/dup.mlir --pass-pipeline='builtin.module(sea-vc-lower{reach=true})' | FileCheck %s --check-prefix=PIPE
 // PIPE-NOT: sea.assume_fold
@@ -50,6 +62,24 @@ sea.program @main {
   %c = sea.icmp ult, %x, %c5 : i8 loc("k.c":2:1)
   sea.assume %c loc("k.c":2:2)
   sea.br ^a
+^a:
+  sea.cond_br %c, ^j, ^a2 loc("k.c":3:1)
+^a2:
+  %q = sea.icmp ult, %y, %c5 : i8 loc("k.c":4:1)
+  sea.assume %q loc("k.c":4:2)
+  sea.br ^j
+^j:
+  %e = sea.icmp ne, %x, %y : i8
+  sea.assert %e loc("k.c":9:1)
+  sea.halt
+}
+//--- dead1.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("k.c":1:1)
+  %y = sea.nondet "y" [1] : i8 loc("k.c":1:2)
+  %c5 = sea.const 5 : i8
+  %c = sea.icmp ult, %x, %c5 : i8 loc("k.c":2:1)
+  sea.cond_br %c, ^a, ^j loc("k.c":2:2)
 ^a:
   sea.cond_br %c, ^j, ^a2 loc("k.c":3:1)
 ^a2:

@@ -7,7 +7,7 @@
 
 // The reduced shape: assume %c, then cond_br %c and a select on %c.
 // CHECK-LABEL: sea.program @direct
-// CHECK-SAME: sea.assume_fold = {"asserts-failed" = 0 : i64, "asserts-held" = 0 : i64, blocks = 1 : i64, branches = 1 : i64, "by-assert" = 0 : i64, "by-assume" = 2 : i64, selects = 1 : i64, uses = 2 : i64, values = 1 : i64}
+// CHECK-SAME: sea.assume_fold = {"asserts-failed" = 0 : i64, "asserts-held" = 0 : i64, blocks = 1 : i64, branches = 1 : i64, "by-assert" = 0 : i64, "by-assume" = 2 : i64, "by-edge" = 0 : i64, selects = 1 : i64, uses = 2 : i64, values = 1 : i64}
 // CHECK: %[[T:.*]] = sea.const true
 // CHECK: sea.assume %[[C:[^ ]*]]
 // CHECK: sea.select %[[T]],
@@ -75,18 +75,20 @@ sea.program @negated {
   sea.halt
 }
 
-// Not dominated: a branch before the assume, and a branch after the join
+// Not dominated: a select before the assume, and a branch after the join
 // of a sibling that assumes %c. Nothing folds (no counters); the assume's
 // own operand stays.
 // CHECK-LABEL: sea.program @not_dominated
 // CHECK-NOT: sea.assume_fold
-// CHECK: sea.cond_br %[[C:[^,]*]], ^bb1, ^bb2
+// CHECK: sea.select %[[C:[^,]*]],
 // CHECK: sea.assume %[[C]]
 // CHECK: sea.cond_br %[[C]], ^bb4, ^bb5
 sea.program @not_dominated {
   %c = sea.nondet "c" [0] : i1
   %x = sea.nondet "x" [1] : i1
-  sea.cond_br %c, ^bb1, ^bb2
+  %d = sea.nondet "d" [2] : i1
+  %s = sea.select %c, %x, %d : i1
+  sea.cond_br %d, ^bb1, ^bb2
 ^bb1:
   sea.assume %c
   sea.br ^bb3
@@ -97,7 +99,7 @@ sea.program @not_dominated {
 ^bb4:
   sea.br ^bb5
 ^bb5:
-  sea.assert %x
+  sea.assert %s
   sea.halt
 }
 
@@ -124,6 +126,129 @@ sea.program @by_assert {
   sea.assert %c
   %nc = sea.xor %c, %t : i1
   sea.assert %nc
+  sea.halt
+}
+
+
+// Edge facts: on the true edge of `cond_br %c` %c is 1, on the false edge
+// 0, in the block the edge enters alone and every block it dominates. The
+// reduced shape: a second branch on %c under the true edge, a select on
+// %c under the false edge.
+// CHECK-LABEL: sea.program @edge
+// CHECK-SAME: "by-edge" = 2 : i64
+// CHECK-SAME: selects = 1 : i64
+// CHECK-DAG: %[[F:.*]] = sea.const false
+// CHECK-DAG: %[[T:.*]] = sea.const true
+// CHECK: sea.cond_br %[[C:[^,]*]], ^bb1, ^bb4
+// CHECK: ^bb1:
+// CHECK-NEXT: sea.cond_br %[[T]], ^bb2, ^bb3
+// CHECK: ^bb4:
+// CHECK-NEXT: sea.select %[[F]],
+sea.program @edge {
+  %t = sea.const 1 : i1
+  %c5 = sea.const 5 : i8
+  %x = sea.nondet "x" [0] : i8
+  %y = sea.nondet "y" [1] : i8
+  %c = sea.icmp ult, %x, %c5 : i8
+  sea.cond_br %c, ^a, ^b
+^a:
+  sea.cond_br %c, ^a1, ^a2
+^a1:
+  sea.br ^j(%x : i8)
+^a2:
+  sea.br ^j(%y : i8)
+^b:
+  %s = sea.select %c, %x, %y : i8
+  sea.br ^j(%s : i8)
+^j(%r : i8):
+  %e = sea.icmp ne, %r, %c5 : i8
+  sea.assert %e
+  sea.halt
+}
+
+// A block with several incoming edges: a fact holds there only if it
+// holds on every edge. ^bb3 is entered on the true edge of `cond_br %c`
+// (%c = 1) and on the true edge of `cond_br %d` in ^bb1, where %c = 0
+// (the false edge into ^bb1): nothing about %c or %d holds in ^bb3. ^bb4
+// is entered by both edges of one cond_br on %e: no fact. Nothing folds.
+// CHECK-LABEL: sea.program @join_no_fold
+// CHECK-NOT: sea.assume_fold
+// CHECK: %[[C:.*]] = sea.nondet "c"
+// CHECK: %[[D:.*]] = sea.nondet "d"
+// CHECK: %[[E:.*]] = sea.nondet "e"
+// CHECK: ^bb3:
+// CHECK-NEXT: sea.or %[[C]], %[[D]] : i1
+// CHECK: ^bb4(%{{.*}}: i1):
+// CHECK-NEXT: sea.and %{{[^,]*}}, %[[E]] : i1
+sea.program @join_no_fold {
+  %c = sea.nondet "c" [0] : i1
+  %d = sea.nondet "d" [1] : i1
+  %e = sea.nondet "e" [2] : i1
+  %x = sea.nondet "x" [3] : i1
+  sea.cond_br %c, ^bb3, ^bb1
+^bb1:
+  sea.cond_br %d, ^bb3, ^bb2
+^bb2:
+  sea.br ^bb3
+^bb3:
+  %cd = sea.or %c, %d : i1
+  %q = sea.xor %cd, %x : i1
+  sea.cond_br %e, ^bb4(%q : i1), ^bb4(%x : i1)
+^bb4(%r : i1):
+  %w = sea.and %r, %e : i1
+  sea.assert %w
+  sea.halt
+}
+
+// Several incoming edges that agree: ^bb2 is entered on the true edge of
+// `cond_br %c` and on the true edge of `cond_br %d`; `or %c, %d` is 1 on
+// both, so in ^bb2; %c and %d alone are not.
+// CHECK-LABEL: sea.program @join_agree
+// CHECK-SAME: "by-edge" = 1 : i64
+// CHECK: %[[T:.*]] = sea.const true
+// CHECK: ^bb2:
+// CHECK-NEXT: sea.assert %[[T]]
+// CHECK: ^bb3:
+// CHECK-NEXT: sea.assert %{{[^ ]*}}{{$}}
+sea.program @join_agree {
+  %c = sea.nondet "c" [0] : i1
+  %d = sea.nondet "d" [1] : i1
+  %o = sea.or %c, %d : i1
+  sea.cond_br %c, ^bb2, ^bb1
+^bb1:
+  sea.cond_br %d, ^bb2, ^bb3
+^bb2:
+  sea.assert %o
+  sea.halt
+^bb3:
+  sea.assert %o
+  sea.halt
+}
+
+
+// Select form: `select %c, %x, false` is `and %c, %x`, `select %w, true,
+// %c` is `or %w, %c`. The assumed conjunction fixes %c and %x (backward);
+// %c true fixes the disjunction (forward), so the final assert holds.
+// CHECK-LABEL: sea.program @select_form
+// CHECK-SAME: "asserts-held" = 1 : i64
+// CHECK-SAME: branches = 1 : i64
+// CHECK: %[[T:.*]] = sea.const true
+// CHECK: sea.cond_br %[[T]], ^bb1, ^bb2
+// CHECK: sea.assert %[[T]]
+sea.program @select_form {
+  %t = sea.const 1 : i1
+  %f = sea.const 0 : i1
+  %c = sea.nondet "c" [0] : i1
+  %x = sea.nondet "x" [1] : i1
+  %w = sea.nondet "w" [2] : i1
+  %a = sea.select %c, %x, %f : i1
+  %o = sea.select %w, %t, %c : i1
+  sea.assume %a
+  sea.cond_br %x, ^bb1, ^bb2
+^bb1:
+  sea.br ^bb2
+^bb2:
+  sea.assert %o
   sea.halt
 }
 

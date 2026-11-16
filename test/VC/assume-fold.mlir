@@ -13,12 +13,16 @@
 // RUN: sea-vc %s --program=held_false --lower --lower-disable=assume-fold --replay-original 2>&1 | FileCheck %s --check-prefix=HFALSE
 // RUN: sea-vc %s --program=asserts_sib --lower --replay-original 2>&1 | FileCheck %s --check-prefix=ASIB
 // RUN: sea-vc %s --program=two_asserts --lower 2>&1 | FileCheck %s --check-prefix=TWO
+// RUN: sea-vc %s --program=edge --lower --replay-original 2>&1 | FileCheck %s --check-prefix=EDGE
+// RUN: sea-vc %s --program=edge --lower --lower-disable=assume-fold 2>&1 | FileCheck %s --check-prefix=EDGE-OFF
+// RUN: sea-vc %s --program=edge_join --lower --replay-original 2>&1 | FileCheck %s --check-prefix=EJOIN
+// RUN: sea-vc %s --program=select_and --lower --range-fold=on 2>&1 | FileCheck %s --check-prefix=SAND
 // sea-assume-fold in the lowering (docs/design/AssumeFold.md). @fold: the
 // branch on the assumed %c folds and its dead arm goes; the answer and the
 // replay are the same either way, and the lowered program runs as the
 // original on the same inputs. With the fold off, sea-vc reports the
 // branch it leaves (vc.assumed-branches).
-// ON: vc.assume-fold: uses=1 by-assume=1 by-assert=0 values=1 branches=1 selects=0 asserts-held=0 asserts-failed=0 blocks=1
+// ON: vc.assume-fold: uses=1 by-assume=1 by-assert=0 by-edge=0 values=1 branches=1 selects=0 asserts-held=0 asserts-failed=0 blocks=1
 // ON-NOT: vc.assumed-branches
 // ON: result: sat
 // ON: replay: assert-failed
@@ -141,6 +145,81 @@ sea.program @held_false {
   sea.assert %c loc("x.c":3:3)
   %f = sea.const 0 : i1
   sea.assert %f loc("x.c":9:3)
+  sea.halt
+}
+
+
+// @edge: facts of cond_br edges. Under the true edge of `cond_br %c` a
+// second branch on %c folds, under the false edge a select on %c: one
+// block goes (the branch's false arm). sat either way, the replay matches
+// the original program.
+// EDGE: vc.assume-fold: uses=2 by-assume=0 by-assert=0 by-edge=2 values=1 branches=1 selects=1 asserts-held=0 asserts-failed=0 blocks=1
+// EDGE: result: sat
+// EDGE: replay.original: {{.*}}match=yes
+// EDGE-OFF-NOT: vc.assume-fold
+// EDGE-OFF: result: sat
+sea.program @edge {
+  %c5 = sea.const 5 : i8
+  %x = sea.nondet "x" [0] : i8
+  %y = sea.nondet "y" [1] : i8
+  %c = sea.icmp ult, %x, %c5 : i8
+  sea.cond_br %c, ^a, ^b
+^a:
+  sea.cond_br %c, ^a1, ^a2
+^a1:
+  sea.br ^j(%x : i8)
+^a2:
+  sea.br ^j(%y : i8)
+^b:
+  %s = sea.select %c, %x, %y : i8
+  sea.br ^j(%s : i8)
+^j(%r : i8):
+  %e = sea.icmp ne, %r, %c5 : i8
+  sea.assert %e loc("x.c":7:1)
+  sea.halt
+}
+
+// @edge_join: ^j is entered on the true edge of `cond_br %c` (a critical
+// edge here: the lowering splits it last) and from ^b, where %c is 0. %c
+// is not fixed in ^j: the assert of %c stays and fails (sat; folding it by
+// the true edge alone would make the job unsat).
+// EJOIN-NOT: vc.assume-fold
+// EJOIN: result: sat
+// EJOIN: replay.original: {{.*}}match=yes
+sea.program @edge_join {
+  %c = sea.nondet "c" [0] : i1
+  %p = sea.nondet "p" [1] : i1
+  sea.cond_br %c, ^j, ^b
+^b:
+  sea.cond_br %p, ^j, ^z
+^z:
+  sea.br ^j
+^j:
+  sea.assert %c loc("x.c":9:1)
+  sea.halt
+}
+
+// @select_and: LLVM's short-circuit form of `0 <= x && x < 6`, `select
+// %a, %b, false`, assumed: a conjunction (matchConnective), so
+// sea-range-fold takes both bounds as facts and settles `x ult 9` (read as
+// one opaque conjunct it has no fact). unsat either way.
+// SAND: vc.range-fold: {{.*}} facts=2 facts-skipped=0 facts-used={{[1-9][0-9]*}} icmp=1
+// SAND: result: unsat
+sea.program @select_and {
+  %c0 = sea.const 0 : i8
+  %c6 = sea.const 6 : i8
+  %c9 = sea.const 9 : i8
+  %f = sea.const 0 : i1
+  %x = sea.nondet "x" [0] : i8
+  %y = sea.nondet "y" [1] : i8
+  %a = sea.icmp sge, %x, %c0 : i8
+  %b = sea.icmp slt, %x, %c6 : i8
+  %ab = sea.select %a, %b, %f : i1
+  sea.assume %ab
+  %lt = sea.icmp ult, %y, %c6 : i8
+  %ok1 = sea.icmp ult, %x, %c9 : i8
+  %ok = sea.or %ok1, %lt : i1
+  sea.assert %ok
   sea.halt
 }
 

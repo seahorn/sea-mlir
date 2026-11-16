@@ -23,8 +23,9 @@
 //     verdict wrong).
 // A fact is a simple bound: `sea.assume c` with c a sea.icmp of a value x
 // and a constant (either order, any predicate; `ne` only at the ends of
-// x's range, else it is a hole and skipped), or an i1 sea.and (nested) of
-// such conjuncts. A bound on sext(y) / zext(y) is also one on y (inverted
+// x's range, else it is a hole and skipped), or an i1 sea.and or its
+// select form `select a, b, false` (nested, matchConnective) of such
+// conjuncts. A bound on sext(y) / zext(y) is also one on y (inverted
 // exactly, RangeFold.h). Anything else is not a fact; each such conjunct is
 // counted (facts-skipped). No memory reasoning: a load is a leaf, refined
 // only by facts on that same SSA value.
@@ -64,6 +65,7 @@
 #include "PassUtils.h"
 #include "sea/Dialect/Sea/SeaOps.h"
 #include "sea/Support/Log.h"
+#include "sea/Transforms/AssumeFold.h"
 #include "sea/Transforms/Passes.h"
 
 #include "mlir/IR/Builders.h"
@@ -294,9 +296,10 @@ private:
     SmallVector<Value> todo{a.getCond()};
     while (!todo.empty()) {
       Value c = todo.pop_back_val();
-      if (auto andOp = c.getDefiningOp<AndOp>(); andOp && isI1(c)) {
-        todo.push_back(andOp.getLhs());
-        todo.push_back(andOp.getRhs());
+      // `and` and its select form `select a, b, false` (AssumeFold.h)
+      if (auto k = matchConnective(c.getDefiningOp()); k && k->isAnd) {
+        todo.push_back(k->lhs);
+        todo.push_back(k->rhs);
         continue;
       }
       APInt k;

@@ -7,13 +7,17 @@
 // `sea.assert %c`, every use of %c in an op the check properly dominates is
 // replaced by the constant 1; likewise for the i1 values the check fixes
 // through i1 connectives and comparisons with constants
-// (collectAssumedValues: the conjuncts of an `and`, the operand of `xor %c,
+// (collectAssumedValues: the conjuncts of an `and` or of its select form
+// `select a, b, false`, the operand of `xor %c,
 // 1`, which is 0, a user `xor %c, 1` of %c, which is 0, ...). An assert is
 // an assume for the code it dominates: execution continues past it only if
-// it held. canonicalize then folds the constant branches, selects and
-// connectives and erases the blocks no path reaches any more;
-// sea-merge-asserts drops an assert the fold made 1 and makes one it made 0
-// a direct failure.
+// it held. Edge facts (collectEdgeFacts): the true edge of `sea.cond_br %c`
+// fixes %c to 1, the false edge to 0 (same derivations); a fact holds on
+// entry of a block when it holds on every executable edge into it, and
+// then in every op the block dominates. canonicalize then folds the constant
+// branches, selects and connectives and erases the blocks no path reaches any
+// more; sea-merge-asserts drops an assert the fold made 1 and makes one it made
+// 0 a direct failure.
 //
 // Exact. Let the check A fix v to b and dominate the user U. Every
 // execution that reaches U passed A with its condition 1 (an assume blocks
@@ -22,25 +26,29 @@
 // b = 1, ...), and SSA values do not change. The program after the fold
 // has the same executions with the same values up to their end, and fails
 // the same asserts on them; only paths that already end at A lose branches
-// they could not take. No premise and no entry of the assumption ledger.
+// they could not take. An edge fact is a check on the edge: an execution in
+// a block B dominates entered B last on one of its edges, where the fact
+// held, and the value was not redefined since. No premise and no entry of
+// the assumption ledger.
 //
 // Contract.
 //   Accepts: any sea.program (single-region CFG), any number of asserts
 //     (it runs before sea-merge-asserts in the lowering).
 //   Produces: every use of a fixed value whose owner a check that fixes it
-//     properly dominates (in a block reachable from the entry) reads a
+//     properly dominates, or a block whose edges fix it dominates (in a
+//     block reachable from the entry), reads a
 //     sea.const of the fixed value (unknown location, at the start of the
 //     entry block). Nothing is erased; branches and asserts stay.
-//     Checked, on the facts collected again after the rewrite: no such
-//     use left.
+//     Checked, on the facts (checks and edges) collected again after the
+//     rewrite: no such use left.
 //   Reports: the counters (kAssumeFoldStatsAttr on the program, only when
 //     a use was folded; the lower.assume-fold log): uses (operands
-//     replaced) and of them by-assume / by-assert (the check whose fact
-//     folded it), values (distinct values with a replaced use), branches /
-//     selects (cond_br / select ops whose condition was replaced),
-//     asserts-held / asserts-failed (asserts whose condition became 1 / 0),
-//     blocks (blocks reachable before and no more once each cond_br with a
-//     constant condition takes its one edge).
+//     replaced) and of them by-assume / by-assert / by-edge (the fact that
+//     folded it; checks are applied first), values (distinct values with a
+//     replaced use), branches / selects (cond_br / select ops whose condition
+//     was replaced), asserts-held / asserts-failed (asserts whose condition
+//     became 1 / 0), blocks (blocks reachable before and no more once each
+//     cond_br with a constant condition takes its one edge).
 //
 //===----------------------------------------------------------------------===//
 
@@ -52,10 +60,12 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/IR/RegionGraphTraits.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
 using namespace mlir;
@@ -115,6 +125,66 @@ std::optional<std::pair<Value, bool>> negationOperand(Operation *op) {
 
 } // namespace
 
+std::optional<Connective> matchConnective(Operation *op) {
+  if (!op || op->getNumResults() != 1 || !isI1(op->getResult(0)))
+    return std::nullopt;
+  if (isa<AndOp, OrOp>(op))
+    return Connective{isa<AndOp>(op), op->getOperand(0), op->getOperand(1)};
+  auto sel = dyn_cast<SelectOp>(op);
+  if (!sel)
+    return std::nullopt;
+  std::optional<bool> t = constI1(sel.getTrueValue());
+  std::optional<bool> f = constI1(sel.getFalseValue());
+  if (t && f)
+    return std::nullopt;
+  if (f && !*f)
+    return Connective{true, sel.getCondition(), sel.getTrueValue()};
+  if (t && *t)
+    return Connective{false, sel.getCondition(), sel.getFalseValue()};
+  return std::nullopt;
+}
+
+namespace {
+/// Adds to `fixed` the values that `cond` = `truth` fixes (with cond):
+/// backward through `and` / `or` / negations, forward to the i1 users the
+/// value decides. The first truth of a value is kept (conflicting facts make
+/// every point they hold at unreachable, where either is exact).
+void deriveFixed(Value cond, bool truth, llvm::MapVector<Value, bool> &fixed) {
+  SmallVector<std::pair<Value, bool>> todo{{cond, truth}};
+  while (!todo.empty()) {
+    auto [v, b] = todo.pop_back_val();
+    if (constI1(v) || !fixed.insert({v, b}).second)
+      continue;
+    // backward: what v = b says about v's operands
+    if (Operation *def = v.getDefiningOp()) {
+      if (auto k = matchConnective(def)) {
+        // `and` true / `or` false fixes both operands to the same truth
+        if (k->isAnd == b) {
+          todo.push_back({k->lhs, b});
+          todo.push_back({k->rhs, b});
+        }
+      } else if (auto n = negationOperand(def)) {
+        // x op k = b; op(x) = (x != k) for xor / ne, (x == k) for eq: x
+        // is the one value with decidedBy(def, k, x) = b
+        bool x = *decidedBy(def, n->second, true) == b;
+        todo.push_back({n->first, x});
+      }
+    }
+    // forward: the i1 users v decides
+    for (Operation *user : v.getUsers()) {
+      if (user->getNumResults() != 1 || !isI1(user->getResult(0)))
+        continue;
+      if (auto k = matchConnective(user)) {
+        // `and` with a false operand is false, `or` with a true one true
+        if (k->isAnd != b && (k->lhs == v || k->rhs == v))
+          todo.push_back({user->getResult(0), b});
+      } else if (auto n = negationOperand(user); n && n->first == v)
+        todo.push_back({user->getResult(0), *decidedBy(user, n->second, b)});
+    }
+  }
+}
+} // namespace
+
 void collectAssumedValues(ProgramOp program, SmallVectorImpl<AssumedValue> &out,
                           bool withAsserts) {
   program.walk([&](Operation *a) {
@@ -125,44 +195,92 @@ void collectAssumedValues(ProgramOp program, SmallVectorImpl<AssumedValue> &out,
       cond = at.getCond();
     else
       return;
-    // per source: value -> fixed truth (the first one; conflicting facts
-    // make every point A dominates unreachable, where either is exact)
+    // per source: value -> fixed truth
     llvm::MapVector<Value, bool> fixed;
-    SmallVector<std::pair<Value, bool>> todo{{cond, true}};
-    while (!todo.empty()) {
-      auto [v, b] = todo.pop_back_val();
-      if (constI1(v) || !fixed.insert({v, b}).second)
-        continue;
-      // backward: what v = b says about v's operands
-      if (Operation *def = v.getDefiningOp()) {
-        if (isa<AndOp>(def) && b) {
-          todo.push_back({def->getOperand(0), true});
-          todo.push_back({def->getOperand(1), true});
-        } else if (isa<OrOp>(def) && !b) {
-          todo.push_back({def->getOperand(0), false});
-          todo.push_back({def->getOperand(1), false});
-        } else if (auto n = negationOperand(def)) {
-          // x op k = b; op(x) = (x != k) for xor / ne, (x == k) for eq: x
-          // is the one value with decidedBy(def, k, x) = b
-          bool x = *decidedBy(def, n->second, true) == b;
-          todo.push_back({n->first, x});
-        }
-      }
-      // forward: the i1 users v decides
-      for (Operation *user : v.getUsers()) {
-        if (user->getNumResults() != 1 || !isI1(user->getResult(0)))
-          continue;
-        if (isa<AndOp>(user) && !b)
-          todo.push_back({user->getResult(0), false});
-        else if (isa<OrOp>(user) && b)
-          todo.push_back({user->getResult(0), true});
-        else if (auto n = negationOperand(user); n && n->first == v)
-          todo.push_back({user->getResult(0), *decidedBy(user, n->second, b)});
-      }
-    }
+    deriveFixed(cond, true, fixed);
     for (auto [v, b] : fixed)
       out.push_back({v, b, a});
   });
+}
+
+void collectEdgeFacts(ProgramOp program, DominanceInfo &dom,
+                      ArrayRef<AssumedValue> checks,
+                      SmallVectorImpl<AssumedValue> &out) {
+  Region &r = program->getRegion(0);
+  if (r.empty() || r.hasOneBlock())
+    return;
+  DenseMap<Value, SmallVector<const AssumedValue *, 1>> checksOf;
+  for (const AssumedValue &f : checks)
+    if (!f.block)
+      checksOf[f.value].push_back(&f);
+  // what an edge fixes: a cond_br's condition on its true / false edge
+  // (none when both edges enter the same block, or for any other edge)
+  DenseMap<std::pair<Operation *, unsigned>, llvm::MapVector<Value, bool>>
+      edgeMemo;
+  auto edgeFixes =
+      [&](BlockOperand &e) -> const llvm::MapVector<Value, bool> & {
+    Operation *t = e.getOwner();
+    auto key = std::make_pair(t, e.getOperandNumber());
+    auto [it, fresh] = edgeMemo.try_emplace(key);
+    if (fresh)
+      if (auto br = dyn_cast<CondBrOp>(t);
+          br && br.getTrueDest() != br.getFalseDest())
+        deriveFixed(br.getCondition(), e.get() == br.getTrueDest(), it->second);
+    return it->second;
+  };
+  // block -> the values fixed on entry (filled in reverse post-order: a
+  // block's forward predecessors first; a back edge's source not yet
+  // filled has fewer facts, which only drops candidates)
+  DenseMap<Block *, llvm::MapVector<Value, bool>> entryFacts;
+  // v = b at the end of `p`: a check that dominates its terminator, or the
+  // entry facts of a block that dominates p
+  auto holdsAtEnd = [&](Block *p, Value v, bool b) {
+    if (auto it = checksOf.find(v); it != checksOf.end())
+      for (const AssumedValue *f : it->second)
+        if (f->truth == b &&
+            dom.properlyDominates(f->source, p->getTerminator()))
+          return true;
+    for (DominanceInfoNode *n = dom.getNode(p); n; n = n->getIDom()) {
+      auto it = entryFacts.find(n->getBlock());
+      if (it == entryFacts.end())
+        continue;
+      auto f = it->second.find(v);
+      if (f != it->second.end() && f->second == b)
+        return true;
+    }
+    return false;
+  };
+  for (Block *s : llvm::ReversePostOrderTraversal<Block *>(&r.front())) {
+    // the edges into s that can execute
+    SmallVector<BlockOperand *, 4> edges;
+    for (BlockOperand &e : s->getUses())
+      if (dom.isReachableFromEntry(e.getOwner()->getBlock()))
+        edges.push_back(&e);
+    if (edges.empty())
+      continue;
+    // candidates: what some edge fixes (the first edge that does is the
+    // source of the fact); kept if it holds on every edge into s
+    llvm::MapVector<std::pair<Value, unsigned>, Operation *> candidates;
+    for (BlockOperand *e : edges)
+      for (auto [v, b] : edgeFixes(*e))
+        candidates.insert({{v, unsigned(b)}, e->getOwner()});
+    if (candidates.empty())
+      continue;
+    llvm::MapVector<Value, bool> &fixed = entryFacts[s];
+    for (auto [vb, source] : candidates) {
+      Value v = vb.first;
+      bool b = vb.second;
+      bool all = llvm::all_of(edges, [&](BlockOperand *e) {
+        const auto &on = edgeFixes(*e);
+        auto f = on.find(v);
+        if (f != on.end())
+          return f->second == b;
+        return edges.size() > 1 && holdsAtEnd(e->getOwner()->getBlock(), v, b);
+      });
+      if (all && fixed.insert({v, b}).second)
+        out.push_back({v, b, source, s});
+    }
+  }
 }
 
 namespace {
@@ -244,8 +362,8 @@ public:
   StringRef getArgument() const final { return "sea-assume-fold"; }
   StringRef getDescription() const final {
     return "Replace the uses of an i1 value that a dominating sea.assume or "
-           "sea.assert fixes (the condition, its conjuncts, negations) by "
-           "the constant";
+           "sea.assert, or the edges into a dominating block (cond_br), fix "
+           "(the condition, its conjuncts, negations) by the constant";
   }
 
   void runOnOperation() override;
@@ -257,11 +375,18 @@ void AssumeFoldPass::runOnOperation() {
   Region &region = program->getRegion(0);
   if (region.empty())
     return markAllAnalysesPreserved();
+  DominanceInfo &dom = getAnalysis<DominanceInfo>();
+  // the checks' facts first, then the edges' (a use both fix counts as by
+  // its check)
   SmallVector<AssumedValue> facts;
   collectAssumedValues(program, facts);
+  {
+    SmallVector<AssumedValue> edges;
+    collectEdgeFacts(program, dom, facts, edges);
+    facts.append(edges);
+  }
   if (facts.empty())
     return markAllAnalysesPreserved();
-  DominanceInfo &dom = getAnalysis<DominanceInfo>();
   const llvm::DenseSet<Block *> liveBefore = liveBlocks(program);
 
   // the constants, made on first use at the start of the entry block; no
@@ -278,13 +403,15 @@ void AssumeFoldPass::runOnOperation() {
     return consts[b];
   };
 
-  uint64_t uses = 0, byAssume = 0, byAssert = 0;
+  uint64_t uses = 0, byAssume = 0, byAssert = 0, byEdge = 0;
   llvm::SmallPtrSet<Operation *, 16> branchOps, selectOps, assertOps[2];
   llvm::DenseSet<Value> values;
   auto folds = [](DominanceInfo &d, const AssumedValue &f, OpOperand &u) {
     Operation *user = u.getOwner();
-    return d.isReachableFromEntry(user->getBlock()) &&
-           d.properlyDominates(f.source, user);
+    if (!d.isReachableFromEntry(user->getBlock()))
+      return false;
+    return f.block ? d.dominates(f.block, user->getBlock())
+                   : d.properlyDominates(f.source, user);
   };
   for (const AssumedValue &f : facts) {
     for (OpOperand &u : llvm::make_early_inc_range(f.value.getUses())) {
@@ -299,13 +426,14 @@ void AssumeFoldPass::runOnOperation() {
         assertOps[f.truth].insert(user);
       u.set(constant(f.truth));
       ++uses;
-      ++(isa<AssertOp>(f.source) ? byAssert : byAssume);
+      ++(f.block ? byEdge : isa<AssertOp>(f.source) ? byAssert : byAssume);
       values.insert(f.value);
       SEA_LOG(logAssumeFold, log::Object)
           .msg("fold")
           .kv("op", user->getName().getStringRef())
           .kv("value", f.truth ? 1 : 0)
-          .kv("by", f.source->getName().getStringRef())
+          .kv("by",
+              f.block ? StringRef("edge") : f.source->getName().getStringRef())
           .at(user->getLoc());
     }
   }
@@ -315,6 +443,11 @@ void AssumeFoldPass::runOnOperation() {
     SmallVector<AssumedValue> again;
     collectAssumedValues(program, again);
     DominanceInfo fresh(program);
+    {
+      SmallVector<AssumedValue> edges;
+      collectEdgeFacts(program, fresh, again, edges);
+      again.append(edges);
+    }
     for (const AssumedValue &f : again)
       for (OpOperand &u : f.value.getUses())
         if (folds(fresh, f, u)) {
@@ -341,6 +474,7 @@ void AssumeFoldPass::runOnOperation() {
   stat("uses", uses);
   stat("by-assume", byAssume);
   stat("by-assert", byAssert);
+  stat("by-edge", byEdge);
   stat("values", values.size());
   stat("branches", branchOps.size());
   stat("selects", selectOps.size());
@@ -352,6 +486,7 @@ void AssumeFoldPass::runOnOperation() {
       .kv("uses", uses)
       .kv("by-assume", byAssume)
       .kv("by-assert", byAssert)
+      .kv("by-edge", byEdge)
       .kv("values", uint64_t(values.size()))
       .kv("branches", uint64_t(branchOps.size()))
       .kv("selects", uint64_t(selectOps.size()))
