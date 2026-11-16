@@ -157,3 +157,9 @@ An operator, a sort or a width that the format has no node for, a program
 that is not straight-line, an unknown lane, and a static out-of-object access in a
 premise lane are each an error (`[validation.export]`, status 1, nothing on
 stdout). Nothing is skipped or approximated. Tests: `test/SeamExport/`.
+A program the VC cannot encode is an error of the VC's kind, with the
+location, status 1 and nothing on stdout, for example: an abstract (unplaced) program
+(`[vc.abstract-program]`, as `sea-vc` refuses it), an op `SeaOpSem` does
+not encode (`[vc.unsupported-op]`), an intrinsic it leaves to
+`sea-expand-intrinsics` (`[vc.intrinsic]`), a multi-byte access in a lane
+without wide accesses (`[vc.wide-access]`).

@@ -998,8 +998,13 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
               return memStore(in(0), in(1), v, unitsOf(op), ctx);
             })
             .Default([](Operation *) { return Expr(); });
-    if (!val)
-      return op.emitError("sea-vc: unsupported op");
+    if (!val) {
+      diag::error("vc.unsupported-op",
+                  op.getName().getStringRef() +
+                      " is an op the VC does not encode",
+                  op.getLoc());
+      return failure();
+    }
     // Ops are total, so definitions need no path condition.
     ctx.write(mkSymbReg(op.getResult(0)), val);
   }

@@ -16,6 +16,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 #include "sea/Dialect/Sea/SeaDialect.h"
+#include "sea/Dialect/Sea/SeaOps.h"
 #include "sea/Expr/RewriteTrail.hh"
 #include "sea/Expr/SeaMRules.hh"
 #include "sea/Expr/TypeChecker.hh"
@@ -209,7 +210,9 @@ premise or terms cannot be expressed has `unexpressible: <why>` instead
 
 STATUS CODES: 0 exported; 1 error (bad input, unsupported construct:
 an operator, sort or width the format has no node for -> `Error: ...
-[validation.export]` on stderr, nothing on stdout); 3 exported, but some
+[validation.export]` on stderr, nothing on stdout; a program the VC
+cannot encode -> its vc.* error, e.g. vc.abstract-program (not placed),
+vc.unsupported-op, vc.intrinsic, vc.wide-access); 3 exported, but some
 firings are unexpressible (their records say why; a witness check must not
 count them).
 )";
@@ -467,6 +470,14 @@ int main(int argc, char **argv) {
     fail("single block without arguments required");
   if (!isa<sea::HaltOp>(p.getBody().front().getTerminator()))
     fail("straight-line program must end in sea.halt");
+  // as sea-vc refuses it: OpSem encodes placed programs only
+  if (sea::isAbstract(p)) {
+    sea::diag::error("vc.abstract-program",
+                     "the program uses abstract pointers; place it first "
+                     "(sea-opt --sea-place-static)",
+                     p.getLoc());
+    return 1;
+  }
   Block &body = p.getBody().front();
 
   ExprFactory ef;
