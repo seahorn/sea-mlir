@@ -1030,12 +1030,14 @@ static cl::opt<bool> reachKeepSites(
     cl::init(false));
 static cl::opt<bool> reachFoldFacts(
     "reach-fold-facts",
-    cl::desc("With --reach and --lower: run sea-assume-fold (off under --reach "
-             "by default: everything stays visible). Exact for the safety "
-             "query only: it can make checks constant (canonicalize erases "
-             "them with their reach sites) and blocks dead (erased with "
-             "their checks), so targets disappear; an opt-in for "
-             "performance (docs/design/AssumeFold.md)"),
+    cl::desc("With --reach and --lower: run sea-assume-fold and "
+             "sea-prune-edges (off under --reach by default: everything stays "
+             "visible). Exact for the safety query only: they can make "
+             "checks constant (canonicalize erases them with their reach "
+             "sites) and blocks dead (erased with their checks), and remove "
+             "prefixes of executions that block later, so targets disappear "
+             "and reach sites change; an opt-in for performance "
+             "(docs/design/AssumeFold.md, docs/design/PruneEdges.md)"),
     cl::init(false));
 static cl::opt<bool> reachFailures(
     "reach-failures",
@@ -1965,11 +1967,15 @@ TYPICAL:
                                  #   of=<op>), a target, instead of
                                  #   erasing it
   sea-vc p.mlir --lower --reach --reach-fold-facts  # also run
-                                 #   sea-assume-fold (off under --reach:
-                                 #   it erases the checks it makes
-                                 #   constant and the blocks it makes
-                                 #   dead, so their targets disappear;
-                                 #   exact for the safety query only)
+                                 #   sea-assume-fold and sea-prune-edges
+                                 #   (off under --reach: they erase the
+                                 #   checks they make constant and the
+                                 #   blocks they make dead, and remove
+                                 #   prefixes that block later, so targets
+                                 #   disappear and reach sites change;
+                                 #   exact for the safety query only);
+                                 #   sea-opt --sea-vc-lower='reach=true
+                                 #   reach-fold-facts=true' is its lowering
   sea-vc p.mlir --lower --widen-memory=8 --widen-memory-report  # a remark
                                  #   per memory: widened, or kept as bytes
                                  #   and the first reason (remark: <loc>:
@@ -2428,7 +2434,8 @@ OUTPUT (stdout, `key: value` lines):
       cond-br=<n> unreachable=<n> blocks=<n> rounds=<n> fold-uses=<n>
                                   (--lower, when it pruned an edge:
                                   sea-prune-edges, on by default, exact for
-                                  the safety query, not under --reach;
+                                  the safety query, not under --reach
+                                  unless --reach-fold-facts;
                                   edges on which no run reaches an assert
                                   or a halt removed: by-args: constant
                                   block arguments make the target's leading
@@ -3908,17 +3915,15 @@ int main(int argc, char **argv) {
                   "prune-edges");
     lowerDisableMask |= bit;
   }
-  // --reach decides whether a prefix of an execution reaches a site, also
-  // one that blocks later; sea-prune-edges removes such prefixes (exact for
-  // the safety query only)
-  if (reach)
-    lowerDisableMask |= sea::LowerDisablePruneEdges;
   if (!lowerDisable.empty() && !lower)
     return fail("--lower-disable needs --lower");
   // --reach: everything visible by default (vacuity-safe); the fold of
-  // facts can erase checks and blocks, so it runs only on request
+  // facts can erase checks and blocks, and sea-prune-edges removes the
+  // prefixes of executions that block later (exact for the safety query
+  // only), so both run only on request
   if (reach && !reachFoldFacts)
-    lowerDisableMask |= sea::LowerDisableAssumeFold;
+    lowerDisableMask |=
+        sea::LowerDisableAssumeFold | sea::LowerDisablePruneEdges;
   if (rangeFoldOpt != sea::RangeFoldMode::Off && !lower)
     return fail("--range-fold needs --lower");
   if (expandMemMoveOpt && !lower)

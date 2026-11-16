@@ -87,16 +87,18 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   0 on the false one), fixes, its conjuncts and negations -> constants:
   exact, on by default in the lowering right before sea-merge-asserts,
   `sea-vc --lower-disable=assume-fold`; not under `--reach` unless
-  `--reach-fold-facts`; `select c, x, false` / `select c, true, x` count
-  as and / or here and in sea-range-fold; a fact `x == K` on an integer x
+  `--reach-fold-facts`, which also runs sea-prune-edges; `select c, x,
+  false` / `select c, true, x` count as and / or here and in sea-range-fold; a fact `x == K` on an integer x
   replaces x's uses by K, never on addresses / pointers;
   docs/design/AssumeFold.md),
   `sea-prune-edges` (edges on which no execution reaches an assert or a
   halt: constant block arguments that make the target's leading assume 0,
   targets whose paths all block; a cond_br with one -> assume + br, rounds
   with assume-fold / canonicalize / cse to a fixpoint: exact for the safety
-  query, on by default after the final canonicalize, off under `--reach`,
-  `sea-vc --lower-disable=prune-edges`; docs/design/PruneEdges.md),
+  query, on by default after the final canonicalize, off under `--reach`
+  unless `--reach-fold-facts`, `sea-vc --lower-disable=prune-edges`,
+  `sea-vc-lower{reach=true}` / `{prune-edges=false}`;
+  docs/design/PruneEdges.md),
   `sea-widen-memory` (byte
   memory -> aligned k-byte words when every access provably fits; in the
   lowering with `sea-vc --widen-memory=k`), `sea-apply-tracking`

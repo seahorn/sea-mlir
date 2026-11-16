@@ -59,6 +59,8 @@ sea.program @br {
 // @held: a merged assert's branch (location `sea.assert`) whose landing
 // edge is dead: the br is no failure site, without the marker and the id.
 // CHECK-LABEL: sea.program @held
+// CHECK-NOT: sea.xor
+// CHECK: sea.assume %0
 // CHECK: sea.br ^{{bb[0-9]+}} loc(#[[UNK:loc[0-9]*]])
 // CHECK-NOT: sea.assert_id
 // CHECK-LABEL: sea.program @failed

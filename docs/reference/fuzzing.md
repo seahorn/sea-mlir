@@ -317,7 +317,10 @@ fuzz.uncovered: p.mlir:19:3 at=p.mlir:19:3
 The ids are those of `--reach-targets=blocks`. Every id of the file must
 be a block of the program: the output of another program or lowering is
 an error. Run `sea-vc` on the file you fuzz (a program in BMC form, or
-the lowered one: `sea-opt --sea-vc-lower`). `unknown`: blocks sea-vc did
+the lowered one: `sea-opt --sea-vc-lower='reach=true'`, the lowering of
+`sea-vc --lower --reach`; the plain `--sea-vc-lower` is the safety
+lowering, which prunes edges no complete execution takes, so its blocks
+differ). `unknown`: blocks sea-vc did
 not decide, of which `unknown-covered` the trials entered; `unlisted`:
 blocks the file does not list. A block a trial entered that the file
 calls unreachable is a bug of one of the two tools
@@ -695,7 +698,8 @@ reach targets the runs reached: the targets of `sea-vc --reach`, with the
 same ids ([Reach](output-formats.md#reach)). A target is reached when a run
 is about to execute its op (a block: its first op), every earlier assume
 having held; what the run does after that does not matter. Run on the
-lowered program (`sea-opt --sea-vc-lower` with `sea-vc`'s options) to get
+lowered program (`sea-opt --sea-vc-lower='reach=true'` with `sea-vc`'s
+options; with `--reach-fold-facts`, also `reach-fold-facts=true`) to get
 the targets of `sea-vc --lower --reach`.
 
 ```text

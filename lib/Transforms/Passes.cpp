@@ -248,15 +248,22 @@ struct VCLowerOptions : public PassPipelineOptions<VCLowerOptions> {
                                   "opt=false keeps every op (with fold=false: "
                                   "every op's location)"),
                    llvm::cl::init(true)};
+  Option<bool> pruneEdges{
+      *this, "prune-edges",
+      llvm::cl::desc("sea-prune-edges (sea-vc --lower-disable=prune-edges: "
+                     "false)"),
+      llvm::cl::init(true)};
   Option<bool> reach{*this, "reach",
                      llvm::cl::desc("The lowering of sea-vc --reach: no "
-                                    "sea-assume-fold (it can erase checks "
-                                    "and blocks) unless reach-fold-facts"),
+                                    "sea-assume-fold and sea-prune-edges "
+                                    "(they can erase checks and blocks) "
+                                    "unless reach-fold-facts"),
                      llvm::cl::init(false)};
   Option<bool> reachFoldFacts{
       *this, "reach-fold-facts",
-      llvm::cl::desc("With reach=true: run sea-assume-fold anyway (sea-vc "
-                     "--reach-fold-facts)"),
+      llvm::cl::desc("With reach=true: run sea-assume-fold and "
+                     "sea-prune-edges anyway (sea-vc --reach-fold-facts; the "
+                     "reach sites change)"),
       llvm::cl::init(false)};
 };
 } // namespace
@@ -299,8 +306,10 @@ void registerPasses() {
         if (o.reachFoldFacts && !o.reach)
           llvm::report_fatal_error(
               "sea-vc-lower: reach-fold-facts needs reach=true");
-        unsigned disable =
-            o.reach && !o.reachFoldFacts ? LowerDisableAssumeFold : 0;
+        const bool facts = !o.reach || o.reachFoldFacts;
+        unsigned disable = facts ? 0u : unsigned(LowerDisableAssumeFold);
+        if (!(o.pruneEdges && facts))
+          disable |= LowerDisablePruneEdges;
         buildVCLoweringPipeline(pm, false, false, o.fold, 0, true, false, false,
                                 false, 0, o.opt, true, disable);
       });

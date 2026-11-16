@@ -282,7 +282,8 @@ anyway, an opt-in for performance whose targets are a subset of the
 default's (an edge-dead block's checks go too: `if (c) { if (c) ... else
 { assume q } }` lists the `assume q` unreachable by default, and not at all
 with the flag). The pipeline `sea-vc-lower{reach=true}` is the reach lowering
-(no fold), `reach-fold-facts=true` adds it.
+(no fold), `reach-fold-facts=true` adds it. The same flag runs
+`sea-prune-edges` ([Edge pruning](PruneEdges.md)), the other fact fold.
 `test/VC/reach/reach-fold-facts.test`.
 
 ## Open

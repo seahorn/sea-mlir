@@ -71,6 +71,17 @@ TYPICAL:
                                           #   unlocated error marker
                                           #   (report=false: no warning)
   sea-opt p.mlir --sea-vc-lower           # what sea-vc --lower runs (placed input)
+  sea-opt p.mlir --sea-vc-lower='reach=true'
+                                          # what sea-vc --lower --reach runs:
+                                          #   no sea-assume-fold, no
+                                          #   sea-prune-edges (exact for the
+                                          #   safety query only; with
+                                          #   reach-fold-facts=true: as
+                                          #   --reach-fold-facts); fuzz this
+                                          #   with sea-vc --reach=blocks ids
+  sea-opt p.mlir --sea-vc-lower='prune-edges=false'
+                                          # without sea-prune-edges
+                                          #   (--lower-disable=prune-edges)
   sea-opt p.mlir --pass-pipeline='builtin.module(sea-vc-lower{fold=false})'
                                           # the same without sccp (keeps every
                                           #   op's location)

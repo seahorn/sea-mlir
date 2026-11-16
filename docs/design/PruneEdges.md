@@ -1,8 +1,9 @@
 # Edge pruning
 
 `lib/Transforms/PruneEdges.cpp` (`sea-prune-edges`); on by default in
-`sea-vc --lower`, off with `--lower-disable=prune-edges`, never under
-`--reach`. Tests: `test/Transforms/prune-edges.mlir`,
+`sea-vc --lower`, off with `--lower-disable=prune-edges`, off under
+`--reach` unless `--reach-fold-facts` (sea-opt: `sea-vc-lower{reach=true}`,
+`reach-fold-facts=true`, `prune-edges=false`). Tests: `test/Transforms/prune-edges.mlir`,
 `test/VC/prune-edges.mlir`.
 
 Status: implemented, on by default (exact for the safety query).
@@ -89,7 +90,17 @@ Not for reachability (`sea-vc --reach`): a reach query asks whether a
 prefix of an execution reaches a site, also one that blocks afterwards,
 and the sites on a dead edge (the falsified assume itself, the blocks
 before it) are reached by such prefixes. sea-vc leaves the pass out under
-`--reach`, so reach targets and verdicts do not depend on it.
+`--reach` by default, so reach targets and verdicts do not depend on it
+(for vacuity checks the safe choice: every site stays visible).
+`--reach-fold-facts` runs it under `--reach` anyway, for performance
+work: then sites behind dead edges are no targets any more and others may
+answer differently; it is exact only for the safety query.
+`sea-opt --sea-vc-lower` is the safety lowering (with the pass);
+`--sea-vc-lower='reach=true'` is the lowering of `sea-vc --lower --reach`
+(without it and without `sea-assume-fold`; `reach-fold-facts=true` adds both back), the program whose
+blocks `sea-vc --lower --reach=blocks` lists for `sea-run
+--fuzz-reachable` and `--reach-targets`; `prune-edges=false` leaves it out
+of the safety lowering (`--lower-disable=prune-edges`).
 
 The interpreter on the original program still executes the blocked
 prefixes (`assume-blocked` later than the lowered program's run); a
@@ -108,6 +119,11 @@ does (`--replay-original` match=yes, `test/VC/prune-edges.mlir`
 @cont_dead). The landing edge is never dead (the landing block reaches
 the exit's assert); if one were, the br would lose the marker and the id,
 as an assert that held (SimplifyCondBr's rule, SeaOps.cpp).
+
+The failing condition of such an assert (`replay: assert-at`, its
+definition) is no longer the condition of a cond_br taken on its false
+side: the interpreter takes it from the `sea.assume (xor P, 1)` right
+before the marked br (that shape only, Interpreter.cpp `prunedAssertCond`).
 
 ## Where it lives, and why there
 

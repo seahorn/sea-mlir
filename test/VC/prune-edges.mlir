@@ -87,6 +87,10 @@ sea.program @keep {
 // the original program fails it.
 // CONT: vc.prune-edges: edges=1
 // CONT: result: sat
+// The failing condition is still found (assert-at: the icmp, not the
+// located branch between it and the assert; the interpreter reads it from
+// the `assume !p` before the marked br).
+// CONT: replay: assert-at: x.c:2:3
 // CONT: replay: assert-op: x.c:3:3
 // CONT: replay.original: status=assert-failed at=x.c:3:3 match=yes
 // CONT-LOW-NOT: sea.cond_br {{.*}}"x.c":3:3
@@ -96,7 +100,9 @@ sea.program @cont_dead {
   %c10 = sea.const 10 : i8
   %x = sea.nondet "x" [0] : i8
   %y = sea.nondet "y" [1] : i8
-  %p = sea.icmp ult, %x, %c10 : i8
+  %p = sea.icmp ult, %x, %c10 : i8 loc("x.c":2:3)
+  sea.br ^chk loc("x.c":2:9)
+^chk:
   sea.assert %p loc("x.c":3:3)
   sea.br ^exit(%f : i1) loc("x.c":4:3)
 ^exit(%ok : i1):

@@ -60,7 +60,7 @@ The main lines of `sea-vc`:
 | `vc.expand-memmove: k=<K> expanded=<n> bytes=<n> kept-symbolic=<n> kept-over-k=<n> kept-word-layout=<n> kept-abstract=<n> kept-tracked=<n> kept-companion-mirror=<n> kept-ptr-companion=<n>` | `--expand-memmove`: memmoves expanded into copies (and their length in index units, `bytes`) and kept, by reason ([Short memmoves as copies](../design/SeaM-memops.md#short-memmoves-as-copies-expand-memmovek)) |
 | `vc.range-fold: mode=<on\|check> <key>=<n> ...` | `--range-fold`: keys in alphabetical order: `bool`, `checks`, `depth-cap`, `empty`, `facts`, `facts-skipped`, `facts-used`, `icmp`, `no-facts`, `queries`, `select`, `wrap-flags` ([Range folding](../design/RangeFold.md#counters)) |
 | `vc.assume-fold: uses=<n> by-assume=<n> by-assert=<n> by-edge=<n> values=<n> branches=<n> selects=<n> asserts-held=<n> asserts-failed=<n> blocks=<n> int-uses=<n> int-values=<n> rounds=<n>` | `--lower` (on by default; only when it folded a use): `sea-assume-fold`, uses of i1 values that a dominating assume or assert, or every edge into a dominating block (`cond_br %c`: 1 on the true edge, 0 on the false one), fixes replaced by constants (`by-assume` / `by-assert` / `by-edge`: by which kind of fact); `asserts-held` / `asserts-failed`: asserts whose condition became 1 (dropped) / 0 (a direct failure); `blocks`: blocks no path reaches after it; `int-uses` / `int-values`: uses of an integer `x` replaced by `K` under a fact `x == K` (same sources and regions; integers only), distinct such `x`; `rounds`: rounds that replaced a use (a substitution can make a new fact: `icmp eq y, x` with `x` replaced is `y == K`) ([Assume folding](../design/AssumeFold.md#counters)) |
-| `vc.prune-edges: edges=<n> by-args=<n> dead-target=<n> falsified=<n> cond-br=<n> unreachable=<n> blocks=<n> rounds=<n> fold-uses=<n>` | `--lower` (on by default, not under `--reach`; only when it pruned an edge): `sea-prune-edges`, edges on which no execution reaches an assert or a halt removed (`by-args`: constant block arguments make the target's leading assume 0; `dead-target`: every path from the target blocks); `falsified`: edges whose arguments falsify an assume, counted where they are (the removed edge may be one before them); `cond-br`: branches made an assume and a br; `unreachable`: branches replaced by `sea.unreachable`; `blocks`: blocks cut off; `rounds`: rounds that pruned; `fold-uses`: uses folded by the assume-fold rewrite between rounds ([Edge pruning](../design/PruneEdges.md#counters)) |
+| `vc.prune-edges: edges=<n> by-args=<n> dead-target=<n> falsified=<n> cond-br=<n> unreachable=<n> blocks=<n> rounds=<n> fold-uses=<n>` | `--lower` (on by default; under `--reach` only with `--reach-fold-facts`; only when it pruned an edge): `sea-prune-edges`, edges on which no execution reaches an assert or a halt removed (`by-args`: constant block arguments make the target's leading assume 0; `dead-target`: every path from the target blocks); `falsified`: edges whose arguments falsify an assume, counted where they are (the removed edge may be one before them); `cond-br`: branches made an assume and a br; `unreachable`: branches replaced by `sea.unreachable`; `blocks`: blocks cut off; `rounds`: rounds that pruned; `fold-uses`: uses folded by the assume-fold rewrite between rounds ([Edge pruning](../design/PruneEdges.md#counters)) |
 | `vc.assumed-branches: branches=<n> selects=<n> values=<n>` | cond_br / select ops of the program the VC encodes whose condition is a value an assume fixes (any position; only when there is one): with `sea-assume-fold` on, those no check that fixes it dominates; each value is a `split.assumed-candidate` ([Assume folding](../design/AssumeFold.md#what-it-leaves-vcassumed-branches-splitassumed-candidate)) |
 | `vc.box-all: dead=<n> empty=<n> expand-max=<K> expanded=<n> guarded=<n> lowered=<n> nondets=<n>` | `--lower` of a program with `sea.box.all`: box ops erased unused, constant empty boxes (true), `--box-all-expand`, boxes expanded at every index, boxes entered behind a non-empty test, ops lowered to one index (guarded ones included), index nondets made ([sea.box.all](../design/BoxAll.md)) |
 | `vc.fold: assume-false=<n> assert-false=<n>` | the lowering folded an assume or assert of constant false (warnings `fold.assume-false`, `fold.assert-false`; `sea-merge-asserts` also warns `fold.assert-false` for an assert of constant 0, except the only assert right before the halt without a source location: SeaHorn's error marker `assert false; halt`; canonicalize warns it for a merged assert's branch whose condition a later lowering made 0; an assert that becomes constant only in canonicalize's own folders, such as `icmp ne x, x`, is not reported, though the verdict still shows it); only when one did. The counts are of every program in the file the lowering ran on, not only the selected one |
@@ -122,10 +122,11 @@ a safety verdict.
   reached iff an execution reaches the assert with its condition false
   (`sea-split-assert-failures` before the targets are listed; for a merged
   assert, the landing block of `sea-merge-asserts`).
-  The reach lowering leaves `sea-assume-fold` out (it would erase the
-  checks it makes constant and the blocks it makes dead, and their
-  targets); `--reach-fold-facts` runs it, an opt-in for performance whose
-  targets are a subset ([Assume folding](../design/AssumeFold.md#under---reach)).
+  The reach lowering leaves `sea-assume-fold` and `sea-prune-edges` out
+  (they would erase the checks and blocks they make constant or dead, and
+  their targets); `--reach-fold-facts` runs both, an opt-in for performance
+  whose targets are a subset ([Assume folding](../design/AssumeFold.md#under---reach),
+  [Edge pruning](../design/PruneEdges.md)).
 - The id is the target's `file:line:col`, then the call sites it was
   inlined at, each after `@`; a position in the `.mlir` file itself (an op
   the exporter left without a source position) is written with the file's
@@ -150,7 +151,9 @@ a safety verdict.
 - `witness`: with `--reach-witness=<dir>`, the run's `nondet:` and
   `memread:` lines, which `sea-run --input-file` replays; its header says
   on which program: the lowered one (with `--lower`; `sea-opt
-  --sea-vc-lower` with the same options) or the input program.
+  --sea-vc-lower='reach=true'` with the same options: the reach lowering,
+  without `sea-assume-fold` and `sea-prune-edges` unless `--reach-fold-facts`) or the input
+  program.
 - An unreachable check site means unsatisfiable preconditions before it,
   or dead code. The `seam.premises` and `assume.*` lines are the
   assumptions every answer rests on. The reach runs (the replays and the
