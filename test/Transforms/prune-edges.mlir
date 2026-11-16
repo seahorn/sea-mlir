@@ -26,6 +26,25 @@ sea.program @chain {
   sea.halt
 }
 
+// @and_flag: the join assumes `and %flag, %x`; `false` entering makes it
+// 0 whatever %x is (the and folder's identity `0 & x = 0`), so that edge is
+// dead too.
+// CHECK-LABEL: sea.program @and_flag
+// CHECK-SAME: "by-args" = 1
+// CHECK-NOT: sea.cond_br
+sea.program @and_flag {
+  %f = sea.const 0 : i1
+  %x = sea.nondet "x" [0] : i1
+  %y = sea.nondet "y" [1] : i1
+  %c = sea.nondet "c" [2] : i1
+  sea.cond_br %c, ^j(%f : i1), ^j(%y : i1)
+^j(%flag : i1):
+  %a = sea.and %flag, %x : i1
+  sea.assume %a
+  sea.assert %y
+  sea.halt
+}
+
 // @nonconst: no constant reaches the join: nothing to prune.
 // CHECK-LABEL: sea.program @nonconst
 // CHECK-NOT: sea.prune_edges
@@ -113,9 +132,12 @@ sea.program @loop {
 
 // The default rounds (assume-fold, canonicalize, cse): in @chain the new
 // assume of !c is the only one left on %c; the join merges into the entry.
+// The assert `icmp eq %r, %x` is then `icmp eq %x, %x`, 1 (the icmp
+// folder's identity), and is erased.
 // FIX-LABEL: sea.program @chain
 // FIX-NOT: sea.cond_br
 // FIX-NOT: ^bb
+// FIX-NOT: sea.assert
 // FIX: sea.halt
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors

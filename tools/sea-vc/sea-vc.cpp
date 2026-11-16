@@ -1771,11 +1771,12 @@ INPUT FORM (checked; anything else is an error, never approximated):
   reaches sea.assert through i1 sea.and / sea.or only; any other use is an
   error box-all.use-<assume|branch|negation|select|print|value> (no
   unrolling fallback). A box of constant upper bounds (the op folders
-  reduce them to one before sccp: sea.const, flag-free arithmetic on
-  constants) with at most K indices (--box-all-expand=K <= 1024, untuned
-  default 16) is expanded instead: the body at every index, and-reduced
-  (same polarity rule). Prints vc.box-all: dead= empty= expand-max=
-  expanded= guarded= lowered= nondets=. Use it for claims whose instances
+  reduce them to one before sccp: sea.const, arithmetic on constants;
+  nsw / nuw only when they keep the promise) with at most K indices
+  (--box-all-expand=K <= 1024, untuned default 16) is expanded instead:
+  the body at every index, and-reduced (same polarity rule). Prints
+  vc.box-all: dead= empty= expand-max= expanded= guarded= lowered=
+  nondets=. Use it for claims whose instances
   are each expensive (a read of a memory through many writes: one index
   replaces them all); keep a
   claim whose instances are each matched by an assumption instance (e.g.

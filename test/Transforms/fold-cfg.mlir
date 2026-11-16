@@ -153,26 +153,28 @@ sea.program @no_merge {
 // through a tracked store.
 // CHECK-LABEL: sea.program @load_stored
 // CHECK: %[[V:.*]] = sea.nondet "v" [1] : i32
+// CHECK: %[[U:.*]] = sea.nondet "u" [5] : i32
 // CHECK-NOT: sea.load
-// CHECK: sea.icmp eq, %[[V]], %[[V]]
-// CHECK: sea.icmp eq, %[[V]], %[[V]]
-// CHECK: sea.icmp eq, %[[V]], %[[V]]
+// CHECK: sea.icmp eq, %[[V]], %[[U]]
+// CHECK: sea.icmp eq, %[[V]], %[[U]]
+// CHECK: sea.icmp eq, %[[V]], %[[U]]
 sea.program @load_stored {
   %m = sea.mem.nondet "m" [0] : !sea.mem<!sea.addr<64>, i8>
   %v = sea.nondet "v" [1] : i32
+  %u = sea.nondet "u" [5] : i32
   %k = sea.nondet "k" [2] : i64
   %a = sea.addr.from_int %k : i64 to !sea.addr<64>
   %m1 = sea.store %m[%a], %v tracked : !sea.mem<!sea.addr<64>, i8>, i32
   %x = sea.load %m1[%a] : !sea.mem<!sea.addr<64>, i8> -> i32
-  %e1 = sea.icmp eq, %x, %v : i32
+  %e1 = sea.icmp eq, %x, %u : i32
   %w = sea.mem.nondet "w" [3] : !sea.mem<!sea.addr<64>, i32, aligned>
   %w1 = sea.store %w[%a], %v : !sea.mem<!sea.addr<64>, i32, aligned>, i32
   %y = sea.load %w1[%a] : !sea.mem<!sea.addr<64>, i32, aligned> -> i32
-  %e2 = sea.icmp eq, %y, %v : i32
+  %e2 = sea.icmp eq, %y, %u : i32
   %q = sea.mem.nondet "q" [4] : !sea.mem<!sea.addr<64>, i32, keyed>
   %q1 = sea.store %q[%a], %v : !sea.mem<!sea.addr<64>, i32, keyed>, i32
   %z = sea.load %q1[%a] : !sea.mem<!sea.addr<64>, i32, keyed> -> i32
-  %e3 = sea.icmp eq, %z, %v : i32
+  %e3 = sea.icmp eq, %z, %u : i32
   %e12 = sea.and %e1, %e2 : i1
   %e = sea.and %e12, %e3 : i1
   sea.assert %e

@@ -16,7 +16,12 @@ z3 computes the expected result with `(simplify ...)` on the SMT-LIB term
   expansion of intrinsic ops into core ops);
 - with --sea-opt and --fold, the op folders (sea-opt --sccp): every case
   has constant operands, so every result must fold to a sea.const, whose
-  value is compared (a result that does not fold is a mismatch).
+  value is compared (a result that does not fold is a mismatch). Also
+  (sea-opt --canonicalize): add / sub / mul / shl with nsw / nuw and
+  constant operands fold, to the wrapped value, exactly when z3 says the
+  promise holds of them; identities with a nondet operand x (`x & 0`,
+  `icmp ult x, 0`, `(x ^ k) ^ k`, ...) fold to the constant or to x that
+  z3 proves for every x.
 Intrinsic ops (min/max, abs, bswap, ctpop, funnel shifts, overflow bits) are
 checked against reference terms that are their LLVM LangRef / SMT-LIB 2.7
 definitions written in SMT-LIB 2.6 (wide arithmetic, shifts of the
@@ -28,7 +33,8 @@ expanded.
 the pair to_bits(from_bits x) = x at widths 1..64, also without a folder.
 `sea.ptr.index` (docs/design/PtrIndex.md) is checked on address bases of
 widths 1..64: its base is made by `sea.addr.from_int` and its result read
-by `sea.addr.to_int`. It has no folder (address ops never fold: provenance),
+by `sea.addr.to_int`. It has no folder (address-valued ops never fold:
+provenance; `sea.addr.cmp`, an i1, is in the identity check of --fold),
 so it is excluded from the fold check (maintainer-approved exception); the
 --sea-opt run also applies sea-lower-ptr-index, so its lowering is checked.
 Any difference is a bug in the checked side.
@@ -500,6 +506,469 @@ def run_folded(args, tmp, cases):
     return {keep[k]: consts.get(observed.get(l)) for k, l in enumerate(obs_lines)}
 
 
+# Folds beyond constant operands (--fold): flagged ops (nsw / nuw) with
+# constant operands fold exactly when z3 says the promise holds of them
+# (the value is the wrapped one), and identities with a free operand x fold
+# to the value z3 proves for every x (a constant, or x itself).
+WRAP_FLAGS = (["nsw"], ["nuw"], ["nsw", "nuw"])
+
+# The other rules the folders handle (both operand orders, single flags,
+# unflagged forms), and constant addresses: a segment at base K, segment + 1
+# (addr.add), ptr.index of the segment at index 1 (no promise), and one whose
+# nusw promise breaks (index 2^(w-2), stride 4: the product wraps, P1): that
+# compare must stay (z3 proves the product wraps).
+MORE_IDENTITIES = [
+    ("or 0 x", "sea.or {c0}, {x} : i{w}", "(bvor Z x)", "x"),
+    ("xor 0 x", "sea.xor {c0}, {x} : i{w}", "(bvxor Z x)", "x"),
+    ("xor k (x^k)", "sea.xor {ck}, {xk} : i{w}", "(bvxor K (bvxor x K))", "x"),
+    ("xor (k^x) k", "sea.xor {kx}, {ck} : i{w}", "(bvxor (bvxor K x) K)", "x"),
+    ("mul 0 x", "sea.mul {c0}, {x} : i{w}", "(bvmul Z x)", None),
+    ("mul x 1", "sea.mul {x}, {c1} : i{w}", "(bvmul x O)", "x"),
+    (
+        "add x 0 nsw",
+        "sea.add {x}, {c0} nsw : i{w}",
+        "(bvadd x Z)",
+        "x",
+        ("add", "x", "Z"),
+    ),
+    (
+        "sub x 0 nuw",
+        "sea.sub {x}, {c0} nuw : i{w}",
+        "(bvsub x Z)",
+        "x",
+        ("sub", "x", "Z"),
+    ),
+    (
+        "sub x x nsw",
+        "sea.sub {x}, {x} nsw : i{w}",
+        "(bvsub x x)",
+        None,
+        ("sub", "x", "x"),
+    ),
+    (
+        "shl x 0 nsw",
+        "sea.shl {x}, {c0} nsw : i{w}",
+        "(bvshl x Z)",
+        "x",
+        ("shl", "x", "Z"),
+    ),
+    (
+        "shl x 0 nuw",
+        "sea.shl {x}, {c0} nuw : i{w}",
+        "(bvshl x Z)",
+        "x",
+        ("shl", "x", "Z"),
+    ),
+    (
+        "addr.cmp eq seg k",
+        "sea.addr.cmp eq, {seg}, {pk} : !sea.addr<{w}>",
+        "(ite (= K K) #b1 #b0)",
+        None,
+    ),
+    (
+        "addr.cmp ult seg+1 k",
+        "sea.addr.cmp ult, {sa}, {pk} : !sea.addr<{w}>",
+        "(ite (bvult (bvadd K O) K) #b1 #b0)",
+        None,
+    ),
+    (
+        "addr.cmp eq index seg+1",
+        "sea.addr.cmp eq, {pi}, {sa} : !sea.addr<{w}>",
+        "(ite (= (bvadd K O) (bvadd K O)) #b1 #b0)",
+        None,
+    ),
+    (
+        "addr.cmp ne index-broken 0",
+        "sea.addr.cmp ne, {pbad}, {p0} : !sea.addr<{w}>",
+        "(ite (distinct (bvadd K (bvmul Q F)) Z) #b1 #b0)",
+        None,
+        ("mul", "Q", "F", "nsw"),
+    ),
+]
+
+IDENTITIES = (
+    [
+        # (name, sea op line, SMT term, result: "x" or None for a constant that
+        # z3 computes at x = 0 and proves for every x, and for a flagged op its
+        # (op, lhs, rhs): it must fold only if its promise holds for every x,
+        # else stay)
+        ("and x 0", "sea.and {x}, {c0} : i{w}", "(bvand x Z)", None),
+        ("and 0 x", "sea.and {c0}, {x} : i{w}", "(bvand Z x)", None),
+        ("and x -1", "sea.and {x}, {cm} : i{w}", "(bvand x M)", "x"),
+        ("and -1 x", "sea.and {cm}, {x} : i{w}", "(bvand M x)", "x"),
+        ("and x x", "sea.and {x}, {x} : i{w}", "(bvand x x)", "x"),
+        ("or x 0", "sea.or {x}, {c0} : i{w}", "(bvor x Z)", "x"),
+        ("or x -1", "sea.or {x}, {cm} : i{w}", "(bvor x M)", None),
+        ("or -1 x", "sea.or {cm}, {x} : i{w}", "(bvor M x)", None),
+        ("or x x", "sea.or {x}, {x} : i{w}", "(bvor x x)", "x"),
+        ("xor x x", "sea.xor {x}, {x} : i{w}", "(bvxor x x)", None),
+        ("xor x 0", "sea.xor {x}, {c0} : i{w}", "(bvxor x Z)", "x"),
+        ("xor xor", "sea.xor {xk}, {ck} : i{w}", "(bvxor (bvxor x K) K)", "x"),
+        ("add x 0", "sea.add {x}, {c0} : i{w}", "(bvadd x Z)", "x"),
+        (
+            "add 0 x nsw nuw",
+            "sea.add {c0}, {x} nsw nuw : i{w}",
+            "(bvadd Z x)",
+            "x",
+            ("add", "Z", "x"),
+        ),
+        (
+            "sub x 0 nsw",
+            "sea.sub {x}, {c0} nsw : i{w}",
+            "(bvsub x Z)",
+            "x",
+            ("sub", "x", "Z"),
+        ),
+        (
+            "sub x x nuw",
+            "sea.sub {x}, {x} nuw : i{w}",
+            "(bvsub x x)",
+            None,
+            ("sub", "x", "x"),
+        ),
+        (
+            "mul x 0 nsw nuw",
+            "sea.mul {x}, {c0} nsw nuw : i{w}",
+            "(bvmul x Z)",
+            None,
+            ("mul", "x", "Z"),
+        ),
+        ("mul 1 x", "sea.mul {c1}, {x} : i{w}", "(bvmul O x)", "x"),
+        (
+            "shl x 0 nsw nuw",
+            "sea.shl {x}, {c0} nsw nuw : i{w}",
+            "(bvshl x Z)",
+            "x",
+            ("shl", "x", "Z"),
+        ),
+        # 1 is -1 signed at i1: x * 1 wraps for x = 1 there (stays)
+        (
+            "mul x 1 nsw",
+            "sea.mul {x}, {c1} nsw : i{w}",
+            "(bvmul x O)",
+            "x",
+            ("mul", "x", "O"),
+        ),
+    ]
+    + [
+        (
+            f"icmp {p} x x",
+            f"sea.icmp {p}, {{x}}, {{x}} : i{{w}}",
+            f"(ite ({q} x x) #b1 #b0)",
+            None,
+        )
+        for p, q in ICMPS.items()
+    ]
+    + [
+        # addresses: p = addr.from_int x; pointer equality and the ordered
+        # compares are those of the addresses (docs/design/PtrSort.md D6)
+        (
+            f"addr.cmp {p} p p",
+            f"sea.addr.cmp {p}, {{p}}, {{p}} : !sea.addr<{{w}}>",
+            f"(ite ({q} x x) #b1 #b0)",
+            None,
+        )
+        for p, q in ICMPS.items()
+    ]
+    + [
+        # two constant addresses (from_int k, from_int 0)
+        (
+            f"addr.cmp {p} k 0",
+            f"sea.addr.cmp {p}, {{pk}}, {{p0}} : !sea.addr<{{w}}>",
+            f"(ite ({q} K Z) #b1 #b0)",
+            None,
+        )
+        for p, q in ICMPS.items()
+    ]
+    + [
+        (
+            "icmp ult x 0",
+            "sea.icmp ult, {x}, {c0} : i{w}",
+            "(ite (bvult x Z) #b1 #b0)",
+            None,
+        ),
+        (
+            "icmp uge x 0",
+            "sea.icmp uge, {x}, {c0} : i{w}",
+            "(ite (bvuge x Z) #b1 #b0)",
+            None,
+        ),
+        (
+            "icmp ugt 0 x",
+            "sea.icmp ugt, {c0}, {x} : i{w}",
+            "(ite (bvugt Z x) #b1 #b0)",
+            None,
+        ),
+        (
+            "icmp ule 0 x",
+            "sea.icmp ule, {c0}, {x} : i{w}",
+            "(ite (bvule Z x) #b1 #b0)",
+            None,
+        ),
+    ]
+    + MORE_IDENTITIES
+)
+
+
+def broken_smt(op, flag, a, b, w):
+    """The promise `flag` of `op a, b` (SMT terms of width w) is broken:
+    LangRef, on unbounded integers (2w+2 bits); shl: a bit shifted out
+    differs from the sign (nsw) or is not 0 (nuw)."""
+    if op == "shl":
+        back = "bvashr" if flag == "nsw" else "bvlshr"
+        return f"(distinct ({back} (bvshl {a} {b}) {b}) {a})"
+    W, ext = 2 * w + 2, "sign_extend" if flag == "nsw" else "zero_extend"
+    r = f"({BINOPS[op]} ((_ {ext} {W - w}) {a}) ((_ {ext} {W - w}) {b}))"
+    return f"(distinct ((_ {ext} {W - w}) ((_ extract {w - 1} 0) {r})) {r})"
+
+
+def z3_run(args, tmp, name, text):
+    path = os.path.join(tmp, name)
+    with open(path, "w") as f:
+        f.write(text)
+    return subprocess.run(
+        [args.z3, path], cwd=tmp, capture_output=True, text=True, check=True
+    ).stdout.split()
+
+
+def check_more_folds(args, tmp, rng, nrandom):
+    """The folds of flagged constants and identities (sea-opt
+    --canonicalize); returns (results, mismatches). Each result is observed
+    by a strong sea.print (never erased) and read from the printed program
+    as its operand: a sea.const or the identity's own nondet x."""
+    # flagged constants: (op, w, flags, a, b)
+    flagged = []
+    for w in WIDTHS:
+        vals = edge_values(w)
+        pairs = [(a, b) for a in vals for b in vals]
+        pairs = rng.sample(pairs, min(len(pairs), 12))
+        pairs += [(rng.getrandbits(w), rng.getrandbits(w)) for _ in range(nrandom)]
+        for op in ("add", "sub", "mul", "shl"):
+            for fl in WRAP_FLAGS:
+                for a, b in pairs:
+                    flagged.append((op, w, fl, a, b))
+        # abs nsw (is_int_min_poison): broken by INT_MIN only
+        for a in sorted({a for a, _ in pairs} | {1 << (w - 1)}):
+            flagged.append(("abs", w, ["nsw"], a, None))
+    q = []
+    for op, w, fl, a, b in flagged:
+        if op == "abs":
+            val = abs_ref(a, w)
+            broken = f"(= {bv(a, w)} {bv(1 << (w - 1), w)})"
+            q.append(f"(simplify {val})\n(simplify (or false {broken}))\n")
+            continue
+        val = f"({BINOPS[op]} {bv(a, w)} {bv(b, w)})"
+        broken = []
+        for flag in fl:
+            if op == "shl":
+                back = "bvashr" if flag == "nsw" else "bvlshr"
+                broken.append(f"(distinct ({back} {val} {bv(b, w)}) {bv(a, w)})")
+            else:
+                broken.append(ovf_ref(("s" if flag == "nsw" else "u") + op, a, b, w))
+        q.append(f"(simplify {val})\n(simplify (or false {' '.join(broken)}))\n")
+    out = z3_run(args, tmp, "flag.smt2", "".join(q))
+    ref = [
+        (parse_z3(out[2 * i]), parse_z3(out[2 * i + 1])) for i in range(len(flagged))
+    ]
+    # identities: (name, w, line, k, result); expected: ("x", None),
+    # ("c", value) or ("keep", None): a flagged op whose promise can break
+    idents = []
+    q = []
+    for w in WIDTHS:
+        Z, M, O = bv(0, w), bv((1 << w) - 1, w), bv(1, w)
+        k = rng.getrandbits(w)
+        K = bv(k, w)
+
+        Q, F = bv((1 << max(w - 2, 0)) % (1 << w), w), bv(4 % (1 << w), w)
+
+        def sub(e, Z=Z, M=M, O=O, K=K, Q=Q, F=F):
+            e = e.replace("Z", Z).replace("M", M).replace("O", O).replace("K", K)
+            return e.replace("Q", Q).replace("F", F)
+
+        for name, line, term, res, *promise in IDENTITIES:
+            if "addr" in name and w > 64:
+                continue  # addresses are at most 64 bits
+            if ("seg" in name or "index" in name) and w < 4:
+                continue  # the segment and the wrapping index need 4 bits
+            t = sub(term)
+            idents.append((name, w, line, k, res))
+            at0 = re.sub(r"\bx\b", Z, t)
+            # valid for every x: the negation is unsat
+            q.append(
+                f"(push)(declare-const x (_ BitVec {w}))"
+                f"(assert (not (= {t} {at0 if res is None else 'x'})))(check-sat)(pop)\n"
+            )
+            q.append(f"(simplify {at0})\n")
+            # the op's own flags; a promise of an operand (the nusw
+            # ptr.index of a compare) names its flag: the product's nsw (P1)
+            flags = [f for f in ("nsw", "nuw") if f in line.split()]
+            if promise and len(promise[0]) > 3:
+                flags = [promise[0][3]]
+            broken = " ".join(
+                broken_smt(promise[0][0], f, sub(promise[0][1]), sub(promise[0][2]), w)
+                for f in flags
+            )
+            q.append(
+                f"(push)(declare-const x (_ BitVec {w}))"
+                f"(assert (or false {broken}))(check-sat)(pop)\n"
+            )
+    out = z3_run(args, tmp, "ident.smt2", "".join(q))
+    if any(out[3 * i] != "unsat" for i in range(len(idents))):
+        bad = [idents[i][:2] for i in range(len(idents)) if out[3 * i] != "unsat"]
+        sys.exit(f"not an identity: {bad[:5]}")
+    iref = [
+        ("keep", None)
+        if out[3 * i + 2] != "unsat"
+        else ("x", None)
+        if idents[i][4] == "x"
+        else ("c", parse_z3(out[3 * i + 1]))
+        for i in range(len(idents))
+    ]
+    # one program: each result observed by a strong print
+    path = os.path.join(tmp, "more.mlir")
+    obs_lines = []
+    x_sites = []  # the nondet site of each identity's x
+    with open(path, "w") as f:
+        f.write("sea.program @more {\n")
+        line = 2
+        site = [1000]
+
+        def nd(wd):
+            site[0] += 1
+            return f'sea.nondet "x" [{site[0]}] : i{wd}'
+
+        def observe(i, wd):
+            # a strong print: a user with an effect, never erased
+            nonlocal line
+            f.write(f'  sea.print "o" %r{i} : i{wd}\n')
+            line += 1
+            obs_lines.append(line - 1)
+
+        for i, (op, w, fl, a, b) in enumerate(flagged):
+            if op == "abs":
+                f.write(f"  %f{i}_a = sea.const {a} : i{w}\n")
+                f.write(f"  %r{i} = sea.abs %f{i}_a nsw : i{w}\n")
+                line += 2
+                observe(i, w)
+                continue
+            f.write(
+                f"  %f{i}_a = sea.const {a} : i{w}\n  %f{i}_b = sea.const {b} : i{w}\n"
+            )
+            f.write(f"  %r{i} = sea.{op} %f{i}_a, %f{i}_b {' '.join(fl)} : i{w}\n")
+            line += 3
+            observe(i, w)
+        base = len(flagged)
+        for j, (name, w, tmpl, k, _res) in enumerate(idents):
+            i = base + j
+            f.write(f"  %x{i} = {nd(w)}\n")
+            x_sites.append(site[0])
+            f.write(f"  %c0_{i} = sea.const 0 : i{w}\n  %c1_{i} = sea.const 1 : i{w}\n")
+            f.write(
+                f"  %cm_{i} = sea.const {(1 << w) - 1} : i{w}\n  %ck_{i} = sea.const {k} : i{w}\n"
+            )
+            f.write(f"  %xk{i} = sea.xor %x{i}, %ck_{i} : i{w}\n")
+            line += 6
+            f.write(f"  %kx{i} = sea.xor %ck_{i}, %x{i} : i{w}\n")
+            line += 1
+            if "seg" in name or "index" in name:
+                at = f"!sea.addr<{w}>"
+                f.write(
+                    f'  %seg{i} = sea.segment "stack.{i}" base {k} : i{w} size 1 : i{w} '
+                    f'align 1 kind "stack" : {at}\n'
+                    f"  %sa{i} = sea.addr.add %seg{i}, %c1_{i} : {at}, i{w}\n"
+                    f"  %pi{i} = sea.ptr.index %seg{i} [%c1_{i}] strides [1] offset 0 "
+                    f": {at}, i{w}\n"
+                    f"  %q_{i} = sea.const {1 << (w - 2)} : i{w}\n"
+                    f"  %pbad{i} = sea.ptr.index %seg{i} [%q_{i}] strides [4] offset 0 "
+                    f"nusw : {at}, i{w}\n"
+                )
+                line += 5
+            if "addr" in name:
+                for v, c in (("p", f"%x{i}"), ("pk", f"%ck_{i}"), ("p0", f"%c0_{i}")):
+                    f.write(
+                        f"  %{v}{i} = sea.addr.from_int {c} : i{w} to !sea.addr<{w}>\n"
+                    )
+                line += 3
+            op_line = tmpl.format(
+                x=f"%x{i}",
+                c0=f"%c0_{i}",
+                c1=f"%c1_{i}",
+                cm=f"%cm_{i}",
+                ck=f"%ck_{i}",
+                xk=f"%xk{i}",
+                kx=f"%kx{i}",
+                seg=f"%seg{i}",
+                sa=f"%sa{i}",
+                pi=f"%pi{i}",
+                pbad=f"%pbad{i}",
+                p=f"%p{i}",
+                pk=f"%pk{i}",
+                p0=f"%p0{i}",
+                w=w,
+            )
+            f.write(f"  %r{i} = {op_line}\n")
+            line += 1
+            observe(i, 1 if "cmp" in name else w)
+        f.write("  sea.halt\n}\n")
+    opt = subprocess.run(
+        [
+            args.sea_opt,
+            path,
+            "--canonicalize",
+            "--mlir-print-debuginfo",
+            "--mlir-print-local-scope",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if opt.returncode != 0:
+        sys.exit(f"sea-opt --canonicalize failed:\n{opt.stderr}")
+    consts, nondets, observed = {}, {}, {}
+    for t in opt.stdout.splitlines():
+        m = re.match(r"\s*(%\w+) = sea\.const (true|false|-?\d+)(?: : i(\d+))? loc", t)
+        if m:
+            v = {"true": 1, "false": 0}.get(m.group(2))
+            if v is None:
+                v = int(m.group(2)) & ((1 << int(m.group(3))) - 1)
+            consts[m.group(1)] = v
+            continue
+        m = re.match(r'\s*(%\w+) = sea\.nondet "x" \[(\d+)\]', t)
+        if m:
+            nondets[m.group(1)] = int(m.group(2))
+            continue
+        m = re.match(r'\s*sea\.print "o" (%\w+) : i\d+ loc\("[^"]*":(\d+):\d+\)', t)
+        if m:
+            observed[int(m.group(2))] = m.group(1)
+    got = [observed.get(l) for l in obs_lines]
+    bad = 0
+    for i, (op, w, fl, a, b) in enumerate(flagged):
+        val, broken = ref[i]
+        g = consts.get(got[i])
+        want = None if broken else val
+        if g != want:
+            bad += 1
+            if bad <= 20:
+                print(
+                    f"MISMATCH folded-flagged {op} {' '.join(fl)} i{w} {a} {b}: "
+                    f"z3={want} folded={g}"
+                )
+    for j, (name, w, _, _, _) in enumerate(idents):
+        i = base + j
+        kind, v = iref[j]
+        g = got[i]
+        if kind == "c":
+            ok = consts.get(g) == v
+        elif kind == "keep":
+            ok = g is not None and g not in consts and g not in nondets
+        else:
+            ok = g in nondets and nondets[g] == x_sites[j]
+        if not ok:
+            bad += 1
+            if bad <= 20:
+                print(f"MISMATCH folded-identity {name} i{w}: z3={kind}:{v} folded={g}")
+    return len(flagged) + len(idents), bad
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sea-run", default="sea-run")
@@ -534,6 +1003,7 @@ def main():
 
     rng = random.Random(args.seed)
     cases = build_cases(rng, args.random)
+    more = None
 
     with tempfile.TemporaryDirectory() as tmp:
         smt = os.path.join(tmp, "q.smt2")
@@ -600,6 +1070,7 @@ def main():
             checked["expanded"] = run_traced("sea-run (expanded)", expanded)
             if args.fold:
                 checked["folded"] = run_folded(args, tmp, cases)
+                more = check_more_folds(args, tmp, rng, args.random)
 
         if args.sea_expr_eval:
             terms = os.path.join(tmp, "terms.txt")
@@ -652,6 +1123,12 @@ def main():
         f"{len(checked)} implementations ({', '.join(checked)}), "
         f"{bad} mismatches"
     )
+    if more:
+        print(
+            f"checked {more[0]} more folds (flagged constants, identities), "
+            f"{more[1]} mismatches"
+        )
+        bad += more[1]
     sys.exit(1 if bad else 0)
 
 

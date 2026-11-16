@@ -3,9 +3,11 @@
 // address space, so p == q (q = malloc(4)) is false in every layout, as in
 // the abstract interpreter (objects, not addresses): the read goes through
 // r, which holds 0: unsat, plain and --seam. The segment of p keeps size 0.
+// The compared pointer is p or r by a nondet choice, so the compare is no
+// compare of two constant addresses (which the addr.cmp folder decides).
 // RUN: sea-vc %s --lower | FileCheck %s
 // RUN: sea-vc %s --lower --seam | FileCheck %s --check-prefixes=CHECK,SEG
-// RUN: sea-run %s | FileCheck %s --check-prefix=INTERP
+// RUN: sea-run %s --input=4=1 | FileCheck %s --check-prefix=INTERP
 // SEG: object: name=obj.heap.1 order=0 kind=heap base=134512640 size=0
 // SEG: object: name=obj.heap.2 order=1 kind=heap base=134512644 size=4
 // CHECK: result: unsat
@@ -21,7 +23,9 @@ sea.program @zero {
   %r = sea.malloc %c4 align 4 [3] : i64 -> !sea.ptr<64>
   %v7 = sea.const 7 : i8
   %m1 = sea.store %m0[%q], %v7 inplace : !m, i8
-  %eq = sea.ptr.cmp eq, %p, %q : !sea.ptr<64>
+  %c = sea.nondet "c" [4] : i1
+  %pr = sea.select %c, %p, %r : !sea.ptr<64>
+  %eq = sea.ptr.cmp eq, %pr, %q : !sea.ptr<64>
   %s = sea.select %eq, %q, %r : !sea.ptr<64>
   %x = sea.load %m1[%s] : !m -> i8
   %ok = sea.icmp eq, %x, %z : i8

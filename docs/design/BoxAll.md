@@ -231,11 +231,11 @@ Nothing else expands: no symbolic upper bound (even one assumed small), no
 partial unrolling. K = 0 turns it off.
 
 Constant means: the op folders reduce the bound to one value
-(`foldConstant`): a `sea.const`, or flag-free arithmetic on constants. The
-pass runs before sccp, so a block argument (even one every predecessor
-passes the same constant) and arithmetic with `nsw` / `nuw` (ops with
-flags do not fold) are not constant here: such a box gets the one-index
-lowering.
+(`foldConstant`): a `sea.const`, or arithmetic on constants (with `nsw` /
+`nuw` only when the constants keep the promise). The pass runs before
+sccp, so a block argument (even one every predecessor passes the same
+constant) and flagged arithmetic whose promise the constants break are not
+constant here: such a box gets the one-index lowering.
 
 Default K = 16, untuned. Measured on the program of
 `test/VC/box-all-equal-regions.mlir` (`@box`, generated at n cells: a

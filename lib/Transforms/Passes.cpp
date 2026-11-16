@@ -21,7 +21,8 @@
 //                                store chains) are constants, not symbolic
 //                                (calloc's n * size: treating it as
 //                                symbolic once made a verdict wrong). Ops
-//                                with nsw / nuw do not fold; nondet sites
+//                                with nsw / nuw fold only constants that
+//                                keep the promise; nondet sites
 //                                stay; the CFG is kept (dead blocks too).
 //                                Not canonicalize here: only constants are
 //                                wanted before the lowerings

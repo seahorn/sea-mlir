@@ -176,9 +176,13 @@ def Sea_NondetOp : Sea_Op<"nondet"> {
 // Folding: the pure value ops below (bit-vector ops, icmp, select, casts,
 // concat / extract, intrinsics) fold when all operands are constants, to
 // their value by evalPureOp (Dialect/Sea/Semantics.h): the folders never
-// compute values themselves. Not folded: ops with nsw / nuw (promises),
-// nondet, memory, address and pointer ops, structs. The dialect
-// materializes folded integers as sea.const.
+// compute values themselves. Ops with nsw / nuw (promises) fold only
+// constants that keep the promise and identities that never wrap;
+// identities (`x & 0`, `icmp eq x, x`, ...) take the value of evalPureOp
+// with the free operand 0, or return an operand. sea.addr.cmp folds (one
+// address, or two constant ones); other address and pointer ops do not,
+// nor nondet, memory and struct ops. The dialect materializes folded
+// integers as sea.const.
 
 def Sea_ConstOp : Sea_Op<"const", [ConstantLike, Pure,
     DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRanges"]>,
@@ -216,8 +220,8 @@ class Sea_WrapBinOp<string mnemonic, string smt> :
   let assemblyFormat = [{
     $lhs `,` $rhs (`nsw` $nsw^)? (`nuw` $nuw^)? attr-dict `:` type($result)
   }];
-  // Folds only without flags: folding would drop a promise the interpreter
-  // checks (and sea-wrap-flags turns into an assume / assert).
+  // Folds constants only when the promise holds of them, and identities
+  // that never wrap (SeaOps.cpp): no promise that can break is dropped.
   let hasFolder = 1;
 }
 
@@ -364,8 +368,8 @@ def Sea_AbsOp : Sea_Op<"abs", [Pure, SameOperandsAndResultType]> {
     the value is still the one above, the interpreter warns when the
     promise is broken, `sea-wrap-flags` turns it into a sea.assume /
     sea.assert of `x != INT_MIN` (or drops it), `sea-expand-intrinsics`
-    keeps it on the `sea.sub` of the expansion, and the op folds only
-    without it.
+    keeps it on the `sea.sub` of the expansion, and with it the op folds
+    only a constant other than INT_MIN.
   }];
   let arguments = (ins Sea_BV:$input, UnitAttr:$nsw);
   let results = (outs Sea_BV:$result);
@@ -538,6 +542,9 @@ def Sea_AddrCmpOp : Sea_Op<"addr.cmp", [Pure, SameTypeOperands]> {
   let results = (outs I1:$result);
   let assemblyFormat =
       "$predicate `,` $lhs `,` $rhs attr-dict `:` qualified(type($lhs))";
+  // an i1, not an address: folds when the operands are one value or both
+  // constant addresses (SeaOps.cpp)
+  let hasFolder = 1;
 }
 
 def Sea_AddrToIntOp : Sea_Op<"addr.to_int", [Pure]> {

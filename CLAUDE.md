@@ -262,7 +262,7 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
 - New op: add it to `Semantics.cpp`, to `utils/check-semantics.py`, and to
   roundtrip and interpreter tests in the same change. A pure value op gets
   a folder through `evalPureOp` (`foldByEval`, SeaOps.cpp), never its own
-  arithmetic; ops with nsw / nuw do not fold. `sea.segment` is in `evalPureOp` but has no folder on purpose (sccp would erase the object it names), and it is not in `check-semantics.py`: that oracle folds every case to a constant and checks bit-vector arithmetic against z3, while a segment's value is its `base` attribute (checked by `test/Interp/ptr/segment.mlir` and `test/VC/segment-replay.mlir`).
+  arithmetic; an op with nsw / nuw folds only constants that keep its promise (`brokenWrapPromise`) and identities that never wrap. Identity folders (`x & 0`, `icmp eq x, x`, `(x ^ k) ^ k`, `addr.cmp` of one address or two constant ones) take their value from `evalPureOp` with the free operand set to 0, or return the operand; each is proved with z3 and checked by `check-semantics.py --fold`. `sea.segment` is in `evalPureOp` but has no folder on purpose (sccp would erase the object it names), and it is not in `check-semantics.py`: that oracle folds every case to a constant and checks bit-vector arithmetic against z3, while a segment's value is its `base` attribute (checked by `test/Interp/ptr/segment.mlir` and `test/VC/segment-replay.mlir`).
 - Tag conjectures in comments and notes as hypotheses; cite SeaHorn
   source (file:line, commit) when porting behavior from it.
 - Tool output is line-oriented `key: value` text so agents can parse it.
