@@ -1,0 +1,26 @@
+--seam-check-cost: one `seam-check-cost:` line per checked firing, the z3
+rlimit count and the time of its query. The count is in the unit
+--seam-check-rlimit enforces: the costliest firing is decided at twice its
+count and runs out (reason=rlimit) at a tenth (Inputs/check-cost.py).
+RUN: sea-vc %S/row-group.mlir --lower --solver=z3 --seam --seam-check --seam-check-cost | FileCheck %s
+CHECK: seam-check-cost: id={{[0-9]+}} rlimit={{[0-9]+}} time={{[0-9]+\.[0-9]+}}
+CHECK: seam-check: firings={{[0-9]+}}
+RUN: %python %S/Inputs/check-cost.py sea-vc %S/row-group.mlir --lower --solver=z3 --seam | FileCheck %s --check-prefix=RL
+RL: check-cost: ok
+
+Off by default: the output of --seam-check is unchanged.
+RUN: sea-vc %S/row-group.mlir --lower --solver=z3 --seam --seam-check | FileCheck %s --check-prefix=OFF
+OFF-NOT: seam-check-cost
+OFF: seam-check: firings=
+
+Without --seam-check it is an error.
+RUN: not sea-vc %S/row-group.mlir --lower --seam --seam-check-cost 2>&1 | FileCheck %s --check-prefix=ERR
+ERR: --seam-check-cost needs --seam-check
+
+Another backend has no rlimit count: `-`.
+RUN: %if bitwuzla %{ sea-vc %S/row-group.mlir --lower --solver=bitwuzla --seam --seam-check --seam-check-cost | FileCheck %s --check-prefix=BZ %}
+BZ: seam-check-cost: id={{[0-9]+}} rlimit=- time=
+RUN: %if yices %{ sea-vc %S/row-group.mlir --lower --solver=yices --seam --seam-check --seam-check-cost | FileCheck %s --check-prefix=BZ %}
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

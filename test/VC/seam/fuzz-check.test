@@ -7,7 +7,8 @@ The checks are bounded by z3's rlimit, not by time, so the counts do not
 depend on the machine: with the 10 s default timeout, 4 checks were unknown
 (fuzz-seam-5-2, ids 55 and 121 in the two --seam-premises=0 wide variants;
 13-32 s each). Measured with z3 5.3.3 (docker/Dockerfile's Z3_TAG; the
-rlimit count is z3-version dependent): the largest check uses 75.4M (id 55,
+rlimit count is z3-version dependent; remeasure with sea-vc
+--seam-check-cost): the largest check uses 75.4M (id 55,
 32 s), the next 40.1M (id 121, 13 s), every other one under 22M, 99% under
 0.21M; 2.3-4.7M per second. The rlimit, 150M, is 2x the largest. The
 timeout, 300 s, is only a backstop: 9x the slowest check and above the

@@ -98,6 +98,15 @@ public:
     return r;
   }
 
+  std::optional<uint64_t> rlimit_count() override {
+    z3::stats st = m_solver->stats();
+    for (unsigned i = 0, e = st.size(); i < e; ++i)
+      if (st.key(i) == "rlimit count")
+        return st.is_uint(i) ? uint64_t(st.uint_value(i))
+                             : uint64_t(st.double_value(i));
+    return std::nullopt;
+  }
+
   /** Write asserted formulas to SMT-LIB format **/
   virtual void to_smt_lib(llvm::raw_ostream &o) override {
     m_solver->toSmtLib(o);
