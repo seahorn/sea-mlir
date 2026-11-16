@@ -106,7 +106,12 @@ only, and the tool refuses a second sort.
 
 A term is `{sort, [bits], op, args, ...}`. `sort` is `bv` (with `bits`),
 `bool`, `ptr` (with `bits` = N) or `memory` (N-bit addresses, byte cells).
-Numerals are decimal strings.
+Numerals (the `bv` value, `smap` offsets, `fixed`) are strings in the form
+of the Expr printer: decimal below 65535, lowercase hex with a `0x` prefix
+from 65535 up (`0x3ffff80`). A `bv` value is unsigned; a negative one,
+which should not occur, would print as `-5` or `0x-ffff`. The `stride`,
+`constant` and `byte_offset` fields of `index` and `offset` are signed
+decimal.
 
 | op | args and fields |
 |---|---|
@@ -116,6 +121,8 @@ Numerals are decimal strings.
 | `ite`, `eq`, `ult`, `ule`, `not`, `and`, `or` | `args`; `and` and `or` are n-ary |
 | `add`, `sub`, `mul`, `concat` | `args`; `add` and `mul` may be n-ary (left to right) |
 | `extract` | one arg; `start`, `length` (bits) |
+| `slt`, `sle` | two bit-vector args of one width; a `bool` term: signed (two's complement) less-than, less-or-equal |
+| `sext`, `zext` | one bit-vector arg; the result's `bits` (at least the arg's `bits`): the arg sign- or zero-extended |
 | `select`, `store` | memory, address[, value] |
 | `constMem` | one arg: the value of every cell |
 | `wselect`, `wstore` | memory, address[, value]; `bytes`, `alignment` (the promised alignment) |
@@ -141,7 +148,7 @@ rule call that changed its term gives one record, in order:
 | `op` | the VC operation: `load`, `store`, `addr` (an access address), or `side` / `query` (the final normalization) |
 | `loc`, `units` | the operation's location and access size (when it has them) |
 | `lhs`, `rhs` | raw terms. `lhs` is the term the rule was given, with its kids already rewritten |
-| `premise` | a term: `SeaOpSem::firingPremise`, which is true, or the layout and the in-bounds conditions the rule relies on |
+| `premise` | a term: `SeaOpSem::firingPremise`, which is true, or the layout and the in-bounds conditions the rule relies on; a raw term like `lhs` and `rhs` (with `PTR-INDEX`: the `sea.ptr.index` promise, `sle` over `sext` / `zext` at a wider width) |
 
 The statement is `premise -> lhs = rhs`, with pointers compared by address
 and memories cell by cell. `sea-vc --seam-check` checks the same statement

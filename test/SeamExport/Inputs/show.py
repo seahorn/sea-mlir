@@ -50,6 +50,8 @@ def term(t, erased):
         args += [f"{e['offset']}:{term(e['value'], erased)}" for e in t["entries"]]
     elif op in ("wselect", "wstore"):
         args += [f"bytes={t['bytes']}", f"align={t['alignment']}"]
+    elif op in ("sext", "zext"):
+        args += [f"bits={t['bits']}"]
     elif op == "extract":
         args += [f"start={t['start']}", f"len={t['length']}"]
     return f"{op}({', '.join(args)})"

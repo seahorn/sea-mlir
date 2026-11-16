@@ -3,17 +3,20 @@
 // offsets 100 and 130 of an object, read through the GEP a + 3 i (nusw):
 // 3 divides neither offset, so the read skips both entries
 // (row.smap-abort-stride, decided by cmp.stride) under the GEP's promise
-// (premise PTR-INDEX). Lane seam (no R-STRIDE) keeps the entries. The exit
-// status is not pinned: the promise term may have no node in the format
-// (an unexpressible firing, status 3); the firing is recorded either way.
-// RUN: sea-seam-export %s --lane=seam-stride --firings > %t.stride || true
-// RUN: %python %S/Inputs/show.py < %t.stride | FileCheck %s --check-prefixes=CHECK,STRIDE
+// (premise PTR-INDEX). The premise is a raw term like the two sides: the
+// promise as signed compares (sle) over sext / zext, the object as
+// addr(obj), numerals as printed (0x3ffff80). Lane seam (no R-STRIDE) keeps the
+// entries.
+// RUN: sea-seam-export %s --lane=seam-stride --firings | %python %S/Inputs/show.py | FileCheck %s --check-prefixes=CHECK,STRIDE
 // RUN: sea-seam-export %s --lane=seam --firings | %python %S/Inputs/show.py | FileCheck %s --check-prefixes=CHECK,NOSTRIDE
 // STRIDE: header: schema=3 lane=seam-stride sea_vc='sea-vc --seam --seam-stride' {{.*}}ainb=true
 // NOSTRIDE: header: schema=3 lane=seam sea_vc='sea-vc --seam' {{.*}}ainb=true
-// STRIDE: firing {{[0-9]+}} rules={{[^ ]*}}row.smap-abort-stride{{[^ ]*}} premises={{[^ ]*}}PTR-INDEX
+// STRIDE: firing {{[0-9]+}} rules={{[^ ]*}}row.smap-abort-stride{{[^ ]*}} premises={{[^ ]*}}PTR-INDEX{{[^ ]*}} op=load
+// STRIDE-NOT: unexpressible
+// STRIDE: premise: {{.*}}sle(0x3ffff80, mul(sext(nd.1_0, bits=26), 3))
+// STRIDE-SAME: zext(addr(obj.heap.1), bits=26)
 // NOSTRIDE-NOT: row.smap-abort-stride
-// CHECK: firings: {{[0-9]+}}
+// CHECK: firings: {{[0-9]+}} unexpressible=0
 !am = !sea.mem<!sea.addr<8>, i8>
 sea.program @stride {
   %a = sea.segment "heap.1" base 1 : i8 size 200 : i8 align 1 kind "heap" : !sea.addr<8>

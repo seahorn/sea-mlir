@@ -211,7 +211,9 @@ normalization); lhs (kids already rewritten) and rhs as raw terms;
 premise: SeaOpSem::firingPremise, the statement sea-vc --seam-check
 checks (`premise -> lhs = rhs`, there after the boundary): true, or the
 layout (addr(obj) = base) and the in-bounds conditions the rule relies
-on. Pointers compare by address, memories cell by cell. A firing whose
+on; a raw term like lhs and rhs (PTR-INDEX: the sea.ptr.index promise,
+sle over sext / zext at a wider width; ALIGN: the address's low bits).
+Pointers compare by address, memories cell by cell. A firing whose
 premise or terms cannot be expressed has `unexpressible: <why>` instead
 (warning export.firing-unexpressible) and makes the status 3.
 
@@ -366,6 +368,19 @@ struct Exporter {
                                                                                                                                       "or") else if (isOpX<CONST_ARRAY>(e)) {
       o["op"] = "constMem";
       args.push_back(rec(e->arg(1)));
+    }
+    else if (isOpX<BSLT>(e) || isOpX<BSLE>(e)) {
+      // signed compares: the sea.ptr.index promise (ptr::promise), the
+      // premise of an R-STRIDE firing
+      o["op"] = isOpX<BSLT>(e) ? "slt" : "sle";
+      args.push_back(rec(e->arg(0)));
+      args.push_back(rec(e->arg(1)));
+    }
+    else if (isOpX<BSEXT>(e) || isOpX<BZEXT>(e)) {
+      // the result width is the node's `bits`; the second Expr argument
+      // (the target sort) is not an argument of the node
+      o["op"] = isOpX<BSEXT>(e) ? "sext" : "zext";
+      args.push_back(rec(e->arg(0)));
     }
     else if (isOpX<BEXTRACT>(e)) {
       o["op"] = "extract";
