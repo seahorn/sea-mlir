@@ -413,13 +413,15 @@ public:
   void runOnOperation() override;
 };
 
-void AssumeFoldPass::runOnOperation() {
-  ProgramOp program = getOperation();
-  MLIRContext *ctx = &getContext();
+} // namespace
+
+FailureOr<AssumeFoldCounts> foldAssumedUses(ProgramOp program) {
+  MLIRContext *ctx = program->getContext();
   Region &region = program->getRegion(0);
+  AssumeFoldCounts n;
   if (region.empty())
-    return markAllAnalysesPreserved();
-  DominanceInfo &dom = getAnalysis<DominanceInfo>();
+    return n;
+  DominanceInfo dom(program);
   // the facts of the program as it is: the checks' first, then the edges'
   // (a use both fix counts as by its check)
   auto collect = [&](DominanceInfo &d, SmallVectorImpl<AssumedValue> &out) {
@@ -483,9 +485,8 @@ void AssumeFoldPass::runOnOperation() {
   uint64_t rounds = 0;
   for (;; ++rounds) {
     if (rounds > bound) {
-      (void)postconditionFailed(
+      return postconditionFailed(
           "sea-assume-fold", "more rounds than operands to replace", program);
-      return signalPassFailure();
     }
     const uint64_t before = uses + intUses;
     SmallVector<AssumedValue> facts;
@@ -555,64 +556,86 @@ void AssumeFoldPass::runOnOperation() {
     for (const AssumedValue &f : again)
       for (OpOperand &u : f.value.getUses())
         if (folds(fresh, f, u)) {
-          (void)postconditionFailed("sea-assume-fold",
-                                    "a use of a value a dominating check fixes",
-                                    u.getOwner());
-          return signalPassFailure();
+          return postconditionFailed(
+              "sea-assume-fold", "a use of a value a dominating check fixes",
+              u.getOwner());
         }
     SmallVector<IntFact> intAgain;
     collectIntFacts(again, intAgain);
     for (const IntFact &f : intAgain)
       for (OpOperand &u : f.value.getUses())
         if (folds(fresh, *f.from, u)) {
-          (void)postconditionFailed(
+          return postconditionFailed(
               "sea-assume-fold",
               "a use of an integer a dominating equality fixes", u.getOwner());
-          return signalPassFailure();
         }
   }
 
+  n.uses = uses;
+  n.byAssume = byAssume;
+  n.byAssert = byAssert;
+  n.byEdge = byEdge;
+  n.values = values.size();
+  n.branches = branchOps.size();
+  n.selects = selectOps.size();
+  n.assertsHeld = assertOps[1].size();
+  n.assertsFailed = assertOps[0].size();
+  n.intUses = intUses;
+  n.intValues = intValues.size();
+  n.rounds = rounds;
   if (!uses && !intUses)
-    return markAllAnalysesPreserved();
+    return n;
   const llvm::DenseSet<Block *> liveAfter = liveBlocks(program);
-  uint64_t blocks = 0;
   for (Block *b : liveBefore)
-    blocks += !liveAfter.contains(b);
+    n.blocks += !liveAfter.contains(b);
+  return n;
+}
 
+namespace {
+
+void AssumeFoldPass::runOnOperation() {
+  ProgramOp program = getOperation();
+  MLIRContext *ctx = &getContext();
+  FailureOr<AssumeFoldCounts> r = foldAssumedUses(program);
+  if (failed(r))
+    return signalPassFailure();
+  const AssumeFoldCounts &n = *r;
+  if (!n.uses && !n.intUses)
+    return markAllAnalysesPreserved();
   auto i64 = IntegerType::get(ctx, 64);
   SmallVector<NamedAttribute> stats;
   auto stat = [&](StringRef key, uint64_t v) {
     stats.push_back(
         NamedAttribute(StringAttr::get(ctx, key), IntegerAttr::get(i64, v)));
   };
-  stat("uses", uses);
-  stat("by-assume", byAssume);
-  stat("by-assert", byAssert);
-  stat("by-edge", byEdge);
-  stat("values", values.size());
-  stat("branches", branchOps.size());
-  stat("selects", selectOps.size());
-  stat("asserts-held", assertOps[1].size());
-  stat("asserts-failed", assertOps[0].size());
-  stat("blocks", blocks);
-  stat("int-uses", intUses);
-  stat("int-values", intValues.size());
-  stat("rounds", rounds);
+  stat("uses", n.uses);
+  stat("by-assume", n.byAssume);
+  stat("by-assert", n.byAssert);
+  stat("by-edge", n.byEdge);
+  stat("values", n.values);
+  stat("branches", n.branches);
+  stat("selects", n.selects);
+  stat("asserts-held", n.assertsHeld);
+  stat("asserts-failed", n.assertsFailed);
+  stat("blocks", n.blocks);
+  stat("int-uses", n.intUses);
+  stat("int-values", n.intValues);
+  stat("rounds", n.rounds);
   program->setAttr(kAssumeFoldStatsAttr, DictionaryAttr::get(ctx, stats));
   SEA_LOG(logAssumeFold, log::Flow)
-      .kv("uses", uses)
-      .kv("by-assume", byAssume)
-      .kv("by-assert", byAssert)
-      .kv("by-edge", byEdge)
-      .kv("values", uint64_t(values.size()))
-      .kv("branches", uint64_t(branchOps.size()))
-      .kv("selects", uint64_t(selectOps.size()))
-      .kv("asserts-held", uint64_t(assertOps[1].size()))
-      .kv("asserts-failed", uint64_t(assertOps[0].size()))
-      .kv("blocks", blocks)
-      .kv("int-uses", intUses)
-      .kv("int-values", uint64_t(intValues.size()))
-      .kv("rounds", rounds);
+      .kv("uses", n.uses)
+      .kv("by-assume", n.byAssume)
+      .kv("by-assert", n.byAssert)
+      .kv("by-edge", n.byEdge)
+      .kv("values", n.values)
+      .kv("branches", n.branches)
+      .kv("selects", n.selects)
+      .kv("asserts-held", n.assertsHeld)
+      .kv("asserts-failed", n.assertsFailed)
+      .kv("blocks", n.blocks)
+      .kv("int-uses", n.intUses)
+      .kv("int-values", n.intValues)
+      .kv("rounds", n.rounds);
   // only operands and constants changed: the CFG and dominance stay
   markAnalysesPreserved<DominanceInfo>();
 }

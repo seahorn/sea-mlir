@@ -23,6 +23,20 @@ namespace sea {
 /// sea-assume-fold (lib/Transforms/AssumeFold.cpp).
 std::unique_ptr<mlir::Pass> createAssumeFoldPass();
 
+/// What one fold did (the keys of `vc.assume-fold`).
+struct AssumeFoldCounts {
+  uint64_t uses = 0, byAssume = 0, byAssert = 0, byEdge = 0, values = 0,
+           branches = 0, selects = 0, assertsHeld = 0, assertsFailed = 0,
+           blocks = 0, intUses = 0, intValues = 0, rounds = 0;
+};
+
+/// The rewrite of sea-assume-fold on `program`, without its counter
+/// attribute (sea-prune-edges runs it between its rounds): the facts of
+/// checks and edges (collectAssumedValues, collectEdgeFacts) and the
+/// integer equalities among them, substituted in rounds until none
+/// replaces a use. Failure: its postcondition failed (reported).
+mlir::FailureOr<AssumeFoldCounts> foldAssumedUses(ProgramOp program);
+
 /// On the sea.program after sea-assume-fold: its counters (a dictionary of
 /// i64 attributes, the keys of `vc.assume-fold`).
 inline constexpr llvm::StringLiteral kAssumeFoldStatsAttr = "sea.assume_fold";

@@ -102,6 +102,19 @@
 //                                are users with an effect, never erased or
 //                                merged. A dead sea.segment goes too (no
 //                                pointer refers to its object).
+//   7'. sea-prune-edges          (with sccp's switch, fold; sea-vc
+//                                --lower-disable=prune-edges; off under
+//                                --reach) edges on which no execution
+//                                reaches an assert or a halt: constant
+//                                block arguments that make the target's
+//                                leading assume 0, targets whose paths all
+//                                block. A cond_br with one such edge ->
+//                                assume of the other side + br; a branch
+//                                with none live -> sea.unreachable. Rounds
+//                                with assume-fold's rewrite, canonicalize
+//                                and cse to a fixpoint. After 7: its
+//                                constants and unreachable-only blocks are
+//                                7's (docs/design/PruneEdges.md)
 //   8. sea-split-critical-edges  BMC form, last: after every pass that
 //                                changes the CFG (expand-memset and
 //                                merge-asserts add blocks; canonicalize
@@ -121,6 +134,7 @@
 #include "sea/Dialect/Sea/SeaOps.h"
 #include "sea/Support/Diag.h"
 #include "sea/Transforms/AssumeFold.h"
+#include "sea/Transforms/PruneEdges.h"
 #include "sea/Transforms/RangeFold.h"
 
 #include "mlir/Pass/PassManager.h"
@@ -267,6 +281,7 @@ void registerPasses() {
   registerPass([] { return createSinkAssumesPass(); });
   registerPass([] { return createRangeFoldPass(); });
   registerPass([] { return createAssumeFoldPass(); });
+  registerPass([] { return createPruneEdgesPass(); });
   registerPass([] { return createLowerBoxAllPass(); });
   registerPass([] { return createLowerPtrIndexPass(); });
   registerPass([] { return createCheckAlignPass(); });
@@ -387,6 +402,13 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
     prog.addPass(createCanonicalizerPass());
   if (cse)
     prog.addPass(createCSEPass());
+  // edges on which no execution reaches a check (constant block arguments
+  // that falsify the target's assume; targets that only block), to a
+  // fixpoint with assume-fold, canonicalize and cse; after the clean-up,
+  // which makes the constants and unreachable-only blocks it reads
+  if (fold && !(disable & LowerDisablePruneEdges))
+    prog.addPass(createPruneEdgesPass(!(disable & LowerDisableAssumeFold),
+                                      canonicalize, cse));
   // Constant-branch folding may erase the only assertion and halt. Restore
   // BMC form, including the trivially safe case, after CFG simplification.
   // The first run reported the constant-false asserts.

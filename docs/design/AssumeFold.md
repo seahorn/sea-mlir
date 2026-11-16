@@ -287,14 +287,10 @@ with the flag). The pipeline `sea-vc-lower{reach=true}` is the reach lowering
 
 ## Open
 
-- Edge pruning at a join: an assume whose condition is a comparison of a
-  block argument with a constant, at the start of the block, makes every
-  incoming edge with a constant argument that falsifies it infeasible (the
-  130 `ret = 0` edges into `assume(ret != 0)` in the same firedancer job).
-  Not done: it rewrites the predecessors' branches (a cond_br edge becomes
-  an assume of the other condition), a different transformation; measured
-  on that job without this pass it did not change the cost (10,466
-  constraints).
+- Edge pruning at a join (an assume of a comparison of a block argument
+  with a constant falsified by an incoming edge's constants) is
+  `sea-prune-edges` (docs/design/PruneEdges.md), after the final
+  canonicalize; its rounds run this pass's rewrite on the assumes it makes.
 - The cond_br's own edge operands: `cond_br %c, ^a(%c), ^b` passes 1,
   but the operand is not under the edge's block and is not folded.
 - A join whose edges fix a value by checks only (each sibling assumes

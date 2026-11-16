@@ -37,6 +37,7 @@
 #include "sea/Support/WriteFile.h"
 #include "sea/Transforms/AssumeFold.h"
 #include "sea/Transforms/Passes.h"
+#include "sea/Transforms/PruneEdges.h"
 #include "sea/Transforms/RangeFold.h"
 
 #include "mlir/Pass/PassManager.h"
@@ -164,7 +165,7 @@ static cl::opt<unsigned> boxAllExpandOpt(
 static cl::list<std::string> lowerDisable(
     "lower-disable",
     cl::desc("With --lower: leave these optimization passes out of the "
-             "lowering (sccp, cse, canonicalize, assume-fold; "
+             "lowering (sccp, cse, canonicalize, assume-fold, prune-edges; "
              "comma-separated): a lowering with and without one, compared "
              "by utils/cover-diff.py, validates it"),
     cl::value_desc("pass,..."), cl::CommaSeparated);
@@ -1929,7 +1930,8 @@ TYPICAL:
                                  #   the clean-up)
   sea-vc p.mlir --lower --lower-disable=canonicalize  # leave
                                  #   optimization passes out (sccp, cse,
-                                 #   canonicalize, assume-fold;
+                                 #   canonicalize, assume-fold,
+                                 #   prune-edges;
                                  #   comma-separated): the A
                                  #   side of a pass validation
                                  #   (utils/cover-diff.py). Not
@@ -2422,6 +2424,24 @@ OUTPUT (stdout, `key: value` lines):
                                   substitution can make a new fact);
                                   off: --lower-disable=assume-fold;
                                   docs/design/AssumeFold.md)
+  vc.prune-edges: edges=<n> by-args=<n> dead-target=<n> falsified=<n>
+      cond-br=<n> unreachable=<n> blocks=<n> rounds=<n> fold-uses=<n>
+                                  (--lower, when it pruned an edge:
+                                  sea-prune-edges, on by default, exact for
+                                  the safety query, not under --reach;
+                                  edges on which no run reaches an assert
+                                  or a halt removed: by-args: constant
+                                  block arguments make the target's leading
+                                  assume 0; dead-target: every path from
+                                  the target blocks; falsified: such
+                                  argument edges where they are; cond-br:
+                                  branches made assume + br; unreachable:
+                                  branches made sea.unreachable; blocks: cut
+                                  off; rounds: with assume-fold /
+                                  canonicalize / cse between them;
+                                  fold-uses: folded in those rounds; off:
+                                  --lower-disable=prune-edges;
+                                  docs/design/PruneEdges.md)
   vc.assumed-branches: branches=<n> selects=<n> values=<n>
                                   (cond_br / select ops left whose condition
                                   an assume fixes: not under the assume, or
@@ -3875,6 +3895,7 @@ int main(int argc, char **argv) {
                        .Case("cse", sea::LowerDisableCse)
                        .Case("canonicalize", sea::LowerDisableCanonicalize)
                        .Case("assume-fold", sea::LowerDisableAssumeFold)
+                       .Case("prune-edges", sea::LowerDisablePruneEdges)
                        .Default(0);
     if (p == "sea-drop-fresh-memhavoc")
       return fail("--lower-disable: sea-drop-fresh-memhavoc is a semantics "
@@ -3883,9 +3904,15 @@ int main(int argc, char **argv) {
                   "so the lowering without it means something else");
     if (!bit)
       return fail("--lower-disable: '" + p +
-                  "' is not one of sccp, cse, canonicalize, assume-fold");
+                  "' is not one of sccp, cse, canonicalize, assume-fold, "
+                  "prune-edges");
     lowerDisableMask |= bit;
   }
+  // --reach decides whether a prefix of an execution reaches a site, also
+  // one that blocks later; sea-prune-edges removes such prefixes (exact for
+  // the safety query only)
+  if (reach)
+    lowerDisableMask |= sea::LowerDisablePruneEdges;
   if (!lowerDisable.empty() && !lower)
     return fail("--lower-disable needs --lower");
   // --reach: everything visible by default (vacuity-safe); the fold of
@@ -4321,6 +4348,17 @@ int main(int argc, char **argv) {
          {"uses", "by-assume", "by-assert", "by-edge", "values", "branches",
           "selects", "asserts-held", "asserts-failed", "blocks", "int-uses",
           "int-values", "rounds"})
+      if (auto i = d.getAs<IntegerAttr>(key))
+        l.kv(key, i.getInt());
+  }
+  // sea-prune-edges' counters (on by default with --lower; the line only
+  // when it pruned an edge)
+  if (auto d =
+          program->getAttrOfType<DictionaryAttr>(sea::kPruneEdgesStatsAttr)) {
+    sea::stats::Line &l = lowerStats.line("vc.prune-edges");
+    for (StringRef key :
+         {"edges", "by-args", "dead-target", "falsified", "cond-br",
+          "unreachable", "blocks", "rounds", "fold-uses"})
       if (auto i = d.getAs<IntegerAttr>(key))
         l.kv(key, i.getInt());
   }

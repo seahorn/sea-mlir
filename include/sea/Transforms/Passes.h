@@ -215,7 +215,9 @@ std::unique_ptr<mlir::Pass> createWidenMemoryPass();
 /// pipeline); cse and canonicalize are each of their runs (--lower-opt=false
 /// leaves out all three runs). sea-assume-fold: the uses of i1 values that
 /// dominating assumes and asserts or the edges into a block fix (on with
-/// the fold of the pipeline). Not
+/// the fold of the pipeline).
+/// sea-prune-edges: edges on which no execution reaches a check (on with
+/// the fold of the pipeline; sea-vc leaves it out under --reach). Not
 /// sea-drop-fresh-memhavoc: it also decides
 /// that a memhavoc of a fresh object is no modification (tracking), a
 /// semantics decision.
@@ -224,6 +226,7 @@ enum LowerDisable : unsigned {
   LowerDisableCse = 1u << 1,
   LowerDisableCanonicalize = 1u << 2,
   LowerDisableAssumeFold = 1u << 3,
+  LowerDisablePruneEdges = 1u << 4,
 };
 
 /// What sea-range-fold does with a value the integer ranges settle
@@ -260,7 +263,10 @@ enum class RangeFoldMode { Off, Fold, Check };
 /// \p rangeFold: sea-range-fold (after a cse, right before the final
 /// canonicalize; sea-vc --range-fold, default off). sea-assume-fold runs
 /// right before the first sea-merge-asserts when \p fold is on and \p
-/// disable does not name it.
+/// disable does not name it; sea-prune-edges right after the final
+/// canonicalize + cse (its rounds run sea-assume-fold's rewrite unless
+/// disabled, canonicalize and cse as \p opt and \p disable say), on the
+/// same conditions.
 /// \p expandMemMove: sea-expand-small-memmove{max-bytes=K} after the
 /// metadata lowerings, placement and widening (sea-vc --expand-memmove,
 /// default 0: not run); \p ptrCompanion: its option ptr-companion (sea-vc
