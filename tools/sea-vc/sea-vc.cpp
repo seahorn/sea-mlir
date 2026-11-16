@@ -2397,10 +2397,12 @@ OUTPUT (stdout, `key: value` lines):
                                   right before the halt, or has a source
                                   location (SeaHorn's unlocated error
                                   marker `assert false; halt` is not
-                                  reported); only if one fired). Not
-                                  reported: an assert that becomes
-                                  constant only in the lowering's
-                                  canonicalize (icmp ne x, x); the
+                                  reported), and from canonicalize for a
+                                  merged assert's branch that a later
+                                  lowering made constant 0; only if one
+                                  fired. Not reported: an assert that
+                                  becomes constant only in canonicalize's
+                                  own folders (icmp ne x, x); the
                                   verdict still shows it. Counts
                                   of the whole file: every program the
                                   lowering ran on, not only --program's

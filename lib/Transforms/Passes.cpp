@@ -46,6 +46,9 @@
 //   3. sea-expand-memset         symbolic lengths (the array encoding has
 //                                only store chains); adds blocks, so before 4
 //   4. sea-merge-asserts         BMC form: one assert before the halt
+//                                (an assert of constant 1 is dropped, one
+//                                of constant 0 is a branch to its failure
+//                                site)
 //   5. sea-split-wide-access     the VC encodes single-cell accesses
 //   6. sea-expand-intrinsics     the VC encodes core ops; mul overflow is
 //                                kept for a solver that has it natively

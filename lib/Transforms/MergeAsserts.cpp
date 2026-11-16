@@ -16,6 +16,11 @@
 //         ^cont:  sea.assume P ; (the rest of B)
 //         ^land:  sea.br ^exit(false)        (the assert's location)
 //     The landing block keeps the edge into ^exit non-critical.
+//   - an assert of constant 1 (it can never fail): erased, no branch and
+//     no marker (its reach site, if any, stays on `sea.assume 1`, as the
+//     merged form would leave it); of constant 0 (it fails wherever it is
+//     reached): B ends in `sea.br ^land`, the failure site (marked as
+//     above), the rest of B dead.
 // An execution fails the merged assert iff it fails one original assert
 // (the first one on its path); the landing block's location names it.
 // The cond_br and the landing br carry the assert's location wrapped as
@@ -33,9 +38,11 @@
 //     the error-location marker of SeaHorn's error slice (the only assert,
 //     right before a sea.halt, print ops aside, with no source position:
 //     unknown or a .mlir position); not with report=false,
-//     the lowering's second run, so each is reported once; an assert whose
-//     condition becomes 0 only in the lowering's canonicalize is not
-//     reported: its cond_br folds (the verdict still shows it).
+//     the lowering's second run, so each is reported once. An assert whose
+//     condition becomes constant only after this pass (a later lowering)
+//     is canonicalize's: its marked cond_br folds, to a branch without the
+//     marker if it held, to the landing branch, reported
+//     (fold.assert-false), if it failed (SimplifyCondBr, SeaOps.cpp).
 //   Option: report (default true; sea-opt
 //     --sea-merge-asserts='report=false'): the warnings above.
 //   Produces: one sea.assert, immediately before the only sea.halt, in the
@@ -166,6 +173,17 @@ void MergeAssertsPass::runOnOperation() {
     h.erase();
   }
   for (AssertOp a : asserts) {
+    // can never fail: nothing to branch on
+    if (matchPattern(a.getCond(), m_One())) {
+      if (Attribute site = a->getAttr(kReachSiteAttr)) {
+        b.setInsertionPoint(a);
+        AssumeOp::create(b, a.getLoc(), a.getCond())
+            ->setAttr(kReachSiteAttr, site);
+      }
+      a.erase();
+      continue;
+    }
+    const bool fails = matchPattern(a.getCond(), m_Zero());
     Block *blk = a->getBlock();
     Location aloc = a.getLoc();
     Location brLoc =
@@ -184,15 +202,21 @@ void MergeAssertsPass::runOnOperation() {
     auto landBr = BrOp::create(b, brLoc, ValueRange{f}, exit);
     BlockIdNamer::set(landBr, ids.derive(cont, "f"));
     ArrayAttr blkIds = ids.splitTail(cont);
-    b.setInsertionPointToStart(cont);
-    auto pass = AssumeOp::create(b, aloc, cond);
-    // the assert's reach site (kReachSiteAttr), on the assume: reached
-    // once the assert holds
-    if (Attribute site = a->getAttr(kReachSiteAttr))
-      pass->setAttr(kReachSiteAttr, site);
+    if (!fails) {
+      b.setInsertionPointToStart(cont);
+      auto pass = AssumeOp::create(b, aloc, cond);
+      // the assert's reach site (kReachSiteAttr), on the assume: reached
+      // once the assert holds
+      if (Attribute site = a->getAttr(kReachSiteAttr))
+        pass->setAttr(kReachSiteAttr, site);
+    }
     b.setInsertionPoint(a);
-    auto cbr = CondBrOp::create(b, brLoc, cond, ValueRange{}, ValueRange{},
-                                cont, land);
+    // constant 0: straight to the failure site (^cont is dead)
+    Operation *cbr =
+        fails ? BrOp::create(b, brLoc, ValueRange{}, land).getOperation()
+              : CondBrOp::create(b, brLoc, cond, ValueRange{}, ValueRange{},
+                                 cont, land)
+                    .getOperation();
     if (blkIds)
       cbr->setAttr(kBlockIdsAttr, blkIds);
     // the assert's id (kAssertIdAttr), on both branches made of it

@@ -668,9 +668,20 @@ private:
     // be a name without a file position). The landing block's sea.br
     // follows the cond_br that chose it: the cond_br names the assert (a
     // landing block may serve several asserts once identical blocks are
-    // merged).
+    // merged). A cond_br taken on its true side is an assert that held:
+    // nothing stays recorded, so that a later failure whose branch into
+    // its landing block is a sea.br (an assert of constant false,
+    // sea-merge-asserts) is named, not the held one.
     if (auto n = dyn_cast<NameLoc>(op.getLoc());
         n && n.getName() == kMergedAssertLocName) {
+      if (auto cbr = dyn_cast<CondBrOp>(op);
+          cbr && !env.lookup(cbr.getCondition()).isZero()) {
+        mergedAssertLoc.reset();
+        mergedAssertOp = nullptr;
+        mergedAssertFile.reset();
+        mergedCond = {};
+        return;
+      }
       if (isa<BrOp>(op) && mergedAssertLoc)
         return;
       mergedAssertLoc = n.getChildLoc();

@@ -59,7 +59,7 @@ The main lines of `sea-vc`:
 | `vc.expand-memmove: k=<K> expanded=<n> bytes=<n> kept-symbolic=<n> kept-over-k=<n> kept-word-layout=<n> kept-abstract=<n> kept-tracked=<n> kept-companion-mirror=<n> kept-ptr-companion=<n>` | `--expand-memmove`: memmoves expanded into copies (and their length in index units, `bytes`) and kept, by reason ([Short memmoves as copies](../design/SeaM-memops.md#short-memmoves-as-copies-expand-memmovek)) |
 | `vc.range-fold: mode=<on\|check> <key>=<n> ...` | `--range-fold`: keys in alphabetical order: `bool`, `checks`, `depth-cap`, `empty`, `facts`, `facts-skipped`, `facts-used`, `icmp`, `no-facts`, `queries`, `select`, `wrap-flags` ([Range folding](../design/RangeFold.md#counters)) |
 | `vc.box-all: dead=<n> empty=<n> expand-max=<K> expanded=<n> guarded=<n> lowered=<n> nondets=<n>` | `--lower` of a program with `sea.box.all`: box ops erased unused, constant empty boxes (true), `--box-all-expand`, boxes expanded at every index, boxes entered behind a non-empty test, ops lowered to one index (guarded ones included), index nondets made ([sea.box.all](../design/BoxAll.md)) |
-| `vc.fold: assume-false=<n> assert-false=<n>` | the lowering folded an assume or assert of constant false (warnings `fold.assume-false`, `fold.assert-false`; `sea-merge-asserts` also warns `fold.assert-false` for an assert of constant 0, except the only assert right before the halt without a source location: SeaHorn's error marker `assert false; halt`; an assert that becomes constant only in the lowering's canonicalize, such as `icmp ne x, x`, is not reported, though the verdict still shows it); only when one did. The counts are of every program in the file the lowering ran on, not only the selected one |
+| `vc.fold: assume-false=<n> assert-false=<n>` | the lowering folded an assume or assert of constant false (warnings `fold.assume-false`, `fold.assert-false`; `sea-merge-asserts` also warns `fold.assert-false` for an assert of constant 0, except the only assert right before the halt without a source location: SeaHorn's error marker `assert false; halt`; canonicalize warns it for a merged assert's branch whose condition a later lowering made 0; an assert that becomes constant only in canonicalize's own folders, such as `icmp ne x, x`, is not reported, though the verdict still shows it); only when one did. The counts are of every program in the file the lowering ran on, not only the selected one |
 | `vc.statically-safe: no reachable sea.halt ...` | no path reaches the assertion (every one is blocked, e.g. by a folded `assume` of false): it cannot fail; the solver still answers (`unsat`) |
 | `seam.ptrint: assumed loads=<n>` | `--ptr-companion=assume`: split pointer loads that rest on A-PTRINT |
 | `seam.ptrint: checked loads=<n>`, then `seam.ptrint: holds` or `seam.ptrint: not discharged` | `--ptr-companion=check`: the loads checked, and the answer (`holds` for `unsat`) |
@@ -103,7 +103,8 @@ a safety verdict.
   `vc.reach-site`. The lowering keeps the tag on the checks it keeps, on
   the `sea.unreachable` of an assume folded to false (the same top of op)
   and on the `sea.assume` `sea-merge-asserts` makes of an assert (reached
-  once the assert holds). Checks the lowering makes have none. Two
+  once the assert holds; an assert of constant true becomes only that
+  assume, with no branch). Checks the lowering makes have none. Two
   lowerings of one input match their targets by site
   (`utils/cover-diff.py`). A check of the constant true (which
   canonicalize erases) also has `cond=true`, and `next=<k>`, the site of

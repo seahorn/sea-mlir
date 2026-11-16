@@ -102,6 +102,9 @@ Block *CondBrOp::getSuccessorForOperands(ArrayRef<Attribute> operands) {
   return nullptr;
 }
 
+static void noteFold(StringRef kind, Location loc);
+static bool inDeadBlock(Operation *op);
+
 namespace {
 // The constant and identical-successor cases of upstream cf.cond_br.
 struct SimplifyCondBr : OpRewritePattern<CondBrOp> {
@@ -109,18 +112,47 @@ struct SimplifyCondBr : OpRewritePattern<CondBrOp> {
 
   LogicalResult matchAndRewrite(CondBrOp op,
                                 PatternRewriter &rewriter) const override {
-    // the block stays: its ids (kBlockIdsAttr) go to the new branch
-    auto toBr = [&](ValueRange args, Block *dest) {
-      ArrayAttr ids = op->getAttrOfType<ArrayAttr>(kBlockIdsAttr);
+    // the block stays: its ids (kBlockIdsAttr) and the branch's other
+    // marks (the assert id of a merged assert's branch, which a replay
+    // reports) go to the new branch
+    auto n = dyn_cast<NameLoc>(op.getLoc());
+    const bool merged = n && n.getName().getValue() == "sea.assert";
+    // the br is not that assert (kAssertIdAttr, "sea.assert_id", Passes.h)
+    const bool dropAssertId =
+        merged && matchPattern(op.getCondition(), m_One());
+    auto toBr = [&](ValueRange args, Block *dest,
+                    std::optional<Location> loc = std::nullopt) {
+      NamedAttrList marks(op->getDiscardableAttrDictionary());
+      if (dropAssertId)
+        marks.erase("sea.assert_id");
+      DictionaryAttr kept = marks.getDictionary(op->getContext());
       auto br = rewriter.replaceOpWithNewOp<BrOp>(op, args, dest);
-      if (ids)
-        br->setAttr(kBlockIdsAttr, ids);
+      br->setDiscardableAttrs(kept);
+      if (loc)
+        br->setLoc(*loc);
       return success();
     };
+    // A merged assert's branch (sea-merge-asserts, kMergedAssertLocName)
+    // whose condition became constant only after the merge (a later
+    // lowering): held (1), it is no failure site any more, so the new
+    // branch drops the marker (a replay would otherwise name it as the
+    // failing assert, MergeAsserts.cpp); failed (0), the branch to the
+    // landing block keeps it and the fold is reported, as for a sea.assert
+    // of constant false.
     if (matchPattern(op.getCondition(), m_One()))
-      return toBr(op.getTrueDestOperands(), op.getTrueDest());
-    if (matchPattern(op.getCondition(), m_Zero()))
+      return toBr(op.getTrueDestOperands(), op.getTrueDest(),
+                  merged ? std::optional<Location>(rewriter.getUnknownLoc())
+                         : std::nullopt);
+    if (matchPattern(op.getCondition(), m_Zero())) {
+      if (merged && !inDeadBlock(op)) {
+        sea::diag::warn("fold.assert-false",
+                        "assert of constant false: the check fails whenever "
+                        "it is reached",
+                        n.getChildLoc());
+        noteFold("assert-false", n.getChildLoc());
+      }
       return toBr(op.getFalseDestOperands(), op.getFalseDest());
+    }
     if (op.getTrueDest() == op.getFalseDest() &&
         op.getTrueDestOperands() == op.getFalseDestOperands())
       return toBr(op.getTrueDestOperands(), op.getTrueDest());
