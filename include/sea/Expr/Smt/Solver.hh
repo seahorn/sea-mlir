@@ -8,7 +8,9 @@
 #include "sea/Expr/Smt/Model.hh"
 #include "llvm/ADT/iterator_range.h"
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace llvm {
@@ -77,6 +79,11 @@ public:
   /// Why the last check answered unknown, as far as the backend says
   /// ("timeout", "memout", or the backend's own text); empty if not known.
   virtual std::string reason_unknown() { return std::string(); }
+
+  /// The resource count of the solver so far, in the unit of
+  /// Limits::rlimit (z3's `rlimit count` statistic; deterministic for a
+  /// given z3); nullopt for a backend without one (Yices, Bitwuzla)
+  virtual std::optional<uint64_t> rlimit_count() { return std::nullopt; }
 };
 } // namespace solver
 } // namespace sea

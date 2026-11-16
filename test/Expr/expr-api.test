@@ -4,7 +4,7 @@
 // (include/sea/Expr/TypeChecker.hh): function / lambda application, nested
 // binders, widths, the error result and its cache, a deep term. cases
 // (experimental): constructor errors, sort, expansion. The checker prints
-// nothing: stderr is empty.
+// nothing: stderr is empty. The overflow predicates' printed names follow z3's naming pattern.
 RUN: sea-expr-api-test 2>%t.err | FileCheck %s
 RUN: count 0 < %t.err
 CHECK: test: bool-binary ok
@@ -13,6 +13,7 @@ CHECK: test: tc-functions ok
 CHECK: test: tc-errors ok
 CHECK: test: tc-deep ok
 CHECK: test: cases ok
+CHECK: test: overflow-names ok
 CHECK: failures: 0
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors

@@ -2,8 +2,21 @@ utils/fuzz-seam.py --seam-check (not an oracle): every --seam
 variant of every program also checks each rule firing with the solver
 (`premise => lhs = rhs`); no firing is invalid or unexpressible. Cells: the
 Store-Map rules and the cross-object skips (A-INB firings); wide: ARM.
-RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 5 -n 2 --accesses=cells --seam-check | FileCheck %s
-RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 5 -n 3 --accesses=wide --seam-check | FileCheck %s
+
+The checks are bounded by z3's rlimit, not by time, so the counts do not
+depend on the machine: with the 10 s default timeout, 4 checks were unknown
+(fuzz-seam-5-2, ids 55 and 121 in the two --seam-premises=0 wide variants;
+13-32 s each). Measured with z3 5.3.3 (docker/Dockerfile's Z3_TAG; the
+rlimit count is z3-version dependent; remeasure with sea-vc
+--seam-check-cost): the largest check uses 75.4M (id 55,
+32 s), the next 40.1M (id 121, 13 s), every other one under 22M, 99% under
+0.21M; 2.3-4.7M per second. The rlimit, 150M, is 2x the largest. The
+timeout, 300 s, is only a backstop: 9x the slowest check and above the
+~65 s that 150M takes, so the rlimit decides. --run-timeout=600: the longest
+sea-vc run takes 48 s. Yices has neither an rlimit nor a check timeout: its
+build runs the checks unbounded, as before.
+RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 --extra-args="--seam-check-rlimit=150000000 --seam-check-timeout=300" %} --run-timeout=600 --seed 5 -n 2 --accesses=cells --seam-check | FileCheck %s
+RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 --extra-args="--seam-check-rlimit=150000000 --seam-check-timeout=300" %} --run-timeout=600 --seed 5 -n 3 --accesses=wide --seam-check | FileCheck %s
 CHECK: seam-check-firings: {{[1-9][0-9]*}}
 CHECK: seam-check-invalid: 0
 CHECK: seam-check-unknown: 0

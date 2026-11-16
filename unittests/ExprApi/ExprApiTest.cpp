@@ -30,6 +30,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace expr;
@@ -356,6 +357,30 @@ void testCases() {
     llvm::outs() << "test: cases ok\n";
 }
 
+/// The add/sub/mul overflow predicates are named after z3's: bvumul_noovfl,
+/// bvsmul_noovfl and bvsmul_noudfl are z3's own; the add/sub names follow
+/// the same pattern (z3 has no such operators).
+void testOverflowNames() {
+  int before = failures;
+  Env E;
+  Expr x = bvc(E, "x", 8), y = bvc(E, "y", 8);
+  const std::pair<std::string, const char *> rows[] = {
+      {mk<SADD_NO_OVERFLOW>(x, y)->op().name(), "bvsadd_noovfl"},
+      {mk<UADD_NO_OVERFLOW>(x, y)->op().name(), "bvuadd_noovfl"},
+      {mk<SADD_NO_UNDERFLOW>(x, y)->op().name(), "bvsadd_noudfl"},
+      {mk<SSUB_NO_OVERFLOW>(x, y)->op().name(), "bvssub_noovfl"},
+      {mk<SSUB_NO_UNDERFLOW>(x, y)->op().name(), "bvssub_noudfl"},
+      {mk<USUB_NO_UNDERFLOW>(x, y)->op().name(), "bvusub_noudfl"},
+      {mk<SMUL_NO_OVERFLOW>(x, y)->op().name(), "bvsmul_noovfl"},
+      {mk<UMUL_NO_OVERFLOW>(x, y)->op().name(), "bvumul_noovfl"},
+      {mk<SMUL_NO_UNDERFLOW>(x, y)->op().name(), "bvsmul_noudfl"},
+  };
+  for (const auto &r : rows)
+    CHECK(r.first == r.second, "overflow predicate name " + r.first);
+  if (failures == before)
+    llvm::outs() << "test: overflow-names ok\n";
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -365,6 +390,7 @@ int main(int argc, char **argv) {
   testTcWidthsAndErrors();
   testTcDeep();
   testCases();
+  testOverflowNames();
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

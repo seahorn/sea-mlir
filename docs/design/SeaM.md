@@ -596,7 +596,11 @@ overlap of two recorded access bytes, a statically violated
 access, or a premise the solver finds unsatisfiable: checked first, so a vacuous premise never makes a firing valid) is `unexpressible` (warning `seam.check-unexpressible`), never valid.
 Output `seam-check: firings= checked= valid= invalid= unknown=
 unexpressible=` after the verdict, `seam-check-invalid:` (rule, op, location,
-terms, SMT-LIB) per invalid firing; exit 5. `--seam-plant-bug` (hidden, test
+terms, SMT-LIB) per invalid firing; exit 5. `--seam-check-cost` adds
+`seam-check-cost: id= rlimit= time=` per checked firing: the z3 rlimit
+count of its query (a fresh solver each, so the count is the query's) and
+its time, the measurement an rlimit is chosen from
+(test/VC/seam/fuzz-check.test). `--seam-plant-bug` (hidden, test
 only) makes `sub.const` or `row.store-hit` wrong; `test/VC/seam/check-planted.test`
 shows the check catches both.
 

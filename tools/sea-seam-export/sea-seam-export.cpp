@@ -16,6 +16,7 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 #include "sea/Dialect/Sea/SeaDialect.h"
+#include "sea/Dialect/Sea/SeaOps.h"
 #include "sea/Expr/RewriteTrail.hh"
 #include "sea/Expr/SeaMRules.hh"
 #include "sea/Expr/TypeChecker.hh"
@@ -23,11 +24,13 @@
 #include "sea/Support/Log.h"
 #include "sea/Support/Version.h"
 #include "sea/VC/OpSem.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/JSON.h"
 #include <cstdlib>
 #include <map>
+#include <optional>
 #include <sstream>
 using namespace mlir;
 using namespace expr;
@@ -42,6 +45,7 @@ struct Lane {
   const char *what;
   bool seam, wide, inb, simplify, memoryRules, rules, layout;
   unsigned pullConcat = 0; ///< SeaMOptions::pullConcatIte
+  bool stride = false;     ///< SeaMOptions::strideRule (R-STRIDE)
 };
 // Each sea-vc flag set below sets exactly these SeaMOptions fields
 // (sea-vc.cpp, runVc); every other field is at its SeaMOptions default in
@@ -81,6 +85,17 @@ const Lane kLanes[] = {
     {"seam", "sea-vc --seam",
      "SeaM as sea-vc --seam runs it, under the premises (ainb: true)", true,
      false, true, true, true, true, true},
+    {"seam-stride", "sea-vc --seam --seam-stride",
+     "SeaM with R-STRIDE, under the premises (ainb: true); R-STRIDE can "
+     "fire",
+     true, false, true, true, true, true, true, 0, true},
+    {"seam-inb0-stride", "sea-vc --seam --seam-premises=0 --seam-stride",
+     "SeaM with R-STRIDE, byte accesses, no premises; R-STRIDE can fire "
+     "(row.smap-abort-stride / cmp.stride)",
+     true, false, false, true, true, true, true, 0, true},
+    {"seam-wide-stride", "sea-vc --seam --seam-wide --seam-stride",
+     "SeaM with R-STRIDE, wide accesses, under the premises (ainb: true)", true,
+     true, true, true, true, true, true, 0, true},
     {"plain", "sea-vc",
      "no SeaM, no rewriter: the boundary is PtrIndexExpander's arithmetic",
      false, false, false, false, false, false, false},
@@ -140,6 +155,10 @@ TYPICAL:
 INPUT: a module with exactly one sea.program: one block, no block
 arguments, ending in sea.halt, placed (sea.segment, !sea.addr<N>), N =
 --address-bits. Taken as given: no lowering (sea-vc --lower would run).
+sea.umulo / sea.smulo: the native predicates, as sea-vc encodes them for
+its default solver z3 (and Bitwuzla). For Yices sea-vc --lower expands
+them first (sea-expand-intrinsics); without --lower it refuses them
+(vc.intrinsic).
 Memories must be byte memories indexed by addresses of width N.
 Pointer mode: address if the program has sea.addr.from_int, else opaque
 (as sea-vc --ptr-mode=auto decides it).
@@ -159,10 +178,16 @@ builds, the "sea_vc" key; "-": no sea-vc run builds them):
         loads resolved; the lane where ptr.load-resolve-concat can fire)
   seam-wide        sea-vc --seam --seam-wide   (premises: "ainb": true)
   seam             sea-vc --seam               (premises: "ainb": true)
+  seam-stride      sea-vc --seam --seam-stride (premises: "ainb": true;
+        R-STRIDE on: the lane where row.smap-abort-stride / cmp.stride fire)
+  seam-inb0-stride sea-vc --seam --seam-premises=0 --seam-stride
+        (byte accesses, no premises, R-STRIDE on)
+  seam-wide-stride sea-vc --seam --seam-wide --seam-stride (premises:
+        "ainb": true; wide accesses, R-STRIDE on)
   plain            sea-vc (no --seam): boundary = PtrIndexExpander
   simplify         sea-vc --simplify (bit-vector rules only)
 Lanes without wide accesses (raw, seam-inb0, seam-inb0-pull-concat, seam,
-plain, simplify) refuse
+seam-stride, seam-inb0-stride, plain, simplify) refuse
 a multi-byte access (vc.wide-access): sea-vc --lower would split it.
 Lanes with simplification also normalize the roots, probes and side
 conditions with SeaOpSem::simplify, as sea-vc normalizes its query.
@@ -190,7 +215,16 @@ OUTPUT (stdout, one JSON document, schema 3; keys sorted):
                         premise} | {id, rules, premises, op, unexpressible}]
   firings_unexpressible (--firings): count
 Terms: {sort: bv|bool|ptr|memory, [bits], op, args, ...}; ops and their
-fields are listed in docs/SeamExport.md. Additions are new keys / ops;
+fields are listed in docs/SeamExport.md (bit-vector operators as in
+SMT-LIB, total: udiv x 0 = all ones, urem x 0 = x, shift >= width gives 0
+(ashr: the sign fill); compares ne ugt uge sgt sge slt sle are bool
+terms). umul_no_overflow, smul_no_overflow, smul_no_underflow: bool terms
+over two bv args of one width n, the product as unbounded integers:
+unsigned < 2^n; signed <= 2^(n-1) - 1; signed >= -2^(n-1) (z3's
+Z3_mk_bvmul_no_overflow unsigned / signed, Z3_mk_bvmul_no_underflow).
+sea.umulo = not(umul_no_overflow(a, b)), sea.smulo =
+not(and(smul_no_overflow(a, b), smul_no_underflow(a, b))): sea-run's
+overflow bit. Additions are new keys / ops;
 an incompatible change bumps schema.
 
 FIRINGS (--firings; the rewrite trail, include/sea/Expr/RewriteTrail.hh):
@@ -203,16 +237,79 @@ normalization); lhs (kids already rewritten) and rhs as raw terms;
 premise: SeaOpSem::firingPremise, the statement sea-vc --seam-check
 checks (`premise -> lhs = rhs`, there after the boundary): true, or the
 layout (addr(obj) = base) and the in-bounds conditions the rule relies
-on. Pointers compare by address, memories cell by cell. A firing whose
+on; a raw term like lhs and rhs (PTR-INDEX: the sea.ptr.index promise,
+sle over sext / zext at a wider width; ALIGN: eq(bvand(addr, al-1), 0)).
+Pointers compare by address, memories cell by cell. A firing whose
 premise or terms cannot be expressed has `unexpressible: <why>` instead
 (warning export.firing-unexpressible) and makes the status 3.
 
 STATUS CODES: 0 exported; 1 error (bad input, unsupported construct:
 an operator, sort or width the format has no node for -> `Error: ...
-[validation.export]` on stderr, nothing on stdout); 3 exported, but some
+[validation.export]` on stderr, nothing on stdout; a program the VC
+cannot encode -> its vc.* error, e.g. vc.abstract-program (not placed),
+vc.unsupported-op, vc.intrinsic, vc.wide-access); 3 exported, but some
 firings are unexpressible (their records say why; a witness check must not
 count them).
 )";
+
+// The export node of a bit-vector operator that is a plain `children` node.
+static const char *bvNodeName(Expr e) {
+  if (isOpX<NEQ>(e))
+    return "ne";
+  if (isOpX<BSLT>(e))
+    return "slt";
+  if (isOpX<BSLE>(e))
+    return "sle";
+  if (isOpX<BSGT>(e))
+    return "sgt";
+  if (isOpX<BSGE>(e))
+    return "sge";
+  if (isOpX<BUGT>(e))
+    return "ugt";
+  if (isOpX<BUGE>(e))
+    return "uge";
+  if (isOpX<BUDIV>(e))
+    return "udiv";
+  if (isOpX<BSDIV>(e))
+    return "sdiv";
+  if (isOpX<BUREM>(e))
+    return "urem";
+  if (isOpX<BSREM>(e))
+    return "srem";
+  if (isOpX<BAND>(e))
+    return "bvand";
+  if (isOpX<BOR>(e))
+    return "bvor";
+  if (isOpX<BXOR>(e))
+    return "bvxor";
+  if (isOpX<BSHL>(e))
+    return "shl";
+  if (isOpX<BLSHR>(e))
+    return "lshr";
+  if (isOpX<BASHR>(e))
+    return "ashr";
+  // sea.umulo / sea.smulo as sea-vc encodes them for z3 and Bitwuzla
+  // (bv::mulOverflows, include/sea/Expr/ExprOverflow.hh)
+  if (isOpX<UMUL_NO_OVERFLOW>(e))
+    return "umul_no_overflow";
+  if (isOpX<SMUL_NO_OVERFLOW>(e))
+    return "smul_no_overflow";
+  if (isOpX<SMUL_NO_UNDERFLOW>(e))
+    return "smul_no_underflow";
+  return nullptr;
+}
+
+// The nodes whose format is exactly two arguments. Not every one of them
+// is binary in Expr (BSUB, BUDIV, BSDIV, BUREM, BSREM type-check n-ary), so
+// the export checks it rather than pass an n-ary term on.
+static bool isBinaryNode(llvm::StringRef op) {
+  static const llvm::StringRef binary[] = {
+      "eq",  "ne",  "ult",  "ule",  "ugt",  "uge",  "slt", "sle",  "sgt",
+      "sge", "sub", "udiv", "sdiv", "urem", "srem", "shl", "lshr", "ashr",
+  };
+  return llvm::is_contained(binary, op) || op == "umul_no_overflow" ||
+         op == "smul_no_overflow" || op == "smul_no_underflow";
+}
 
 static std::string printed(Expr e) {
   std::ostringstream s;
@@ -357,6 +454,20 @@ struct Exporter {
       o["op"] = "constMem";
       args.push_back(rec(e->arg(1)));
     }
+    else if (const char *name = bvNodeName(e)) {
+      // bit-vector operators OpSem makes from the arith ops and icmp
+      // predicates, and the premises of the firings (sle: the
+      // sea.ptr.index promise, ptr::promise; slt: icmp / addr.cmp slt;
+      // bvand: the ALIGN premise). Operands in order; the compares are
+      // bool-sorted by the term's own sort.
+      children(name);
+    }
+    else if (isOpX<BSEXT>(e) || isOpX<BZEXT>(e)) {
+      // the result width is the node's `bits`; the second Expr argument
+      // (the target sort) is not an argument of the node
+      o["op"] = isOpX<BSEXT>(e) ? "sext" : "zext";
+      args.push_back(rec(e->arg(0)));
+    }
     else if (isOpX<BEXTRACT>(e)) {
       o["op"] = "extract";
       o["start"] = bv::low(e);
@@ -398,6 +509,10 @@ struct Exporter {
     }
     else bad("unsupported expression: " + printed(e));
 #undef NODE
+    std::optional<llvm::StringRef> op = o.getString("op");
+    if (err.empty() && op && isBinaryNode(*op) && args.size() != 2)
+      bad(op->str() + " with " + std::to_string(args.size()) +
+          " arguments (the node has two): " + printed(e));
     if (!err.empty())
       return nullptr;
     o["args"] = std::move(args);
@@ -467,6 +582,14 @@ int main(int argc, char **argv) {
     fail("single block without arguments required");
   if (!isa<sea::HaltOp>(p.getBody().front().getTerminator()))
     fail("straight-line program must end in sea.halt");
+  // as sea-vc refuses it: OpSem encodes placed programs only
+  if (sea::isAbstract(p)) {
+    sea::diag::error("vc.abstract-program",
+                     "the program uses abstract pointers; place it first "
+                     "(sea-opt --sea-place-static)",
+                     p.getLoc());
+    return 1;
+  }
   Block &body = p.getBody().front();
 
   ExprFactory ef;
@@ -479,7 +602,10 @@ int main(int argc, char **argv) {
   opts.layoutDecide = lane->layout;
   opts.rules = lane->rules;
   opts.pullConcatIte = lane->pullConcat;
-  sea::SeaOpSem sem(ef, names, false, lane->seam, &opts);
+  opts.strideRule = lane->stride;
+  // Mul overflow as sea-vc encodes it for its default solver (z3; also
+  // Bitwuzla): the native predicates, not the expansion it gives Yices.
+  sea::SeaOpSem sem(ef, names, /*nativeMulOverflow=*/true, lane->seam, &opts);
   bool addressMode = false;
   for (Operation &op : body)
     if (isa<sea::AddrFromIntOp>(op))

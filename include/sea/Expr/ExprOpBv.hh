@@ -498,25 +498,25 @@ NOP(BEXT_ROTATE_RIGHT, "bvextrotright", FUNCTIONAL, BvOp,
 NOP(INT2BV, "int2bv", FUNCTIONAL, BvOp, typeCheck::bvType::Int2Bv)
 NOP(BV2INT, "bv2int", FUNCTIONAL, BvOp, typeCheck::bvType::Bv2Int)
 // Add w Overflow
-NOP(SADD_NO_OVERFLOW, "bvsadd_no_overflow", FUNCTIONAL, BvOp,
+NOP(SADD_NO_OVERFLOW, "bvsadd_noovfl", FUNCTIONAL, BvOp,
     typeCheck::bvType::BinaryBool)
-NOP(UADD_NO_OVERFLOW, "bvuadd_no_overflow", FUNCTIONAL, BvOp,
+NOP(UADD_NO_OVERFLOW, "bvuadd_noovfl", FUNCTIONAL, BvOp,
     typeCheck::bvType::BinaryBool)
-NOP(SADD_NO_UNDERFLOW, "bvbadd_no_underflow", FUNCTIONAL, BvOp,
+NOP(SADD_NO_UNDERFLOW, "bvsadd_noudfl", FUNCTIONAL, BvOp,
     typeCheck::bvType::BinaryBool)
 // Sub w Overflow
-NOP(SSUB_NO_OVERFLOW, "bvbsub_no_overflow", FUNCTIONAL, BvOp,
+NOP(SSUB_NO_OVERFLOW, "bvssub_noovfl", FUNCTIONAL, BvOp,
     typeCheck::bvType::BinaryBool)
-NOP(SSUB_NO_UNDERFLOW, "bvssub_no_underflow", FUNCTIONAL, BvOp,
+NOP(SSUB_NO_UNDERFLOW, "bvssub_noudfl", FUNCTIONAL, BvOp,
     typeCheck::bvType::BinaryBool)
-NOP(USUB_NO_UNDERFLOW, "bvusub_no_underflow", FUNCTIONAL, BvOp,
+NOP(USUB_NO_UNDERFLOW, "bvusub_noudfl", FUNCTIONAL, BvOp,
     typeCheck::bvType::BinaryBool)
 // Mul w Overflow
-NOP(SMUL_NO_OVERFLOW, "bvsmul_no_overflow", FUNCTIONAL, BvOp,
+NOP(SMUL_NO_OVERFLOW, "bvsmul_noovfl", FUNCTIONAL, BvOp,
     typeCheck::bvType::BinaryBool)
-NOP(UMUL_NO_OVERFLOW, "bvumul_no_overflow", FUNCTIONAL, BvOp,
+NOP(UMUL_NO_OVERFLOW, "bvumul_noovfl", FUNCTIONAL, BvOp,
     typeCheck::bvType::BinaryBool)
-NOP(SMUL_NO_UNDERFLOW, "bvbmul_no_underflow", FUNCTIONAL, BvOp,
+NOP(SMUL_NO_UNDERFLOW, "bvsmul_noudfl", FUNCTIONAL, BvOp,
     typeCheck::bvType::BinaryBool)
 namespace bv {
 /* XXX Add tc methods as needed */

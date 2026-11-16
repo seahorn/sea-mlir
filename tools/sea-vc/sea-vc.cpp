@@ -855,6 +855,14 @@ static cl::opt<unsigned> seamCheckRlimit(
              "reason=rlimit`"),
     cl::init(0), cl::value_desc("n"));
 
+static cl::opt<bool> seamCheckCost(
+    "seam-check-cost",
+    cl::desc("--seam-check: one `seam-check-cost: id=<n> rlimit=<n> "
+             "time=<s>` line per checked firing, the resources of its "
+             "query (rlimit: z3's count, the unit of --seam-check-rlimit; "
+             "`-` for another backend)"),
+    cl::init(false));
+
 static cl::opt<std::string> seamPlantBug(
     "seam-plant-bug",
     cl::desc("Test only: make one rule wrong (sub.const, row.store-hit), to "
@@ -2211,7 +2219,9 @@ TYPICAL:
                                  #   --seam-check-rlimit=<n>: z3 resource
                                  #   limit per query, deterministic (unset
                                  #   by default: untuned until a corpus
-                                 #   sweep sets one; a non-z3 backend warns)
+                                 #   sweep sets one; a non-z3 backend warns);
+                                 #   --seam-check-cost: each query's rlimit
+                                 #   count and seconds (to choose one)
   sea-vc p.mlir --ackermannize=on  # reads of read-only array constants
                                  #   (nd.<site> memories, memhavoc arrays:
                                  #   used only under select) become fresh
@@ -2844,6 +2854,12 @@ OUTPUT (stdout, `key: value` lines):
   seam-check-smt: <line>          (the SMT-LIB of the failed check: sat means
                                   the rule's result differs from its input)
   seam-check-unknown: id=<n> rules=<r,...> [reason=rlimit]   (timeout, rlimit or solver unknown)
+  seam-check-cost: id=<n> rlimit=<n>|- time=<s>   (--seam-check-cost: per
+                                  checked firing, valid or not, before its
+                                  other lines; the query's z3 rlimit count, the unit of
+                                  --seam-check-rlimit, `-` for another
+                                  backend; the premise's satisfiability
+                                  check is not counted)
   seam.<counter>: <n>              (--seam-stats, before `result:`; with
                                   --smt2 on stderr): rule-calls, rules-fired,
                                   cache-hits, ..., and seam.rule.<rule>: the
@@ -4020,6 +4036,8 @@ int main(int argc, char **argv) {
                 "--simplify");
   if (seamTrailText && seamTrail.empty())
     return fail("--seam-trail-text needs --seam-trail");
+  if (seamCheckCost && !checkOn)
+    return fail("--seam-check-cost needs --seam-check");
   unsigned checkSample = 0; // 0: every firing
   if (checkOn && !seamCheck.empty() &&
       StringRef(seamCheck).getAsInteger(10, checkSample))
@@ -6090,6 +6108,13 @@ int main(int argc, char **argv) {
         sea::Stopwatch qwatch;
         sea::solver::SolverResult res =
             cs->add(q) ? cs->check() : sea::solver::SolverResult::UNKNOWN;
+        if (seamCheckCost) {
+          // the query's own solver (a fresh one): its count is the query's
+          std::optional<uint64_t> rl = cs->rlimit_count();
+          os << "seam-check-cost: id=" << f.id
+             << " rlimit=" << (rl ? std::to_string(*rl) : std::string("-"))
+             << " time=" << format("%.3f", qwatch.seconds()) << "\n";
+        }
         if (res == sea::solver::SolverResult::UNSAT) {
           ++valid;
           continue;
