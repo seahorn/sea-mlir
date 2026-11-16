@@ -88,7 +88,9 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   exact, on by default in the lowering right before sea-merge-asserts,
   `sea-vc --lower-disable=assume-fold`; not under `--reach` unless
   `--reach-fold-facts`; `select c, x, false` / `select c, true, x` count
-  as and / or here and in sea-range-fold; docs/design/AssumeFold.md),
+  as and / or here and in sea-range-fold; a fact `x == K` on an integer x
+  replaces x's uses by K, never on addresses / pointers;
+  docs/design/AssumeFold.md),
   `sea-widen-memory` (byte
   memory -> aligned k-byte words when every access provably fits; in the
   lowering with `sea-vc --widen-memory=k`), `sea-apply-tracking`

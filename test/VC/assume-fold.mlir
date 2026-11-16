@@ -16,6 +16,9 @@
 // RUN: sea-vc %s --program=edge --lower --replay-original 2>&1 | FileCheck %s --check-prefix=EDGE
 // RUN: sea-vc %s --program=edge --lower --lower-disable=assume-fold 2>&1 | FileCheck %s --check-prefix=EDGE-OFF
 // RUN: sea-vc %s --program=edge_join --lower --replay-original 2>&1 | FileCheck %s --check-prefix=EJOIN
+// RUN: sea-vc %s --program=int_eq --lower --seam --vcgen-only --dag-stats 2>&1 | FileCheck %s --check-prefix=INTEQ
+// RUN: sea-vc %s --program=int_eq_sat --lower --replay-original 2>&1 | FileCheck %s --check-prefix=INTSAT
+// RUN: sea-vc %s --program=int_eq_chain_edge --lower --replay-original 2>&1 | FileCheck %s --check-prefix=CHAIN
 // RUN: sea-vc %s --program=select_and --lower --range-fold=on 2>&1 | FileCheck %s --check-prefix=SAND
 // sea-assume-fold in the lowering (docs/design/AssumeFold.md). @fold: the
 // branch on the assumed %c folds and its dead arm goes; the answer and the
@@ -220,6 +223,90 @@ sea.program @select_and {
   %ok1 = sea.icmp ult, %x, %c9 : i8
   %ok = sea.or %ok1, %lt : i1
   sea.assert %ok
+  sea.halt
+}
+
+
+// @int_eq: `assume (x == 5)`, then x scales an address: with x replaced
+// by 5 the store's address is a constant and the VC is smaller (the
+// reduced shape of firedancer's step jobs).
+// INTEQ: vc.dag-size: {{([0-9]|[0-9][0-9]|10[0-9])$}}
+// INTEQ: vc.assume-fold: {{.*}}int-uses=2 int-values=1
+sea.program @int_eq {
+  %c4 = sea.const 4 : i64
+  %c5 = sea.const 5 : i64
+  %k7 = sea.const 7 : i32
+  %m0 = sea.mem.nondet "m" [0] : !sea.mem<!sea.addr<64>, i8>
+  %b = sea.segment "stack.1" base 3221225456 : i64 size 64 : i64 align 8 kind "stack" : !sea.addr<64>
+  %x = sea.nondet "x" [1] : i64
+  %y = sea.nondet "y" [2] : i64
+  %e = sea.icmp eq, %x, %c5 : i64
+  sea.assume %e
+  %yb = sea.icmp ult, %y, %c5 : i64
+  sea.assume %yb
+  %ox = sea.mul %x, %c4 : i64
+  %oy = sea.mul %y, %c4 : i64
+  %px = sea.addr.add %b, %ox : !sea.addr<64>, i64
+  %py = sea.addr.add %b, %oy : !sea.addr<64>, i64
+  %m1 = sea.store %m0[%px], %k7 inplace : !sea.mem<!sea.addr<64>, i8>, i32
+  %v0 = sea.load %m0[%py] : !sea.mem<!sea.addr<64>, i8> -> i32
+  %v1 = sea.load %m1[%py] : !sea.mem<!sea.addr<64>, i8> -> i32
+  %lt = sea.icmp ult, %y, %x : i64
+  sea.cond_br %lt, ^a, ^b
+^a:
+  %g = sea.icmp eq, %v0, %v1 : i32
+  sea.assert %g
+  sea.halt
+^b:
+  %f = sea.const 0 : i1
+  sea.assert %f
+  sea.halt
+}
+
+// @int_eq_sat: on the true edge of `cond_br (x == 7)` x is 7; the assert
+// there fails, and the model of x replays on the original program.
+// INTSAT: vc.assume-fold: {{.*}}int-uses=1 int-values=1
+// INTSAT: result: sat
+// INTSAT: replay.original: {{.*}}match=yes
+sea.program @int_eq_sat {
+  %c1 = sea.const 1 : i8
+  %c7 = sea.const 7 : i8
+  %c8 = sea.const 8 : i8
+  %x = sea.nondet "x" [0] : i8
+  %e = sea.icmp eq, %x, %c7 : i8
+  sea.cond_br %e, ^a, ^b
+^a:
+  %s = sea.add %x, %c1 : i8
+  %ok = sea.icmp ne, %s, %c8 : i8
+  sea.assert %ok loc("x.c":11:1)
+  sea.halt
+^b:
+  sea.halt
+}
+
+
+// @int_eq_chain_edge: x == 5 makes `icmp eq y, x` the equality y == 5 on
+// the true edge (a second round); the assert there fails (sat) and the
+// model replays on the original program.
+// CHAIN: vc.assume-fold: {{.*}}int-uses=2 int-values=2 rounds=2
+// CHAIN: result: sat
+// CHAIN: replay.original: {{.*}}match=yes
+sea.program @int_eq_chain_edge {
+  %c1 = sea.const 1 : i64
+  %c5 = sea.const 5 : i64
+  %c6 = sea.const 6 : i64
+  %x = sea.nondet "x" [0] : i64
+  %y = sea.nondet "y" [1] : i64
+  %e = sea.icmp eq, %x, %c5 : i64
+  sea.assume %e
+  %e2 = sea.icmp eq, %y, %x : i64
+  sea.cond_br %e2, ^a, ^b
+^a:
+  %z = sea.add %y, %c1 : i64
+  %ok = sea.icmp ne, %z, %c6 : i64
+  sea.assert %ok loc("x.c":21:1)
+  sea.halt
+^b:
   sea.halt
 }
 

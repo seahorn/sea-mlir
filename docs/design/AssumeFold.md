@@ -70,6 +70,39 @@ lowering, which is loop-free) is visited later and counts with the checks
 and the entry facts of blocks already visited (its target's strict
 dominators): fewer facts, never a wrong one.
 
+Integer equalities: an i1 fact `icmp eq x, K` = 1 or `icmp ne x, K` = 0
+(K a constant on either side, `x` an integer `iN` with N > 1), from any of
+the sources above (a check, an edge, a conjunct or negation of one),
+fixes `x` to K in the same region: every use of `x` there reads `sea.const
+K` (`collectIntFacts`, after the i1 facts; derivation D7 / rule F3 of the
+fact-fold rule table). Every kind of use: arithmetic operands, addresses
+computed from `x`, values passed to block arguments, strong prints (they
+show the same value), operands of ops with nsw / nuw (the flags stay; the
+op with constant operands is not folded: such ops never fold). The icmp
+that makes the fact is not in its region (it defines the fact's value,
+which dominates the source), so it keeps `x`. Integers only: `sea.icmp`
+takes integers; an address or pointer equality (`sea.addr.cmp`,
+`sea.ptr.cmp`) is never read, because equal addresses do not make two
+pointers interchangeable (provenance, docs/design/PtrSort.md; transform
+test @addr_eq). Exact for the same reason as the i1 facts: the fact holds
+at every execution of the use, and an operand that reads an equal value
+changes nothing. Repro (`test/VC/assume-fold.mlir` @int_eq: `assume x ==
+5`, then `x * 4` as a store offset): the store's address becomes a
+constant, DAG 138 -> 106.
+
+Rounds: a substitution can make a new fact. `assume (x == 5); assume
+(icmp eq y, x)`: once x reads 5, the second compare is `icmp eq y, 5`, the
+equality y == 5 (likewise on the true edge of a branch on it, and an i1
+derivation can pass a new constant). So the pass collects the facts again
+and substitutes until a round replaces nothing (`rounds=`; transform test
+@int_eq_chain*, VC @int_eq_chain_edge). It terminates: each replacement
+turns an operand that is not a `sea.const` into one, and no fact is about
+a constant, so there are at most as many replacements as such operands
+and at most one round more; the bound is checked at run time
+(`sea-assume-fold.postcondition`). Not within the pass: facts that need a
+folder first, e.g. `x ult 10` under `x == 5` (`icmp ult 5, 10` becomes the
+constant 1 only at canonicalize).
+
 Every use is replaced: branch and select conditions, connective operands,
 block-argument values on edges the check dominates, later asserts and
 assumes. The pass changes operands only; sea-merge-asserts drops an assert
@@ -148,7 +181,8 @@ accesses unaligned.
 
 On the program as the attribute `sea.assume_fold` (only when a use was
 folded), printed by sea-vc as `vc.assume-fold: uses= by-assume= by-assert=
-by-edge= values= branches= selects= asserts-held= asserts-failed= blocks=`
+by-edge= values= branches= selects= asserts-held= asserts-failed= blocks=
+int-uses= int-values=`
 and by the log `lower.assume-fold` (level 1 per run, level 2 per folded
 use):
 
@@ -160,20 +194,38 @@ use):
 - `branches`, `selects`: cond_br / select ops whose condition was replaced;
 - `asserts-held`, `asserts-failed`: asserts whose condition became 1 / 0
   (dropped / direct failures in sea-merge-asserts);
+- `int-uses`, `int-values`: operands replaced by an integer equality
+  (not counted in `uses`; integer equalities are applied after the i1
+  facts of each round), distinct integers with a replaced use;
+- `rounds`: rounds that replaced a use (1 unless a substitution made a
+  new fact);
 - `blocks`: blocks reachable before the fold and not after, when each
   cond_br on a constant takes its one edge (what canonicalize then
   erases; blocks sccp's constants already cut off are not counted).
 
-The postcondition collects the facts again (checks and edges) on the
-rewritten program, with a fresh dominance analysis, and checks that no use
-a dominating fact fixes is left.
+The postcondition collects the facts again (checks and edges, and their
+integer equalities) on the rewritten program, with a fresh dominance
+analysis, and checks that no use a dominating fact fixes is left.
+
+Effect on the VC size: K also replaces x where it is passed to a block
+argument on an edge in the region. If the join's other edges pass x, the
+argument was uniform (canonicalize dropped it); now it is a choice between
+K and x, an ite over the incoming edges in the VC: one node more (a
+reduced join: DAG 50 -> 51). A hypothesis, not checked job by job: this is
+the growth of 1-2 nodes in 29 suite jobs at this step. The constant is kept
+on purpose: a constant edge argument is what sea-prune-edges reads to find
+dead edges.
 
 Cost: `collectAssumedValues` walks, per check, the values it fixes; an
 assert of each prefix of a long `and` chain fixes the whole prefix, so
 that case is quadratic in the chain length (not capped). The edge facts
 derive once per cond_br edge; a join checks each candidate on each other
 edge (a dominance query per check of the value and a walk up the
-dominator tree).
+dominator tree). Every round collects all facts again, O(program) per
+round; the rounds are at most the longest chain of facts that each need
+the previous round's constants, plus one. On the public and private
+suites (941 jobs) no job needs a second round (`rounds=1`
+wherever the fold replaces a use).
 
 ## Select form
 
@@ -250,5 +302,5 @@ with the flag). The pipeline `sea-vc-lower{reach=true}` is the reach lowering
 - An assume that post-dominates a branch on its value with no assert in
   between makes the other edge infeasible too; such branches are reported
   (`vc.assumed-branches`), not folded.
-- Integer equalities (`assume(x == K)`) are not substituted at dominated
-  uses; `sea-range-fold` settles comparisons of `x` under such facts.
+- Integer facts other than equalities (`x ult K`) are not used here;
+  `sea-range-fold` settles comparisons under such assumes.

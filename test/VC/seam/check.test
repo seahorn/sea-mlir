@@ -6,10 +6,13 @@ Yices, sampled or not. Under --simplify too.
 RUN: sea-vc %S/store-map.mlir --lower --widen-memory=4 --seam --seam-check | FileCheck %s --check-prefix=ALL
 RUN: sea-vc %S/store-map-join.mlir --lower --widen-memory=4 --seam --seam-check | FileCheck %s
 RUN: sea-vc %S/arm.mlir --lower --seam --seam-check | FileCheck %s
-RUN: sea-vc %S/arm-inb-symbolic.mlir --lower --seam --seam-check | FileCheck %s
+RUN: sea-vc %S/arm-inb-symbolic.mlir --lower --lower-disable=assume-fold --seam --seam-check | FileCheck %s
 RUN: %if yices %{ sea-vc %S/join.mlir --lower --seam --seam-check --solver=yices | FileCheck %s %}
 RUN: sea-vc %S/store-map-fork.mlir --lower --widen-memory=4 --seam --seam-check=5 | FileCheck %s --check-prefix=SAMPLE
 RUN: sea-vc %S/nary-ops.mlir --lower --simplify --program=mul3m --seam-check | FileCheck %s
+arm-inb-symbolic.mlir without sea-assume-fold: its offset stays symbolic
+(the fold makes it the assumed number, and a statically out-of-object
+access is unexpressible for the check).
 The check comes after the verdict and does not change a valid run's status.
 ALL: result: unsat
 ALL: seam-check: firings=[[N:[0-9]+]] checked=[[N]] valid=[[N]] invalid=0 unknown=0 unexpressible=0

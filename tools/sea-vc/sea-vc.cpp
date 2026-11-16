@@ -2398,7 +2398,8 @@ OUTPUT (stdout, `key: value` lines):
   program: @<name>
   vc.assume-fold: uses=<n> by-assume=<n> by-assert=<n> by-edge=<n>
       values=<n> branches=<n> selects=<n> asserts-held=<n>
-      asserts-failed=<n> blocks=<n>
+      asserts-failed=<n> blocks=<n> int-uses=<n> int-values=<n>
+      rounds=<n>
                                   (--lower, when it folded a use:
                                   sea-assume-fold, on by default, exact;
                                   uses of an i1 a dominating assume or
@@ -2412,6 +2413,13 @@ OUTPUT (stdout, `key: value` lines):
                                   -failed: asserts made 1 (dropped) / 0
                                   (a direct failure); blocks: no
                                   longer reachable, erased by canonicalize;
+                                  int-uses / int-values: uses of an
+                                  integer x replaced by K under a fact
+                                  x == K (icmp eq x, K true or icmp ne
+                                  false, same sources and regions; not
+                                  pointers or addresses), and distinct x;
+                                  rounds: rounds that replaced a use (a
+                                  substitution can make a new fact);
                                   off: --lower-disable=assume-fold;
                                   docs/design/AssumeFold.md)
   vc.assumed-branches: branches=<n> selects=<n> values=<n>
@@ -4311,7 +4319,8 @@ int main(int argc, char **argv) {
     sea::stats::Line &l = lowerStats.line("vc.assume-fold");
     for (StringRef key :
          {"uses", "by-assume", "by-assert", "by-edge", "values", "branches",
-          "selects", "asserts-held", "asserts-failed", "blocks"})
+          "selects", "asserts-held", "asserts-failed", "blocks", "int-uses",
+          "int-values", "rounds"})
       if (auto i = d.getAs<IntegerAttr>(key))
         l.kv(key, i.getInt());
   }

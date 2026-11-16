@@ -14,7 +14,11 @@
 // it held. Edge facts (collectEdgeFacts): the true edge of `sea.cond_br %c`
 // fixes %c to 1, the false edge to 0 (same derivations); a fact holds on
 // entry of a block when it holds on every executable edge into it, and
-// then in every op the block dominates. canonicalize then folds the constant
+// then in every op the block dominates. Integer equalities
+// (collectIntFacts): a fact `icmp eq x, K` = 1 or `icmp ne x, K` = 0, x an
+// iN with N > 1, fixes x to K in the same region; not addresses or
+// pointers (equal addresses are not interchangeable pointers).
+// canonicalize then folds the constant
 // branches, selects and connectives and erases the blocks no path reaches any
 // more; sea-merge-asserts drops an assert the fold made 1 and makes one it made
 // 0 a direct failure.
@@ -39,12 +43,15 @@
 //     block reachable from the entry), reads a
 //     sea.const of the fixed value (unknown location, at the start of the
 //     entry block). Nothing is erased; branches and asserts stay.
-//     Checked, on the facts (checks and edges) collected again after the
-//     rewrite: no such use left.
+//     Likewise every such use of an integer x a fact x == K fixes reads a
+//     sea.const K. Checked, on the facts (checks and edges, their integer
+//     equalities) collected again after the rewrite: no such use left.
 //   Reports: the counters (kAssumeFoldStatsAttr on the program, only when
 //     a use was folded; the lower.assume-fold log): uses (operands
 //     replaced) and of them by-assume / by-assert / by-edge (the fact that
-//     folded it; checks are applied first), values (distinct values with a
+//     folded it; checks are applied first), int-uses / int-values
+//     (operands replaced by an integer equality, distinct integers),
+//     values (distinct values with a
 //     replaced use), branches / selects (cond_br / select ops whose condition
 //     was replaced), asserts-held / asserts-failed (asserts whose condition
 //     became 1 / 0), blocks (blocks reachable before and no more once each
@@ -329,6 +336,43 @@ void findBranchesOnAssumed(ProgramOp program,
 
 namespace {
 
+/// An integer equality `value = k` (value an iN, N > 1) that the i1 fact
+/// `from` gives (D7 of docs/design/FactFolds.md): `icmp eq x, K` = 1 or
+/// `icmp ne x, K` = 0, K a constant on either side. Its region is the
+/// fact's. Integers only: sea.icmp takes integers, and an address or
+/// pointer compare (sea.addr.cmp, sea.ptr.cmp) is never read: equal
+/// addresses do not make two pointers interchangeable (PtrSort.md).
+struct IntFact {
+  Value value;
+  APInt k;
+  const AssumedValue *from;
+};
+
+void collectIntFacts(ArrayRef<AssumedValue> facts,
+                     SmallVectorImpl<IntFact> &out) {
+  for (const AssumedValue &f : facts) {
+    auto cmp = f.value.getDefiningOp<ICmpOp>();
+    if (!cmp)
+      continue;
+    ICmpPredicate p = cmp.getPredicate();
+    if (!(p == ICmpPredicate::eq && f.truth) &&
+        !(p == ICmpPredicate::ne && !f.truth))
+      continue;
+    APInt k;
+    Value x;
+    if (matchPattern(cmp.getRhs(), m_ConstantInt(&k)))
+      x = cmp.getLhs();
+    else if (matchPattern(cmp.getLhs(), m_ConstantInt(&k)))
+      x = cmp.getRhs();
+    else
+      continue;
+    auto t = dyn_cast<IntegerType>(x.getType());
+    if (!t || t.getWidth() < 2 || matchPattern(x, m_Constant()))
+      continue; // i1: D3 already; constant: the folders'
+    out.push_back({x, k, &f});
+  }
+}
+
 /// Blocks reachable from the entry when a cond_br on a sea.const takes its
 /// one edge.
 llvm::DenseSet<Block *> liveBlocks(ProgramOp program) {
@@ -376,17 +420,14 @@ void AssumeFoldPass::runOnOperation() {
   if (region.empty())
     return markAllAnalysesPreserved();
   DominanceInfo &dom = getAnalysis<DominanceInfo>();
-  // the checks' facts first, then the edges' (a use both fix counts as by
-  // its check)
-  SmallVector<AssumedValue> facts;
-  collectAssumedValues(program, facts);
-  {
+  // the facts of the program as it is: the checks' first, then the edges'
+  // (a use both fix counts as by its check)
+  auto collect = [&](DominanceInfo &d, SmallVectorImpl<AssumedValue> &out) {
+    collectAssumedValues(program, out);
     SmallVector<AssumedValue> edges;
-    collectEdgeFacts(program, dom, facts, edges);
-    facts.append(edges);
-  }
-  if (facts.empty())
-    return markAllAnalysesPreserved();
+    collectEdgeFacts(program, d, out, edges);
+    out.append(edges);
+  };
   const llvm::DenseSet<Block *> liveBefore = liveBlocks(program);
 
   // the constants, made on first use at the start of the entry block; no
@@ -402,8 +443,21 @@ void AssumeFoldPass::runOnOperation() {
     }
     return consts[b];
   };
+  // integer constants, likewise in the entry block, one per type and value
+  DenseMap<Attribute, Value> intConsts;
+  auto intConstant = [&](Type t, const APInt &k) {
+    auto attr = IntegerAttr::get(t, k);
+    Value &c = intConsts[attr];
+    if (!c) {
+      OpBuilder ob(ctx);
+      ob.setInsertionPointToStart(&region.front());
+      c = ConstOp::create(ob, ob.getUnknownLoc(), t, attr);
+    }
+    return c;
+  };
 
-  uint64_t uses = 0, byAssume = 0, byAssert = 0, byEdge = 0;
+  uint64_t uses = 0, byAssume = 0, byAssert = 0, byEdge = 0, intUses = 0;
+  llvm::DenseSet<Value> intValues;
   llvm::SmallPtrSet<Operation *, 16> branchOps, selectOps, assertOps[2];
   llvm::DenseSet<Value> values;
   auto folds = [](DominanceInfo &d, const AssumedValue &f, OpOperand &u) {
@@ -413,29 +467,79 @@ void AssumeFoldPass::runOnOperation() {
     return f.block ? d.dominates(f.block, user->getBlock())
                    : d.properlyDominates(f.source, user);
   };
-  for (const AssumedValue &f : facts) {
-    for (OpOperand &u : llvm::make_early_inc_range(f.value.getUses())) {
-      if (!folds(dom, f, u))
-        continue;
-      Operation *user = u.getOwner();
-      if (isa<CondBrOp>(user) && u.getOperandNumber() == 0)
-        branchOps.insert(user);
-      else if (isa<SelectOp>(user) && u.getOperandNumber() == 0)
-        selectOps.insert(user);
-      else if (isa<AssertOp>(user))
-        assertOps[f.truth].insert(user);
-      u.set(constant(f.truth));
-      ++uses;
-      ++(f.block ? byEdge : isa<AssertOp>(f.source) ? byAssert : byAssume);
-      values.insert(f.value);
-      SEA_LOG(logAssumeFold, log::Object)
-          .msg("fold")
-          .kv("op", user->getName().getStringRef())
-          .kv("value", f.truth ? 1 : 0)
-          .kv("by",
-              f.block ? StringRef("edge") : f.source->getName().getStringRef())
-          .at(user->getLoc());
+
+  // Rounds: a substitution can make a new fact (`icmp eq y, x` with x
+  // replaced by K is the equality y == K; an i1 fact's derivation can pass
+  // the new constant), so the facts are collected again until a round
+  // replaces nothing. Each replacement turns an operand that is not a
+  // sea.const into one, and no fact is about a constant, so there are at
+  // most as many replacements as such operands, and at most one round more
+  // than that (checked).
+  uint64_t bound = 1;
+  program.walk([&](Operation *op) {
+    for (Value v : op->getOperands())
+      bound += !matchPattern(v, m_Constant());
+  });
+  uint64_t rounds = 0;
+  for (;; ++rounds) {
+    if (rounds > bound) {
+      (void)postconditionFailed(
+          "sea-assume-fold", "more rounds than operands to replace", program);
+      return signalPassFailure();
     }
+    const uint64_t before = uses + intUses;
+    SmallVector<AssumedValue> facts;
+    collect(dom, facts);
+    // the integer equalities of these facts (before this round's rewrite)
+    SmallVector<IntFact> intFacts;
+    collectIntFacts(facts, intFacts);
+    for (const AssumedValue &f : facts) {
+      for (OpOperand &u : llvm::make_early_inc_range(f.value.getUses())) {
+        if (!folds(dom, f, u))
+          continue;
+        Operation *user = u.getOwner();
+        if (isa<CondBrOp>(user) && u.getOperandNumber() == 0)
+          branchOps.insert(user);
+        else if (isa<SelectOp>(user) && u.getOperandNumber() == 0)
+          selectOps.insert(user);
+        else if (isa<AssertOp>(user))
+          assertOps[f.truth].insert(user);
+        u.set(constant(f.truth));
+        ++uses;
+        ++(f.block ? byEdge : isa<AssertOp>(f.source) ? byAssert : byAssume);
+        values.insert(f.value);
+        SEA_LOG(logAssumeFold, log::Object)
+            .msg("fold")
+            .kv("op", user->getName().getStringRef())
+            .kv("value", f.truth ? 1 : 0)
+            .kv("by", f.block ? StringRef("edge")
+                              : f.source->getName().getStringRef())
+            .at(user->getLoc());
+      }
+    }
+    // integer equalities (F3): each use of x in the region reads K. The
+    // icmp that makes the fact is not in its region (it defines the fact's
+    // value, which dominates the source); prints and block-argument
+    // operands are plain uses; an op with nsw / nuw keeps its flags (an
+    // equal operand; such ops do not fold)
+    for (const IntFact &f : intFacts) {
+      for (OpOperand &u : llvm::make_early_inc_range(f.value.getUses())) {
+        if (!folds(dom, *f.from, u))
+          continue;
+        Operation *user = u.getOwner();
+        u.set(intConstant(f.value.getType(), f.k));
+        ++intUses;
+        intValues.insert(f.value);
+        SEA_LOG(logAssumeFold, log::Object)
+            .msg("fold-int")
+            .kv("op", user->getName().getStringRef())
+            .kv("by", f.from->block ? StringRef("edge")
+                                    : f.from->source->getName().getStringRef())
+            .at(user->getLoc());
+      }
+    }
+    if (uses + intUses == before)
+      break;
   }
 
   // postcondition, on the facts collected again from the rewritten program
@@ -456,9 +560,19 @@ void AssumeFoldPass::runOnOperation() {
                                     u.getOwner());
           return signalPassFailure();
         }
+    SmallVector<IntFact> intAgain;
+    collectIntFacts(again, intAgain);
+    for (const IntFact &f : intAgain)
+      for (OpOperand &u : f.value.getUses())
+        if (folds(fresh, *f.from, u)) {
+          (void)postconditionFailed(
+              "sea-assume-fold",
+              "a use of an integer a dominating equality fixes", u.getOwner());
+          return signalPassFailure();
+        }
   }
 
-  if (!uses)
+  if (!uses && !intUses)
     return markAllAnalysesPreserved();
   const llvm::DenseSet<Block *> liveAfter = liveBlocks(program);
   uint64_t blocks = 0;
@@ -481,6 +595,9 @@ void AssumeFoldPass::runOnOperation() {
   stat("asserts-held", assertOps[1].size());
   stat("asserts-failed", assertOps[0].size());
   stat("blocks", blocks);
+  stat("int-uses", intUses);
+  stat("int-values", intValues.size());
+  stat("rounds", rounds);
   program->setAttr(kAssumeFoldStatsAttr, DictionaryAttr::get(ctx, stats));
   SEA_LOG(logAssumeFold, log::Flow)
       .kv("uses", uses)
@@ -492,7 +609,10 @@ void AssumeFoldPass::runOnOperation() {
       .kv("selects", uint64_t(selectOps.size()))
       .kv("asserts-held", uint64_t(assertOps[1].size()))
       .kv("asserts-failed", uint64_t(assertOps[0].size()))
-      .kv("blocks", blocks);
+      .kv("blocks", blocks)
+      .kv("int-uses", intUses)
+      .kv("int-values", uint64_t(intValues.size()))
+      .kv("rounds", rounds);
   // only operands and constants changed: the CFG and dominance stay
   markAnalysesPreserved<DominanceInfo>();
 }
