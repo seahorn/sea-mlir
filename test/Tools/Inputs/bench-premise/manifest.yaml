@@ -1,0 +1,31 @@
+# bench-premise.test: jobs for a fake sea-vc (Inputs/fake-sea-vc.py); each
+# .mlir is the script of what the fake prints and how it ends. b-* / c-*:
+# premise-class B / C; a-*: undeclared (class A). *-dis: answer unsat
+# with --alt (configuration default+alt), sat without.
+family: fam
+defaults: {args: [], timeout: 60, mem: 4096}
+jobs:
+  b-left: {expected: sat, tier: smoke, premise-class: B}
+  b-unconf: {expected: sat, tier: smoke, premise-class: B}
+  b-inb: {expected: sat, tier: smoke, premise-class: B}
+  b-unsat: {expected: sat, tier: smoke, premise-class: B}
+  b-mismatch: {expected: sat, tier: smoke, premise-class: B}
+  c-unconf: {expected: sat, tier: smoke, premise-class: C}
+  c-unsat: {expected: sat, tier: smoke, premise-class: C}
+  a-left: {expected: sat, tier: smoke}
+  a-unconf: {expected: sat, tier: smoke}
+  a-inb: {expected: sat, tier: smoke}
+  a-noclob: {expected: sat, tier: smoke}
+  b-r2ok: {expected: sat, tier: smoke, premise-class: B}
+  b-origmem: {expected: sat, tier: smoke, premise-class: B}
+  b-rc6: {expected: sat, tier: smoke, premise-class: B}
+  b-noclob: {expected: sat, tier: smoke, premise-class: B}
+  b-nofail: {expected: sat, tier: smoke, premise-class: B}
+  c-clean: {expected: sat, tier: smoke, premise-class: C}
+  c-left: {expected: sat, tier: smoke, premise-class: C}
+  b-dis: {expected: sat, tier: smoke, premise-class: B}
+  c-dis-clean: {expected: sat, tier: smoke, premise-class: C}
+  c-dis-sig: {expected: sat, tier: smoke, premise-class: C}
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

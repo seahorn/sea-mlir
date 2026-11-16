@@ -65,6 +65,7 @@ frag-reach-busy-K1:
   tags: [reach]               # proof | reach | mutant | blowup-regression | inb-regression | canary
   args: [--ptr-mode=address]  # appended to the family's default arguments
   replay: impossible          # a sat of this job may not replay; the only value
+  premise-class: B            # B | C: the --seam premises may fail on its counterexamples
 ```
 
 `replay: impossible` is for a `sat` job whose model the interpreter cannot
@@ -72,6 +73,22 @@ run: the program updates memory without `inplace`, so `sea-vc` prints
 `result: sat`, then the error `vc.replay-impossible`, and exits with
 status 1. The verdict is `sat`; the gate fails on such a run unless the
 job carries the field.
+
+`premise-class` is for a job whose counterexamples may leave their object
+(a mutant that drops a precondition): `sea-vc --seam` assumes the pointer
+premises, and which model the solver returns decides whether the replay is
+clean. Class B (a counterexample that keeps the premises exists) requires
+`sat`; class C (every counterexample violates them) accepts `unsat`, and
+`sat` only with a premise signal: a clean confirmed `sat` fails as
+misclassified. Both accept a `sat` whose replay failed in a way a premise
+violation explains (exit status 2 with `replay: assert-failed`, a
+`seam.inb-violation:` line and the error `vc.replay-mismatch`, or exit
+status 4); a replay that reports `replay: no-clobber-violated:` is never
+explained. A job without the field is
+class A: the exact verdict and a clean replay. The gate's `premises:` line
+counts the outcomes; a premise signal on an undeclared job is named on its
+failure line or a `premise-hint:` line. See the developer page
+`docs/Benchmarks.md` (premise classes) for the full rule.
 
 The family's `defaults` give the configuration the verdicts were
 established with: arguments, a timeout of 900 s, and a memory cap of
@@ -136,7 +153,8 @@ The gate fails (exit status 1) on:
 
 - a verdict other than the expected one for a `sat` or `unsat` job
   (`WRONG` for a flipped verdict; a timeout, unknown or error counts too);
-- a replay mismatch (`sea-vc` exit status 2);
+- a replay mismatch (`sea-vc` exit status 2), unless a premise violation
+  explains it on a job with `premise-class`;
 - a `sat` whose model cannot be replayed (`replay-impossible`) on a job
   without `replay: impossible`;
 - an error or an in-bounds violation on a gated job, `unknown-ok` jobs
