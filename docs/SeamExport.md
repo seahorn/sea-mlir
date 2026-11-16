@@ -56,6 +56,7 @@ the `sea-vc` command whose VC terms the lane builds. It is empty when no
 | `seam-inb0-pull-concat` | `sea-vc --seam --seam-premises=0 --seam-pull-concat=4` | split (byte) pointer loads resolved; the only lane where `ptr.load-resolve-concat` can fire |
 | `seam-wide` | `sea-vc --seam --seam-wide` | under the premises (`"ainb": true`) |
 | `seam` | `sea-vc --seam` | under the premises (`"ainb": true`) |
+| `seam-stride` | `sea-vc --seam --seam-stride` | under the premises (`"ainb": true`); the only lane where R-STRIDE can fire |
 | `plain` | `sea-vc` | no SeaM and no rewriter. The boundary is `PtrIndexExpander` (the lowering's arithmetic) |
 | `simplify` | `sea-vc --simplify` | no SeaM: the bit-vector and Boolean rules only |
 
@@ -67,7 +68,7 @@ Notes:
 - Lanes with simplification also normalize the side conditions and the
   registers with `SeaOpSem::simplify`, as `sea-vc` normalizes its side
   conditions and query.
-- Lanes without wide accesses (`raw`, `seam-inb0`, `seam-inb0-pull-concat`, `seam`, `plain`,
+- Lanes without wide accesses (`raw`, `seam-inb0`, `seam-inb0-pull-concat`, `seam`, `seam-stride`, `plain`,
   `simplify`) refuse a multi-byte access (`vc.wide-access`). `sea-vc
   --lower` would split it.
 - A premise lane is an error when the program has a static out-of-object

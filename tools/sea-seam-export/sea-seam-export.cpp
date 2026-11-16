@@ -43,6 +43,7 @@ struct Lane {
   const char *what;
   bool seam, wide, inb, simplify, memoryRules, rules, layout;
   unsigned pullConcat = 0; ///< SeaMOptions::pullConcatIte
+  bool stride = false;     ///< SeaMOptions::strideRule (R-STRIDE)
 };
 // Each sea-vc flag set below sets exactly these SeaMOptions fields
 // (sea-vc.cpp, runVc); every other field is at its SeaMOptions default in
@@ -82,6 +83,10 @@ const Lane kLanes[] = {
     {"seam", "sea-vc --seam",
      "SeaM as sea-vc --seam runs it, under the premises (ainb: true)", true,
      false, true, true, true, true, true},
+    {"seam-stride", "sea-vc --seam --seam-stride",
+     "SeaM with R-STRIDE, under the premises (ainb: true); the only lane "
+     "where R-STRIDE can fire",
+     true, false, true, true, true, true, true, 0, true},
     {"plain", "sea-vc",
      "no SeaM, no rewriter: the boundary is PtrIndexExpander's arithmetic",
      false, false, false, false, false, false, false},
@@ -160,10 +165,12 @@ builds, the "sea_vc" key; "-": no sea-vc run builds them):
         loads resolved; the lane where ptr.load-resolve-concat can fire)
   seam-wide        sea-vc --seam --seam-wide   (premises: "ainb": true)
   seam             sea-vc --seam               (premises: "ainb": true)
+  seam-stride      sea-vc --seam --seam-stride (premises: "ainb": true;
+        R-STRIDE on: the lane where row.smap-abort-stride / cmp.stride fire)
   plain            sea-vc (no --seam): boundary = PtrIndexExpander
   simplify         sea-vc --simplify (bit-vector rules only)
 Lanes without wide accesses (raw, seam-inb0, seam-inb0-pull-concat, seam,
-plain, simplify) refuse
+seam-stride, plain, simplify) refuse
 a multi-byte access (vc.wide-access): sea-vc --lower would split it.
 Lanes with simplification also normalize the roots, probes and side
 conditions with SeaOpSem::simplify, as sea-vc normalizes its query.
@@ -490,6 +497,7 @@ int main(int argc, char **argv) {
   opts.layoutDecide = lane->layout;
   opts.rules = lane->rules;
   opts.pullConcatIte = lane->pullConcat;
+  opts.strideRule = lane->stride;
   sea::SeaOpSem sem(ef, names, false, lane->seam, &opts);
   bool addressMode = false;
   for (Operation &op : body)

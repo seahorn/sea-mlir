@@ -63,10 +63,11 @@ empty when no `sea-vc` run builds them.
 | `seam-inb0` | `sea-vc --seam --seam-premises=0` | |
 | `seam-wide` | `sea-vc --seam --seam-wide` | under the premises (`"ainb": true`) |
 | `seam` | `sea-vc --seam` | under the premises (`"ainb": true`) |
+| `seam-stride` | `sea-vc --seam --seam-stride` | under the premises (`"ainb": true`); the only lane where R-STRIDE can fire |
 | `plain` | `sea-vc` | no SeaM and no rewriter |
 | `simplify` | `sea-vc --simplify` | no SeaM; the bit-vector and Boolean rules only |
 
-- Lanes without wide accesses (`raw`, `seam-inb0`, `seam`, `plain`,
+- Lanes without wide accesses (`raw`, `seam-inb0`, `seam`, `seam-stride`, `plain`,
   `simplify`) refuse a multi-byte access; `sea-vc --lower` would split it.
 - A premise lane is an error when the program has a static out-of-object
   access (its firings would rest on a premise the program may break;
