@@ -24,11 +24,13 @@
 #include "sea/Support/Log.h"
 #include "sea/Support/Version.h"
 #include "sea/VC/OpSem.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/JSON.h"
 #include <cstdlib>
 #include <map>
+#include <optional>
 #include <sstream>
 using namespace mlir;
 using namespace expr;
@@ -153,6 +155,10 @@ TYPICAL:
 INPUT: a module with exactly one sea.program: one block, no block
 arguments, ending in sea.halt, placed (sea.segment, !sea.addr<N>), N =
 --address-bits. Taken as given: no lowering (sea-vc --lower would run).
+sea.umulo / sea.smulo: the native predicates, as sea-vc encodes them for
+its default solver z3 (and Bitwuzla). For Yices sea-vc --lower expands
+them first (sea-expand-intrinsics); without --lower it refuses them
+(vc.intrinsic).
 Memories must be byte memories indexed by addresses of width N.
 Pointer mode: address if the program has sea.addr.from_int, else opaque
 (as sea-vc --ptr-mode=auto decides it).
@@ -212,7 +218,13 @@ Terms: {sort: bv|bool|ptr|memory, [bits], op, args, ...}; ops and their
 fields are listed in docs/SeamExport.md (bit-vector operators as in
 SMT-LIB, total: udiv x 0 = all ones, urem x 0 = x, shift >= width gives 0
 (ashr: the sign fill); compares ne ugt uge sgt sge slt sle are bool
-terms). Additions are new keys / ops;
+terms). umul_no_overflow, smul_no_overflow, smul_no_underflow: bool terms
+over two bv args of one width n, the product as unbounded integers:
+unsigned < 2^n; signed <= 2^(n-1) - 1; signed >= -2^(n-1) (z3's
+Z3_mk_bvmul_no_overflow unsigned / signed, Z3_mk_bvmul_no_underflow).
+sea.umulo = not(umul_no_overflow(a, b)), sea.smulo =
+not(and(smul_no_overflow(a, b), smul_no_underflow(a, b))): sea-run's
+overflow bit. Additions are new keys / ops;
 an incompatible change bumps schema.
 
 FIRINGS (--firings; the rewrite trail, include/sea/Expr/RewriteTrail.hh):
@@ -276,7 +288,27 @@ static const char *bvNodeName(Expr e) {
     return "lshr";
   if (isOpX<BASHR>(e))
     return "ashr";
+  // sea.umulo / sea.smulo as sea-vc encodes them for z3 and Bitwuzla
+  // (bv::mulOverflows, include/sea/Expr/ExprOverflow.hh)
+  if (isOpX<UMUL_NO_OVERFLOW>(e))
+    return "umul_no_overflow";
+  if (isOpX<SMUL_NO_OVERFLOW>(e))
+    return "smul_no_overflow";
+  if (isOpX<SMUL_NO_UNDERFLOW>(e))
+    return "smul_no_underflow";
   return nullptr;
+}
+
+// The nodes whose format is exactly two arguments. Not every one of them
+// is binary in Expr (BSUB, BUDIV, BSDIV, BUREM, BSREM type-check n-ary), so
+// the export checks it rather than pass an n-ary term on.
+static bool isBinaryNode(llvm::StringRef op) {
+  static const llvm::StringRef binary[] = {
+      "eq",  "ne",  "ult",  "ule",  "ugt",  "uge",  "slt", "sle",  "sgt",
+      "sge", "sub", "udiv", "sdiv", "urem", "srem", "shl", "lshr", "ashr",
+  };
+  return llvm::is_contained(binary, op) || op == "umul_no_overflow" ||
+         op == "smul_no_overflow" || op == "smul_no_underflow";
 }
 
 static std::string printed(Expr e) {
@@ -477,6 +509,10 @@ struct Exporter {
     }
     else bad("unsupported expression: " + printed(e));
 #undef NODE
+    std::optional<llvm::StringRef> op = o.getString("op");
+    if (err.empty() && op && isBinaryNode(*op) && args.size() != 2)
+      bad(op->str() + " with " + std::to_string(args.size()) +
+          " arguments (the node has two): " + printed(e));
     if (!err.empty())
       return nullptr;
     o["args"] = std::move(args);
@@ -567,7 +603,9 @@ int main(int argc, char **argv) {
   opts.rules = lane->rules;
   opts.pullConcatIte = lane->pullConcat;
   opts.strideRule = lane->stride;
-  sea::SeaOpSem sem(ef, names, false, lane->seam, &opts);
+  // Mul overflow as sea-vc encodes it for its default solver (z3; also
+  // Bitwuzla): the native predicates, not the expansion it gives Yices.
+  sea::SeaOpSem sem(ef, names, /*nativeMulOverflow=*/true, lane->seam, &opts);
   bool addressMode = false;
   for (Operation &op : body)
     if (isa<sea::AddrFromIntOp>(op))

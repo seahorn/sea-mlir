@@ -32,7 +32,12 @@ sea-seam-export --agent | --version | --help
 Input: a module with exactly one `sea.program`. The program has one block
 without arguments, ends in `sea.halt`, is placed (`sea.segment`,
 `!sea.addr<N>`, N = `--address-bits`), and uses byte memories indexed by
-N-bit addresses. The program is taken as given, with no lowering. The pointer
+N-bit addresses. The program is taken as given, with no lowering.
+`sea.umulo` and `sea.smulo` are encoded with the native predicates
+(`umul_no_overflow`, `smul_no_overflow`, `smul_no_underflow`), as `sea-vc`
+encodes them for its default solver z3 (and Bitwuzla); for Yices
+`sea-vc --lower` expands them first (`sea-expand-intrinsics`); without
+`--lower` it refuses them (`vc.intrinsic`). The pointer
 mode is `address` if the program has `sea.addr.from_int`, else `opaque`
 (as `sea-vc --ptr-mode=auto` decides).
 
@@ -121,7 +126,7 @@ decimal.
 | `bool` | `value` (true / false) |
 | `var` | `name` |
 | `ite`, `eq`, `ult`, `ule`, `not`, `and`, `or` | `args`; `and` and `or` are n-ary |
-| `add`, `sub`, `mul`, `concat` | `args`; `add` and `mul` may be n-ary (left to right) |
+| `add`, `sub`, `mul`, `concat` | `args`; `add` and `mul` may be n-ary (left to right); `concat` may be n-ary, first arg most significant |
 | `extract` | one arg; `start`, `length` (bits) |
 | `slt`, `sle` | two bit-vector args of one width; a `bool` term: signed (two's complement) less-than, less-or-equal |
 | `ne` | the arguments of `eq`; a `bool` term: the negation of `eq` |
@@ -130,6 +135,7 @@ decimal.
 | `bvand`, `bvor`, `bvxor` | bit-vector args of one width, at least two, in order (n-ary is allowed, as `add`); a bit-vector of that width |
 | `shl`, `lshr`, `ashr` | two bit-vector args of one width: the value and the shift amount (unsigned, same width); a bit-vector of that width. A shift amount of at least the width gives 0 (`shl`, `lshr`) or the sign fill, all ones for a negative value and 0 otherwise (`ashr`; below the width it fills with the sign bit) |
 | `sext`, `zext` | one bit-vector arg; the result's `bits` (at least the arg's `bits`): the arg sign- or zero-extended |
+| `umul_no_overflow`, `smul_no_overflow`, `smul_no_underflow` | two bit-vector args of one width n; a `bool` term over the product of the args as unbounded integers: `umul_no_overflow` is true iff the unsigned product is below 2^n; `smul_no_overflow` iff the signed (two's complement) product is at most 2^(n-1) - 1; `smul_no_underflow` iff it is at least -2^(n-1). z3's `Z3_mk_bvmul_no_overflow` (unsigned / signed) and `Z3_mk_bvmul_no_underflow`. `sea.umulo` is `not(umul_no_overflow(a, b))` and `sea.smulo` is `not(and(smul_no_overflow(a, b), smul_no_underflow(a, b)))` (`bv::mulOverflows`), the overflow bits sea-run computes (`APInt::umul_ov` / `smul_ov`: the product does not fit in n bits) |
 | `select`, `store` | memory, address[, value] |
 | `constMem` | one arg: the value of every cell |
 | `wselect`, `wstore` | memory, address[, value]; `bytes`, `alignment` (the promised alignment) |
