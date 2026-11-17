@@ -201,9 +201,12 @@ program load: a select the load's encoding left at the load's own address
 called by `SeaOpSem::memLoad` after the rewriting, which keeps the load's
 address as the index of every select it leaves). Selects the boundary makes
 (store-map expansion, the reads of a memmove's source, wide expansion) are
-not own (`vc.narrow-skip-not-own`), unless they are the same node as an own
-read (hash-consing: the same cell at the same address term, read by a load
-too). Further, every read address of the index (`AccessOrigins`, the stride
+not own (`vc.narrow-skip-not-own`). A select that is both, one node by
+hash-consing (a memmove's source read whose normal form is a load's own
+read), is not narrowed either (`vc.narrow-skip-shared-boundary`): only a
+load's own reads are, so the use lemma has one case. The reads of wide
+loads (`--seam-wide`, expanded into bytes at the boundary) are not tagged
+and not narrowed (conservative). Further, every read address of the index (`AccessOrigins`, the stride
 rule's record, now keeping every address), or every leaf of an ite of them
 (a pointer phi), points into one object of size N > 0, and no select at the
 index reads a shadow memory. Let k be the least width
@@ -239,10 +242,7 @@ Each narrowed read is a rewrite of its own index, justified by the A-INB of
 its own access, the same way a SeaM rewrite of a load is justified by the
 premises of the accesses it compares. The use lemma: the value of an own
 read is used only where its load executes; the load executing, A-INB gives
-`0 <= i - base < N` for the byte it reads. (A boundary-made select that is
-the same node as an own read is also a load's read of that cell; where the
-memmove's read is the one used, its in-range test holds and the memmove's
-source range, whose A-INB is the memory operation's, holds the cell.) If the access executes and stays in
+`0 <= i - base < N` for the byte it reads. If the access executes and stays in
 its object (A-INB), its offset o (the 64-bit value of i - base, so o mod
 2^64) lies in [0, N), so `low_k(o) = o` (`2^k >= N`) and i' = i. If the
 access does not execute, its value is not used by the query (the read
@@ -306,30 +306,49 @@ What it does not apply to:
   `no-object`, `shadow`, `size`, `many`, `shape`), reads narrowed, their
   objects, the largest k, k-bit constraints and the sum of their widths,
   mixed (64-bit) constraints with one narrowed read.
-- `--seam-check` / `--narrow-check`: for each narrowed index (the lowering's
-  record of the selects it narrowed), `layout && inBounds(a, 1) for each
-  read address a && i != i'` must be unsat: the weakest hypothesis, what
-  the executing load's A-INB gives for the byte it reads. i' is rebuilt
-  with the same `splitBase` / `LowBits` from the unlowered index: the
-  check validates the construction, not the emitted term (which is over
-  the lowering's read constants). It proves `A-INB => i = i'`, never A-INB.
-  Invalid: exit 5, as an invalid rule firing. Unknown or unexpressible
-  (shape, premise): a `narrow-check-unknown:` / `-unexpressible:` line; with
-  `--narrow-check` the run exits 7 (`vc.narrow-check-unproven`), since the
-  narrowing of the answer is then not discharged; under `--seam-check`
-  alone they are counted as its other unknowns. An eligible index the
-  lowering did not narrow is listed (`narrow-check-not-narrowed:`).
-  `--narrow-check` runs these obligations without the rule trail (also
-  with `--vcgen-only`): on the firedancer jobs `--seam-check` did not
-  finish generating the VC in 13 minutes (the trail of every firing, 22-29
-  GB). Each obligation is solved with the reads as free constants and the
-  sums' summands in one order (a sat answer is checked again with the
-  reads), on the solver's default configuration: in `--seam-check`'s
-  incremental configuration (relevancy 0, one push) z3 took 11-60 s per
-  obligation on `txn-pf-v1-writes` and ran out of memory, while its
-  default tactic proves the same obligation at once. [OBS] It still does
-  not finish on `txn-pf-v1-writes`: out of memory (8 GB cap) after 80-160
-  s, also with a 2 s timeout per obligation; open.
+- `--seam-check` / `--narrow-check`: what is checked per run and what
+  rests on a lemma are split.
+  - Per run, for each narrowed index i = base + S (the lowering's record of
+    the selects it narrowed): the premise bound, `layout && inBounds(a, 1)
+    for each read address a && !(S <u 2^k)` must be unsat. inBounds(a, 1)
+    is the weakest hypothesis: what the executing load's A-INB gives for
+    the byte it reads. It proves `A-INB => S < 2^k`, never A-INB itself.
+    First syntactically: after each sum's summands are put in one order,
+    the bound is usually a premise conjunct itself, `bvule(S, c)` with
+    c < 2^k (A-INB's `off <= size - units` of a load at base + S), also
+    through ites of one condition on both sides (a pointer phi); counted
+    `syntactic=`. Otherwise one query per index on a fresh solver (released
+    after it), the reads as free constants (a sat answer is checked again
+    with the reads), z3's default configuration, bounded by z3's resource
+    limit (`--narrow-check-rlimit`, default 50,000,000: untuned), not by
+    time.
+  - The lemma: for S < 2^k, i' = base + zext(low_k(S)) = i, since the k-bit
+    rebuild low_k(S) is extract(k-1, 0, S) (LowBits: a ring homomorphism
+    and the other identities in its header). It is checked by its unit test
+    (random terms, every k, z3), and is to be proved in seam-lean; it is
+    not checked per run.
+  - Invalid: exit 5, as an invalid rule firing. Unknown or unexpressible
+    (shape, premise): a `narrow-check-unknown:` / `-unexpressible:` line
+    (the index printed to 300 characters); with `--narrow-check` the run
+    exits 7 (`vc.narrow-check-unproven`), since the narrowing of the answer
+    is then not discharged; under `--seam-check` alone they are counted as
+    its other unknowns. An eligible index the lowering did not narrow is
+    listed (`narrow-check-not-narrowed:`).
+  - `--narrow-check` runs without the rule trail (also with `--vcgen-only`):
+    on the firedancer jobs `--seam-check` did not finish generating the VC
+    in 13 minutes (the trail of every firing, 22-29 GB).
+  - [OBS] Measured (`--vcgen-only --narrow-check`, one run each):
+    `txn-pf-v1-writes` 141 of 141 valid (131 syntactic), 1.5 s, 92 MB peak;
+    `txn-reach-v0-alt` 317 of 317 valid (275 syntactic), 3.9 s, 163 MB.
+  - [OBS] Why the first versions failed there: z3's in-process incremental
+    solver did not relate `bvule(S, c)` to `bvult(S, c + 1)` and bit-blasted
+    the cursor's sum S (11-60 s per obligation; with the 50M rlimit the run
+    passed 20 minutes), where the z3 CLI's preprocessing proves the dumped
+    obligation at once; and an obligation that timed out was reported with
+    its index printed in full: Expr's printer writes a DAG as a tree,
+    exponential for the cursor's shared sums, which is what ran out of
+    memory. The lines now print a bounded prefix (300 characters), and the
+    bound is discharged syntactically first.
 
 ### Measured
 

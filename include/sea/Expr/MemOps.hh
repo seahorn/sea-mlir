@@ -121,6 +121,9 @@ inline bool isMemoryHead(Expr e) {
 /// terms).
 class WideExpander {
 public:
+  /// While set, every select the expansion builds is appended to \p log
+  /// (sea-vc --narrow-offsets: reads made at the boundary).
+  void setReadLog(std::vector<Expr> *log) { m_readLog = log; }
   Expr expand(const Expr &root) {
     if (!hasWide(root))
       return root;
@@ -239,11 +242,17 @@ private:
   Expr select(const Expr &m, const Expr &a, const Expr &sort) {
     ++m_expanded;
     unsigned bytes = op::bv::width(sort) / 8;
-    Expr res = op::array::select(m, at(a, 0));
+    Expr res = logRead(op::array::select(m, at(a, 0)));
     for (unsigned k = 1; k < bytes; ++k)
-      res = op::bv::concat(op::array::select(m, at(a, k)), res);
+      res = op::bv::concat(logRead(op::array::select(m, at(a, k))), res);
     return res;
   }
+  Expr logRead(const Expr &sel) {
+    if (m_readLog)
+      m_readLog->push_back(sel);
+    return sel;
+  }
+  std::vector<Expr> *m_readLog = nullptr;
 
   TypeChecker m_tc;
   std::unordered_map<ENode *, Expr> m_memo;
@@ -278,6 +287,10 @@ public:
   /// reads over a term translated so far (a select(term, j) eliminated by its
   /// read equation): 0 unless a term reached the boundary
   uint64_t translated() const { return m_translated; }
+  /// While set, every select the translation builds is appended to \p log
+  /// (sea-vc --narrow-offsets: reads made at the boundary).
+  void setReadLog(std::vector<Expr> *log) { m_readLog = log; }
+  std::vector<Expr> *m_readLog = nullptr;
 
   /// Does \p e contain a memory-operation term? Memoized, iterative.
   bool hasTerm(const Expr &e) {
@@ -364,7 +377,10 @@ private:
     if (doneR(m, j))
       return true;
     if (!hasTerm(m)) {
-      setR(m, j, op::array::select(m, j));
+      Expr sel = op::array::select(m, j);
+      if (m_readLog)
+        m_readLog->push_back(sel);
+      setR(m, j, sel);
       return true;
     }
     st.push_back(Frame{true, m, j, 0});

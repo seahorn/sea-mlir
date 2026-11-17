@@ -526,12 +526,22 @@ static cl::opt<bool> narrowOffsets(
              "default"),
     cl::init(false));
 
+static cl::opt<unsigned> narrowCheckRlimit(
+    "narrow-check-rlimit",
+    cl::desc("z3's resource limit per --narrow-check obligation (0: none). "
+             "Default 50000000: untuned, a bound against runaway queries, "
+             "not measured on a corpus; an exhausted one is "
+             "narrow-check-unknown"),
+    cl::init(50000000));
+
 static cl::opt<bool> narrowCheck(
     "narrow-check",
-    cl::desc("With --narrow-offsets: check each narrowed read index against "
-             "its in-object representative under the A-INB of its accesses "
-             "(the narrow-check: lines of --seam-check, without the rule "
-             "trail; also with --vcgen-only). Exit 5 if one is invalid"),
+    cl::desc("With --narrow-offsets: for each narrowed read index base + S, "
+             "check that the A-INB of its read addresses gives S < 2^k (the "
+             "narrow-check: lines of --seam-check, without the rule trail; "
+             "also with --vcgen-only). That the narrowed index then equals "
+             "the index is the LowBits lemma, not checked per run. Exit 5 "
+             "if one is invalid, 7 if one is not proven"),
     cl::init(false));
 
 static cl::opt<bool> seamStride(
@@ -2326,11 +2336,16 @@ TYPICAL:
                                  #   computed at k bits (with --vc-defs: k-bit
                                  #   names). Exact for an access that stays
                                  #   in its object: assume.a-inb counts the
-                                 #   reads, --seam-check (or --narrow-check,
-                                 #   alone, also with --vcgen-only) states
-                                 #   and checks each one (narrow-check:).
-                                 #   A pointer compare of the program is
-                                 #   not narrowed.
+                                 #   reads. --narrow-check (alone, also with
+                                 #   --vcgen-only; also under --seam-check)
+                                 #   checks per run, for each narrowed index
+                                 #   base + S, that the A-INB of its read
+                                 #   addresses gives S < 2^k (z3, rlimit
+                                 #   --narrow-check-rlimit); that i' = i then
+                                 #   rests on the LowBits lemma (unit test,
+                                 #   not per run). Exit 7 if one is not
+                                 #   proven. A pointer compare of the
+                                 #   program is not narrowed.
                                  #   Needs the premises and the Ackermann
                                  #   lowering (else vc.narrow: off-...).
                                  #   docs/design/Ackermann.md
@@ -2608,7 +2623,8 @@ OUTPUT (stdout, `key: value` lines):
                                   stderr with --smt2)
   vc.narrow: on|off-no-premises|off-no-ackermann   (--narrow-offsets; on:
                                   vc.narrow-indices / -eligible / -skip-not-
-                                  own / -skip-no-object / -skip-shadow /
+                                  own / -skip-shared-boundary / -skip-no-
+                                  object / -skip-shadow /
                                   -skip-size / -skip-many / -skip-shape /
                                   -reads / -objects / -k-max / -pairs /
                                   -pair-bits / -mixed: read indices seen,
@@ -2616,7 +2632,9 @@ OUTPUT (stdout, `key: value` lines):
                                   load's read at its own address into one
                                   object of known size, the others by reason
                                   (a select the boundary made, such as a
-                                  memmove's read, not one object, a shadow
+                                  memmove's read; an own read that is also
+                                  such a select, one node; not one object,
+                                  a shadow
                                   memory, size 0 or too large, more than 8
                                   addresses, not base + offset after the
                                   boundary), reads narrowed, their objects,
@@ -3042,13 +3060,17 @@ OUTPUT (stdout, `key: value` lines):
                                   backend; the premise's satisfiability
                                   check is not counted)
   narrow-check: indices=<n> checked=<n> valid=<n> invalid=<n> unknown=<n>
-      unexpressible=<n> not-narrowed=<n>   (--seam-check or --narrow-check
-                                  with --narrow-offsets: each narrowed index
-                                  i against base + zext(low_k(i - base)),
-                                  rebuilt as the lowering builds it, under
-                                  the layout and inBounds(a, 1) of each of
-                                  its read addresses a; proves A-INB =>
-                                  i = i', never A-INB. invalid: exit 5,
+      unexpressible=<n> not-narrowed=<n> syntactic=<n>   (--seam-check or
+                                  --narrow-check with --narrow-offsets: per
+                                  narrowed index i = base + S, the premise
+                                  bound S <u 2^k under the layout and
+                                  inBounds(a, 1) of each read address a:
+                                  syntactic when a premise conjunct is the
+                                  bound (counted), else z3, rlimit
+                                  --narrow-check-rlimit; proves A-INB =>
+                                  S < 2^k, never A-INB. That i' = i then is
+                                  the LowBits lemma (unit test; not checked
+                                  per run). invalid: exit 5,
                                   narrow-check-invalid: index=<term> k=<k>;
                                   narrow-check-unknown: index=<term>,
                                   narrow-check-unexpressible: index=<term>
@@ -4947,6 +4969,7 @@ int main(int argc, char **argv) {
     seamOpts.expandUnknownRow = seamRowExpand;
     seamOpts.groupSameValueRow = seamRowGroup;
     seamOpts.checkInbPremise = seamCheckInbPremise;
+    seamOpts.trackOwnReads = narrowOffsets;
     seamOpts.layoutDecide = seamLayout;
     seamOpts.pruneSize0 = seamPruneSize0;
     seamOpts.wideAccess = seamWide;
@@ -5771,8 +5794,8 @@ int main(int argc, char **argv) {
     };
     std::vector<NarrowSite> narrowSites;
     struct {
-      uint64_t indices = 0, notOwn = 0, shadow = 0, noObject = 0, size = 0,
-               many = 0;
+      uint64_t indices = 0, notOwn = 0, shared = 0, shadow = 0, noObject = 0,
+               size = 0, many = 0;
     } narrowSkip;
     if (narrowOn) {
       const auto &rules = sem.seamRewriter()->rules();
@@ -5793,6 +5816,10 @@ int main(int argc, char **argv) {
         }
         if (e->shadow) {
           ++narrowSkip.shadow;
+          continue;
+        }
+        if (e->shared) {
+          ++narrowSkip.shared;
           continue;
         }
         if (e->notOwn) {
@@ -6243,6 +6270,7 @@ int main(int argc, char **argv) {
           r.line("vc.narrow-indices").value(narrowSkip.indices);
           r.line("vc.narrow-eligible").value(narrowSites.size());
           r.line("vc.narrow-skip-not-own").value(narrowSkip.notOwn);
+          r.line("vc.narrow-skip-shared-boundary").value(narrowSkip.shared);
           r.line("vc.narrow-skip-no-object").value(narrowSkip.noObject);
           r.line("vc.narrow-skip-shadow").value(narrowSkip.shadow);
           r.line("vc.narrow-skip-size").value(narrowSkip.size);
@@ -6629,29 +6657,29 @@ int main(int argc, char **argv) {
     // --narrow-offsets: each narrowed index against its representative
     // (--seam-check or --narrow-check; no rule trail needed)
     auto runNarrowCheck = [&]() {
-      // --narrow-offsets: each narrowed index i (the query's, before the
-      // lowering) against its in-object representative i' = base +
-      // zext(low_k(i - base)), rebuilt here as the lowering builds it (the
-      // construction, not the emitted term), under the layout and the A-INB
-      // of each of its read addresses a (inBounds(a, 1): what the executing
-      // load's A-INB gives for the byte it reads): `layout && inb && i != i'`
-      // must be unsat. It proves inb => i = i', never inb itself (the
-      // discharge of A-INB is a bounds check of the program).
+      // --narrow-offsets: for each narrowed index i = base + S (the query's,
+      // before the lowering), the premise bound: under the layout and the
+      // A-INB of each of its read addresses a (inBounds(a, 1): what the
+      // executing load's A-INB gives for the byte it reads), S <u 2^k;
+      // `layout && inb && !(S <u 2^k)` must be unsat. That then i' = base +
+      // zext(low_k(S)) = i is the LowBits lemma (its unit test; a Lean
+      // proof later), not checked per run. It proves inb => S < 2^k, never
+      // inb itself (the discharge of A-INB is a bounds check of the program).
       if ((!checkOn && !narrowCheck) || !narrowOn || !ackOn)
         return;
       raw_string_ostream os(checkReport);
-      // a fresh solver per obligation, with --seam-check's limits
+      // a fresh solver per obligation (released after it), bounded by z3's
+      // resource limit (deterministic), not by time
       auto mkCheckSolver = [&]() -> std::unique_ptr<sea::solver::Solver> {
         sea::solver::Limits cl;
-        if (backend != Backend::Yices)
-          cl.timeoutMs = seamCheckTimeout * 1000;
-        cl.rlimit = seamCheckRlimit;
+        cl.rlimit = narrowCheckRlimit;
         sea::solver::SolverConfig cc = solverConfig;
         // the solver's default configuration (no push): the obligations are
         // bit-vector arithmetic that its preprocessing settles
         return sea::solver::makeSolver(efac, backend, cl, cc);
       };
       uint64_t nValid = 0, nInvalid = 0, nUnknown = 0, nUnexpr = 0;
+      uint64_t nSyntactic = 0; // of nValid: the bound is a premise conjunct
       expr::Expr layout = sem.layoutFacts();
       std::unordered_map<expr::ENode *, expr::Expr> narrowFree;
       // the indices the lowering narrowed (an eligible index it did not:
@@ -6663,7 +6691,8 @@ int main(int argc, char **argv) {
       for (const NarrowSite &site : narrowSites) {
         if (!narrowedKeys.count(site.key.get())) {
           ++nNotNarrowed;
-          os << "narrow-check-not-narrowed: index=" << *site.key << "\n";
+          os << "narrow-check-not-narrowed: index="
+             << expr::RewriteTrail::text(site.key, 300) << "\n";
           continue;
         }
         ++nNarrowed;
@@ -6672,12 +6701,16 @@ int main(int argc, char **argv) {
         if (!w ||
             !expr::Ackermannizer::splitBase(site.key, site.base, w, rest)) {
           ++nUnexpr;
-          os << "narrow-check-unexpressible: index=" << *site.key
-             << " why=shape\n";
+          os << "narrow-check-unexpressible: index="
+             << expr::RewriteTrail::text(site.key, 300) << " why=shape\n";
           continue;
         }
-        expr::Expr repr = expr::Ackermannizer::narrowIndex(
-            site.base, ack.lowBits().of(rest, site.k), w);
+        // the premise bound only: S = i - base below 2^k. That i' =
+        // base + zext(low_k(S)) equals i for such S is the LowBits lemma
+        // (low_k rebuilt = extract(k-1, 0, S)), checked by its unit test,
+        // not per run
+        expr::Expr bound =
+            expr::op::bv::bvnum(expr::mpz_class(1UL) << site.k, w, efac);
         expr::ExprVector conj{layout};
         std::string why;
         bool expressible = true;
@@ -6693,11 +6726,11 @@ int main(int argc, char **argv) {
         }
         if (!expressible) {
           ++nUnexpr;
-          os << "narrow-check-unexpressible: index=" << *site.key
-             << " why=premise\n";
+          os << "narrow-check-unexpressible: index="
+             << expr::RewriteTrail::text(site.key, 300) << " why=premise\n";
           continue;
         }
-        conj.push_back(expr::mk<expr::NEQ>(site.key, repr));
+        conj.push_back(expr::mk<expr::NEG>(expr::mk<expr::BULT>(rest, bound)));
         std::unique_ptr<sea::solver::Solver> cs = mkCheckSolver();
         if (!cs)
           return;
@@ -6740,6 +6773,44 @@ int main(int argc, char **argv) {
                 return it->second;
               });
         }
+        // syntactic first: a premise conjunct bvule(S, c) with c < 2^k over
+        // the same (canonical) S is the bound itself (the in-bounds
+        // condition of a load at base + S, A-INB's `off <= size - units`);
+        // z3's incremental solver bit-blasts S instead of seeing it
+        // (through ites of one condition on both sides: a pointer phi's
+        // offset under the ite of its leaves' conditions)
+        expr::mpz_class kmax = (expr::mpz_class(1UL) << site.k);
+        std::function<bool(expr::ENode *, expr::ENode *)> bounds =
+            [&](expr::ENode *sv, expr::ENode *pv) -> bool {
+          if (expr::isOpX<expr::AND>(pv)) {
+            for (size_t q = 0; q < pv->arity(); ++q)
+              if (bounds(sv, pv->arg(q)))
+                return true;
+            return false;
+          }
+          if (expr::isOpX<expr::BULE>(pv) && pv->arg(0) == sv &&
+              expr::op::bv::isBvNum(expr::Expr(pv->arg(1))))
+            return expr::ackermann_detail::reducedValue(
+                       expr::Expr(pv->arg(1))) < kmax;
+          if (expr::isOpX<expr::ITE>(sv) && expr::isOpX<expr::ITE>(pv) &&
+              sv->arg(0) == pv->arg(0))
+            return bounds(sv->arg(1), pv->arg(1)) &&
+                   bounds(sv->arg(2), pv->arg(2));
+          return false;
+        };
+        bool syntactic = false;
+        if (expr::isOpX<expr::AND>(ob) && ob->arity() >= 2) {
+          expr::Expr last(ob->arg(ob->arity() - 1)); // !(S <u 2^k)
+          if (expr::isOpX<expr::NEG>(last) &&
+              expr::isOpX<expr::BULT>(last->arg(0)))
+            for (size_t q = 0; q + 1 < ob->arity() && !syntactic; ++q)
+              syntactic = bounds(last->arg(0)->arg(0), ob->arg(q));
+        }
+        if (syntactic) {
+          ++nValid;
+          ++nSyntactic;
+          continue;
+        }
         bool added = cs->add(ob);
         sea::solver::SolverResult res =
             added ? cs->check() : sea::solver::SolverResult::UNKNOWN;
@@ -6754,18 +6825,20 @@ int main(int argc, char **argv) {
           ++nValid;
         } else if (res == sea::solver::SolverResult::SAT) {
           ++nInvalid;
-          os << "narrow-check-invalid: index=" << *site.key << " k=" << site.k
+          os << "narrow-check-invalid: index="
+             << expr::RewriteTrail::text(site.key, 300) << " k=" << site.k
              << "\n";
         } else {
           ++nUnknown;
-          os << "narrow-check-unknown: index=" << *site.key << "\n";
+          os << "narrow-check-unknown: index="
+             << expr::RewriteTrail::text(site.key, 300) << "\n";
         }
       }
       os << "narrow-check: indices=" << nNarrowed
          << " checked=" << (nValid + nInvalid + nUnknown) << " valid=" << nValid
          << " invalid=" << nInvalid << " unknown=" << nUnknown
          << " unexpressible=" << nUnexpr << " not-narrowed=" << nNotNarrowed
-         << "\n";
+         << " syntactic=" << nSyntactic << "\n";
       checkInvalid += nInvalid;
       if (narrowCheck)
         narrowUnproven += nUnknown + nUnexpr;
@@ -7446,7 +7519,7 @@ int main(int argc, char **argv) {
           continue;
         if (!differ++) {
           raw_string_ostream fs(first);
-          fs << *n->index << " = "
+          fs << expr::RewriteTrail::text(n->index, 300) << " = "
              << expr::ackermann_detail::reducedValue(vi).to_string()
              << ", narrowed "
              << expr::ackermann_detail::reducedValue(vn).to_string();

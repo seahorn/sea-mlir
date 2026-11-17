@@ -544,6 +544,7 @@ Expr SeaOpSem::memLoad(Expr mem, Expr ptr, uint64_t units, OpSemContext &ctx) {
   // not for shadow / companion memories, which are not program accesses
   if (!seamRw->rules().shadowMemory(mem) && !keyedAccess())
     seamRw->rules().noteOwnReads(res, ptr, units);
+  seamRw->settleBoundaryReads();
   return res;
 }
 

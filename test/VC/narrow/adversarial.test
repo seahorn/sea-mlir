@@ -58,9 +58,17 @@
 // MCOPY: result: sat
 // MCOPY: validate: checked={{[0-9]+}} mismatches=0
 //
+// shared: the load at a + i and the memmove's source read for the load at
+// b + i are one node (the read's normal form is a + i). Only a load's own
+// reads are narrowed: this one is not (vc.narrow-skip-shared-boundary).
+// RUN: sea-vc %t/shared.mlir --lower --seam --narrow-offsets 2>&1 | FileCheck %s --check-prefix=SHARED
+// SHARED: vc.narrow-skip-shared-boundary: 1
+// SHARED: vc.narrow-reads: 1
+// SHARED: result: unsat
+//
 // --narrow-check with an obligation it does not prove (z3 rlimit 1):
 // reported, and the run exits 7.
-// RUN: not sea-vc %t/t1.mlir --lower --seam --narrow-offsets --narrow-check --seam-check-rlimit=1 --brunch-stats 2>&1 | FileCheck %s --check-prefix=UNPROVEN
+// RUN: not sea-vc %t/t1.mlir --lower --seam --narrow-offsets --narrow-check --narrow-check-rlimit=1 --brunch-stats 2>&1 | FileCheck %s --check-prefix=UNPROVEN
 // UNPROVEN: narrow-check-unknown: index=
 // UNPROVEN: vc.narrow-check-unproven
 // UNPROVEN: BRUNCH_STAT status 7
@@ -202,5 +210,25 @@ sea.program @mcopy {
   sea.assert %ok
   sea.halt
 }
+//--- shared.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @shared {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c16 align 8 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64
+  %lt = sea.icmp ult, %i, %c16 : i64
+  sea.assume %lt
+  %pa = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %y = sea.load %m[%pa] : !m -> i8
+  %m1 = sea.memmove %m[%b], %m[%a], %c16 inplace : !m
+  %pb = sea.ptr.add %b, %i : !sea.ptr<64>, i64
+  %x = sea.load %m1[%pb] : !m -> i8
+  %ok = sea.icmp eq, %x, %y : i8
+  sea.assert %ok
+  sea.halt
+}
+
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

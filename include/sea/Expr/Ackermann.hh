@@ -436,18 +436,22 @@ struct AccessOrigins {
     /// identity, not a program access)
     bool shadow = false;
     /// some select at this index is not an own read of a program load
-    /// (seam::Rules::noteOwnReads): made by the boundary
+    /// (seam::Rules::noteOwnReads), or also a read made elsewhere (a
+    /// memmove's source read, the boundary's translations)
     bool notOwn = false;
+    /// of notOwn: an own read that is also made elsewhere (one node)
+    bool shared = false;
   };
   std::unordered_map<ENode *, Entry> byIndex;
   /// \p key (expanded) was the read address \p origin (of a shadow memory:
   /// \p shadow)
   void add(const Expr &key, const Expr &origin, bool shadow = false,
-           bool notOwn = false) {
+           bool notOwn = false, bool shared = false) {
     Entry &e = byIndex[key.get()];
     e.key = key;
     e.shadow = e.shadow || shadow;
     e.notOwn = e.notOwn || notOwn;
+    e.shared = e.shared || shared;
     if (std::find(e.addrs.begin(), e.addrs.end(), origin) == e.addrs.end()) {
       if (e.addrs.size() < kMaxAddrs)
         e.addrs.push_back(origin);
