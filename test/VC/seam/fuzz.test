@@ -16,11 +16,14 @@ plain sat, each confirmed out of bounds (the shape on which a solver check
 built from the A-INB encoding gave a wrong "A-INB holds"). Ptrmem: a pointer
 stored in memory and reloaded after a store that only A-INB lets the rewriting
 skip. Cells-violate: the sure violation (numeral offset) is detected statically
-in every program (fallbacks).
+in every program (fallbacks). Cells with --ptr-index and strides other than 1:
+each index is scaled to keep the address, so the accesses stay in their
+objects and the stride rules still fire.
 RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 1 -n 20 --accesses=bases | FileCheck %s --check-prefix=INB
 RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 2 -n 20 --accesses=any | FileCheck %s
 RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 3 -n 8 --accesses=cells | FileCheck %s --check-prefix=CELLS
 RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 4 -n 6 --accesses=cells-violate | FileCheck %s --check-prefix=VIOL
+RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 7 -n 8 --accesses=cells --ptr-index --ptr-index-strides=1,4,8,24 --extra-args=--seam-stride | FileCheck %s --check-prefix=STRIDE
 RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 0 -n 12 --accesses=circular | FileCheck %s --check-prefix=CIRC
 RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 1 -n 12 --accesses=ptrmem | FileCheck %s --check-prefix=PTRMEM
 CHECK: failures: 0
@@ -31,6 +34,9 @@ CELLS: smap.commute: {{[1-9][0-9]*}}
 CELLS: cross-base-skips: {{[1-9][0-9]*}}
 CELLS: out-of-object: 0
 CELLS: failures: 0
+STRIDE: row.smap-abort-stride: {{[1-9][0-9]*}}
+STRIDE: out-of-object: 0
+STRIDE: failures: 0
 VIOL: out-of-object: 6
 VIOL: failures: 0
 CIRC: seam-differs: 3
