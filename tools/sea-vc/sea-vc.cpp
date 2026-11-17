@@ -1805,6 +1805,14 @@ symbolic execution of each block (OpSem) plus a VC that connects blocks
 can fail; the counterexample is then replayed in the interpreter (sea-run's
 semantics) and every computed value is checked against the model.
 
+SLOW OR TIMEOUT: read docs/agents/slow-vc.md. First commands:
+  sea-vc p.mlir <flags> --smt2 > q.smt2; z3 -v:10 -st q.smt2   # size or
+                                 #   search: num-exprs per step, conflicts
+  sea-vc p.mlir <flags> --z3-param=verbose=10   # the same inside a run
+  sea-vc p.mlir <flags> --dag-stats --vcgen-only  # size with sharing
+  sea-vc p.mlir <flags> --ack-dump-pairs=f --eq-audit   # big terms by value
+  utils/reduce-test.py (--agent): reduce on a counter, not on time
+
 WHY BEAT MANUAL: the VC is exhaustive over all nondet values; the replay
 turns a solver model into a concrete run you can trust (or exposes a VC bug).
 

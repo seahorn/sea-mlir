@@ -67,9 +67,8 @@ Arguments that start with `--` are passed with `=`, as in
 ## When a smaller query is slower
 
 A change that shrinks the query can make the solver slower. Do not revert
-it on one timing. Find the mechanism: raise the solver's verbosity
-(`--z3-param=verbose=<n>`), and run several random seeds to separate a
-real effect from variance.
+it on one timing; [Diagnosing a slow or timed-out VC](slow-vc.md) finds the
+mechanism, including how to reduce on a solver-phase metric.
 
 ## Report
 
