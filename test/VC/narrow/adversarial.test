@@ -86,7 +86,7 @@
 // --narrow-check with an obligation it does not prove (z3 rlimit 1):
 // reported, and the run exits 7.
 // RUN: not sea-vc %t/t1.mlir --lower --seam --narrow-offsets --narrow-check --narrow-check-rlimit=1 --brunch-stats 2>&1 | FileCheck %s --check-prefix=UNPROVEN
-// UNPROVEN: narrow-check-unknown: index=
+// UNPROVEN: narrow-check-unknown: index={{.*}} reason=rlimit
 // UNPROVEN: vc.narrow-check-unproven
 // UNPROVEN: BRUNCH_STAT status 7
 // Under --seam-check alone the same unknown is listed and, as its other
@@ -95,6 +95,12 @@
 // SCUNK: narrow-check-unknown: index=
 // SCUNK: narrow-check: indices=3 {{.*}} unknown=1
 // SCUNK: BRUNCH_STAT status 0
+// --narrow-check-rlimit over 32 bits: accepted (64-bit, as the other rlimit
+// flags); z3's parameter is 32-bit, so the factory clamps it and says so.
+// RUN: sea-vc %t/t1.mlir --lower --seam --narrow-offsets --narrow-check --narrow-check-rlimit=4294967296 2>%t.big.err | FileCheck %s --check-prefix=BIG
+// RUN: FileCheck %s --check-prefix=BIG-ERR < %t.big.err
+// BIG-ERR: [vc.limit-clamped]
+// BIG: narrow-check: indices=3 checked=3 valid=3 invalid=0 unknown=0
 
 //--- t1.mlir
 !m = !sea.mem<!sea.ptr<64>, i8>

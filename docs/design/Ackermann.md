@@ -354,16 +354,18 @@ n-ary regrouping of the index into `base + S` (its ite case is proved).
     `syntactic=`. Otherwise one query per index on a fresh solver (released
     after it), the reads as free constants (a sat answer is checked again
     with the reads), z3's default configuration, bounded by z3's resource
-    limit (`--narrow-check-rlimit`, default 50,000,000: untuned), not by
+    limit (`--narrow-check-rlimit`, default 50,000,000: untuned; 64-bit as the
+    other rlimit flags, z3 enforces at most 4294967295 per check), not by
     time.
   - The lemma: for S < 2^k, i' = base + zext(low_k(S)) = i, since the k-bit
     rebuild low_k(S) is extract(k-1, 0, S) (LowBits: a ring homomorphism
     and the other identities in its header). It is checked by its unit test
     (random terms, every k, z3) and machine-checked in seam-lean (B1, B2,
-    B7 below); it is not checked per run.
+    B7 above); it is not checked per run.
   - Invalid: exit 5, as an invalid rule firing. Unknown or unexpressible
     (shape, premise): a `narrow-check-unknown:` / `-unexpressible:` line
-    (the index printed to 300 characters); with `--narrow-check` the run
+    (the index printed to 300 characters; `reason=rlimit` on an unknown
+    that exhausted the rlimit); with `--narrow-check` the run
     exits 7 (`vc.narrow-check-unproven`), since the narrowing of the answer
     is then not discharged; under `--seam-check` alone the lines are printed
     too and, as its other unknowns, they leave the exit status as it is. An eligible index the lowering did not narrow is

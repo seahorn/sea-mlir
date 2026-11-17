@@ -526,12 +526,14 @@ static cl::opt<bool> narrowOffsets(
              "default"),
     cl::init(false));
 
-static cl::opt<unsigned> narrowCheckRlimit(
+static cl::opt<uint64_t> narrowCheckRlimit(
     "narrow-check-rlimit",
     cl::desc("z3's resource limit per --narrow-check obligation (0: none). "
              "Default 50000000: untuned, a bound against runaway queries, "
              "not measured on a corpus; an exhausted one is "
-             "narrow-check-unknown"),
+             "narrow-check-unknown reason=rlimit. 64-bit; z3 enforces at "
+             "most 4294967295 (a larger value is clamped, "
+             "vc.limit-clamped)"),
     cl::init(50000000));
 
 static cl::opt<bool> narrowCheck(
@@ -3069,10 +3071,11 @@ OUTPUT (stdout, `key: value` lines):
                                   bound (counted), else z3, rlimit
                                   --narrow-check-rlimit; proves A-INB =>
                                   S < 2^k, never A-INB. That i' = i then is
-                                  the LowBits lemma (unit test; not checked
-                                  per run). invalid: exit 5,
+                                  the LowBits lemma (unit test, proved in
+                                  seam-lean; not checked per run). invalid: exit 5,
                                   narrow-check-invalid: index=<term> k=<k>;
-                                  narrow-check-unknown: index=<term>,
+                                  narrow-check-unknown: index=<term>
+                                  [reason=rlimit],
                                   narrow-check-unexpressible: index=<term>
                                   why=shape|premise (--narrow-check: exit 7);
                                   narrow-check-not-narrowed: index=<term>,
@@ -6662,8 +6665,8 @@ int main(int argc, char **argv) {
       // A-INB of each of its read addresses a (inBounds(a, 1): what the
       // executing load's A-INB gives for the byte it reads), S <u 2^k;
       // `layout && inb && !(S <u 2^k)` must be unsat. That then i' = base +
-      // zext(low_k(S)) = i is the LowBits lemma (its unit test; a Lean
-      // proof later), not checked per run. It proves inb => S < 2^k, never
+      // zext(low_k(S)) = i is the LowBits lemma (its unit test; proved in
+      // seam-lean), not checked per run. It proves inb => S < 2^k, never
       // inb itself (the discharge of A-INB is a bounds check of the program).
       if ((!checkOn && !narrowCheck) || !narrowOn || !ackOn)
         return;
@@ -6814,12 +6817,17 @@ int main(int argc, char **argv) {
         bool added = cs->add(ob);
         sea::solver::SolverResult res =
             added ? cs->check() : sea::solver::SolverResult::UNKNOWN;
+        // no timeout is set: a canceled check ran out of the rlimit
+        bool rlimitHit = added && res == sea::solver::SolverResult::UNKNOWN &&
+                         hitRlimit(*cs, narrowCheckRlimit, 0, 0);
         if (res == sea::solver::SolverResult::SAT) {
           std::unique_ptr<sea::solver::Solver> cc = mkCheckSolver();
           if (!cc)
             return;
-          res = cc->add(concrete) ? cc->check()
-                                  : sea::solver::SolverResult::UNKNOWN;
+          bool cadded = cc->add(concrete);
+          res = cadded ? cc->check() : sea::solver::SolverResult::UNKNOWN;
+          rlimitHit = cadded && res == sea::solver::SolverResult::UNKNOWN &&
+                      hitRlimit(*cc, narrowCheckRlimit, 0, 0);
         }
         if (res == sea::solver::SolverResult::UNSAT) {
           ++nValid;
@@ -6831,7 +6839,8 @@ int main(int argc, char **argv) {
         } else {
           ++nUnknown;
           os << "narrow-check-unknown: index="
-             << expr::RewriteTrail::text(site.key, 300) << "\n";
+             << expr::RewriteTrail::text(site.key, 300)
+             << (rlimitHit ? " reason=rlimit" : "") << "\n";
         }
       }
       os << "narrow-check: indices=" << nNarrowed
