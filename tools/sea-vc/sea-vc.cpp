@@ -304,7 +304,7 @@ static cl::opt<bool> wordsCheck(
 static cl::opt<unsigned> wordsCheckTimeout(
     "words-check-timeout",
     cl::desc("Seconds for --words-check (0: none; default 60)"), cl::init(60));
-static cl::opt<unsigned> wordsCheckRlimit(
+static cl::opt<uint64_t> wordsCheckRlimit(
     "words-check-rlimit",
     cl::desc("z3's resource limit for --words-check (0: none; deterministic, "
              "unlike --words-check-timeout). Untuned: unset until a corpus "
@@ -828,7 +828,7 @@ static cl::opt<unsigned>
     eqAuditTimeout("eq-audit-timeout",
                    cl::desc("Seconds per --eq-audit check (z3; default 5)"),
                    cl::init(5));
-static cl::opt<unsigned> eqAuditRlimit(
+static cl::opt<uint64_t> eqAuditRlimit(
     "eq-audit-rlimit",
     cl::desc("z3's resource limit per --eq-audit check (0: none; "
              "deterministic, unlike --eq-audit-timeout). Untuned: unset "
@@ -846,7 +846,7 @@ static cl::opt<unsigned> seamCheckTimeout(
     "seam-check-timeout",
     cl::desc("Seconds per --seam-check query (default 10; z3 and Bitwuzla)"),
     cl::init(10));
-static cl::opt<unsigned> seamCheckRlimit(
+static cl::opt<uint64_t> seamCheckRlimit(
     "seam-check-rlimit",
     cl::desc("z3's resource limit per --seam-check query (0: none; "
              "deterministic, unlike --seam-check-timeout; z3 only, other "
@@ -881,7 +881,7 @@ static cl::opt<unsigned> seamRuleLimit(
 /// incremental solver `canceled` (normalized: timeout) for both limits, so it
 /// is the rlimit unless the check took the time of the timeout (\p timeoutSec,
 /// 0: none)
-static bool hitRlimit(sea::solver::Solver &s, unsigned rlimit,
+static bool hitRlimit(sea::solver::Solver &s, uint64_t rlimit,
                       unsigned timeoutSec, double sec) {
   if (!rlimit)
     return false;
@@ -965,7 +965,7 @@ static cl::opt<sea::ReachKind> reachKind(
                clEnumValN(sea::ReachKind::Checks, "", ""),
                clEnumValN(sea::ReachKind::Blocks, "blocks",
                           "every block after the lowering")));
-static cl::opt<unsigned> reachRlimit(
+static cl::opt<uint64_t> reachRlimit(
     "reach-rlimit",
     cl::desc("z3's resource limit per reach query (0: none; deterministic, "
              "unlike --timeout); a query over it is `unknown reason=rlimit`"),
@@ -1706,7 +1706,7 @@ static cl::opt<bool> splitCheck(
              "and the chosen case's condition implies term = value; "
              "split.check lines; a failed check is exit 5"),
     cl::init(true));
-static cl::opt<unsigned> splitCheckRlimit(
+static cl::opt<uint64_t> splitCheckRlimit(
     "split-check-rlimit",
     cl::desc("z3 rlimit of each --split-check query (default 10000000; 0: "
              "none); an exhausted one is unknown, reported"),

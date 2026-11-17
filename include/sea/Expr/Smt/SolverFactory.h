@@ -13,11 +13,14 @@
 //     diag::error, null solver
 //   a nonzero limit the backend has no form for -> diag::warn
 //     (<kindPrefix>limit-unsupported), the solver runs without it
+//   a limit over what the backend takes -> diag::warn
+//     (<kindPrefix>limit-clamped), the solver runs with the largest it takes
 //
 // Limits per backend (0 = none):
 //   timeoutMs  z3 `timeout` (solver parameter), Bitwuzla `time-limit-per`,
 //              Yices set_timeout (a watcher stops the search)
-//   rlimit     z3 `rlimit` only
+//   rlimit     z3 `rlimit` only; at most 4294967295 (z3's parameter is a
+//              32-bit unsigned, its count 64-bit): clamped
 //   memMB      Bitwuzla `memory-limit` only. z3 and Yices have no limit per
 //              solver: the tool bounds the process (sea-vc --mem-limit:
 //              RLIMIT_AS, z3's global memory_max_size)
@@ -54,7 +57,7 @@ bool available(Backend b);
 /// for what each backend honours
 struct Limits {
   unsigned timeoutMs = 0;
-  unsigned rlimit = 0;
+  uint64_t rlimit = 0;
   uint64_t memMB = 0;
 };
 
@@ -62,8 +65,8 @@ struct Limits {
 /// backend; another backend does not read them.
 struct SolverConfig {
   /// diag kinds: <prefix>solver-unavailable, <prefix>yices-config,
-  /// <prefix>yices-param, <prefix>z3-tactic, <prefix>limit-unsupported (sea-vc:
-  /// "vc.")
+  /// <prefix>yices-param, <prefix>z3-tactic, <prefix>limit-unsupported,
+  /// <prefix>limit-clamped (sea-vc: "vc.")
   std::string kindPrefix = "smt.";
   /// z3: relevancy 0 and one push before anything is asserted (sea-vc
   /// --seam-check's setup: the push makes z3 pick its incremental

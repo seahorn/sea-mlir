@@ -22,6 +22,13 @@ RUN: sea-vc %S/row-leaf-split.mlir --lower --program=account --seam --seam-check
 CHECK1: seam-check-unknown: id={{[0-9]+}} rules={{[^ ]+}} reason=rlimit
 CHECK1: seam-check: firings={{[0-9]+}} checked={{[0-9]+}} valid={{[0-9]+}} invalid=0 unknown={{[1-9][0-9]*}} unexpressible=0 unknown-rlimit={{[1-9][0-9]*}}
 
+// over 32 bits: accepted (the flags are 64-bit), z3's parameter is 32-bit,
+// so the factory clamps it to 4294967295 and says so; the checks decide
+RUN: sea-vc %S/row-leaf-split.mlir --lower --program=account --seam --seam-check --seam-check-rlimit=4294967296 2>%t.big.err | FileCheck %s --check-prefix=BIG
+RUN: FileCheck %s --check-prefix=BIG-ERR < %t.big.err
+BIG: seam-check: firings={{[0-9]+}} checked={{[0-9]+}} valid={{[0-9]+}} invalid=0 unknown=0 unexpressible=0 unknown-rlimit=0
+BIG-ERR: Warning: z3's rlimit is at most 4294967295: 4294967296 is clamped to it [vc.limit-clamped]
+
 // another backend has no rlimit: the factory's warning, the checks run
 RUN: %if bitwuzla %{ sea-vc %S/row-leaf-split.mlir --lower --program=account --seam --seam-check --seam-check-rlimit=1 --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=BZ %}
 BZ: [vc.limit-unsupported]
