@@ -10,6 +10,10 @@ RUN: sea-run --agent | FileCheck %s --check-prefix=RPRINT
 RUN: sea-opt --agent | FileCheck %s --check-prefix=OPRINT
 
 VPRINT: PRINTS (docs/design/Print.md)
+RUN: sea-vc --agent | FileCheck %s --check-prefix=VSLOW
+VSLOW: SLOW OR TIMEOUT: read docs/agents/slow-vc.md
+VSLOW: z3 -v:10 -st
+VSLOW: --dag-stats
 RPRINT: PRINTS (docs/design/Print.md)
 OPRINT: sea-print-strengthen
 RUN: sea-reduce --agent | FileCheck %s --check-prefix=DGUIDE

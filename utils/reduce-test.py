@@ -72,6 +72,8 @@ MODES (--mode):
                    A capped at a-over by RLIMIT_AS); <counter>: a
                    --seam-stats line, e.g. seam.rule.bv.ite-merge (add
                    --seam-stats to the args)
+                   (a solver-phase metric, e.g. z3's bit-blast size: write
+                   a test script, docs/agents/slow-vc.md step 4)
   result           --config "<args>" --result sat|unsat|unknown|none
                    [--status <n>]
 COMMON: --sea-vc <exe> --sea-opt <exe> --sea-reduce <exe> (default: env
