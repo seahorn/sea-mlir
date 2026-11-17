@@ -3460,21 +3460,10 @@ public:
       m_inbByBase[v->base.get()].push_back(p.get());
   }
   bool inbRecorded(const Expr &x0, uint64_t span) const {
-    Expr p;
-    uint64_t units;
-    return inbCover(x0, span, p, units);
-  }
-  /// The recorded access whose bytes hold the \p span units at \p x0 (as
-  /// inbRecorded): its normal-form address \p p and its \p units. Under
-  /// that access's A-INB, every byte of [x0, x0 + span) is in its object.
-  bool inbCover(const Expr &x0, uint64_t span, Expr &p, uint64_t &units) const {
     const Expr x = op::ptr::stripObservation(x0);
     auto it = m_inbRec.find(x.get());
-    if (it != m_inbRec.end() && it->second.units >= span) {
-      p = it->second.p;
-      units = it->second.units;
+    if (it != m_inbRec.end() && it->second.units >= span)
       return true;
-    }
     std::optional<PtrView> v = view(x);
     if (!v)
       return false;
@@ -3486,11 +3475,8 @@ public:
       mpz_class dv;
       if (cancelDiff(x, r.p, dv) && dv >= mpz_class(0L) &&
           dv + mpz_class((unsigned long)span) <=
-              mpz_class((unsigned long)r.units)) {
-        p = r.p;
-        units = r.units;
+              mpz_class((unsigned long)r.units))
         return true;
-      }
     }
     return false;
   }
@@ -3527,20 +3513,30 @@ public:
   void noteOwnReads(const Expr &res, const Expr &ptr, uint64_t units) const {
     if (!m_opts.trackOwnReads)
       return;
+    const Expr p = op::ptr::stripObservation(ptr);
+    noteValueReads(res, [&](ENode *n) {
+      const Expr x = op::ptr::stripObservation(Expr(n->arg(1)));
+      mpz_class d;
+      if (x == p || (cancelDiff(x, p, d) && d >= mpz_class(0L) &&
+                     d < mpz_class((unsigned long)units)))
+        m_ownReads.emplace(n, Expr(n));
+    });
+  }
+  /// \p fn on every select reachable from \p res as a value: through every
+  /// operator but into neither a select's operands (its index is an
+  /// address, its memory a memory) nor an ite's condition; at most kOwnWalk
+  /// nodes.
+  template <typename Fn>
+  void noteValueReads(const Expr &res, Fn fn) const {
     std::unordered_set<ENode *> seen;
     std::vector<ENode *> stack{res.get()};
-    const Expr p = op::ptr::stripObservation(ptr);
     while (!stack.empty() && seen.size() < kOwnWalk) {
       ENode *n = stack.back();
       stack.pop_back();
       if (!seen.insert(n).second)
         continue;
       if (isOpX<SELECT>(n)) {
-        const Expr x = op::ptr::stripObservation(Expr(n->arg(1)));
-        mpz_class d;
-        if (x == p || (cancelDiff(x, p, d) && d >= mpz_class(0L) &&
-                       d < mpz_class((unsigned long)units)))
-          m_ownReads.emplace(n, Expr(n));
+        fn(n);
         continue;
       }
       if (isOpX<ITE>(n)) {
@@ -6115,11 +6111,10 @@ public:
       std::vector<Expr> pending = m_config.rules().takeBoundaryPending();
       if (pending.empty())
         return;
-      for (const Expr &sel : pending) {
-        Expr nf = rewrite(sel);
-        if (isOpX<SELECT>(nf))
-          m_config.rules().noteBoundaryRead(nf);
-      }
+      for (const Expr &sel : pending)
+        m_config.rules().noteValueReads(rewrite(sel), [&](ENode *n) {
+          m_config.rules().noteBoundaryRead(Expr(n));
+        });
     }
   }
 
@@ -6177,12 +6172,6 @@ public:
     if (m_record)
       settleBoundaryReads();
     Expr res = expandStoreMaps(e);
-    // the selects the translations make (--narrow-offsets: not own reads)
-    std::vector<Expr> made;
-    if (m_record) {
-      m_wide.setReadLog(&made);
-      m_memops.setReadLog(&made);
-    }
     // width terms first: their byte reads may be over memory-operation terms
     if (m_wideMade) {
       res = m_wide.expand(res);
@@ -6191,17 +6180,18 @@ public:
     }
     if (m_memOpsMade) {
       res = m_memops.translate(res, why);
-      if (!res) {
-        m_wide.setReadLog(nullptr);
-        m_memops.setReadLog(nullptr);
+      if (!res)
         return res;
-      }
       m_stats.rules["memop.translated"] = m_memops.translated();
     }
-    m_wide.setReadLog(nullptr);
-    m_memops.setReadLog(nullptr);
-    for (const Expr &sel : made)
-      m_config.rules().noteBoundaryRead(sel);
+    // the selects the translations ever made (--narrow-offsets: not own
+    // reads), this call's and earlier calls' (memo hits)
+    if (m_record) {
+      for (const Expr &sel : m_wide.madeReads())
+        m_config.rules().noteBoundaryRead(sel);
+      for (const Expr &sel : m_memops.madeReads())
+        m_config.rules().noteBoundaryRead(sel);
+    }
     // nodes last: every read of the query is there now, with the address it
     // has (the record of the stride rule); the translations above build
     // terms over a node that its expansion turns into the old ones

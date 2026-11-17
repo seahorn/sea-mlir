@@ -61,7 +61,9 @@ OUTPUT of run: stats.csv (job config rep wall cpu status verdict + every BRUNCH_
   logs/<config>/<job>.<rep>.{out,err}, manifest.yaml (sea-vc sha256, git rev/dirty, configs, host, date), rows.jsonl.
   verdict: sat unsat unknown timeout memout error inb-violation (rc 4) replay-mismatch (rc 2)
   lowering-mismatch (rc 6: --replay-original, the input program does not fail the lowered sat's assertion),
-  original-memory-error (rc 4 with replay.original match=no: the input program makes a memory-safety violation).
+  original-memory-error (rc 4 with replay.original match=no: the input program makes a memory-safety violation),
+  check-invalid (rc 5: --seam-check / --narrow-check found an invalid rewrite), check-unproven (rc 7:
+  --narrow-check left a narrowed read index unproven).
   Classified by what sea-vc printed: the verdict is the last `result:` line of stdout (text or --format=jsonl;
   a split's parts and BRUNCH_STAT result do not count; column `result`): rc 0/3 give it (rc 3 with
   `result: unknown` after a mem-limit hit is unknown, also after an earlier sat; no `result:` line: error).
@@ -462,6 +464,14 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
         verdict = "replay-mismatch"
     elif rc == 6:
         verdict = "lowering-mismatch"
+    elif rc == 5:
+        # --seam-check / --narrow-check: a rule firing or a narrowed read
+        # index is invalid under its premises (a rewriting bug)
+        verdict = "check-invalid"
+    elif rc == 7:
+        # --narrow-check: a narrowed read index whose premise bound is not
+        # proven (the narrowing is not discharged)
+        verdict = "check-unproven"
     elif rc == 1 and printed == "sat" and "vc.replay-impossible" in err + out:
         # sat with an exact VC whose model the in-place interpreter cannot run
         # (a memory update without `inplace`, docs/design/Memory.md): the
@@ -1279,7 +1289,14 @@ def cmd_gate(a):
             solved.append(f"{key} verdict={v}")
         elif (
             exp == "unknown-ok"
-            and v in ("error", "inb-violation", "original-memory-error")
+            and v
+            in (
+                "error",
+                "inb-violation",
+                "original-memory-error",
+                "check-invalid",
+                "check-unproven",
+            )
             and tier != "hard"
         ):
             fails.append(f"{v} {key} expected={exp}")

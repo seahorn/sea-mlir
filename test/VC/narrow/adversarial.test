@@ -5,11 +5,12 @@
 // t1: the load at p + i runs only for i < 16; for i >= 16 its index is out
 // of the object and its narrowed index p + low_4(i) is another cell. The
 // load does not execute then, so its value is not used: still unsat, and
-// the check proves each index under its read's A-INB.
+// the check proves each index's bound under its read's A-INB: two as a
+// premise conjunct (syntactic), p + 3 by the solver.
 // RUN: sea-vc %t/t1.mlir --lower --seam --narrow-offsets --narrow-check 2>&1 | FileCheck %s --check-prefix=T1
 // T1: vc.narrow-reads: 3
 // T1: result: unsat
-// T1: narrow-check: indices=3 checked=3 valid=3 invalid=0 unknown=0 unexpressible=0
+// T1: narrow-check: indices=3 checked=3 valid=3 invalid=0 unknown=0 unexpressible=0 not-narrowed=0 syntactic=2
 //
 // t1bad: the same with the wrong branch compared: sat, and the model
 // replays and validates (the out-of-range read does not execute).
@@ -18,22 +19,23 @@
 // T1BAD: replay: assert-failed
 // T1BAD: validate: checked={{[0-9]+}} mismatches=0
 //
-// t2: the read address is an ite of two addresses into one object.
+// t2: the read address is an ite of two addresses into one object; its
+// bound is discharged through the ites of the index and the premise.
 // RUN: sea-vc %t/t2.mlir --lower --seam --narrow-offsets --narrow-check 2>&1 | FileCheck %s --check-prefix=T2
 // T2: vc.narrow-reads: 2
 // T2: result: unsat
-// T2: narrow-check: indices=2 checked=2 valid=2
+// T2: narrow-check: indices=2 checked=2 valid=2 invalid=0 unknown=0 unexpressible=0 not-narrowed=0 syntactic=2
 //
 // t3: loads at p + i and p + i + 16 of a 16-byte object, assert x == y. Both
 // in the object is impossible: under A-INB for both the answer is unsat,
 // vacuously (conditional soundness: the program has a memory-safety error,
 // which a bounds check reports). Without the switch the VC does not use
-// A-INB and the answer is sat. --narrow-check proves inb => i = i' for each
-// read and says nothing of inb itself.
+// A-INB and the answer is sat. --narrow-check proves inb => S < 2^k for
+// each read (i' = i by the LowBits lemma) and says nothing of inb itself.
 // RUN: sea-vc %t/t3.mlir --lower --seam --narrow-offsets --narrow-check 2>&1 | FileCheck %s --check-prefix=T3
 // T3: assume.a-inb: narrow-reads=2 narrow-pairs=1
 // T3: result: unsat
-// T3: narrow-check: indices=2 checked=2 valid=2 invalid=0
+// T3: narrow-check: indices=2 checked=2 valid=2 invalid=0 unknown=0 unexpressible=0 not-narrowed=0 syntactic=2
 // RUN: sea-vc %t/t3.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=T3OFF
 // T3OFF: result: sat
 // T3OFF: validate: checked={{[0-9]+}} mismatches=0
@@ -66,12 +68,33 @@
 // SHARED: vc.narrow-reads: 1
 // SHARED: result: unsat
 //
+// s1: as shared, with a store into a before the memmove: the source read's
+// normal form is ite(j = i, 5, select(m, a + i)), whose select is y's own
+// read: not narrowed either.
+// RUN: sea-vc %t/s1.mlir --lower --seam --narrow-offsets 2>&1 | FileCheck %s --check-prefix=S1
+// S1: vc.narrow-skip-shared-boundary: 1
+// S1: vc.narrow-reads: 1
+// S1: result: unsat
+//
+// mcopy with --seam-row-expand=0: the boundary translates the memmove read;
+// its selects are not own.
+// RUN: sea-vc %t/mcopy.mlir --lower --seam --narrow-offsets --seam-row-expand=0 2>&1 | FileCheck %s --check-prefix=MCOPYB
+// MCOPYB: vc.narrow-skip-not-own: {{[1-9]}}
+// MCOPYB: result: sat
+// MCOPYB: validate: checked={{[0-9]+}} mismatches=0
+//
 // --narrow-check with an obligation it does not prove (z3 rlimit 1):
 // reported, and the run exits 7.
 // RUN: not sea-vc %t/t1.mlir --lower --seam --narrow-offsets --narrow-check --narrow-check-rlimit=1 --brunch-stats 2>&1 | FileCheck %s --check-prefix=UNPROVEN
 // UNPROVEN: narrow-check-unknown: index=
 // UNPROVEN: vc.narrow-check-unproven
 // UNPROVEN: BRUNCH_STAT status 7
+// Under --seam-check alone the same unknown is listed and, as its other
+// unknowns, does not change the exit status.
+// RUN: sea-vc %t/t1.mlir --lower --seam --narrow-offsets --seam-check --narrow-check-rlimit=1 --brunch-stats 2>&1 | FileCheck %s --check-prefix=SCUNK
+// SCUNK: narrow-check-unknown: index=
+// SCUNK: narrow-check: indices=3 {{.*}} unknown=1
+// SCUNK: BRUNCH_STAT status 0
 
 //--- t1.mlir
 !m = !sea.mem<!sea.ptr<64>, i8>
@@ -226,6 +249,33 @@ sea.program @shared {
   %pb = sea.ptr.add %b, %i : !sea.ptr<64>, i64
   %x = sea.load %m1[%pb] : !m -> i8
   %ok = sea.icmp eq, %x, %y : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- s1.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @s1 {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %c5 = sea.const 5 : i8
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c16 align 8 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64
+  %j = sea.nondet "j" [4] : i64
+  %lt = sea.icmp ult, %i, %c16 : i64
+  sea.assume %lt
+  %lt2 = sea.icmp ult, %j, %c16 : i64
+  sea.assume %lt2
+  %pa = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %a, %j : !sea.ptr<64>, i64
+  %y = sea.load %m[%pa] : !m -> i8
+  %m0 = sea.store %m[%pj], %c5 inplace : !m, i8
+  %m1 = sea.memmove %m0[%b], %m0[%a], %c16 inplace : !m
+  %pb = sea.ptr.add %b, %i : !sea.ptr<64>, i64
+  %x = sea.load %m1[%pb] : !m -> i8
+  %e = sea.icmp eq, %x, %y : i8
+  %ij = sea.icmp eq, %i, %j : i64
+  %ok = sea.or %e, %ij : i1
   sea.assert %ok
   sea.halt
 }

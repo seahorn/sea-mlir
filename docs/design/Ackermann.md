@@ -202,9 +202,11 @@ called by `SeaOpSem::memLoad` after the rewriting, which keeps the load's
 address as the index of every select it leaves). Selects the boundary makes
 (store-map expansion, the reads of a memmove's source, wide expansion) are
 not own (`vc.narrow-skip-not-own`). A select that is both, one node by
-hash-consing (a memmove's source read whose normal form is a load's own
-read), is not narrowed either (`vc.narrow-skip-shared-boundary`): only a
-load's own reads are, so the use lemma has one case. The reads of wide
+hash-consing (a select reachable as a value of a memmove's source read in
+normal form, `ite(j = i, v, select(m, a + i))` included; any select a
+boundary translation or wide expansion ever built, memo hits included), is
+not narrowed either (`vc.narrow-skip-shared-boundary`): only a load's own
+reads are, so the use lemma has one case. The reads of wide
 loads (`--seam-wide`, expanded into bytes at the boundary) are not tagged
 and not narrowed (conservative). Further, every read address of the index (`AccessOrigins`, the stride
 rule's record, now keeping every address), or every leaf of an ite of them
@@ -303,7 +305,7 @@ What it does not apply to:
 - `assume.a-inb: narrow-reads=<n> narrow-pairs=<m>`: n reads rest on the
   A-INB of their access, m pairs of them are compared at k bits.
 - `vc.narrow-*`: indices seen, eligible, skipped by reason (`not-own`,
-  `no-object`, `shadow`, `size`, `many`, `shape`), reads narrowed, their
+  `shared-boundary`, `no-object`, `shadow`, `size`, `many`, `shape`), reads narrowed, their
   objects, the largest k, k-bit constraints and the sum of their widths,
   mixed (64-bit) constraints with one narrowed read.
 - `--seam-check` / `--narrow-check`: what is checked per run and what
@@ -331,8 +333,8 @@ What it does not apply to:
     (shape, premise): a `narrow-check-unknown:` / `-unexpressible:` line
     (the index printed to 300 characters); with `--narrow-check` the run
     exits 7 (`vc.narrow-check-unproven`), since the narrowing of the answer
-    is then not discharged; under `--seam-check` alone they are counted as
-    its other unknowns. An eligible index the lowering did not narrow is
+    is then not discharged; under `--seam-check` alone the lines are printed
+    too and, as its other unknowns, they leave the exit status as it is. An eligible index the lowering did not narrow is
     listed (`narrow-check-not-narrowed:`).
   - `--narrow-check` runs without the rule trail (also with `--vcgen-only`):
     on the firedancer jobs `--seam-check` did not finish generating the VC

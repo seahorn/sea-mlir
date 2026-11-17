@@ -121,9 +121,10 @@ inline bool isMemoryHead(Expr e) {
 /// terms).
 class WideExpander {
 public:
-  /// While set, every select the expansion builds is appended to \p log
-  /// (sea-vc --narrow-offsets: reads made at the boundary).
-  void setReadLog(std::vector<Expr> *log) { m_readLog = log; }
+  /// Every select an expansion built, in order (sea-vc --narrow-offsets:
+  /// reads made at the boundary; kept across calls, so a term expanded
+  /// earlier and found in the memo is still known).
+  const std::vector<Expr> &madeReads() const { return m_made; }
   Expr expand(const Expr &root) {
     if (!hasWide(root))
       return root;
@@ -248,11 +249,10 @@ private:
     return res;
   }
   Expr logRead(const Expr &sel) {
-    if (m_readLog)
-      m_readLog->push_back(sel);
+    m_made.push_back(sel);
     return sel;
   }
-  std::vector<Expr> *m_readLog = nullptr;
+  std::vector<Expr> m_made;
 
   TypeChecker m_tc;
   std::unordered_map<ENode *, Expr> m_memo;
@@ -287,10 +287,11 @@ public:
   /// reads over a term translated so far (a select(term, j) eliminated by its
   /// read equation): 0 unless a term reached the boundary
   uint64_t translated() const { return m_translated; }
-  /// While set, every select the translation builds is appended to \p log
-  /// (sea-vc --narrow-offsets: reads made at the boundary).
-  void setReadLog(std::vector<Expr> *log) { m_readLog = log; }
-  std::vector<Expr> *m_readLog = nullptr;
+  /// Every select a translation built, in order (sea-vc --narrow-offsets:
+  /// reads made at the boundary; kept across calls, so a read translated
+  /// earlier and found in the memo is still known).
+  const std::vector<Expr> &madeReads() const { return m_made; }
+  std::vector<Expr> m_made;
 
   /// Does \p e contain a memory-operation term? Memoized, iterative.
   bool hasTerm(const Expr &e) {
@@ -378,8 +379,7 @@ private:
       return true;
     if (!hasTerm(m)) {
       Expr sel = op::array::select(m, j);
-      if (m_readLog)
-        m_readLog->push_back(sel);
+      m_made.push_back(sel);
       setR(m, j, sel);
       return true;
     }
