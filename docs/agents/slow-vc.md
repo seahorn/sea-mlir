@@ -208,20 +208,25 @@ lowering.
    step was absent (the memory was over 300 MB), and `max-bv-sharing`
    changed nothing.
 3. Bisect: the effect was the sum of many of the pass's edits, not one.
-   The pass removes block arguments of joins. Without them the parser's
-   cursor, which was a block argument at each join, became a flat 64-bit
+   The pass removes the edges into the error-exit joins (the paths that
+   only end in a failed check), and the join block arguments that carried
+   the parser's cursor went with them. Without them the cursor became a flat 64-bit
    sum of the cursor's increments in every read address: sums of up to 34
    operands.
 4. Measure with sharing: the printed goal showed 27k multiplications
    against 5.7k, which was misleading; counted on the DAG, both queries
    had 37k nodes and the same multiplications, and the difference was
-   the arity of `bvadd`. `--ack-dump-pairs` and `--eq-audit` showed the sums
-   were the index sums of same-object Ackermann pairs. For each pair z3
+   the arity of `bvadd`. The wide sums were the index sums of same-object
+   Ackermann pairs (found with ad-hoc DAG scripts at the time;
+   `--ack-dump-pairs` and `--eq-audit` list the pairs). For each pair z3
    cancels the common prefix of the two sums and bit-blasts what is left,
    so the same prefix is blasted for each of thousands of pairs.
-5. Controls: Yices and Bitwuzla were not slower. A look at z3 showed the
-   `max-bv-sharing` step, which should share the sums, did nothing: the
-   occurrence count its guard tests was 0 everywhere (a trace of z3).
+5. Controls: Yices and Bitwuzla were not slower (each keeps sums shared
+   before bit-blasting). Reading z3 showed two steps of its QF_BV preamble
+   that do nothing: `max-bv-sharing` never registers the operators it
+   shares, and `solve-eqs` never counts occurrences, so its `max_occs`
+   bound (2 in the preamble) does not stop it from eliminating names
+   (a trace, `-tr:solve_eqs_check_occs`, shows `num_occs: 0` everywhere).
 6. Fix by the mechanism. `--vc-defs=hidden` names the shared prefixes with
    constants that `solve-eqs` does not eliminate, which brought the
    `txn-pf-v1-writes` bit-blast from 7.34M to 2.27M, below the limit for
