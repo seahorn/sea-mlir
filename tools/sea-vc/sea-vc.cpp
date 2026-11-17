@@ -18,6 +18,7 @@
 #include "sea/Expr/ReadCells.hh"
 #include "sea/Expr/SeaMRules.hh"
 #include "sea/Expr/Smt/Yices2SolverImpl.hh"
+#include "sea/Expr/SumNames.hh"
 #ifdef WITH_BITWUZLA
 #include "sea/Expr/Smt/BitwuzlaSolverImpl.hh"
 #endif
@@ -540,6 +541,27 @@ static cl::opt<AckMode> ackermannize(
                           "always (arrays used other than by select are kept)"),
                clEnumValN(AckMode::Off, "off", "never")),
     cl::init(AckMode::Auto));
+
+enum class VcDefs { Inline, Nest, Eq, Hidden };
+static cl::opt<VcDefs> vcDefs(
+    "vc-defs",
+    cl::desc("Named address sums, after the Ackermann lowering "
+             "(docs/design/SumNames.md): the index sums of the query that "
+             "share a prefix get fresh constants def.<k>, each address is "
+             "def.<k> + c or a parent's name plus the rest"),
+    cl::values(clEnumValN(VcDefs::Inline, "inline",
+                          "no names: the flat sums (default; not tuned)"),
+               clEnumValN(VcDefs::Nest, "nest",
+                          "no names: each shared sum is one node, its "
+                          "parent's sum plus the rest (z3's simplifier "
+                          "flattens it again)"),
+               clEnumValN(VcDefs::Eq, "eq",
+                          "names defined by top-level equations (a solver's "
+                          "variable elimination may substitute them back)"),
+               clEnumValN(VcDefs::Hidden, "hidden",
+                          "names defined by two bvule atoms each, no "
+                          "top-level equation")),
+    cl::init(VcDefs::Inline));
 
 static cl::opt<bool> dagStats(
     "dag-stats",
@@ -2263,6 +2285,18 @@ TYPICAL:
                                  #   The model's arrays are rebuilt from the
                                  #   reads (0 at unread cells) for replay.
                                  #   docs/design/Ackermann.md
+  sea-vc p.mlir --seam --vc-defs=hidden  # named address sums, after
+                                 #   Ackermann: index sums that share a
+                                 #   prefix (a parser cursor) become fresh
+                                 #   constants def.<k>, each defined from its
+                                 #   parent's name (exact, no assumption).
+                                 #   hidden: two bvule atoms per name (no
+                                 #   equation: survives z3's solve-eqs);
+                                 #   eq: an equation (solvers substitute it
+                                 #   back); nest: no names, each shared sum
+                                 #   one node (solver-neutral; z3 flattens
+                                 #   it again); inline (default, not tuned):
+                                 #   flat sums. docs/design/SumNames.md
   sea-vc p.mlir --seam --seam-wide --seam-words=all|auto [--words-check]
                                  # initial byte memories (nd.<site>,
                                  #   memhavoc arrays) only read in the query
@@ -2535,6 +2569,13 @@ OUTPUT (stdout, `key: value` lines):
                                   c2 - c1 is not (no constraint: never
                                   equal), constraints added; with vc-time,
                                   stderr with --smt2)
+  vc.defs: inline|nest|eq|hidden  (--vc-defs; not inline: vc.defs-sums /
+                                  -index-sums / -names / -atoms / -rewritten:
+                                  distinct sums of the query, those at an
+                                  index, names made (nest: shared sums),
+                                  definition atoms
+                                  asserted, bvadd nodes replaced; with
+                                  vc-time, stderr with --smt2)
   vc.ackermann-model: defaulted=<n> inconsistent=<n>
                                   (sat, lowering on: reads at indices the
                                   query does not read (cell 0; any value
@@ -5708,6 +5749,25 @@ int main(int argc, char **argv) {
         .kv("arrays", ack.stats().lowered)
         .kv("pairs", ack.stats().pairs)
         .kv("nodes-made", efac.nodesMade());
+    // named address sums (an encoding step of the query, after Ackermann,
+    // which decides its pairs on the flat sums; docs/design/SumNames.md)
+    std::optional<expr::SumNamer::Stats> defStats;
+    if (vcDefs != VcDefs::Inline) {
+      using Form = expr::SumNamer::DefForm;
+      expr::SumNamer namer(vcDefs == VcDefs::Nest ? Form::Nest
+                           : vcDefs == VcDefs::Eq ? Form::Eq
+                                                  : Form::Hidden);
+      if (ackOn)
+        for (const auto &arr : ack.arrays())
+          for (const auto &rd : arr.reads)
+            namer.addIndex(rd.index);
+      query = namer.name(query);
+      defStats = namer.stats();
+      if (failed(sea::verifyUniqueNames(query, clash)))
+        return fail("--vc-defs: two distinct VC constants are both named '" +
+                    clash + "'");
+      lap("vc-defs");
+    }
     // the size of what the solver gets: distinct nodes (shared subterms
     // once), per operator
     if (dagStats) {
@@ -5962,6 +6022,17 @@ int main(int argc, char **argv) {
                              strideOn    ? Stride::On
                              : ackStride ? Stride::Fallback
                                          : Stride::Off);
+      }
+      r.line("vc.defs").value(vcDefs == VcDefs::Inline ? "inline"
+                              : vcDefs == VcDefs::Nest ? "nest"
+                              : vcDefs == VcDefs::Eq   ? "eq"
+                                                       : "hidden");
+      if (defStats) {
+        r.line("vc.defs-sums").value(defStats->sums);
+        r.line("vc.defs-index-sums").value(defStats->indexSums);
+        r.line("vc.defs-names").value(defStats->names);
+        r.line("vc.defs-atoms").value(defStats->atoms);
+        r.line("vc.defs-rewritten").value(defStats->rewritten);
       }
       // the named assumptions of the VC (BRUNCH_STAT <key>-<field>)
       sea::assume::Ledger vcAssumes;
