@@ -51,8 +51,8 @@ name.
   proper sub-multiset of `M` (ties: the first collected). Any sum of the
   query can be a parent; the cursor's offset sums (`d_1 + ... + d_k`,
   without the base) are parents of its addresses this way.
-- The parents form a forest (`SumNamer::findParents`). A unit of a
-  multiset has the representative of that multiset as its parent, and the
+- The parents form a forest (`SumNamer::findParents`). A unit other than
+  its multiset's representative has the representative as its parent, and the
   representative's own parent has a strictly smaller multiset. So a parent
   step either goes to the representative, which never has a parent of its
   own multiset, or makes the multiset strictly smaller.
@@ -99,8 +99,8 @@ no VC constant starts with `def.` (an error otherwise), and the unique-name
 check runs again after the step. The origins of `--arith-stats` follow the
 query through the step (`SumNamer::image`).
 
-The statements of this section are machine-checked in
-[seam-lean](https://github.com/agurfinkel/seam-lean) (`SeaM/VCDefs`), over a
+The statements of this section are machine-checked in seam-lean (module
+`SeaM/VCDefs`; the proofs are to be published), over a
 one-width model of terms with nested sums, for every plan that meets the
 invariants the step establishes (the parent rule above among them):
 each definition is exact and the rewritten query is the query (A1); the
