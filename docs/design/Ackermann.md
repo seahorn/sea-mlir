@@ -327,8 +327,9 @@ What it does not apply to:
   reads), on the solver's default configuration: in `--seam-check`'s
   incremental configuration (relevancy 0, one push) z3 took 11-60 s per
   obligation on `txn-pf-v1-writes` and ran out of memory, while its
-  default tactic proves the same obligation at once. Whether the check
-  finishes on the firedancer jobs is not measured yet.
+  default tactic proves the same obligation at once. [OBS] It still does
+  not finish on `txn-pf-v1-writes`: out of memory (8 GB cap) after 80-160
+  s, also with a 2 s timeout per obligation; open.
 
 ### Measured
 
