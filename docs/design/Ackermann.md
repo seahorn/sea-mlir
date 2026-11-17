@@ -195,13 +195,18 @@ constraints) about 97% of them compare two reads of one object, the
 Where: in the lowering, on the index of each read, before the pairs are
 formed (`Ackermannizer::setNarrow`, a `NarrowTable` filled by sea-vc).
 
-A read index i is eligible when every read address it had before the
-boundary (`AccessOrigins`, the stride rule's record, now keeping every
-address) lies in a recorded program access (`seam::Rules::inbCover`, the
-matcher of `--seam-check-inb-premise`: the access's own address, or
-`p + d` with `0 <= d < units` of a recorded access p), all of them (or all
-leaves of an ite of them: a pointer phi) point into one object of size
-N > 0, and no select at i reads a shadow memory. Let k be the least width
+A read index i is eligible when every select at it is an own read of a
+program load: a select the load's encoding left at the load's own address
+(a byte of [q, q + units) for a load at q: `seam::Rules::noteOwnReads`,
+called by `SeaOpSem::memLoad` after the rewriting, which keeps the load's
+address as the index of every select it leaves). Selects the boundary makes
+(store-map expansion, the reads of a memmove's source, wide expansion) are
+not own (`vc.narrow-skip-not-own`), unless they are the same node as an own
+read (hash-consing: the same cell at the same address term, read by a load
+too). Further, every read address of the index (`AccessOrigins`, the stride
+rule's record, now keeping every address), or every leaf of an ite of them
+(a pointer phi), points into one object of size N > 0, and no select at the
+index reads a shadow memory. Let k be the least width
 with `2^k >= N`. After the boundary the index is `base + o` (a flat sum
 with the object's constant as one summand, or an ite of such sums); the
 read's index becomes
@@ -232,7 +237,12 @@ wide). The 64-bit sums stay wherever else the query uses them.
 
 Each narrowed read is a rewrite of its own index, justified by the A-INB of
 its own access, the same way a SeaM rewrite of a load is justified by the
-premises of the accesses it compares. If the access executes and stays in
+premises of the accesses it compares. The use lemma: the value of an own
+read is used only where its load executes; the load executing, A-INB gives
+`0 <= i - base < N` for the byte it reads. (A boundary-made select that is
+the same node as an own read is also a load's read of that cell; where the
+memmove's read is the one used, its in-range test holds and the memmove's
+source range, whose A-INB is the memory operation's, holds the cell.) If the access executes and stays in
 its object (A-INB), its offset o (the 64-bit value of i - base, so o mod
 2^64) lies in [0, N), so `low_k(o) = o` (`2^k >= N`) and i' = i. If the
 access does not execute, its value is not used by the query (the read
@@ -260,10 +270,21 @@ per-read representative has no such mix: every constraint of a narrowed
 read is over i'.
 
 Unsat holds for the executions in which every narrowed read's access stays
-in its object. A sat model whose run leaves an object at a narrowed read
-does not replay at that load (the run reads at i, the model at i'), and
-sea-vc classifies it as for every other premise (`vc.seam-inb-spurious`,
-status 4).
+in its object. Two loads whose A-INB conditions cannot hold together (p + i
+and p + i + 16 of a 16-byte object) make the answer unsat vacuously, where
+the VC without the switch is sat: the program has a memory-safety error,
+which the discharge of A-INB (a bounds check of the program) reports;
+`--narrow-check` does not (test/VC/narrow/adversarial.test, t3).
+
+A sat model whose run executes a narrowed load out of its object does not
+replay at that load: the run reads the cell at i, the model the one at i'.
+Model evaluation (`AckermannModel`) gives a narrowed select the cell the
+query read, so validation reports the difference; then sea-vc evaluates i
+and i' of every narrowed select in the model, and if some differ it prints
+`seam.narrow-inb-violation: reads=<n> first: <index> = <v>, narrowed <v'>`
+and exits 4 (`vc.narrow-inb-spurious`), as for a broken premise. (The
+abstract program's run, which `vc.seam-inb-spurious` uses, stops at the
+first read of a nondet memory and decides nothing here.)
 
 What it does not apply to:
 - pairs of reads of different objects, or with a read whose base is
@@ -281,24 +302,33 @@ What it does not apply to:
 
 - `assume.a-inb: narrow-reads=<n> narrow-pairs=<m>`: n reads rest on the
   A-INB of their access, m pairs of them are compared at k bits.
-- `vc.narrow-*`: indices seen, eligible, skipped by reason (`not-access`,
+- `vc.narrow-*`: indices seen, eligible, skipped by reason (`not-own`,
   `no-object`, `shadow`, `size`, `many`, `shape`), reads narrowed, their
   objects, the largest k, k-bit constraints and the sum of their widths,
   mixed (64-bit) constraints with one narrowed read.
-- `--seam-check`: for each eligible index, `layout && inb(access) &&
-  i != i'` must be unsat, with inb the in-bounds condition of every access
-  the index lies in (`narrow-check:` line; an invalid one exits 5 as an
-  invalid rule firing does). `--narrow-check` runs these obligations
-  alone, without the rule trail (also with `--vcgen-only`): on the
-  firedancer jobs `--seam-check` did not finish generating the VC in 13
-  minutes (the trail of every firing, 22-29 GB). Each obligation is
-  solved with the reads as free constants and the sums' summands in one
-  order (a sat answer is checked again with the reads), on the solver's
-  default configuration: in `--seam-check`'s incremental configuration
-  (relevancy 0, one push) z3 took 11-60 s per obligation on
-  `txn-pf-v1-writes` and ran out of memory, while its default tactic
-  proves the same obligation at once. Whether the revised check finishes
-  on the firedancer jobs is not measured yet.
+- `--seam-check` / `--narrow-check`: for each narrowed index (the lowering's
+  record of the selects it narrowed), `layout && inBounds(a, 1) for each
+  read address a && i != i'` must be unsat: the weakest hypothesis, what
+  the executing load's A-INB gives for the byte it reads. i' is rebuilt
+  with the same `splitBase` / `LowBits` from the unlowered index: the
+  check validates the construction, not the emitted term (which is over
+  the lowering's read constants). It proves `A-INB => i = i'`, never A-INB.
+  Invalid: exit 5, as an invalid rule firing. Unknown or unexpressible
+  (shape, premise): a `narrow-check-unknown:` / `-unexpressible:` line; with
+  `--narrow-check` the run exits 7 (`vc.narrow-check-unproven`), since the
+  narrowing of the answer is then not discharged; under `--seam-check`
+  alone they are counted as its other unknowns. An eligible index the
+  lowering did not narrow is listed (`narrow-check-not-narrowed:`).
+  `--narrow-check` runs these obligations without the rule trail (also
+  with `--vcgen-only`): on the firedancer jobs `--seam-check` did not
+  finish generating the VC in 13 minutes (the trail of every firing, 22-29
+  GB). Each obligation is solved with the reads as free constants and the
+  sums' summands in one order (a sat answer is checked again with the
+  reads), on the solver's default configuration: in `--seam-check`'s
+  incremental configuration (relevancy 0, one push) z3 took 11-60 s per
+  obligation on `txn-pf-v1-writes` and ran out of memory, while its
+  default tactic proves the same obligation at once. Whether the check
+  finishes on the firedancer jobs is not measured yet.
 
 ### Measured
 

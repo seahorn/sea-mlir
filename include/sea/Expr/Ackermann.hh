@@ -435,14 +435,19 @@ struct AccessOrigins {
     /// some select at this index reads a shadow memory (keyed by object
     /// identity, not a program access)
     bool shadow = false;
+    /// some select at this index is not an own read of a program load
+    /// (seam::Rules::noteOwnReads): made by the boundary
+    bool notOwn = false;
   };
   std::unordered_map<ENode *, Entry> byIndex;
   /// \p key (expanded) was the read address \p origin (of a shadow memory:
   /// \p shadow)
-  void add(const Expr &key, const Expr &origin, bool shadow = false) {
+  void add(const Expr &key, const Expr &origin, bool shadow = false,
+           bool notOwn = false) {
     Entry &e = byIndex[key.get()];
     e.key = key;
     e.shadow = e.shadow || shadow;
+    e.notOwn = e.notOwn || notOwn;
     if (std::find(e.addrs.begin(), e.addrs.end(), origin) == e.addrs.end()) {
       if (e.addrs.size() < kMaxAddrs)
         e.addrs.push_back(origin);
@@ -486,8 +491,8 @@ struct AccessOrigins {
 /// The reads --narrow-offsets narrows (docs/design/Ackermann.md, "Narrowed
 /// offsets"): per read index (the expanded index term of a select, as the
 /// query has it before the lowering), the object its address is in. sea-vc
-/// fills it with the indices whose every read address lies in a recorded
-/// program access (seam::Rules::inbCover) of an object of known size N > 0;
+/// fills it with the indices whose every select is a program load's own read
+/// (seam::Rules::noteOwnReads) into an object of known size N > 0;
 /// k is the least width with 2^k >= N. Under the A-INB of that access the
 /// index is base + o with o in [0, N), so it equals base + zext(low_k(o)).
 struct NarrowTable {
@@ -705,6 +710,9 @@ public:
             groupKey.push_back(&g->first);
           auto [p, fresh] = byKey[a].emplace(std::make_pair(g->second, off),
                                              m_arrays[a].reads.size());
+          if (low && !m_narrowSel.count(n))
+            m_narrowSel.emplace(
+                n, NarrowedSelect{Expr(n), kids[1], idx, a, p->second});
           if (!fresh) {
             noteOrigins(m_arrays[a].reads[p->second], n->arg(1), false);
             if (m_keepImages)
@@ -844,6 +852,23 @@ public:
   /// --narrow-offsets: narrow the reads whose index is in \p t (null, the
   /// default: none). Rests on A-INB for each narrowed read (counted).
   void setNarrow(const NarrowTable *t) { m_narrow = t; }
+  /// A select of the query whose index was narrowed: the select, its index
+  /// as lowered (64 bits, i) and the narrowed one (i'), the read it is.
+  struct NarrowedSelect {
+    Expr select, index, narrowed;
+    size_t array, read;
+  };
+  /// The narrowed selects (by node of the query before the lowering).
+  const std::unordered_map<ENode *, NarrowedSelect> &narrowedSelects() const {
+    return m_narrowSel;
+  }
+  /// The read constant of narrowed select \p n; null if \p n is not one.
+  Expr narrowedValue(const ENode *n) const {
+    auto it = m_narrowSel.find(const_cast<ENode *>(n));
+    return it == m_narrowSel.end()
+               ? Expr()
+               : m_arrays[it->second.array].reads[it->second.read].value;
+  }
   /// The truncation of the narrowed reads (LowBits; --seam-check builds the
   /// same terms on the unlowered indices).
   LowBits &lowBits() { return m_low; }
@@ -1126,6 +1151,7 @@ private:
   std::vector<Pair> m_pairs;
   const AccessOrigins *m_origins = nullptr;
   const NarrowTable *m_narrow = nullptr;
+  std::unordered_map<ENode *, NarrowedSelect> m_narrowSel;
   LowBits m_low;
   std::unordered_set<ENode *> m_size0;
   bool m_premises = true;
@@ -1180,6 +1206,11 @@ public:
         [&](ENode *n, llvm::SmallVectorImpl<Expr> &kids) -> Expr {
           if (m_broken || !isOpX<SELECT>(n) || !hasLowered(n->arg(0)))
             return withKids(n, kids);
+          // a narrowed select is the cell the query read, at its narrowed
+          // index (what the VC computed with; a run that reads elsewhere
+          // differs from it: validation sees it)
+          if (Expr r = m_ack.narrowedValue(n))
+            return r;
           Expr j = m_inner.eval(kids[1], /*complete=*/true);
           if (!j || !op::bv::is_bvnum(j)) {
             m_broken = true;

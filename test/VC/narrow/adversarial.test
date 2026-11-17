@@ -1,0 +1,206 @@
+// --narrow-offsets on adversarial programs (docs/design/Ackermann.md,
+// "Narrowed offsets"); 16-byte objects, k = 4.
+// RUN: split-file %s %t
+//
+// t1: the load at p + i runs only for i < 16; for i >= 16 its index is out
+// of the object and its narrowed index p + low_4(i) is another cell. The
+// load does not execute then, so its value is not used: still unsat, and
+// the check proves each index under its read's A-INB.
+// RUN: sea-vc %t/t1.mlir --lower --seam --narrow-offsets --narrow-check 2>&1 | FileCheck %s --check-prefix=T1
+// T1: vc.narrow-reads: 3
+// T1: result: unsat
+// T1: narrow-check: indices=3 checked=3 valid=3 invalid=0 unknown=0 unexpressible=0
+//
+// t1bad: the same with the wrong branch compared: sat, and the model
+// replays and validates (the out-of-range read does not execute).
+// RUN: sea-vc %t/t1bad.mlir --lower --seam --narrow-offsets 2>&1 | FileCheck %s --check-prefix=T1BAD
+// T1BAD: result: sat
+// T1BAD: replay: assert-failed
+// T1BAD: validate: checked={{[0-9]+}} mismatches=0
+//
+// t2: the read address is an ite of two addresses into one object.
+// RUN: sea-vc %t/t2.mlir --lower --seam --narrow-offsets --narrow-check 2>&1 | FileCheck %s --check-prefix=T2
+// T2: vc.narrow-reads: 2
+// T2: result: unsat
+// T2: narrow-check: indices=2 checked=2 valid=2
+//
+// t3: loads at p + i and p + i + 16 of a 16-byte object, assert x == y. Both
+// in the object is impossible: under A-INB for both the answer is unsat,
+// vacuously (conditional soundness: the program has a memory-safety error,
+// which a bounds check reports). Without the switch the VC does not use
+// A-INB and the answer is sat. --narrow-check proves inb => i = i' for each
+// read and says nothing of inb itself.
+// RUN: sea-vc %t/t3.mlir --lower --seam --narrow-offsets --narrow-check 2>&1 | FileCheck %s --check-prefix=T3
+// T3: assume.a-inb: narrow-reads=2 narrow-pairs=1
+// T3: result: unsat
+// T3: narrow-check: indices=2 checked=2 valid=2 invalid=0
+// RUN: sea-vc %t/t3.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=T3OFF
+// T3OFF: result: sat
+// T3OFF: validate: checked={{[0-9]+}} mismatches=0
+//
+// t5: as t3 with x == 7 && y == 7 failing: a model with i < 16 reads both
+// cells at p + i (the second narrowed from p + i + 16); the run reads p + i
+// + 16 and does not fail. Validation sees the narrowed cell differ, and the
+// answer is classified as resting on a broken A-INB: status 4.
+// RUN: not sea-vc %t/t5.mlir --lower --seam --narrow-offsets --brunch-stats 2>&1 | FileCheck %s --check-prefix=T5
+// T5: result: sat
+// T5: validate: checked={{[0-9]+}} mismatches={{[1-9]}}
+// T5: seam.narrow-inb-violation: reads=1
+// T5: vc.narrow-inb-spurious
+// T5: BRUNCH_STAT status 4
+//
+// memmove: the load of b + i reads the copy of a: the select at a + i is
+// a memory-operation read, not a load at a + i, so its index is not
+// narrowed (vc.narrow-skip-not-own); the sat replays.
+// RUN: sea-vc %t/mcopy.mlir --lower --seam --narrow-offsets 2>&1 | FileCheck %s --check-prefix=MCOPY
+// MCOPY: vc.narrow-skip-not-own: 1
+// MCOPY: vc.narrow-reads: 1
+// MCOPY: result: sat
+// MCOPY: validate: checked={{[0-9]+}} mismatches=0
+//
+// --narrow-check with an obligation it does not prove (z3 rlimit 1):
+// reported, and the run exits 7.
+// RUN: not sea-vc %t/t1.mlir --lower --seam --narrow-offsets --narrow-check --seam-check-rlimit=1 --brunch-stats 2>&1 | FileCheck %s --check-prefix=UNPROVEN
+// UNPROVEN: narrow-check-unknown: index=
+// UNPROVEN: vc.narrow-check-unproven
+// UNPROVEN: BRUNCH_STAT status 7
+
+//--- t1.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @t1 {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %c15 = sea.const 15 : i64
+  %c3 = sea.const 3 : i64
+  %p = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [2] : i64
+  %p3 = sea.ptr.add %p, %c3 : !sea.ptr<64>, i64
+  %z = sea.load %m[%p3] : !m -> i8
+  %pi = sea.ptr.add %p, %i : !sea.ptr<64>, i64
+  %lt = sea.icmp ult, %i, %c16 : i64
+  sea.cond_br %lt, ^a, ^b
+^a:
+  %x = sea.load %m[%pi] : !m -> i8
+  sea.br ^j(%x : i8)
+^b:
+  sea.br ^j(%z : i8)
+^j(%v : i8):
+  %im = sea.and %i, %c15 : i64
+  %pm = sea.ptr.add %p, %im : !sea.ptr<64>, i64
+  %w = sea.load %m[%pm] : !m -> i8
+  %e1 = sea.icmp eq, %v, %w : i8
+  %e2 = sea.icmp eq, %v, %z : i8
+  %ok = sea.select %lt, %e1, %e2 : i1
+  sea.assert %ok
+  sea.halt
+}
+//--- t1bad.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @t1 {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %c15 = sea.const 15 : i64
+  %c3 = sea.const 3 : i64
+  %p = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [2] : i64
+  %p3 = sea.ptr.add %p, %c3 : !sea.ptr<64>, i64
+  %z = sea.load %m[%p3] : !m -> i8
+  %pi = sea.ptr.add %p, %i : !sea.ptr<64>, i64
+  %lt = sea.icmp ult, %i, %c16 : i64
+  sea.cond_br %lt, ^a, ^b
+^a:
+  %x = sea.load %m[%pi] : !m -> i8
+  sea.br ^j(%x : i8)
+^b:
+  sea.br ^j(%z : i8)
+^j(%v : i8):
+  %im = sea.and %i, %c15 : i64
+  %pm = sea.ptr.add %p, %im : !sea.ptr<64>, i64
+  %w = sea.load %m[%pm] : !m -> i8
+  %e1 = sea.icmp eq, %v, %w : i8
+  %e2 = sea.icmp eq, %v, %z : i8
+  %ok = sea.select %lt, %e2, %e1 : i1
+  sea.assert %ok
+  sea.halt
+}
+//--- t2.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @t2 {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %c15 = sea.const 15 : i64
+  %p = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [2] : i64
+  %j = sea.nondet "j" [3] : i64
+  %c = sea.nondet "c" [4] : i1
+  %pi = sea.ptr.add %p, %i : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %p, %j : !sea.ptr<64>, i64
+  %k = sea.select %c, %i, %j : i64
+  %lt = sea.icmp ult, %k, %c16 : i64
+  sea.assume %lt
+  %q = sea.select %c, %pi, %pj : !sea.ptr<64>
+  %x = sea.load %m[%q] : !m -> i8
+  %km = sea.and %k, %c15 : i64
+  %pm = sea.ptr.add %p, %km : !sea.ptr<64>, i64
+  %w = sea.load %m[%pm] : !m -> i8
+  %ok = sea.icmp eq, %x, %w : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- t3.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @t3 {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %p = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [2] : i64
+  %i2 = sea.add %i, %c16 : i64
+  %pi = sea.ptr.add %p, %i : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %p, %i2 : !sea.ptr<64>, i64
+  %x = sea.load %m[%pi] : !m -> i8
+  %y = sea.load %m[%pj] : !m -> i8
+  %ok = sea.icmp eq, %x, %y : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- t5.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @t3 {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %p = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [2] : i64
+  %i2 = sea.add %i, %c16 : i64
+  %pi = sea.ptr.add %p, %i : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %p, %i2 : !sea.ptr<64>, i64
+  %x = sea.load %m[%pi] : !m -> i8
+  %y = sea.load %m[%pj] : !m -> i8
+  %c7 = sea.const 7 : i8
+  %a = sea.icmp eq, %x, %c7 : i8
+  %b = sea.icmp eq, %y, %c7 : i8
+  %bad = sea.and %a, %b : i1
+  %t = sea.const 1 : i1
+  %ok = sea.xor %bad, %t : i1
+  sea.assert %ok
+  sea.halt
+}
+//--- mcopy.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @mcopy {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c16 align 8 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64
+  %lt = sea.icmp ult, %i, %c16 : i64
+  sea.assume %lt
+  %m1 = sea.memmove %m[%b], %m[%a], %c16 inplace : !m
+  %pb = sea.ptr.add %b, %i : !sea.ptr<64>, i64
+  %x = sea.load %m1[%pb] : !m -> i8
+  %c7 = sea.const 7 : i8
+  %ok = sea.icmp ne, %x, %c7 : i8
+  sea.assert %ok
+  sea.halt
+}
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

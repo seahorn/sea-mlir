@@ -3510,6 +3510,46 @@ public:
     return m_inbUnrecorded;
   }
 
+  /// Own reads (sea-vc --narrow-offsets, docs/design/Ackermann.md
+  /// "Narrowed offsets"): the selects a program load's encoding \p res made
+  /// at its own address, a byte of [\p ptr, ptr + \p units) (OpSem::memLoad
+  /// after the rewriting, which keeps the load's address as the read index
+  /// of every select it leaves). Selects the boundary makes later (store-map
+  /// expansion, memory-operation reads, wide expansion) are not own, unless
+  /// they are the same node (hash-consed: the same cell at the same term).
+  /// The walk does not enter read indices or ite conditions; at most
+  /// kOwnWalk nodes per load.
+  static constexpr size_t kOwnWalk = 4096;
+  void noteOwnReads(const Expr &res, const Expr &ptr, uint64_t units) const {
+    std::unordered_set<ENode *> seen;
+    std::vector<ENode *> stack{res.get()};
+    const Expr p = op::ptr::stripObservation(ptr);
+    while (!stack.empty() && seen.size() < kOwnWalk) {
+      ENode *n = stack.back();
+      stack.pop_back();
+      if (!seen.insert(n).second)
+        continue;
+      if (isOpX<SELECT>(n)) {
+        const Expr x = op::ptr::stripObservation(Expr(n->arg(1)));
+        mpz_class d;
+        if (x == p || (cancelDiff(x, p, d) && d >= mpz_class(0L) &&
+                       d < mpz_class((unsigned long)units)))
+          m_ownReads.emplace(n, Expr(n));
+        continue;
+      }
+      if (isOpX<ITE>(n)) {
+        stack.push_back(n->arg(1));
+        stack.push_back(n->arg(2));
+        continue;
+      }
+      for (size_t i = 0; i < n->arity(); ++i)
+        stack.push_back(n->arg(i));
+    }
+  }
+  bool ownRead(const ENode *n) const {
+    return m_ownReads.count(const_cast<ENode *>(n)) != 0;
+  }
+
   bool cancelDiff(const Expr &a0, const Expr &b0, mpz_class &d) const {
     const Expr a = op::ptr::stripObservation(a0),
                b = op::ptr::stripObservation(b0);
@@ -5810,6 +5850,8 @@ private:
   mutable std::unordered_map<ENode *, InbRec> m_inbRec;
   mutable std::unordered_map<ENode *, std::vector<ENode *>> m_inbByBase;
   mutable std::vector<std::string> m_inbUnrecorded;
+  /// noteOwnReads: the own selects (pinned)
+  mutable std::unordered_map<ENode *, Expr> m_ownReads;
   /// split loads loadResolveConcat looked at (not split again)
   std::unordered_map<ENode *, Expr> m_concatTried;
   /// leafWalk's memo: (memory, leaf address, read bytes) -> its answer; the
@@ -5978,7 +6020,8 @@ class SeaMRewriter {
       if (isOpX<SELECT>(n)) {
         Expr idx(n->arg(1));
         m_record->add(m_config.rules().erase(idx), idx,
-                      m_config.rules().shadowMemory(Expr(n->arg(0))));
+                      m_config.rules().shadowMemory(Expr(n->arg(0))),
+                      !m_config.rules().ownRead(n));
       }
       for (size_t i = 0; i < n->arity(); ++i)
         stack.push_back(n->arg(i));
