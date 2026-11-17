@@ -45,12 +45,23 @@ name.
   one sum.
 - An index sum is a sum at an array index position (a select or a store of
   the query, an Ackermann read), through ite leaves.
-- The parent of a sum `(M, c)`: the first collected sum with the same `M`,
-  if this one is not that one; else the first collected sum of the largest
-  multiset among the query's sums that is a proper sub-multiset of `M`.
-  Parents are strictly smaller, so they form a forest. Any sum of the query
-  can be a parent; the cursor's offset sums (`d_1 + ... + d_k`, without the
-  base) are parents of its addresses this way.
+- The parent of a sum `(M, c)`: the first collected sum with the same `M`
+  (the multiset's representative), if this one is not that one; else the
+  representative of the largest multiset among the query's sums that is a
+  proper sub-multiset of `M` (ties: the first collected). Any sum of the
+  query can be a parent; the cursor's offset sums (`d_1 + ... + d_k`,
+  without the base) are parents of its addresses this way.
+- The parents form a forest (`SumNamer::findParents`). A unit of a
+  multiset has the representative of that multiset as its parent, and the
+  representative's own parent has a strictly smaller multiset. So a parent
+  step either goes to the representative, which never has a parent of its
+  own multiset, or makes the multiset strictly smaller.
+- This rule is load-bearing. A relation that allowed two units of one
+  multiset to be each other's parents would be unsound. Name `x + y` as
+  `def.0` and `x + y + 1` as `def.1`, each defined through the other:
+  `def.0 = def.1 - 1` and `def.1 = def.0 + 1`. The definitions no longer
+  fix the names: at `x = y = 0` the query `x + y = 1` is false, but its
+  named form `def.0 = 1` holds with `def.0 = 1`, `def.1 = 2`.
 - Named: every index sum and every ancestor of one, except an index sum with
   no parent and no child. Other sums are not touched: the step names the
   shared offset arithmetic, not every sum.
@@ -87,6 +98,17 @@ collide with VC names (`%`, `^`, `nd.`, `obj.`, `ack.`); sea-vc checks that
 no VC constant starts with `def.` (an error otherwise), and the unique-name
 check runs again after the step. The origins of `--arith-stats` follow the
 query through the step (`SumNamer::image`).
+
+The statements of this section are machine-checked in
+[seam-lean](https://github.com/agurfinkel/seam-lean) (`SeaM/VCDefs`), over a
+one-width model of terms with nested sums, for every plan that meets the
+invariants the step establishes (the parent rule above among them):
+each definition is exact and the rewritten query is the query (A1); the
+dependency of the names is well-founded (A2); the named query is
+equisatisfiable with the query and the names are determined (A3); the
+`hidden` atom pair is the equation, at every width (A4); the `nest` form
+is the query, for any number of substitution rounds (A5). Not proved: that
+finitely many rounds remove every name (the step terminates by A2).
 
 ## Counters
 
