@@ -26,10 +26,10 @@
 //    first of one multiset), so they form a forest;
 //  - the named sums: every index sum and every ancestor of one, except an
 //    index sum with no parent and no child (it shares nothing);
-//  - a name def.<k> (w bits; not with Nest) is defined as def.P + (M - P) + (c
-//  - c_P) for a
-//    parent P, else as the sum itself; every named sum is replaced by its
-//    name everywhere in the query (the definitions too); other terms stay.
+//  - a name def.<k> (w bits; not with Nest) is defined, for a parent P, as
+//        def.P + (M - P) + (c - c_P)
+//    and else as the sum itself; every named sum is replaced by its name
+//    everywhere in the query (the definitions too); other terms stay.
 // The query becomes query' && defs: equisatisfiable (each name is a fresh
 // constant fixed by its definition, so a model of the original constants
 // extends to one of the names, uniquely), and every model of it is one of
@@ -113,6 +113,16 @@ public:
   }
 
   const Stats &stats() const { return m_stats; }
+
+  /// After name(): the image of a node of its input query (null: the node
+  /// is not in the query). A named sum's image is its name (Nest: its
+  /// definition term).
+  Expr image(const Expr &n) const {
+    if (m_named.empty())
+      return n;
+    auto it = m_memo.find(n.get());
+    return it == m_memo.end() ? Expr() : it->second;
+  }
 
 private:
   static constexpr size_t npos = size_t(-1);

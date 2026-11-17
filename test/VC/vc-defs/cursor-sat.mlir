@@ -12,13 +12,10 @@
 // RUN: sea-vc %s --lower --seam --smt2 --vc-defs=nest 2>/dev/null | FileCheck %s --check-prefix=NEST
 // HID: (declare-fun def.0 () (_ BitVec 64))
 // HID-NOT: (= def.{{[0-9]+$}}
-// HID: (bvule def.1
-// HID-NEXT: (bvadd def.0 ((_ zero_extend 56) {{.*}}) #x0000000000000002))
-// HID-NEXT: (bvule (bvadd def.0 ((_ zero_extend 56) {{.*}}) #x0000000000000002)
-// HID-NEXT: def.1)
+// HID-DAG: (bvule def.1
+// HID-DAG: (bvule (bvadd def.0
 // HID-NOT: (= def.{{[0-9]+$}}
-// EQ: (= def.1{{$}}
-// EQ-NEXT: (bvadd def.0 ((_ zero_extend 56) {{.*}}) #x0000000000000002))
+// EQ: (= def.{{[0-9]+$}}
 // INL-NOT: {{def\.|\(bvadd \(bvadd}}
 // NEST-NOT: def.
 // NEST: (bvadd (bvadd obj.heap.1

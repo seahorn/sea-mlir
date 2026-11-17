@@ -39,6 +39,7 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--ptr-mode=auto|opaque|address` | the pointer model; `auto` (default) chooses `address` if the program converts an integer to a pointer |
 | `--simplify` | the bit-vector and Boolean normalization of SeaM, without SeaM |
 | `--ackermannize=auto|on|off` | replace reads of read-only arrays by fresh constants with consistency constraints |
+| `--vc-defs=inline|nest|eq|hidden` | name or share the address sums of the query (default `inline`, not tuned; [SumNames](../design/SumNames.md)) |
 | `--mem=array|lambda` | the memory encoding; `lambda` is SeaHorn's lambda encoding, z3 only |
 | `--config=<name|file>` | read options from a profile ([Profiles](profiles.md)) |
 | `--sink-assumes` | experimental: replace the program's assumes by one assume of their conjunction on the path, before the assertion (exact in BMC form); a solver tradeoff, off by default |

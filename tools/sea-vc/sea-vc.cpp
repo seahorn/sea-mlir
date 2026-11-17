@@ -5761,8 +5761,24 @@ int main(int argc, char **argv) {
         for (const auto &arr : ack.arrays())
           for (const auto &rd : arr.reads)
             namer.addIndex(rd.index);
+      // a VC constant of the prefix would be the same term as a name
+      {
+        expr::ExprSet consts;
+        expr::filter(query, expr::op::bind::IsConst(),
+                     std::inserter(consts, consts.begin()));
+        for (const expr::Expr &c : consts) {
+          std::ostringstream os;
+          os << *expr::op::bind::fname(expr::op::bind::fname(c));
+          if (llvm::StringRef(os.str()).starts_with("def."))
+            return fail("--vc-defs: the VC constant '" + os.str() +
+                        "' has the prefix of the names (def.)");
+        }
+      }
       query = namer.name(query);
       defStats = namer.stats();
+      if (originsOn)
+        origins = origins.through(
+            [&](const expr::Expr &n) { return namer.image(n); });
       if (failed(sea::verifyUniqueNames(query, clash)))
         return fail("--vc-defs: two distinct VC constants are both named '" +
                     clash + "'");

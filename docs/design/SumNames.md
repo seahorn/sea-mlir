@@ -83,8 +83,10 @@ model of the query extends to the names uniquely, and a model of the named
 query restricted to the original constants is a model of the query. The
 names are not program values. Replay, model evaluation and validation read
 the original terms, so they never see a name. The names `def.<k>` cannot
-collide with VC names (`%`, `^`, `nd.`, `obj.`, `ack.`); the unique-name
-check runs again after the step.
+collide with VC names (`%`, `^`, `nd.`, `obj.`, `ack.`); sea-vc checks that
+no VC constant starts with `def.` (an error otherwise), and the unique-name
+check runs again after the step. The origins of `--arith-stats` follow the
+query through the step (`SumNamer::image`).
 
 ## Counters
 
