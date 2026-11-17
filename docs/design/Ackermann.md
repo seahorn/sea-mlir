@@ -304,7 +304,7 @@ What it does not apply to:
 ### Machine-checked
 
 The lemmas of this section are proved in
-[seam-lean](https://github.com/agurfinkel/seam-lean) (`SeaM/VCDefs`), over
+seam-lean (module `SeaM/VCDefs`; the proofs are to be published), over
 a model of the index terms at one width w:
 
 - B1: `low_k(e) = extract(k-1, 0, e)` for every term the rebuild handles
