@@ -11,7 +11,8 @@
 //              factoring query unknown (z3: resource limit), also when set
 //              later (setLimits); timeoutMs 1 makes it unknown too; the
 //              seam-check setup (relevancy 0, one push)
-//              decides; memMB warns (limit-unsupported)
+//              decides; memMB warns (limit-unsupported); an rlimit over
+//              2^32-1 is clamped and warns (limit-clamped)
 //  optional    Yices and Bitwuzla: when not built, null and the error
 //              <prefix>solver-unavailable; when built, a solver, rlimit
 //              warns (limit-unsupported); Yices' bad logic / param: null
@@ -102,6 +103,29 @@ void testZ3(Terms &T) {
     CHECK(s && s->add(T.hard()), "z3 add");
     sea::solver::setLimits(*s, one);
     CHECK(s->check() == SolverResult::UNKNOWN, "z3 setLimits rlimit 1");
+  }
+  // an rlimit over z3's 32-bit parameter: clamped to its largest, said, not
+  // truncated (2^32 + 1 would be 1 in 32 bits); at construction and later
+  {
+    Limits big;
+    big.rlimit = (uint64_t(1) << 32) + 1;
+    unsigned before = sea::diag::count("smt.limit-clamped");
+    auto s = sea::solver::makeSolver(T.efac, Backend::Z3, big);
+    CHECK(sea::diag::count("smt.limit-clamped") == before + 1,
+          "z3 rlimit 2^32+1 warns");
+    CHECK(s && s->add(T.easy()) && s->check() == SolverResult::SAT,
+          "z3 rlimit 2^32+1 decides");
+    sea::solver::setLimits(*s, big);
+    CHECK(sea::diag::count("smt.limit-clamped") == before + 2,
+          "z3 setLimits rlimit 2^32+1 warns");
+    CHECK(s->check() == SolverResult::SAT,
+          "z3 setLimits rlimit 2^32+1 decides");
+    // the largest z3 takes: no warning
+    Limits max;
+    max.rlimit = 4294967295u;
+    auto m = sea::solver::makeSolver(T.efac, Backend::Z3, max);
+    CHECK(m && sea::diag::count("smt.limit-clamped") == before + 2,
+          "z3 rlimit 2^32-1 does not warn");
   }
   {
     SolverConfig c;

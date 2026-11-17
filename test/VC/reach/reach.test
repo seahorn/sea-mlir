@@ -90,6 +90,14 @@
 // RLIM: reach.summary: targets=3 reachable=0 unreachable=0 unknown=3
 // RLIM: BRUNCH_STAT status 3
 
+// An rlimit over 32 bits: accepted and reported whole; z3 runs with its
+// largest (4294967295), with a warning, and the queries decide.
+// RUN: sea-vc %t/chain.mlir --reach --reach-model-runs=false --reach-rlimit=5000000000 2>%t/rlim64.err | FileCheck %s --check-prefix=RLIM64
+// RUN: FileCheck %s --check-prefix=RLIM64-ERR < %t/rlim64.err
+// RLIM64: reach.config: kind=checks {{.*}}rlimit=5000000000
+// RLIM64: reach.summary: targets=3 reachable=2 unreachable=1 unknown=0
+// RLIM64-ERR: Warning: z3's rlimit is at most 4294967295: 5000000000 is clamped to it [vc.limit-clamped]
+
 // Ids of sites without a source position use the .mlir file's basename,
 // not the path it was given by.
 // RUN: sea-vc %t/chain.mlir --reach --reach-model-runs=false | FileCheck %s --check-prefix=BASE

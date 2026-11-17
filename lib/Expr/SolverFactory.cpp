@@ -19,6 +19,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 
+#include <limits>
 #include <optional>
 #include <z3.h>
 
@@ -75,8 +76,19 @@ void z3Limits(z3_solver_impl &z, const Limits &limits,
   if (!limits.timeoutMs && !limits.rlimit && !relevancy0)
     return;
   sea::ZParams<sea::EZ3> params(z.get_context());
-  if (limits.rlimit)
-    params.set("rlimit", limits.rlimit);
+  if (limits.rlimit) {
+    // z3 counts resources in 64 bits, but its `rlimit` parameter is a 32-bit
+    // unsigned (the per-check budget added to the count): a larger limit is
+    // clamped to the largest z3 takes, and said
+    unsigned rl = std::numeric_limits<unsigned>::max();
+    if (limits.rlimit > rl)
+      sea::diag::warn(config.kindPrefix + "limit-clamped",
+                      "z3's rlimit is at most " + llvm::Twine(rl) + ": " +
+                          llvm::Twine(limits.rlimit) + " is clamped to it");
+    else
+      rl = static_cast<unsigned>(limits.rlimit);
+    params.set("rlimit", rl);
+  }
   if (limits.timeoutMs)
     params.set("timeout", limits.timeoutMs);
   if (relevancy0)
