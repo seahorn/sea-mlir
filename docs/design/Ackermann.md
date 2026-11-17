@@ -211,9 +211,10 @@ loads (`--seam-wide`, expanded into bytes at the boundary) are not tagged
 and not narrowed (conservative). Further, every read address of the index (`AccessOrigins`, the stride
 rule's record, now keeping every address), or every leaf of an ite of them
 (a pointer phi), points into one object of size N > 0, and no select at the
-index reads a shadow memory. Let k be the least width
-with `2^k >= N`. After the boundary the index is `base + o` (a flat sum
-with the object's constant as one summand, or an ite of such sums); the
+index reads a shadow memory. Let w be the index width (64 on the
+jobs measured) and k the least width with `2^k >= N`. After the boundary
+the index is `base + o` (a flat sum with the object's constant as one
+summand, or an ite of such sums); base and o both have width w. The
 read's index becomes
 
     i' = base + zext(low_k(o))
@@ -223,7 +224,7 @@ where `low_k(o)` is computed at k bits from truncated operands
 -, *, negation; it commutes with the bitwise operators, ite and shifts by a
 numeral; zext, sext, concat and extract are read off; anything else is an
 `extract`). So the cursor's sums become k-bit sums, and the bit-blast
-shrinks; extracting the low bits of a 64-bit sum would not.
+shrinks; extracting the low bits of a w-bit sum would not.
 
 The lowering then works on i' as on any index (read sharing, the exact
 drops), with one addition: two narrowed reads of one object compare
@@ -231,12 +232,12 @@ drops), with one addition: two narrowed reads of one object compare
 pair gets the k-bit constraint `t_k = t_l -> r_k = r_l`, after the exact
 drops are tried on the k-bit forms (same symbolic part with different
 numerals modulo 2^k, residues, leaves). A pair with one narrowed read and
-another (a read of another object, or one not eligible) keeps a 64-bit
+another (a read of another object, or one not eligible) keeps a w-bit
 equality, over i'. The stride rule is not applied to a narrowed read.
 
 With `--vc-defs`, a narrowed read's index sum is its k-bit offset
 `low_k(o)`: SumNames names the k-bit prefix chain (the names are k bits
-wide). The 64-bit sums stay wherever else the query uses them.
+wide). The w-bit sums stay wherever else the query uses them.
 
 ### Soundness
 
@@ -245,8 +246,8 @@ its own access, the same way a SeaM rewrite of a load is justified by the
 premises of the accesses it compares. The use lemma: the value of an own
 read is used only where its load executes; the load executing, A-INB gives
 `0 <= i - base < N` for the byte it reads. If the access executes and stays in
-its object (A-INB), its offset o (the 64-bit value of i - base, so o mod
-2^64) lies in [0, N), so `low_k(o) = o` (`2^k >= N`) and i' = i. If the
+its object (A-INB), its offset o (the w-bit value of i - base, so o mod
+2^w) lies in [0, N), so `low_k(o) = o` (`2^k >= N`) and i' = i. If the
 access does not execute, its value is not used by the query (the read
 stands for a load the run does not do; every SeaM rewrite of a load rests
 on the same argument), so its index does not matter: the cells are
@@ -255,19 +256,19 @@ lowered query is then the Ackermann lowering of the query with i' in place
 of i: functional consistency over the i', so every model reconstruction
 (`AckermannModel`, keyed by the values of i') is consistent.
 
-A-NOWRAP is not needed: the 64-bit address arithmetic is modular already,
-and A-INB constrains the wrapped value o mod 2^64. `base + o = base + o'`
-(mod 2^64) iff `o = o'` (mod 2^64), and for o, o' in [0, N) that is
+A-NOWRAP is not needed: the w-bit address arithmetic is modular already,
+and A-INB constrains the wrapped value o mod 2^w. `base + o = base + o'`
+(mod 2^w) iff `o = o'` (mod 2^w), and for o, o' in [0, N) that is
 `low_k(o) = low_k(o')`.
 
 Why per read and not per pair: replacing only the pair equality
 `i_k = i_l` by `low_k(o_k) = low_k(o_l)` would be stronger than the original
 constraint only when an offset is out of range, which happens for a read on
 a path the run does not take (a parser reads past a length it has not
-checked yet on the other branch). Such a read's 64-bit pairs with other
+checked yet on the other branch). Such a read's w-bit pairs with other
 objects' reads would remain, and the two kinds of constraints together can
 equate the cells of two in-bounds reads at different addresses (a k-bit
-pair to one, a 64-bit pair to the other through the out-of-range read). The
+pair to one, a w-bit pair to the other through the out-of-range read). The
 per-read representative has no such mix: every constraint of a narrowed
 read is over i'.
 
@@ -290,15 +291,46 @@ first read of a nondet memory and decides nothing here.)
 
 What it does not apply to:
 - pairs of reads of different objects, or with a read whose base is
-  unknown: their constraint is the 64-bit address equality (no A-SEP is
+  unknown: their constraint is the w-bit address equality (no A-SEP is
   used here);
 - a pointer comparison of the program (`PTR_EQ`, `sea.ptr.cmp`, a
   one-past-the-end pointer): not a read index, untouched;
 - every other use of the offsets: only the read's index changes; the
-  program's arithmetic on the cursor stays 64-bit;
+  program's arithmetic on the cursor stays w-bit;
 - runs without the premises (`--seam-premises=0`, the out-of-object
   fallback) and runs without the Ackermann lowering (`vc.narrow:
   off-no-premises` / `off-no-ackermann`); `--seam-words` is refused.
+
+### Machine-checked
+
+The lemmas of this section are proved in
+[seam-lean](https://github.com/agurfinkel/seam-lean) (`SeaM/VCDefs`), over
+a model of the index terms at one width w:
+
+- B1: `low_k(e) = extract(k-1, 0, e)` for every term the rebuild handles
+  and every k (each operator case of `LowBits`, the fallback included).
+- B2: splitting the index into `base + S` and rebuilding it keeps its
+  value; S has the width w of the base.
+- B3: for k <= w, two narrowed indices of one object are equal iff their
+  k-bit offsets are.
+- B4: the exact drops (offsets, residues, leaves) at k bits are carried
+  over to the narrowed indices by B3.
+- B6: the k-bit constraint of a pair is functional consistency over the
+  narrowed indices, so the Ackermann results apply to them, read sharing
+  included.
+- B7: the narrow-check obligation `S <u 2^k` gives i' = i (by B1 and B2).
+- B5, the use lemma: the query over i is satisfiable iff the query over i'
+  is, with A-INB read per execution (every read whose guard holds is in
+  bounds). It is proved under two facts of the VC that the model does not
+  contain, taken as hypotheses: the query does not use the value of a
+  read that does not execute, and an executing read's narrowed index
+  depends only on earlier reads that execute (dominance). Both rest on
+  one property of the C++, not checked: every select a load's encoding
+  leaves is at the load's own address or is noted as a boundary read
+  (`vc.narrow-skip-not-own`, `vc.narrow-skip-shared-boundary`).
+
+Not modelled: that the narrow-check obligation follows from A-INB, and the
+n-ary regrouping of the index into `base + S` (its ite case is proved).
 
 ### Accounting
 
@@ -307,11 +339,11 @@ What it does not apply to:
 - `vc.narrow-*`: indices seen, eligible, skipped by reason (`not-own`,
   `shared-boundary`, `no-object`, `shadow`, `size`, `many`, `shape`), reads narrowed, their
   objects, the largest k, k-bit constraints and the sum of their widths,
-  mixed (64-bit) constraints with one narrowed read.
+  mixed (w-bit) constraints with one narrowed read.
 - `--seam-check` / `--narrow-check`: what is checked per run and what
   rests on a lemma are split.
   - Per run, for each narrowed index i = base + S (the lowering's record of
-    the selects it narrowed): the premise bound, `layout && inBounds(a, 1)
+    the selects it narrowed; S has the index width w, as base): the premise bound, `layout && inBounds(a, 1)
     for each read address a && !(S <u 2^k)` must be unsat. inBounds(a, 1)
     is the weakest hypothesis: what the executing load's A-INB gives for
     the byte it reads. It proves `A-INB => S < 2^k`, never A-INB itself.
@@ -327,8 +359,8 @@ What it does not apply to:
   - The lemma: for S < 2^k, i' = base + zext(low_k(S)) = i, since the k-bit
     rebuild low_k(S) is extract(k-1, 0, S) (LowBits: a ring homomorphism
     and the other identities in its header). It is checked by its unit test
-    (random terms, every k, z3), and is to be proved in seam-lean; it is
-    not checked per run.
+    (random terms, every k, z3) and machine-checked in seam-lean (B1, B2,
+    B7 below); it is not checked per run.
   - Invalid: exit 5, as an invalid rule firing. Unknown or unexpressible
     (shape, premise): a `narrow-check-unknown:` / `-unexpressible:` line
     (the index printed to 300 characters); with `--narrow-check` the run
