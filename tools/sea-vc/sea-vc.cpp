@@ -526,6 +526,14 @@ static cl::opt<bool> narrowOffsets(
              "default"),
     cl::init(false));
 
+static cl::opt<bool> narrowCheck(
+    "narrow-check",
+    cl::desc("With --narrow-offsets: check each narrowed read index against "
+             "its in-object representative under the A-INB of its accesses "
+             "(the narrow-check: lines of --seam-check, without the rule "
+             "trail; also with --vcgen-only). Exit 5 if one is invalid"),
+    cl::init(false));
+
 static cl::opt<bool> seamStride(
     "seam-stride",
     cl::desc("R-STRIDE in SeaM (with --seam): a store-map entry b + o is "
@@ -2318,9 +2326,11 @@ TYPICAL:
                                  #   computed at k bits (with --vc-defs: k-bit
                                  #   names). Exact for an access that stays
                                  #   in its object: assume.a-inb counts the
-                                 #   reads, --seam-check states and checks
-                                 #   each one (narrow-check:). A pointer
-                                 #   compare of the program is not narrowed.
+                                 #   reads, --seam-check (or --narrow-check,
+                                 #   alone, also with --vcgen-only) states
+                                 #   and checks each one (narrow-check:).
+                                 #   A pointer compare of the program is
+                                 #   not narrowed.
                                  #   Needs the premises and the Ackermann
                                  #   lowering (else vc.narrow: off-...).
                                  #   docs/design/Ackermann.md
@@ -3030,7 +3040,8 @@ OUTPUT (stdout, `key: value` lines):
                                   backend; the premise's satisfiability
                                   check is not counted)
   narrow-check: indices=<n> checked=<n> valid=<n> invalid=<n> unknown=<n>
-      unexpressible=<n>           (--seam-check with --narrow-offsets: each
+      unexpressible=<n>           (--seam-check or --narrow-check with
+                                  --narrow-offsets: each
                                   narrowed index i against base +
                                   zext(low_k(i - base)) under the layout and
                                   the A-INB of the accesses it lies in;
@@ -4140,6 +4151,8 @@ int main(int argc, char **argv) {
     return fail("--seam-words needs --seam");
   if (wordsCheck && seamWords == WordsMode::Off)
     return fail("--words-check needs --seam-words");
+  if (narrowCheck && !narrowOffsets)
+    return fail("--narrow-check needs --narrow-offsets");
   if (narrowOffsets && !seam)
     return fail("--narrow-offsets needs --seam (it rests on A-INB of the "
                 "accesses SeaM records)");
@@ -6601,12 +6614,28 @@ int main(int argc, char **argv) {
         os << " unknown-rlimit=" << unknownRlimit;
       os << "\n";
       checkInvalid += invalid;
+    };
+
+    // --narrow-offsets: each narrowed index against its representative
+    // (--seam-check or --narrow-check; no rule trail needed)
+    auto runNarrowCheck = [&]() {
       // --narrow-offsets: each narrowed index i (the query's, before the
       // lowering) against its in-object representative i' = base +
       // zext(low_k(i - base)), under the layout and the A-INB of every
       // access its reads lie in: `layout && inb && i != i'` must be unsat
-      if (!narrowOn || !ackOn)
+      if ((!checkOn && !narrowCheck) || !narrowOn || !ackOn)
         return;
+      raw_string_ostream os(checkReport);
+      // a fresh solver per obligation, as --seam-check's
+      auto mkCheckSolver = [&]() -> std::unique_ptr<sea::solver::Solver> {
+        sea::solver::Limits cl;
+        if (backend != Backend::Yices)
+          cl.timeoutMs = seamCheckTimeout * 1000;
+        cl.rlimit = seamCheckRlimit;
+        sea::solver::SolverConfig cc = solverConfig;
+        cc.z3Relevancy0Push = true;
+        return sea::solver::makeSolver(efac, backend, cl, cc);
+      };
       uint64_t nValid = 0, nInvalid = 0, nUnknown = 0, nUnexpr = 0;
       expr::Expr layout = sem.layoutFacts();
       for (const NarrowSite &site : narrowSites) {
@@ -6705,6 +6734,7 @@ int main(int argc, char **argv) {
       }
       printSeamStats(statOut());
       runSeamCheck();
+      runNarrowCheck();
       runEqAudit();
       return 0;
     }
@@ -6782,6 +6812,7 @@ int main(int argc, char **argv) {
       // its checks are its own z3 instance with their own timeout, on terms
       // of the VC only
       runEqAudit();
+      runNarrowCheck();
       if (checkOn)
         sea::diag::warn("vc.vcgen-only-check-skipped",
                         "--seam-check does not run: --vcgen-only skips it");
@@ -6790,6 +6821,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     runSeamCheck();
+    runNarrowCheck();
     runEqAudit();
     if (reach) {
       // the reach queries (lib/VC/Reach.cpp); the solver above holds the
@@ -7854,7 +7886,7 @@ int main(int argc, char **argv) {
     statOut() << auditReport;
     gOut->flush();
   }
-  if (checkOn) {
+  if (checkOn || narrowCheck) {
     statOut() << checkReport;
     gOut->flush();
     if (checkInvalid && rc != 1) {

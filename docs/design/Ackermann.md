@@ -288,7 +288,10 @@ What it does not apply to:
 - `--seam-check`: for each eligible index, `layout && inb(access) &&
   i != i'` must be unsat, with inb the in-bounds condition of every access
   the index lies in (`narrow-check:` line; an invalid one exits 5 as an
-  invalid rule firing does).
+  invalid rule firing does). `--narrow-check` runs these obligations
+  alone, without the rule trail (also with `--vcgen-only`): on the
+  firedancer jobs `--seam-check` did not finish generating the VC in 13
+  minutes (the trail of every firing, 22-29 GB).
 
 ## Model reconstruction
 

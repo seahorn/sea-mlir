@@ -30,6 +30,9 @@
 // that its index equals the narrowed one under it.
 // RUN: sea-vc %s --lower --seam --narrow-offsets --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // CHK: narrow-check: indices=6 checked=6 valid=6 invalid=0 unknown=0 unexpressible=0
+// --narrow-check runs the same obligations alone (no rule trail), also
+// without solving the query.
+// RUN: sea-vc %s --lower --seam --narrow-offsets --narrow-check --vcgen-only 2>&1 | FileCheck %s --check-prefix=CHK
 // Off by default; without the premises it narrows nothing.
 // RUN: sea-vc %s --lower --seam 2>&1 | FileCheck %s --check-prefix=OFF
 // OFF-NOT: vc.narrow

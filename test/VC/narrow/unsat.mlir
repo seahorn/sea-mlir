@@ -8,6 +8,10 @@
 // CHECK: vc.narrow-pairs: 1
 // CHECK: assume.a-inb: narrow-reads=2 narrow-pairs=1
 // CHECK: result: unsat
+// The A-INB of each read (i <= 1231) gives i = base + zext(low_11(i)): the
+// check passes; at 10 bits it would not.
+// RUN: sea-vc %s --lower --seam --narrow-offsets --narrow-check --vcgen-only 2>&1 | FileCheck %s --check-prefix=CHK
+// CHK: narrow-check: indices=2 checked=2 valid=2 invalid=0
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @same {
   %m = sea.mem.nondet "m" [0] : !m
