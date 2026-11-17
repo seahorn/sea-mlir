@@ -109,15 +109,32 @@ sea.program @mixed {
   sea.halt
 }
 
-// A bound computed with nsw is not a constant to the pass (ops with flags
-// do not fold; it runs before sccp): one index, though it is 2.
+// A bound computed with nsw is a constant when the promise holds of its
+// operands (1 + 1 nsw = 2: two indices expanded); one whose promise breaks
+// (INT64_MAX + 1 nsw) does not fold: one nondet index.
 // CHECK-LABEL: sea.program @flagged
-// CHECK-SAME: expanded = 0 : i64
-// CHECK-SAME: lowered = 1 : i64
+// CHECK-SAME: expanded = 1 : i64
+// CHECK-SAME: lowered = 0 : i64
 sea.program @flagged {
   %x = sea.nondet "x" [0] : i64
   %c1 = sea.const 1 : i64
   %n = sea.add %c1, %c1 nsw : i64
+  %all = sea.box.all (%i) = (0) to (%n) {
+    %e = sea.icmp ne, %i, %x : i64
+    sea.yield %e
+  }
+  sea.assert %all
+  sea.halt
+}
+
+// CHECK-LABEL: sea.program @flagged_wrap
+// CHECK-SAME: expanded = 0 : i64
+// CHECK-SAME: lowered = 1 : i64
+sea.program @flagged_wrap {
+  %x = sea.nondet "x" [0] : i64
+  %c1 = sea.const 1 : i64
+  %max = sea.const 9223372036854775807 : i64
+  %n = sea.add %max, %c1 nsw : i64
   %all = sea.box.all (%i) = (0) to (%n) {
     %e = sea.icmp ne, %i, %x : i64
     sea.yield %e

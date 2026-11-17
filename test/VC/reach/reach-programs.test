@@ -69,7 +69,7 @@
 // RUN: sea-vc %t/rb/reach-1.mlir 2>/dev/null | FileCheck %s --check-prefix=SAT
 
 // One R_T through sea-opt, from the lowered program: the same answer.
-// RUN: sea-opt %t/contra.mlir --sea-vc-lower --sea-reach-target="id=contra.c:5:5" --mlir-print-debuginfo | sea-vc - 2>/dev/null | FileCheck %s --check-prefix=UNSAT
+// RUN: sea-opt %t/contra.mlir --sea-vc-lower='reach=true' --sea-reach-target="id=contra.c:5:5" --mlir-print-debuginfo | sea-vc - 2>/dev/null | FileCheck %s --check-prefix=UNSAT
 
 // --reach-programs takes no query options.
 // RUN: not sea-vc %t/contra.mlir --reach --reach-programs=%t/x --reach-fuzz=3 2>&1 | FileCheck %s --check-prefix=OPT

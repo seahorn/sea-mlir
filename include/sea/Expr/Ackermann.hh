@@ -53,6 +53,7 @@
 // other occurrence of A by the store chain over a constant 0 array, so every
 // consumer of the model (replay, validation) sees the same array.
 #include "sea/Expr/Expr.hh"
+#include "sea/Expr/LowBits.hh"
 #include "sea/Expr/Smt/Model.hh"
 #include "sea/Support/Stats.h"
 
@@ -421,16 +422,42 @@ private:
 /// them was anything else (a bvadd, an unflagged node, an ite, a term a
 /// boundary translation built). An index without an entry is plain.
 struct AccessOrigins {
+  /// at most this many distinct addresses per index are kept in addrs
+  static constexpr size_t kMaxAddrs = 8;
   struct Entry {
     Expr key;
     std::vector<Expr> nodes; ///< distinct flagged nodes
     bool plain = false;
+    /// every distinct read address (pointer-sorted, as the select had it;
+    /// --narrow-offsets); `many` when there were more than kMaxAddrs
+    std::vector<Expr> addrs;
+    bool many = false;
+    /// some select at this index reads a shadow memory (keyed by object
+    /// identity, not a program access)
+    bool shadow = false;
+    /// some select at this index is not an own read of a program load
+    /// (seam::Rules::noteOwnReads), or also a read made elsewhere (a
+    /// memmove's source read, the boundary's translations)
+    bool notOwn = false;
+    /// of notOwn: an own read that is also made elsewhere (one node)
+    bool shared = false;
   };
   std::unordered_map<ENode *, Entry> byIndex;
-  /// \p key (expanded) was the read address \p origin
-  void add(const Expr &key, const Expr &origin) {
+  /// \p key (expanded) was the read address \p origin (of a shadow memory:
+  /// \p shadow)
+  void add(const Expr &key, const Expr &origin, bool shadow = false,
+           bool notOwn = false, bool shared = false) {
     Entry &e = byIndex[key.get()];
     e.key = key;
+    e.shadow = e.shadow || shadow;
+    e.notOwn = e.notOwn || notOwn;
+    e.shared = e.shared || shared;
+    if (std::find(e.addrs.begin(), e.addrs.end(), origin) == e.addrs.end()) {
+      if (e.addrs.size() < kMaxAddrs)
+        e.addrs.push_back(origin);
+      else
+        e.many = true;
+    }
     // an ite of promised nodes (a GEP over a phi): the index is one of its
     // leaves, each under its guard, so each leaf is an origin (the rule
     // must separate every pair of leaves)
@@ -463,6 +490,21 @@ struct AccessOrigins {
     if (std::find(e.nodes.begin(), e.nodes.end(), origin) == e.nodes.end())
       e.nodes.push_back(origin);
   }
+};
+
+/// The reads --narrow-offsets narrows (docs/design/Ackermann.md, "Narrowed
+/// offsets"): per read index (the expanded index term of a select, as the
+/// query has it before the lowering), the object its address is in. sea-vc
+/// fills it with the indices whose every select is a program load's own read
+/// (seam::Rules::noteOwnReads) into an object of known size N > 0;
+/// k is the least width with 2^k >= N. Under the A-INB of that access the
+/// index is base + o with o in [0, N), so it equals base + zext(low_k(o)).
+struct NarrowTable {
+  struct Entry {
+    Expr base;  ///< the object constant as the query has it (bv(w))
+    unsigned k; ///< the offset width
+  };
+  std::unordered_map<ENode *, Entry> byIndex;
 };
 
 /// The lowering (see the header). One instance per query; it keeps the table
@@ -498,6 +540,15 @@ public:
     /// they rest on A-NOWRAP, the access address does not wrap)
     uint64_t strideANullPairs = 0, strideANoWrapPairs = 0;
     uint64_t constraints = 0; ///< constraints added (the other pairs)
+    /// --narrow-offsets (setNarrow): reads narrowed (their index is
+    /// base + zext(low_k(offset))), objects they are in, the largest k;
+    /// constraints compared at k bits (two narrowed reads of one object);
+    /// sum of their k; constraints with one narrowed read and one other
+    /// (64-bit, over base + zext(low_k(offset))); selects whose index was
+    /// eligible but not of the form base + offset (not narrowed)
+    uint64_t narrowReads = 0, narrowObjects = 0, narrowKMax = 0;
+    uint64_t narrowPairs = 0, narrowPairBits = 0, narrowMixed = 0;
+    uint64_t narrowShape = 0;
 
     /// What report() says of the stride rule: not asked (no line), used
     /// (its counters), asked but not used by this lowering (`stride:
@@ -544,6 +595,11 @@ public:
     bool plain = true;
     /// the selects of the query merged into this read (keepImages)
     std::vector<Expr> selects;
+    /// --narrow-offsets: the low k bits of the offset (a k-bit term; null:
+    /// not narrowed) and the object base; index is then
+    /// base + zext(low) (base + low's value for a numeral)
+    Expr low;
+    Expr nbase;
   };
   struct Array {
     Expr array; ///< the array constant A
@@ -634,6 +690,22 @@ public:
           Expr idx = kids[1];
           unsigned w = op::bv::width(
               sort::arrayIndexTy(op::bind::declaredSort(m_arrays[a].array)));
+          // --narrow-offsets: the index's in-object representative
+          Expr low, nbase;
+          if (m_narrow) {
+            auto nt = m_narrow->byIndex.find(n->arg(1));
+            if (nt != m_narrow->byIndex.end()) {
+              Expr rest;
+              if (nt->second.k < w &&
+                  splitBase(idx, nt->second.base, w, rest)) {
+                low = m_low.of(rest, nt->second.k);
+                nbase = nt->second.base;
+                idx = narrowIndex(nbase, low, w);
+              } else {
+                ++m_stats.narrowShape;
+              }
+            }
+          }
           LinearForms &lf = forms.try_emplace(w, w).first->second;
           const Linear &lin = lf.of(idx.get());
           mpz_class off = lin.c;
@@ -642,6 +714,9 @@ public:
             groupKey.push_back(&g->first);
           auto [p, fresh] = byKey[a].emplace(std::make_pair(g->second, off),
                                              m_arrays[a].reads.size());
+          if (low && !m_narrowSel.count(n))
+            m_narrowSel.emplace(
+                n, NarrowedSelect{Expr(n), kids[1], idx, a, p->second});
           if (!fresh) {
             noteOrigins(m_arrays[a].reads[p->second], n->arg(1), false);
             if (m_keepImages)
@@ -650,7 +725,7 @@ public:
           }
           Expr r = freshConstant(a);
           m_arrays[a].reads.push_back(
-              Read{idx, r, g->second, off, {}, true, {}});
+              Read{idx, r, g->second, off, {}, true, {}, low, nbase});
           noteOrigins(m_arrays[a].reads.back(), n->arg(1), true);
           if (m_keepImages)
             m_arrays[a].reads.back().selects.push_back(Expr(n));
@@ -662,6 +737,22 @@ public:
       m_imageKeep = std::move(keep);
     }
     std::vector<Expr> conj{body};
+    // --narrow-offsets: the narrowed reads' objects and widths
+    if (m_narrow) {
+      std::unordered_set<ENode *> objs;
+      for (const Array &arr : m_arrays)
+        for (const Read &rd : arr.reads)
+          if (rd.low) {
+            ++m_stats.narrowReads;
+            objs.insert(rd.nbase.get());
+            m_stats.narrowKMax =
+                std::max<uint64_t>(m_stats.narrowKMax, m_low.width(rd.low));
+          }
+      m_stats.narrowObjects = objs.size();
+    }
+    // linear forms and leaf tests of the narrowed offsets, per width k
+    std::map<unsigned, LinearForms> lowForms;
+    std::map<unsigned, LeafDecider> lowLeaves;
     for (const Array &arr : m_arrays) {
       unsigned w =
           op::bv::width(sort::arrayIndexTy(op::bind::declaredSort(arr.array)));
@@ -670,6 +761,22 @@ public:
       for (size_t k = 0; k < rs.size(); ++k)
         for (size_t l = k + 1; l < rs.size(); ++l) {
           ++m_stats.pairs;
+          // two narrowed reads of one object: base + zext(t_k) = base +
+          // zext(t_l) iff t_k = t_l; the exact drops at k bits, else a
+          // k-bit constraint
+          if (rs[k].low && rs[l].low && rs[k].nbase == rs[l].nbase &&
+              m_low.width(rs[k].low) == m_low.width(rs[l].low)) {
+            if (narrowPair(rs[k], rs[l], lowForms, lowLeaves))
+              continue;
+            ++m_stats.constraints;
+            ++m_stats.narrowPairs;
+            m_stats.narrowPairBits += m_low.width(rs[k].low);
+            if (m_recordPairs)
+              m_pairs.push_back({size_t(&arr - m_arrays.data()), k, l});
+            conj.push_back(mk<OR>(mk<NEG>(mk<EQ>(rs[k].low, rs[l].low)),
+                                  mk<EQ>(rs[k].value, rs[l].value)));
+            continue;
+          }
           if (rs[k].group == rs[l].group) {
             // S + c_k = S + c_l is false: c_k != c_l (else one read)
             ++(rs[k].group == 0 ? m_stats.numeralPairs : m_stats.offsetPairs);
@@ -703,6 +810,8 @@ public:
             continue;
           }
           ++m_stats.constraints;
+          if (rs[k].low || rs[l].low)
+            ++m_stats.narrowMixed;
           if (m_origins)
             countStrideMiss(rs[k], rs[l]);
           if (m_recordPairs)
@@ -744,6 +853,86 @@ public:
     m_values = std::move(v);
   }
   const std::vector<Pair> &constrainedPairs() const { return m_pairs; }
+  /// --narrow-offsets: narrow the reads whose index is in \p t (null, the
+  /// default: none). Rests on A-INB for each narrowed read (counted).
+  void setNarrow(const NarrowTable *t) { m_narrow = t; }
+  /// A select of the query whose index was narrowed: the select, its index
+  /// as lowered (64 bits, i) and the narrowed one (i'), the read it is.
+  struct NarrowedSelect {
+    Expr select, index, narrowed;
+    size_t array, read;
+  };
+  /// The narrowed selects (by node of the query before the lowering).
+  const std::unordered_map<ENode *, NarrowedSelect> &narrowedSelects() const {
+    return m_narrowSel;
+  }
+  /// The read constant of narrowed select \p n; null if \p n is not one.
+  Expr narrowedValue(const ENode *n) const {
+    auto it = m_narrowSel.find(const_cast<ENode *>(n));
+    return it == m_narrowSel.end()
+               ? Expr()
+               : m_arrays[it->second.array].reads[it->second.read].value;
+  }
+  /// The truncation of the narrowed reads (LowBits; --seam-check builds the
+  /// same terms on the unlowered indices).
+  LowBits &lowBits() { return m_low; }
+  /// at most this many ite leaves in an index splitBase takes apart
+  static constexpr unsigned kMaxSplitLeaves = 16;
+  /// \p idx is base + rest at width \p w (a top-level bvadd with \p base
+  /// as one summand, or \p base itself; an ite of such, at most
+  /// kMaxSplitLeaves leaves: rest is the ite of the leaves' rests): \p rest.
+  static bool splitBase(const Expr &idx, const Expr &base, unsigned w,
+                        Expr &rest) {
+    unsigned leaves = 0;
+    return splitBase(idx, base, w, rest, leaves);
+  }
+  static bool splitBase(const Expr &idx, const Expr &base, unsigned w,
+                        Expr &rest, unsigned &leaves) {
+    if (isOpX<ITE>(idx)) {
+      Expr r1, r2;
+      if (!splitBase(Expr(idx->arg(1)), base, w, r1, leaves) ||
+          !splitBase(Expr(idx->arg(2)), base, w, r2, leaves))
+        return false;
+      rest = mk<ITE>(Expr(idx->arg(0)), r1, r2);
+      return true;
+    }
+    if (++leaves > kMaxSplitLeaves)
+      return false;
+    if (idx == base) {
+      rest = op::bv::bvnum(mpz_class(0UL), w, idx->efac());
+      return true;
+    }
+    if (!isOpX<BADD>(idx))
+      return false;
+    llvm::SmallVector<Expr, 8> others;
+    unsigned seen = 0;
+    for (size_t i = 0; i < idx->arity(); ++i) {
+      if (idx->arg(i) == base.get())
+        ++seen;
+      else
+        others.push_back(Expr(idx->arg(i)));
+    }
+    if (seen != 1)
+      return false;
+    if (others.empty())
+      rest = op::bv::bvnum(mpz_class(0UL), w, idx->efac());
+    else if (others.size() == 1)
+      rest = others[0];
+    else
+      rest = idx->efac().mkNary(idx->op(), others.begin(), others.end());
+    return true;
+  }
+  /// base + zext(low) at width \p w (base + its value for a numeral low,
+  /// base for 0).
+  static Expr narrowIndex(const Expr &base, const Expr &low, unsigned w) {
+    if (op::bv::isBvNum(low)) {
+      mpz_class v = ackermann_detail::reducedValue(low);
+      if (v == 0L)
+        return base;
+      return mk<BADD>(base, op::bv::bvnum(v, w, base->efac()));
+    }
+    return mk<BADD>(base, op::bv::zext(low, w));
+  }
   /// Did the stride rule drop the constraint of reads \p a and \p b?
   bool strideDropped(const Read &a, const Read &b) const {
     return strideApart(a, b);
@@ -815,7 +1004,8 @@ private:
   };
   /// \p sp: the premises the answer also rests on.
   bool strideApart(const Read &a, const Read &b, StridePrem &sp) const {
-    if (!m_origins || a.plain || b.plain || a.nodes.empty() || b.nodes.empty())
+    if (!m_origins || a.plain || b.plain || a.nodes.empty() ||
+        b.nodes.empty() || a.low || b.low)
       return false;
     for (const Expr &na : a.nodes)
       for (const Expr &nb : b.nodes)
@@ -877,6 +1067,38 @@ private:
     return !mpz_divisible_p(d.get_mpz_t(), g.get_mpz_t());
   }
 
+  /// Two narrowed reads of one object never at one index by an exact test
+  /// on their k-bit offsets (as the 64-bit ones: same symbolic part with
+  /// different numerals, residues, leaves): counted with those drops.
+  bool narrowPair(const Read &a, const Read &b,
+                  std::map<unsigned, ackermann_detail::LinearForms> &forms,
+                  std::map<unsigned, LeafDecider> &leaves) {
+    using namespace ackermann_detail;
+    unsigned k = m_low.width(a.low);
+    LinearForms &lf = forms.try_emplace(k, k).first->second;
+    const Linear la = lf.of(a.low.get());
+    const Linear lb = lf.of(b.low.get());
+    LinearForms::Key ka = lf.key(la), kb = lf.key(lb);
+    if (ka == kb) {
+      if (la.c == lb.c)
+        return false; // equal offsets: the constraint is r_a = r_b
+      ++(ka.empty() ? m_stats.numeralPairs : m_stats.offsetPairs);
+      return true;
+    }
+    unsigned t = diffTrailingZeros(ka, kb, k);
+    mpz_class dc = lb.c - la.c;
+    if (t > 0 && mpzTrailingZeros(dc, k) < t) {
+      ++m_stats.residuePairs;
+      return true;
+    }
+    LeafDecider &ld = leaves.try_emplace(k, k, nullptr).first->second;
+    if (ld.neverEqual(a.low.get(), b.low.get())) {
+      ++m_stats.leafPairs;
+      return true;
+    }
+    return false;
+  }
+
   /// Trailing zeros of x modulo 2^w (w for 0).
   static unsigned mpzTrailingZeros(const mpz_class &x, unsigned w) {
     mpz_class m = mpz_class(1UL);
@@ -932,6 +1154,9 @@ private:
   std::unordered_map<ENode *, mpz_class> m_values;
   std::vector<Pair> m_pairs;
   const AccessOrigins *m_origins = nullptr;
+  const NarrowTable *m_narrow = nullptr;
+  std::unordered_map<ENode *, NarrowedSelect> m_narrowSel;
+  LowBits m_low;
   std::unordered_set<ENode *> m_size0;
   bool m_premises = true;
   Stats m_stats;
@@ -985,6 +1210,11 @@ public:
         [&](ENode *n, llvm::SmallVectorImpl<Expr> &kids) -> Expr {
           if (m_broken || !isOpX<SELECT>(n) || !hasLowered(n->arg(0)))
             return withKids(n, kids);
+          // a narrowed select is the cell the query read, at its narrowed
+          // index (what the VC computed with; a run that reads elsewhere
+          // differs from it: validation sees it)
+          if (Expr r = m_ack.narrowedValue(n))
+            return r;
           Expr j = m_inner.eval(kids[1], /*complete=*/true);
           if (!j || !op::bv::is_bvnum(j)) {
             m_broken = true;

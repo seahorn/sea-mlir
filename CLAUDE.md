@@ -82,6 +82,23 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   semantics in `lib/Dialect/Sea/SeaIntRanges.cpp`, intersected with the
   simple bounds of dominating assumes, at the candidate's definition; `sea-vc --range-fold`,
   off by default; `check`: the paranoid job; docs/design/RangeFold.md),
+  `sea-assume-fold` (uses of an i1 that a dominating assume or assert,
+  or every edge into a dominating block (cond_br %c: 1 on the true edge,
+  0 on the false one), fixes, its conjuncts and negations -> constants:
+  exact, on by default in the lowering right before sea-merge-asserts,
+  `sea-vc --lower-disable=assume-fold`; not under `--reach` unless
+  `--reach-fold-facts`, which also runs sea-prune-edges; `select c, x,
+  false` / `select c, true, x` count as and / or here and in sea-range-fold; a fact `x == K` on an integer x
+  replaces x's uses by K, never on addresses / pointers;
+  docs/design/AssumeFold.md),
+  `sea-prune-edges` (edges on which no execution reaches an assert or a
+  halt: constant block arguments that make the target's leading assume 0,
+  targets whose paths all block; a cond_br with one -> assume + br, rounds
+  with assume-fold / canonicalize / cse to a fixpoint: exact for the safety
+  query, on by default after the final canonicalize, off under `--reach`
+  unless `--reach-fold-facts`, `sea-vc --lower-disable=prune-edges`,
+  `sea-vc-lower{reach=true}` / `{prune-edges=false}`;
+  docs/design/PruneEdges.md),
   `sea-widen-memory` (byte
   memory -> aligned k-byte words when every access provably fits; in the
   lowering with `sea-vc --widen-memory=k`), `sea-apply-tracking`
@@ -245,7 +262,7 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
 - New op: add it to `Semantics.cpp`, to `utils/check-semantics.py`, and to
   roundtrip and interpreter tests in the same change. A pure value op gets
   a folder through `evalPureOp` (`foldByEval`, SeaOps.cpp), never its own
-  arithmetic; ops with nsw / nuw do not fold. `sea.segment` is in `evalPureOp` but has no folder on purpose (sccp would erase the object it names), and it is not in `check-semantics.py`: that oracle folds every case to a constant and checks bit-vector arithmetic against z3, while a segment's value is its `base` attribute (checked by `test/Interp/ptr/segment.mlir` and `test/VC/segment-replay.mlir`).
+  arithmetic; an op with nsw / nuw folds only constants that keep its promise (`brokenWrapPromise`) and identities that never wrap. Identity folders (`x & 0`, `icmp eq x, x`, `(x ^ k) ^ k`, `addr.cmp` of one address or two constant ones) take their value from `evalPureOp` with the free operand set to 0, or return the operand; each is proved with z3 and checked by `check-semantics.py --fold`. `sea.segment` is in `evalPureOp` but has no folder on purpose (sccp would erase the object it names), and it is not in `check-semantics.py`: that oracle folds every case to a constant and checks bit-vector arithmetic against z3, while a segment's value is its `base` attribute (checked by `test/Interp/ptr/segment.mlir` and `test/VC/segment-replay.mlir`).
 - Tag conjectures in comments and notes as hypotheses; cite SeaHorn
   source (file:line, commit) when porting behavior from it.
 - Tool output is line-oriented `key: value` text so agents can parse it.

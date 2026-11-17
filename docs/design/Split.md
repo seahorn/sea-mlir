@@ -170,6 +170,13 @@ separate runs, so the list never depends on a split.
   in their conditions; a branch's two successor guards usually rank
   together, and splitting on either gives the same two cases.
 
+- `split.assumed-candidate`: i1 values an assume fixes that still guard a
+  branch or select in the program the VC encodes (`vc.assumed-branches`;
+  docs/design/AssumeFold.md). The lowering folds the uses the assume
+  dominates, so these are the others: a branch before the assume, or
+  after the join of a sibling that assumes. Listed in program order, not
+  ranked by the query.
+
 ### When no alias question is open: the read indices
 
 A query can be hard with no open alias question at all: its residue is

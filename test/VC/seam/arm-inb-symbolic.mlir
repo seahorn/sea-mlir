@@ -4,13 +4,20 @@
 // (conditions=1: the answer depends on it). Plain sat; --seam unsat, the
 // documented conditional answer (A-INB assumed and reported, not discharged);
 // --seam-arm=0 keeps the compare unknown and does not skip across bases, so
-// it is sat.
+// it is sat. The runs leave sea-assume-fold out: it replaces n by -16 (the
+// assumed equality), and the offset is then a number (the FOLD run: the access is
+// out of its object on every alternative, reported).
 // RUN: sea-vc %s --lower | FileCheck %s --check-prefix=SAT
 // RUN: sea-vc %s --lower --seam --seam-premises=0 | FileCheck %s --check-prefix=SAT
-// RUN: sea-vc %s --lower --seam 2>&1 | FileCheck %s --check-prefix=COUNT
-// RUN: sea-vc %s --lower --seam --seam-arm=0 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %s --lower --lower-disable=assume-fold --seam 2>&1 | FileCheck %s --check-prefix=COUNT
+// RUN: sea-vc %s --lower --lower-disable=assume-fold --seam --seam-arm=0 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %s --lower --seam 2>&1 | FileCheck %s --check-prefix=FOLD
+// COUNT-NOT: seam.out-of-object
 // COUNT: seam.premises: assumed accesses=3 conditions=1
 // COUNT: result: unsat
+// FOLD: vc.assume-fold: {{.*}}int-uses=1
+// FOLD: seam.out-of-object: accesses=1 object=0 shared=0 unknown=1 null=0 gap=0
+// FOLD: result: unsat
 // SAT: result: sat
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @ov {

@@ -537,7 +537,15 @@ Expr SeaOpSem::memLoad(Expr mem, Expr ptr, uint64_t units, OpSemContext &ctx) {
   ptr = accessAddr(mem, ptr, units, ctx);
   trailAccess("load", units);
   Expr sel = op::array::select(mem, ptr);
-  return seamMode ? seamRw->rewrite(sel) : sel;
+  if (!seamMode)
+    return sel;
+  Expr res = seamRw->rewrite(sel);
+  // the selects this load leaves at its own address (--narrow-offsets);
+  // not for shadow / companion memories, which are not program accesses
+  if (!seamRw->rules().shadowMemory(mem) && !keyedAccess())
+    seamRw->rules().noteOwnReads(res, ptr, units);
+  seamRw->settleBoundaryReads();
+  return res;
 }
 
 Expr SeaOpSem::memStore(Expr mem, Expr ptr, Expr val, uint64_t units,

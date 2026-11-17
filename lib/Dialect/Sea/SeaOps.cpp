@@ -102,6 +102,9 @@ Block *CondBrOp::getSuccessorForOperands(ArrayRef<Attribute> operands) {
   return nullptr;
 }
 
+static void noteFold(StringRef kind, Location loc);
+static bool inDeadBlock(Operation *op);
+
 namespace {
 // The constant and identical-successor cases of upstream cf.cond_br.
 struct SimplifyCondBr : OpRewritePattern<CondBrOp> {
@@ -109,18 +112,47 @@ struct SimplifyCondBr : OpRewritePattern<CondBrOp> {
 
   LogicalResult matchAndRewrite(CondBrOp op,
                                 PatternRewriter &rewriter) const override {
-    // the block stays: its ids (kBlockIdsAttr) go to the new branch
-    auto toBr = [&](ValueRange args, Block *dest) {
-      ArrayAttr ids = op->getAttrOfType<ArrayAttr>(kBlockIdsAttr);
+    // the block stays: its ids (kBlockIdsAttr) and the branch's other
+    // marks (the assert id of a merged assert's branch, which a replay
+    // reports) go to the new branch
+    auto n = dyn_cast<NameLoc>(op.getLoc());
+    const bool merged = n && n.getName().getValue() == "sea.assert";
+    // the br is not that assert (kAssertIdAttr, "sea.assert_id", Passes.h)
+    const bool dropAssertId =
+        merged && matchPattern(op.getCondition(), m_One());
+    auto toBr = [&](ValueRange args, Block *dest,
+                    std::optional<Location> loc = std::nullopt) {
+      NamedAttrList marks(op->getDiscardableAttrDictionary());
+      if (dropAssertId)
+        marks.erase("sea.assert_id");
+      DictionaryAttr kept = marks.getDictionary(op->getContext());
       auto br = rewriter.replaceOpWithNewOp<BrOp>(op, args, dest);
-      if (ids)
-        br->setAttr(kBlockIdsAttr, ids);
+      br->setDiscardableAttrs(kept);
+      if (loc)
+        br->setLoc(*loc);
       return success();
     };
+    // A merged assert's branch (sea-merge-asserts, kMergedAssertLocName)
+    // whose condition became constant only after the merge (a later
+    // lowering): held (1), it is no failure site any more, so the new
+    // branch drops the marker (a replay would otherwise name it as the
+    // failing assert, MergeAsserts.cpp); failed (0), the branch to the
+    // landing block keeps it and the fold is reported, as for a sea.assert
+    // of constant false.
     if (matchPattern(op.getCondition(), m_One()))
-      return toBr(op.getTrueDestOperands(), op.getTrueDest());
-    if (matchPattern(op.getCondition(), m_Zero()))
+      return toBr(op.getTrueDestOperands(), op.getTrueDest(),
+                  merged ? std::optional<Location>(rewriter.getUnknownLoc())
+                         : std::nullopt);
+    if (matchPattern(op.getCondition(), m_Zero())) {
+      if (merged && !inDeadBlock(op)) {
+        sea::diag::warn("fold.assert-false",
+                        "assert of constant false: the check fails whenever "
+                        "it is reached",
+                        n.getChildLoc());
+        noteFold("assert-false", n.getChildLoc());
+      }
       return toBr(op.getFalseDestOperands(), op.getFalseDest());
+    }
     if (op.getTrueDest() == op.getFalseDest() &&
         op.getTrueDestOperands() == op.getFalseDestOperands())
       return toBr(op.getTrueDestOperands(), op.getTrueDest());
@@ -734,13 +766,118 @@ static OpFoldResult foldByEval(Operation *op, ArrayRef<Attribute> operands) {
 
 OpFoldResult ConstOp::fold(FoldAdaptor) { return getValue(); }
 
+//===----------------------------------------------------------------------===//
+// Identity folders. A folder with a non-constant operand folds only by an
+// identity of sea's total bit-vector semantics (each derived with z3 at
+// widths 1..64 and checked by utils/check-semantics.py --fold): either the
+// result is an operand (`x & -1` is x), or it does not depend on the free
+// operand (`x & 0`, `icmp ult x, 0`, `x ^ x`), and then its value is
+// evalPureOp's with the free operand set to any value (0 here: the value is
+// still computed only by evalPureOp).
+//===----------------------------------------------------------------------===//
+
+static std::optional<APInt> constOf(Attribute a) {
+  if (auto i = dyn_cast_if_present<IntegerAttr>(a))
+    return i.getValue();
+  return std::nullopt;
+}
+
+/// evalPureOp's value of `op` on `vals` as a fold result.
+static OpFoldResult evalAt(Operation *op, ArrayRef<APInt> vals) {
+  auto type = dyn_cast<IntegerType>(op->getResult(0).getType());
+  std::optional<APInt> r = evalPureOp(op, vals);
+  if (!type || !r)
+    return {};
+  return IntegerAttr::get(type, *r);
+}
+
+/// A two-operand op whose result does not depend on its operands' values
+/// here: evaluated with both operands 0 of the operand width.
+static OpFoldResult evalFree(Operation *op) {
+  unsigned w = bitWidthOf(op->getOperand(0).getType());
+  return evalAt(op, {APInt(w, 0), APInt(w, 0)});
+}
+
+/// The constant operand of a binary op and the other operand, if one of
+/// the two is a constant (the right one first).
+static std::optional<std::pair<APInt, Value>>
+constAndOther(Operation *op, ArrayRef<Attribute> operands) {
+  if (auto k = constOf(operands[1]))
+    return std::make_pair(*k, op->getOperand(0));
+  if (auto k = constOf(operands[0]))
+    return std::make_pair(*k, op->getOperand(1));
+  return std::nullopt;
+}
+
+/// and / or / xor: `x op x`, a 0 or all-ones operand, `(x ^ k) ^ k`.
+static OpFoldResult foldBitIdentity(Operation *op,
+                                    ArrayRef<Attribute> operands) {
+  Value lhs = op->getOperand(0), rhs = op->getOperand(1);
+  if (lhs == rhs)
+    return isa<XorOp>(op) ? evalFree(op) : OpFoldResult(lhs);
+  auto ko = constAndOther(op, operands);
+  if (!ko)
+    return {};
+  auto [k, x] = *ko;
+  if (k.isZero())
+    return isa<AndOp>(op) ? evalFree(op) : OpFoldResult(x);
+  if (k.isAllOnes() && isa<AndOp>(op))
+    return x;
+  if (k.isAllOnes() && isa<OrOp>(op))
+    return evalAt(op, {k, k});
+  // (y ^ k) ^ k = y
+  if (auto inner = x.getDefiningOp<XorOp>(); inner && isa<XorOp>(op)) {
+    APInt k2;
+    if (matchPattern(inner.getRhs(), m_ConstantInt(&k2)) && k2 == k)
+      return inner.getLhs();
+    if (matchPattern(inner.getLhs(), m_ConstantInt(&k2)) && k2 == k)
+      return inner.getRhs();
+  }
+  return {};
+}
+
 // nsw / nuw are promises the interpreter checks and sea-wrap-flags turns
-// into an assume / assert: a flagged op is not folded, so none is lost.
+// into an assume / assert. A flagged op folds only where its promise holds
+// in every execution: constant operands that keep it (brokenWrapPromise),
+// so the folded program loses an assume / assert of 1; or an identity that
+// never wraps (x + 0, x - 0, x - x, x * 0, x << 0; x * 1 above width 1:
+// at i1 the constant 1 is -1 signed and `x * 1 nsw` wraps for x = 1).
+static OpFoldResult foldWrap(Operation *op, ArrayRef<Attribute> operands) {
+  bool flagged = op->hasAttr("nsw") || op->hasAttr("nuw");
+  SmallVector<APInt> vals;
+  for (Attribute a : operands)
+    if (auto k = constOf(a))
+      vals.push_back(*k);
+  if (vals.size() == operands.size())
+    return flagged && brokenWrapPromise(op, vals) ? OpFoldResult()
+                                                  : foldByEval(op, operands);
+  Value lhs = op->getOperand(0), rhs = op->getOperand(1);
+  if (lhs == rhs && isa<SubOp>(op))
+    return evalFree(op);
+  std::optional<APInt> kr = constOf(operands[1]), kl = constOf(operands[0]);
+  if (isa<AddOp>(op)) {
+    if (kr && kr->isZero())
+      return lhs;
+    if (kl && kl->isZero())
+      return rhs;
+  }
+  if (isa<SubOp, ShlOp>(op) && kr && kr->isZero())
+    return lhs;
+  if (isa<MulOp>(op)) {
+    if ((kr && kr->isZero()) || (kl && kl->isZero()))
+      return evalFree(op);
+    bool wide = bitWidthOf(lhs.getType()) > 1;
+    if (kr && kr->isOne() && (wide || !flagged))
+      return lhs;
+    if (kl && kl->isOne() && (wide || !flagged))
+      return rhs;
+  }
+  return {};
+}
+
 #define SEA_WRAP_FOLDER(Op)                                                    \
   OpFoldResult Op::fold(FoldAdaptor a) {                                       \
-    if (getNsw() || getNuw())                                                  \
-      return {};                                                               \
-    return foldByEval(*this, a.getOperands());                                 \
+    return foldWrap(*this, a.getOperands());                                   \
   }
 SEA_WRAP_FOLDER(AddOp)
 SEA_WRAP_FOLDER(SubOp)
@@ -750,9 +887,82 @@ SEA_WRAP_FOLDER(ShlOp)
 
 // abs: its nsw (is_int_min_poison) is a promise like the others
 OpFoldResult AbsOp::fold(FoldAdaptor a) {
-  if (getNsw())
+  auto k = constOf(a.getOperands()[0]);
+  if (getNsw() && (!k || brokenWrapPromise(*this, {*k})))
     return {};
   return foldByEval(*this, a.getOperands());
+}
+
+#define SEA_BIT_FOLDER(Op)                                                     \
+  OpFoldResult Op::fold(FoldAdaptor a) {                                       \
+    if (OpFoldResult r = foldByEval(*this, a.getOperands()))                   \
+      return r;                                                                \
+    return foldBitIdentity(*this, a.getOperands());                            \
+  }
+SEA_BIT_FOLDER(AndOp)
+SEA_BIT_FOLDER(OrOp)
+SEA_BIT_FOLDER(XorOp)
+#undef SEA_BIT_FOLDER
+
+/// icmp / addr.cmp of one value with itself: the predicate's reflexive
+/// value.
+static bool isUnsignedBound(ICmpPredicate p, bool zeroOnRight) {
+  // x <u 0 is 0, x >=u 0 is 1; 0 >u x is 0, 0 <=u x is 1
+  return zeroOnRight ? (p == ICmpPredicate::ult || p == ICmpPredicate::uge)
+                     : (p == ICmpPredicate::ugt || p == ICmpPredicate::ule);
+}
+
+OpFoldResult ICmpOp::fold(FoldAdaptor a) {
+  if (OpFoldResult r = foldByEval(*this, a.getOperands()))
+    return r;
+  if (getLhs() == getRhs())
+    return evalFree(*this);
+  std::optional<APInt> kr = constOf(a.getRhs()), kl = constOf(a.getLhs());
+  if ((kr && kr->isZero() && isUnsignedBound(getPredicate(), true)) ||
+      (kl && kl->isZero() && isUnsignedBound(getPredicate(), false)))
+    return evalFree(*this);
+  return {};
+}
+
+/// The address `v` has in every execution: sea.segment (its base),
+/// addr.add of a constant offset, addr.from_int of a constant, ptr.index
+/// with constant indices whose promise holds; by evalPureOp. Reads the
+/// defining ops (address ops have no folders: provenance), changes none.
+static std::optional<APInt> constAddress(Value v, unsigned depth = 0) {
+  Operation *def = v.getDefiningOp();
+  if (!def || depth > 16 || def->getNumResults() != 1 ||
+      !isa<SegmentOp, AddrAddOp, AddrFromIntOp, PtrIndexOp>(def))
+    return std::nullopt;
+  SmallVector<APInt> vals;
+  for (Value o : def->getOperands()) {
+    APInt k;
+    if (isa<AddrType>(o.getType())) {
+      std::optional<APInt> base = constAddress(o, depth + 1);
+      if (!base)
+        return std::nullopt;
+      vals.push_back(*base);
+    } else if (matchPattern(o, m_ConstantInt(&k))) {
+      vals.push_back(k);
+    } else {
+      return std::nullopt;
+    }
+  }
+  if (isa<PtrIndexOp>(def) &&
+      brokenPtrIndexPromise(def, vals.front(), ArrayRef(vals).drop_front()))
+    return std::nullopt;
+  return evalPureOp(def, vals);
+}
+
+// The value is i1: no address is folded. Pointer equality is address
+// equality (PtrSort.md D6) and ordered compares compare addresses; a
+// segment's address is its base in the VC too (ADDR(obj) = base).
+OpFoldResult AddrCmpOp::fold(FoldAdaptor) {
+  if (getLhs() == getRhs())
+    return evalFree(*this);
+  std::optional<APInt> l = constAddress(getLhs()), r = constAddress(getRhs());
+  if (!l || !r)
+    return {};
+  return evalAt(*this, {*l, *r});
 }
 
 #define SEA_EVAL_FOLDER(Op)                                                    \
@@ -763,12 +973,8 @@ SEA_EVAL_FOLDER(UDivOp)
 SEA_EVAL_FOLDER(SDivOp)
 SEA_EVAL_FOLDER(URemOp)
 SEA_EVAL_FOLDER(SRemOp)
-SEA_EVAL_FOLDER(AndOp)
-SEA_EVAL_FOLDER(OrOp)
-SEA_EVAL_FOLDER(XorOp)
 SEA_EVAL_FOLDER(LShrOp)
 SEA_EVAL_FOLDER(AShrOp)
-SEA_EVAL_FOLDER(ICmpOp)
 SEA_EVAL_FOLDER(ZExtOp)
 SEA_EVAL_FOLDER(SExtOp)
 SEA_EVAL_FOLDER(TruncOp)

@@ -64,7 +64,8 @@ sea.program @main {
 ^a:
   sea.cond_br %t, ^b, ^d {sea.block_ids = ["1"]}
 ^b:
-  %c = sea.icmp ne, %x, %x : i8
+  %k = sea.const 3 : i8
+  %c = sea.icmp ne, %x, %k : i8
   sea.assume %c
   sea.br ^j {sea.block_ids = ["2"]}
 ^d:
@@ -79,7 +80,8 @@ sea.program @main {
 sea.program @main {
   %x = sea.nondet "x" [0] : i8
   %f = sea.const false
-  %c = sea.icmp ult, %x, %x : i8
+  %k = sea.const 3 : i8
+  %c = sea.icmp ult, %x, %k : i8
   sea.cond_br %c, ^a, ^b {sea.block_ids = ["0"]}
 ^a:
   sea.assume %f

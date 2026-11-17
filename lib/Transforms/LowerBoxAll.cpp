@@ -44,13 +44,13 @@
 // Expansion (option expand-max = K <= kMaxBoxAllExpand, sea-vc
 // --box-all-expand; untuned default kBoxAllExpandDefault). A box whose
 // upper bounds all fold to constants (foldConstant: the op folders reduce
-// them to one, i.e. sea.const and flag-free arithmetic on constants; the
-// pass runs before sccp, so a block argument or nsw / nuw arithmetic is
-// not a constant here) and whose trip count (the product over its dimensions)
-// is at most K becomes the body at every index, row-major, and-reduced: exact
-// anywhere, but taken under the same polarity rule and refusals, so what a
-// front end may write does not depend on K. Nothing else expands (no
-// symbolic bound, no partial unrolling).
+// them to one, i.e. sea.const and arithmetic on constants, nsw / nuw only
+// when the constants keep the promise; the pass runs before sccp, so a
+// block argument is not a constant here) and whose trip count (the product over
+// its dimensions) is at most K becomes the body at every index, row-major,
+// and-reduced: exact anywhere, but taken under the same polarity rule and
+// refusals, so what a front end may write does not depend on K. Nothing else
+// expands (no symbolic bound, no partial unrolling).
 //
 // Contract.
 //   Accepts: any sea.program; its box.all ops verified (docs/design/BoxAll.md).

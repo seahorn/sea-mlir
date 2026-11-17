@@ -174,6 +174,247 @@ noise except array_eq with z3 (0.48 -> 1.24 s). Yices gains where the
 constraints are few relative to the reads (hash_iter_begin: 36884 of 39340
 pairs dropped as offset pairs) and loses where they are many.
 
+## Narrowed offsets (`--narrow-offsets`)
+
+Status: implemented, off by default. It rests on A-INB, which `--seam`
+does not assume by itself (its premises are A-SEP, A-NULL and A-NOWRAP):
+A-INB is used only when this switch is on, and it is counted and checked
+like the other premises (below).
+
+### Why
+
+After `--vc-defs=hidden` names the shared address sums
+([SumNames.md](SumNames.md)), what is left of a parser's query is the pairs
+themselves: one 64-bit address equality per constraint, about 210
+bit-blasted expressions each. On firedancer's `txn-pf-v1-writes` (8101
+constraints) about 97% of them compare two reads of one object, the
+1232-byte payload. An offset into that object needs 11 bits, not 64.
+
+### What it does
+
+Where: in the lowering, on the index of each read, before the pairs are
+formed (`Ackermannizer::setNarrow`, a `NarrowTable` filled by sea-vc).
+
+A read index i is eligible when every select at it is an own read of a
+program load: a select the load's encoding left at the load's own address
+(a byte of [q, q + units) for a load at q: `seam::Rules::noteOwnReads`,
+called by `SeaOpSem::memLoad` after the rewriting, which keeps the load's
+address as the index of every select it leaves). Selects the boundary makes
+(store-map expansion, the reads of a memmove's source, wide expansion) are
+not own (`vc.narrow-skip-not-own`). A select that is both, one node by
+hash-consing (a select reachable as a value of a memmove's source read in
+normal form, `ite(j = i, v, select(m, a + i))` included; any select a
+boundary translation or wide expansion ever built, memo hits included), is
+not narrowed either (`vc.narrow-skip-shared-boundary`): only a load's own
+reads are, so the use lemma has one case. The reads of wide
+loads (`--seam-wide`, expanded into bytes at the boundary) are not tagged
+and not narrowed (conservative). Further, every read address of the index (`AccessOrigins`, the stride
+rule's record, now keeping every address), or every leaf of an ite of them
+(a pointer phi), points into one object of size N > 0, and no select at the
+index reads a shadow memory. Let w be the index width (64 on the
+jobs measured) and k the least width with `2^k >= N`. After the boundary
+the index is `base + o` (a flat sum with the object's constant as one
+summand, or an ite of such sums); base and o both have width w. The
+read's index becomes
+
+    i' = base + zext(low_k(o))
+
+where `low_k(o)` is computed at k bits from truncated operands
+(`include/sea/Expr/LowBits.hh`: truncation is a ring homomorphism for +,
+-, *, negation; it commutes with the bitwise operators, ite and shifts by a
+numeral; zext, sext, concat and extract are read off; anything else is an
+`extract`). So the cursor's sums become k-bit sums, and the bit-blast
+shrinks; extracting the low bits of a w-bit sum would not.
+
+The lowering then works on i' as on any index (read sharing, the exact
+drops), with one addition: two narrowed reads of one object compare
+`base + zext(t_k) = base + zext(t_l)`, which holds iff `t_k = t_l`; the
+pair gets the k-bit constraint `t_k = t_l -> r_k = r_l`, after the exact
+drops are tried on the k-bit forms (same symbolic part with different
+numerals modulo 2^k, residues, leaves). A pair with one narrowed read and
+another (a read of another object, or one not eligible) keeps a w-bit
+equality, over i'. The stride rule is not applied to a narrowed read.
+
+With `--vc-defs`, a narrowed read's index sum is its k-bit offset
+`low_k(o)`: SumNames names the k-bit prefix chain (the names are k bits
+wide). The w-bit sums stay wherever else the query uses them.
+
+### Soundness
+
+Each narrowed read is a rewrite of its own index, justified by the A-INB of
+its own access, the same way a SeaM rewrite of a load is justified by the
+premises of the accesses it compares. The use lemma: the value of an own
+read is used only where its load executes; the load executing, A-INB gives
+`0 <= i - base < N` for the byte it reads. If the access executes and stays in
+its object (A-INB), its offset o (the w-bit value of i - base, so o mod
+2^w) lies in [0, N), so `low_k(o) = o` (`2^k >= N`) and i' = i. If the
+access does not execute, its value is not used by the query (the read
+stands for a load the run does not do; every SeaM rewrite of a load rests
+on the same argument), so its index does not matter: the cells are
+A(i') for every read, which equals A(i) for every read that executes. The
+lowered query is then the Ackermann lowering of the query with i' in place
+of i: functional consistency over the i', so every model reconstruction
+(`AckermannModel`, keyed by the values of i') is consistent.
+
+A-NOWRAP is not needed: the w-bit address arithmetic is modular already,
+and A-INB constrains the wrapped value o mod 2^w. `base + o = base + o'`
+(mod 2^w) iff `o = o'` (mod 2^w), and for o, o' in [0, N) that is
+`low_k(o) = low_k(o')`.
+
+Why per read and not per pair: replacing only the pair equality
+`i_k = i_l` by `low_k(o_k) = low_k(o_l)` would be stronger than the original
+constraint only when an offset is out of range, which happens for a read on
+a path the run does not take (a parser reads past a length it has not
+checked yet on the other branch). Such a read's w-bit pairs with other
+objects' reads would remain, and the two kinds of constraints together can
+equate the cells of two in-bounds reads at different addresses (a k-bit
+pair to one, a w-bit pair to the other through the out-of-range read). The
+per-read representative has no such mix: every constraint of a narrowed
+read is over i'.
+
+Unsat holds for the executions in which every narrowed read's access stays
+in its object. Two loads whose A-INB conditions cannot hold together (p + i
+and p + i + 16 of a 16-byte object) make the answer unsat vacuously, where
+the VC without the switch is sat: the program has a memory-safety error,
+which the discharge of A-INB (a bounds check of the program) reports;
+`--narrow-check` does not (test/VC/narrow/adversarial.test, t3).
+
+A sat model whose run executes a narrowed load out of its object does not
+replay at that load: the run reads the cell at i, the model the one at i'.
+Model evaluation (`AckermannModel`) gives a narrowed select the cell the
+query read, so validation reports the difference; then sea-vc evaluates i
+and i' of every narrowed select in the model, and if some differ it prints
+`seam.narrow-inb-violation: reads=<n> first: <index> = <v>, narrowed <v'>`
+and exits 4 (`vc.narrow-inb-spurious`), as for a broken premise. (The
+abstract program's run, which `vc.seam-inb-spurious` uses, stops at the
+first read of a nondet memory and decides nothing here.)
+
+What it does not apply to:
+- pairs of reads of different objects, or with a read whose base is
+  unknown: their constraint is the w-bit address equality (no A-SEP is
+  used here);
+- a pointer comparison of the program (`PTR_EQ`, `sea.ptr.cmp`, a
+  one-past-the-end pointer): not a read index, untouched;
+- every other use of the offsets: only the read's index changes; the
+  program's arithmetic on the cursor stays w-bit;
+- runs without the premises (`--seam-premises=0`, the out-of-object
+  fallback) and runs without the Ackermann lowering (`vc.narrow:
+  off-no-premises` / `off-no-ackermann`); `--seam-words` is refused.
+
+### Machine-checked
+
+The lemmas of this section are proved in
+seam-lean (module `SeaM/VCDefs`; the proofs are to be published), over
+a model of the index terms at one width w:
+
+- B1: `low_k(e) = extract(k-1, 0, e)` for every term the rebuild handles
+  and every k (each operator case of `LowBits`, the fallback included).
+- B2: splitting the index into `base + S` and rebuilding it keeps its
+  value; S has the width w of the base.
+- B3: for k <= w, two narrowed indices of one object are equal iff their
+  k-bit offsets are.
+- B4: the exact drops (offsets, residues, leaves) at k bits are carried
+  over to the narrowed indices by B3.
+- B6: the k-bit constraint of a pair is functional consistency over the
+  narrowed indices, so the Ackermann results apply to them, read sharing
+  included.
+- B7: the narrow-check obligation `S <u 2^k` gives i' = i (by B1 and B2).
+- B5, the use lemma: the query over i is satisfiable iff the query over i'
+  is, with A-INB read per execution (every read whose guard holds is in
+  bounds). It is proved under two facts of the VC that the model does not
+  contain, taken as hypotheses: the query does not use the value of a
+  read that does not execute, and an executing read's narrowed index
+  depends only on earlier reads that execute (dominance). Both rest on
+  one property of the C++, not checked: every select a load's encoding
+  leaves is at the load's own address or is noted as a boundary read
+  (`vc.narrow-skip-not-own`, `vc.narrow-skip-shared-boundary`).
+
+Not modelled: that the narrow-check obligation follows from A-INB, and the
+n-ary regrouping of the index into `base + S` (its ite case is proved).
+
+### Accounting
+
+- `assume.a-inb: narrow-reads=<n> narrow-pairs=<m>`: n reads rest on the
+  A-INB of their access, m pairs of them are compared at k bits.
+- `vc.narrow-*`: indices seen, eligible, skipped by reason (`not-own`,
+  `shared-boundary`, `no-object`, `shadow`, `size`, `many`, `shape`), reads narrowed, their
+  objects, the largest k, k-bit constraints and the sum of their widths,
+  mixed (w-bit) constraints with one narrowed read.
+- `--seam-check` / `--narrow-check`: what is checked per run and what
+  rests on a lemma are split.
+  - Per run, for each narrowed index i = base + S (the lowering's record of
+    the selects it narrowed; S has the index width w, as base): the premise bound, `layout && inBounds(a, 1)
+    for each read address a && !(S <u 2^k)` must be unsat. inBounds(a, 1)
+    is the weakest hypothesis: what the executing load's A-INB gives for
+    the byte it reads. It proves `A-INB => S < 2^k`, never A-INB itself.
+    First syntactically: after each sum's summands are put in one order,
+    the bound is usually a premise conjunct itself, `bvule(S, c)` with
+    c < 2^k (A-INB's `off <= size - units` of a load at base + S), also
+    through ites of one condition on both sides (a pointer phi); counted
+    `syntactic=`. Otherwise one query per index on a fresh solver (released
+    after it), the reads as free constants (a sat answer is checked again
+    with the reads), z3's default configuration, bounded by z3's resource
+    limit (`--narrow-check-rlimit`, default 50,000,000: untuned; 64-bit as the
+    other rlimit flags, z3 enforces at most 4294967295 per check), not by
+    time.
+  - The lemma: for S < 2^k, i' = base + zext(low_k(S)) = i, since the k-bit
+    rebuild low_k(S) is extract(k-1, 0, S) (LowBits: a ring homomorphism
+    and the other identities in its header). It is checked by its unit test
+    (random terms, every k, z3) and machine-checked in seam-lean (B1, B2,
+    B7 above); it is not checked per run.
+  - Invalid: exit 5, as an invalid rule firing. Unknown or unexpressible
+    (shape, premise): a `narrow-check-unknown:` / `-unexpressible:` line
+    (the index printed to 300 characters; `reason=rlimit` on an unknown
+    that exhausted the rlimit); with `--narrow-check` the run
+    exits 7 (`vc.narrow-check-unproven`), since the narrowing of the answer
+    is then not discharged; under `--seam-check` alone the lines are printed
+    too and, as its other unknowns, they leave the exit status as it is. An eligible index the lowering did not narrow is
+    listed (`narrow-check-not-narrowed:`).
+  - `--narrow-check` runs without the rule trail (also with `--vcgen-only`):
+    on the firedancer jobs `--seam-check` did not finish generating the VC
+    in 13 minutes (the trail of every firing, 22-29 GB).
+  - [OBS] Measured (`--vcgen-only --narrow-check`, one run each):
+    `txn-pf-v1-writes` 141 of 141 valid (131 syntactic), 1.5 s, 92 MB peak;
+    `txn-reach-v0-alt` 317 of 317 valid (275 syntactic), 3.9 s, 163 MB.
+  - [OBS] Why the first versions failed there: z3's in-process incremental
+    solver did not relate `bvule(S, c)` to `bvult(S, c + 1)` and bit-blasted
+    the cursor's sum S (11-60 s per obligation; with the 50M rlimit the run
+    passed 20 minutes), where the z3 CLI's preprocessing proves the dumped
+    obligation at once; and an obligation that timed out was reported with
+    its index printed in full: Expr's printer writes a DAG as a tree,
+    exponential for the cursor's shared sums, which is what ran out of
+    memory. The lines now print a bounded prefix (300 characters), and the
+    bound is discharged syntactically first.
+
+### Measured
+
+Two firedancer jobs, `--lower --seam --widen-memory=4 --vc-defs=hidden`,
+without and with `--narrow-offsets`; z3 5.3.3 on the `--smt2` dumps
+(`-v:10`, seeds 0-3 as `sat.random_seed` = `smt.random_seed`, timeout
+900 s, three runs at a time on a shared machine: the times are noisy).
+
+| job | constraints (k-bit) | z3 bit-blast | aig | z3 seeds 0-3 (s) |
+|---|---|---|---|---|
+| pf-v1-writes (unsat), off | 8101 (0) | 2.27M | no | 80, 46, 80, 43 |
+| pf-v1-writes, on (k = 11, 12) | 8111 (7983) | 1.15M | yes (0.91M) | 37, 97, 63, 57 |
+| reach-v0-alt (sat), off | 39287 (0) | 8.94M | no | 169, 125, 171, 134 |
+| reach-v0-alt, on (k = 10) | 39232 (39232) | 2.66M | no | 94, 282, 645, 323 |
+
+- The bit-blast halves on the unsat job and shrinks 3.4x on the sat job;
+  z3's post-blast aig step now runs on the unsat job. Solve times do not
+  follow: no change beyond the seed spread on the unsat job, and slower
+  with a wide spread on the sat job.
+- [OBS] On the sat job the narrowed query is the smaller one by every
+  count z3 prints (SAT clauses 1.8M vs 5.7M, memory 1.46 vs 3.6 GB), and
+  the slow seeds are search: seed 2 needed 593k conflicts against 85k for
+  the baseline's seed 0. Hypothesis: the k-bit offsets change the
+  decision order on the cursor's bytes; one sat job and four seeds do
+  not separate that from luck.
+- Of the k-bit pairs on `txn-pf-v1-writes`, 128 constraints stay mixed
+  (64-bit): one read index is not in one object. On `txn-reach-v0-alt`
+  every read is narrowed once ites of addresses in one object are taken.
+- Yices and Bitwuzla: not measured yet.
+
 ## Model reconstruction
 
 A model of the lowered query has values for every i_k and r_k, none for A

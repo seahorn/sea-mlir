@@ -44,7 +44,7 @@
 // RUN: FileCheck %s --check-prefix=W3 < %t/w/reach-3.txt
 // W3: # sea-vc --reach: contra.c:7:1 op=sea.assume at=contra.c:7:1 via=run trial=
 // W3: # replays on: the lowered program
-// RUN: sea-opt %t/contra.mlir --sea-vc-lower --mlir-print-debuginfo > %t/contra-lowered.mlir 2>/dev/null
+// RUN: sea-opt %t/contra.mlir --sea-vc-lower='reach=true' --mlir-print-debuginfo > %t/contra-lowered.mlir 2>/dev/null
 // RUN: sea-run %t/contra-lowered.mlir --input-file=%t/w/reach-3.txt --reach-targets | FileCheck %s --check-prefix=RUN3
 // RUN3: reach: contra.c:7:1 reached
 // RUN: sea-vc %t/contra.mlir --lower --reach --reach-corpus=%t/w 2>/dev/null | FileCheck %s --check-prefix=AGAIN

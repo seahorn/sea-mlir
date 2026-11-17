@@ -21,7 +21,8 @@
 //                                store chains) are constants, not symbolic
 //                                (calloc's n * size: treating it as
 //                                symbolic once made a verdict wrong). Ops
-//                                with nsw / nuw do not fold; nondet sites
+//                                with nsw / nuw fold only constants that
+//                                keep the promise; nondet sites
 //                                stay; the CFG is kept (dead blocks too).
 //                                Not canonicalize here: only constants are
 //                                wanted before the lowerings
@@ -45,7 +46,30 @@
 //                                struct fields included: sea::isAbstract)
 //   3. sea-expand-memset         symbolic lengths (the array encoding has
 //                                only store chains); adds blocks, so before 4
+//   3'. sea-assume-fold          (with sccp's switch, fold; sea-vc
+//                                --lower-disable=assume-fold) uses of an i1
+//                                that a dominating assume or assert fixes
+//                                (its condition, conjuncts, negations;
+//                                `select c, x, false` is a conjunction,
+//                                `select c, true, x` a disjunction), or
+//                                that every edge into a dominating block
+//                                fixes (cond_br %c: 1 on the true edge, 0
+//                                on the false one), become constants:
+//                                exact (an assert is an
+//                                assume for the code it dominates); the
+//                                constant branches and dead blocks go at 7
+//                                (docs/design/AssumeFold.md). Before 4:
+//                                the program's asserts are still in place,
+//                                so a later check of a condition an
+//                                earlier one fixed becomes constant and 4
+//                                drops it (1) or makes it a failure (0);
+//                                the fold needs no merged form. After the
+//                                lowerings before it (their assumes:
+//                                expand-memset's bounds)
 //   4. sea-merge-asserts         BMC form: one assert before the halt
+//                                (an assert of constant 1 is dropped, one
+//                                of constant 0 is a branch to its failure
+//                                site)
 //   5. sea-split-wide-access     the VC encodes single-cell accesses
 //   6. sea-expand-intrinsics     the VC encodes core ops; mul overflow is
 //                                kept for a solver that has it natively
@@ -79,6 +103,19 @@
 //                                are users with an effect, never erased or
 //                                merged. A dead sea.segment goes too (no
 //                                pointer refers to its object).
+//   7'. sea-prune-edges          (with sccp's switch, fold; sea-vc
+//                                --lower-disable=prune-edges; off under
+//                                --reach) edges on which no execution
+//                                reaches an assert or a halt: constant
+//                                block arguments that make the target's
+//                                leading assume 0, targets whose paths all
+//                                block. A cond_br with one such edge ->
+//                                assume of the other side + br; a branch
+//                                with none live -> sea.unreachable. Rounds
+//                                with assume-fold's rewrite, canonicalize
+//                                and cse to a fixpoint. After 7: its
+//                                constants and unreachable-only blocks are
+//                                7's (docs/design/PruneEdges.md)
 //   8. sea-split-critical-edges  BMC form, last: after every pass that
 //                                changes the CFG (expand-memset and
 //                                merge-asserts add blocks; canonicalize
@@ -97,6 +134,8 @@
 #include "PassUtils.h"
 #include "sea/Dialect/Sea/SeaOps.h"
 #include "sea/Support/Diag.h"
+#include "sea/Transforms/AssumeFold.h"
+#include "sea/Transforms/PruneEdges.h"
 #include "sea/Transforms/RangeFold.h"
 
 #include "mlir/Pass/PassManager.h"
@@ -210,6 +249,23 @@ struct VCLowerOptions : public PassPipelineOptions<VCLowerOptions> {
                                   "opt=false keeps every op (with fold=false: "
                                   "every op's location)"),
                    llvm::cl::init(true)};
+  Option<bool> pruneEdges{
+      *this, "prune-edges",
+      llvm::cl::desc("sea-prune-edges (sea-vc --lower-disable=prune-edges: "
+                     "false)"),
+      llvm::cl::init(true)};
+  Option<bool> reach{*this, "reach",
+                     llvm::cl::desc("The lowering of sea-vc --reach: no "
+                                    "sea-assume-fold and sea-prune-edges "
+                                    "(they can erase checks and blocks) "
+                                    "unless reach-fold-facts"),
+                     llvm::cl::init(false)};
+  Option<bool> reachFoldFacts{
+      *this, "reach-fold-facts",
+      llvm::cl::desc("With reach=true: run sea-assume-fold and "
+                     "sea-prune-edges anyway (sea-vc --reach-fold-facts; the "
+                     "reach sites change)"),
+      llvm::cl::init(false)};
 };
 } // namespace
 
@@ -232,6 +288,8 @@ void registerPasses() {
   registerPass([] { return createMergeAssertsPass(); });
   registerPass([] { return createSinkAssumesPass(); });
   registerPass([] { return createRangeFoldPass(); });
+  registerPass([] { return createAssumeFoldPass(); });
+  registerPass([] { return createPruneEdgesPass(); });
   registerPass([] { return createLowerBoxAllPass(); });
   registerPass([] { return createLowerPtrIndexPass(); });
   registerPass([] { return createCheckAlignPass(); });
@@ -246,8 +304,15 @@ void registerPasses() {
       "The lowering sea-vc --lower runs on a placed program (abstract "
       "programs: run sea-place-static first)",
       [](OpPassManager &pm, const VCLowerOptions &o) {
+        if (o.reachFoldFacts && !o.reach)
+          llvm::report_fatal_error(
+              "sea-vc-lower: reach-fold-facts needs reach=true");
+        const bool facts = !o.reach || o.reachFoldFacts;
+        unsigned disable = facts ? 0u : unsigned(LowerDisableAssumeFold);
+        if (!(o.pruneEdges && facts))
+          disable |= LowerDisablePruneEdges;
         buildVCLoweringPipeline(pm, false, false, o.fold, 0, true, false, false,
-                                false, 0, o.opt);
+                                false, 0, o.opt, true, disable);
       });
 }
 
@@ -323,6 +388,12 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
   // (sea-vc --seam), which are exact for every length
   if (expandMemSet)
     prog.addPass(createExpandMemSetPass());
+  // uses of i1 values that dominating assumes and asserts, or the edges
+  // into a block, fix: constants, on the program's own asserts (before
+  // they are merged); canonicalize folds the branches and erases the dead
+  // blocks
+  if (fold && !(disable & LowerDisableAssumeFold))
+    prog.addPass(createAssumeFoldPass());
   // multi-assert: BMC form (one assert before the one halt)
   prog.addPass(createMergeAssertsPass());
   prog.addPass(createSplitWideAccessPass(keepByteWide));
@@ -341,6 +412,13 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
     prog.addPass(createCanonicalizerPass());
   if (cse)
     prog.addPass(createCSEPass());
+  // edges on which no execution reaches a check (constant block arguments
+  // that falsify the target's assume; targets that only block), to a
+  // fixpoint with assume-fold, canonicalize and cse; after the clean-up,
+  // which makes the constants and unreachable-only blocks it reads
+  if (fold && !(disable & LowerDisablePruneEdges))
+    prog.addPass(createPruneEdgesPass(!(disable & LowerDisableAssumeFold),
+                                      canonicalize, cse));
   // Constant-branch folding may erase the only assertion and halt. Restore
   // BMC form, including the trivially safe case, after CFG simplification.
   // The first run reported the constant-false asserts.

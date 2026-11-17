@@ -83,6 +83,16 @@ assume.a-nowrap: seam=<n>
 seam.premises: assumed accesses=<n> conditions=<m>
 ```
 
+`sea-vc --narrow-offsets` (off by default) uses A-INB itself: it
+compares two reads of one object by the low bits of their offsets, enough
+bits for the object's size, and reports `assume.a-inb: narrow-reads=<n>
+narrow-pairs=<m>`. A sat whose replay fails because a narrowed load left
+its object exits with status 4 (`vc.narrow-inb-spurious`), as for the other
+premises. `--narrow-check` checks, for each narrowed read, that A-INB of
+its load bounds the offset by the narrowed width; it exits 5 if a check
+fails and 7 if one is not proven (`vc.narrow-check-unproven`). It does not
+discharge A-INB.
+
 An `unsat` under `--seam` holds for the executions that satisfy the
 premises with a count above 0. `sea-vc` does not discharge them; that
 takes a separate memory-safety check of the program (a bounds check

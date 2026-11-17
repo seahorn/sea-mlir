@@ -31,7 +31,9 @@ sea.program @bad {
   %c4 = sea.const 4 : i64
   %p = sea.ptr.add %a, %c4 : !sea.ptr<64>, i64
   %x = sea.load %m0[%p] align 8 : !m -> i64
-  %ok = sea.icmp eq, %x, %x : i64
+  %one = sea.const 1 : i64
+  %y = sea.add %x, %one : i64
+  %ok = sea.icmp eq, %x, %y : i64
   sea.assert %ok
   sea.halt
 }

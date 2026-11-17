@@ -162,6 +162,10 @@ struct SeaMOptions {
   /// mostly the matcher's gaps (keyed companions recorded through their
   /// mirror, other normal forms of one address), to be refined.
   bool checkInbPremise = false;
+  /// Record own reads and boundary-made reads (noteOwnReads,
+  /// noteBoundaryRead) for sea-vc --narrow-offsets. Off by default: no
+  /// effect on the rewriting either way.
+  bool trackOwnReads = false;
   /// without the premises, decide the access pairs / memop ranges of two placed
   /// objects at numeral offsets by their placed numerals (cmp.layout,
   /// mem.in-layout; uses: LAYOUT). Off by default: valid only where the
@@ -3496,6 +3500,77 @@ public:
     return m_inbUnrecorded;
   }
 
+  /// Own reads (sea-vc --narrow-offsets, docs/design/Ackermann.md
+  /// "Narrowed offsets"): the selects a program load's encoding \p res made
+  /// at its own address, a byte of [\p ptr, ptr + \p units) (OpSem::memLoad
+  /// after the rewriting, which keeps the load's address as the read index
+  /// of every select it leaves). Selects the boundary makes later (store-map
+  /// expansion, memory-operation reads, wide expansion) are not own, unless
+  /// they are the same node (hash-consed: the same cell at the same term).
+  /// The walk does not enter read indices or ite conditions; at most
+  /// kOwnWalk nodes per load.
+  static constexpr size_t kOwnWalk = 4096;
+  void noteOwnReads(const Expr &res, const Expr &ptr, uint64_t units) const {
+    if (!m_opts.trackOwnReads)
+      return;
+    const Expr p = op::ptr::stripObservation(ptr);
+    noteValueReads(res, [&](ENode *n) {
+      const Expr x = op::ptr::stripObservation(Expr(n->arg(1)));
+      mpz_class d;
+      if (x == p || (cancelDiff(x, p, d) && d >= mpz_class(0L) &&
+                     d < mpz_class((unsigned long)units)))
+        m_ownReads.emplace(n, Expr(n));
+    });
+  }
+  /// \p fn on every select reachable from \p res as a value: through every
+  /// operator but into neither a select's operands (its index is an
+  /// address, its memory a memory) nor an ite's condition; at most kOwnWalk
+  /// nodes.
+  template <typename Fn>
+  void noteValueReads(const Expr &res, Fn fn) const {
+    std::unordered_set<ENode *> seen;
+    std::vector<ENode *> stack{res.get()};
+    while (!stack.empty() && seen.size() < kOwnWalk) {
+      ENode *n = stack.back();
+      stack.pop_back();
+      if (!seen.insert(n).second)
+        continue;
+      if (isOpX<SELECT>(n)) {
+        fn(n);
+        continue;
+      }
+      if (isOpX<ITE>(n)) {
+        stack.push_back(n->arg(1));
+        stack.push_back(n->arg(2));
+        continue;
+      }
+      for (size_t i = 0; i < n->arity(); ++i)
+        stack.push_back(n->arg(i));
+    }
+  }
+  bool ownRead(const ENode *n) const {
+    return m_ownReads.count(const_cast<ENode *>(n)) != 0;
+  }
+  /// A select made other than by a load at its own address: a memmove's
+  /// source read (here), the boundary's translations and wide expansion
+  /// (SeaMRewriter::solverTerm). A node both own and here is shared: not
+  /// narrowed (--narrow-offsets reads only a load's own reads).
+  Expr noteBoundaryRead(const Expr &sel) const {
+    if (!m_opts.trackOwnReads)
+      return sel;
+    if (m_boundaryReads.emplace(sel.get(), sel).second)
+      m_boundaryPending.push_back(sel);
+    return sel;
+  }
+  /// the boundary reads noted since the last call (their normal forms are
+  /// noted too: SeaMRewriter::settleBoundaryReads)
+  std::vector<Expr> takeBoundaryPending() const {
+    return std::exchange(m_boundaryPending, {});
+  }
+  bool boundaryRead(const ENode *n) const {
+    return m_boundaryReads.count(const_cast<ENode *>(n)) != 0;
+  }
+
   bool cancelDiff(const Expr &a0, const Expr &b0, mpz_class &d) const {
     const Expr a = op::ptr::stripObservation(a0),
                b = op::ptr::stripObservation(b0);
@@ -5484,9 +5559,9 @@ public:
       countPremises(dec.premises);
       return {op::array::select(memOpBase(t), idx), RWStatus::RW_1};
     }
-    Expr hit = isOpX<MEM_COPY>(t)
-                   ? op::array::select(t->arg(1), copySource(t->arg(3), k))
-                   : memOpHit(t, idx, k);
+    Expr hit = isOpX<MEM_COPY>(t) ? noteBoundaryRead(op::array::select(
+                                        t->arg(1), copySource(t->arg(3), k)))
+                                  : memOpHit(t, idx, k);
     if (r == Range::In) {
       counter("-hit");
       countReasons(dec);
@@ -5796,6 +5871,11 @@ private:
   mutable std::unordered_map<ENode *, InbRec> m_inbRec;
   mutable std::unordered_map<ENode *, std::vector<ENode *>> m_inbByBase;
   mutable std::vector<std::string> m_inbUnrecorded;
+  /// noteOwnReads: the own selects (pinned)
+  mutable std::unordered_map<ENode *, Expr> m_ownReads;
+  /// noteBoundaryRead: selects made elsewhere (pinned)
+  mutable std::unordered_map<ENode *, Expr> m_boundaryReads;
+  mutable std::vector<Expr> m_boundaryPending;
   /// split loads loadResolveConcat looked at (not split again)
   std::unordered_map<ENode *, Expr> m_concatTried;
   /// leafWalk's memo: (memory, leaf address, read bytes) -> its answer; the
@@ -5963,7 +6043,10 @@ class SeaMRewriter {
         continue;
       if (isOpX<SELECT>(n)) {
         Expr idx(n->arg(1));
-        m_record->add(m_config.rules().erase(idx), idx);
+        const seam::Rules &ru = m_config.rules();
+        const bool own = ru.ownRead(n), made = ru.boundaryRead(n);
+        m_record->add(ru.erase(idx), idx, ru.shadowMemory(Expr(n->arg(0))),
+                      !own || made, own && made);
       }
       for (size_t i = 0; i < n->arity(); ++i)
         stack.push_back(n->arg(i));
@@ -6020,6 +6103,21 @@ public:
   /// store, is not walked again).
   Expr rewrite(const Expr &e) { return run(e, m_rewriteTimer); }
 
+  /// The memmove source reads the rules made since the last call
+  /// (Rules::noteBoundaryRead) are rewritten further (RW_FULL): their
+  /// normal forms, the nodes the query holds, are boundary reads too.
+  void settleBoundaryReads() {
+    for (int round = 0; round < 4; ++round) {
+      std::vector<Expr> pending = m_config.rules().takeBoundaryPending();
+      if (pending.empty())
+        return;
+      for (const Expr &sel : pending)
+        m_config.rules().noteValueReads(rewrite(sel), [&](ENode *n) {
+          m_config.rules().noteBoundaryRead(Expr(n));
+        });
+    }
+  }
+
   /// The normal form of a term of the VC that is not a memory access (a side
   /// condition, the query), with the same cache and rules as rewrite(): the
   /// final normalization pass. Time is counted apart (simplifySeconds()).
@@ -6071,6 +6169,8 @@ public:
   /// smap.expanded and memop.translated (reads over a term translated: 0
   /// unless the rewriting left one).
   Expr solverTerm(const Expr &e, std::string &why) {
+    if (m_record)
+      settleBoundaryReads();
     Expr res = expandStoreMaps(e);
     // width terms first: their byte reads may be over memory-operation terms
     if (m_wideMade) {
@@ -6083,6 +6183,14 @@ public:
       if (!res)
         return res;
       m_stats.rules["memop.translated"] = m_memops.translated();
+    }
+    // the selects the translations ever made (--narrow-offsets: not own
+    // reads), this call's and earlier calls' (memo hits)
+    if (m_record) {
+      for (const Expr &sel : m_wide.madeReads())
+        m_config.rules().noteBoundaryRead(sel);
+      for (const Expr &sel : m_memops.madeReads())
+        m_config.rules().noteBoundaryRead(sel);
     }
     // nodes last: every read of the query is there now, with the address it
     // has (the record of the stride rule); the translations above build

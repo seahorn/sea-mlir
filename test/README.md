@@ -14,7 +14,13 @@ An oracle checks meaning against an independent reference. Today:
   Yices (sea-expr-eval; also Bitwuzla in `semantics-bitwuzla.test`), for sea-run after sea-expand-intrinsics
   (intrinsics are checked against their LangRef definitions in SMT-LIB),
   and for the op folders (`--fold`: sea-opt --sccp must fold every case
-  to a sea.const of the reference value).
+  to a sea.const of the reference value; also, under sea-opt
+  --canonicalize, add / sub / mul / shl / abs with nsw / nuw and constant
+  operands fold iff z3 says the promise holds of them, to the wrapped
+  value, and identities with a nondet operand x fold to the constant or
+  to x that z3 proves for every x, a flagged one only if z3 proves its
+  promise for every x; constant addresses from segments, addr.add and
+  ptr.index fold in addr.cmp, not when the ptr.index promise breaks).
 - `VC/fuzz.test` + `utils/fuzz-vc.py`: VC vs interpreter on random programs
   in BMC form (scalars, and memory: in-place stores and loads with aliasing
   3-bit addresses, address ops, versions merged at joins): z3 and Yices

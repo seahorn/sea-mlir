@@ -148,6 +148,10 @@ pointer-sorted term left after `solverTerm` is the error
 constant is evaluated through its erased twin; replay reads pointers as
 addresses (after placement).
 
+After the boundary and the Ackermann lowering, `sea-vc --vc-defs=hidden`
+names the index sums that share a prefix (a cursor's addresses), so the
+flat sums do not reach the solver as such ([SumNames.md](SumNames.md)).
+
 ## Measured (vcc-pi2, one data point)
 
 [OBS] The lowered corpus (rev 5 draft 2.2, HEAD 24be323):

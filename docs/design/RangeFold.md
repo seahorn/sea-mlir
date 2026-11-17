@@ -68,7 +68,9 @@ signed range, otherwise it is a hole and skipped. Every other conjunct
 the comparison) is not a fact and is counted (`facts-skipped`). A bound on
 `sext(y)` or `zext(y)` is also one on `y`, inverted exactly
 (`rangeBeforeExt`), so a fact on `sext(slot)` applies where the walk reaches
-`slot`.
+`slot`. LLVM's short-circuit `a && b`, the i1 `select a, b, false`, is a
+conjunction too (`matchConnective`, docs/design/AssumeFold.md, "Select
+form"; `test/VC/assume-fold.mlir` @select_and).
 
 No per-value cache of facts. Caching a fact as a value's range for all uses
 when its assume "dominates every use" is not sound as stated: the assume's
@@ -202,6 +204,9 @@ after a load-over-store pass.
   it). A range the cap cut is not memoized within a candidate's walk, so a
   value reached first at the cap is computed again when reached shallower;
   there is no cache across candidates.
+- i1 facts (`assume %c`, then a branch or select on `%c`) are
+  `sea-assume-fold`'s, on by default (docs/design/AssumeFold.md); this pass
+  folds a select on such a value too when it runs.
 - A use-point fold (a fact between a value's definition and one of its uses
   folds that use only) is not done: the point is the candidate's
   definition.

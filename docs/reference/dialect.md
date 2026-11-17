@@ -37,8 +37,8 @@ It is the `nsw` of add / sub / mul / shl (the promise, not the value):
 the value is still the one above, the interpreter warns when the
 promise is broken, `sea-wrap-flags` turns it into a sea.assume /
 sea.assert of `x != INT_MIN` (or drops it), `sea-expand-intrinsics`
-keeps it on the `sea.sub` of the expansion, and the op folds only
-without it.
+keeps it on the `sea.sub` of the expansion, and with it the op folds
+only a constant other than INT_MIN.
 
 Traits: `AlwaysSpeculatableImplTrait`, `SameOperandsAndResultType`
 

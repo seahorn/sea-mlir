@@ -2,10 +2,12 @@
 // RUN: sea-opt %s --canonicalize | FileCheck %s --check-prefix=CANON
 
 // The pure ops fold through evalPureOp: 5 * 4 = 20; a constant select picks
-// its arm. Ops with nsw / nuw are not folded (their promise would be lost),
-// and program inputs (nondet sites) stay even when unused.
+// its arm. Ops with nsw / nuw fold only when their promise holds of the
+// constants (5 + 4 nsw is 9; 127 + 1 nsw wraps and stays: the promise is
+// not lost), and program inputs (nondet sites) stay even when unused.
 
 // CHECK-DAG: sea.const 20 : i8
+// CHECK-DAG: sea.const 9 : i8
 // CHECK-DAG: sea.add %{{.*}}, %{{.*}} nsw : i8
 // CHECK-DAG: sea.nondet "nd" [1] : i8
 // CHECK-DAG: sea.nondet "unused" [3] : i8
@@ -27,14 +29,19 @@ sea.program @main {
   %a = sea.const 5 : i8
   %b = sea.const 4 : i8
   %n = sea.mul %a, %b : i8
-  %f = sea.add %a, %b nsw : i8
+  %f9 = sea.add %a, %b nsw : i8
+  %big = sea.const 127 : i8
+  %one = sea.const 1 : i8
+  %f = sea.add %big, %one nsw : i8
+  %g = sea.icmp ult, %x, %f9 : i8
   %t = sea.const 1 : i1
   %s = sea.select %t, %n, %x : i8
   %c = sea.icmp ult, %x, %s : i8
   %pa = sea.addr.from_int %n : i8 to !sea.addr<8>
   %m1 = sea.memhavoc %m0[%pa], %b [2] inplace : !sea.mem<!sea.addr<8>, i8>
   %u = sea.icmp ult, %x, %f : i8
-  %ok = sea.and %c, %u : i1
+  %ok0 = sea.and %c, %u : i1
+  %ok = sea.and %ok0, %g : i1
   sea.assert %ok
   sea.halt
 }

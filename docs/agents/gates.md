@@ -327,7 +327,13 @@ python3 utils/cover-diff.py --sea-vc <build>/bin/sea-vc \
 ```
 
 `--a` and `--b` are the arguments of each side (`--lower-opt=false`,
-`--lower-disable=sccp|cse|canonicalize`), `--args` those of both.
+`--lower-disable=sccp|cse|canonicalize|assume-fold|prune-edges`;
+sea-assume-fold and sea-prune-edges do not run under `--reach` unless
+`--reach-fold-facts`, which changes the targets (an assert assume-fold
+makes 1 is dropped, so its failure site is not listed with it on): compare
+it with `--b=--reach-fold-facts`; without that flag a cover-diff A/B of
+either under `--reach` compares identical lowerings),
+`--args` those of both.
 
 What is compared, per input:
 

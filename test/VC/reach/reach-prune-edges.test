@@ -1,0 +1,53 @@
+// sea-prune-edges and --reach (docs/design/PruneEdges.md). The edge from
+// ^a passes `false` into the join's assume: dead for the safety query, but
+// a prefix of an execution still reaches ^a and the blocks before the
+// assume. --reach leaves the pass out, and so does the reach lowering of
+// sea-opt (sea-vc-lower{reach=true}): the blocks sea-vc --reach lists are
+// those of that lowering, which sea-run fuzzes. The plain lowering (the
+// safety lowering) has pruned ^a: the list is not of that program.
+// RUN: split-file %s %t
+// RUN: sea-vc %t/p.mlir --lower 2>&1 | FileCheck %s --check-prefix=SAFETY
+// SAFETY: vc.prune-edges: edges=1
+// RUN: sea-vc %t/p.mlir --lower --reach=blocks > %t/blocks.txt 2>/dev/null
+// RUN: FileCheck %s --check-prefix=REACH < %t/blocks.txt
+// REACH-NOT: vc.prune-edges
+// REACH: reach: p.mlir:{{[0-9]+}}:{{[0-9]+}} reachable op=block
+// REACH: reach.summary: targets=4 reachable=4
+// RUN: sea-opt %t/p.mlir --sea-vc-lower='reach=true' --mlir-print-debuginfo > %t/reach.mlir
+// RUN: sea-run %t/reach.mlir --fuzz=200 --fuzz-reachable=%t/blocks.txt | FileCheck %s --check-prefix=FUZZ
+// FUZZ: fuzz.reachable: covered=4 reachable=4 unreachable=0 unknown=0
+// RUN: sea-opt %t/p.mlir --sea-vc-lower --mlir-print-debuginfo > %t/safety.mlir
+// RUN: not sea-run %t/safety.mlir --fuzz=200 --fuzz-reachable=%t/blocks.txt 2>&1 | FileCheck %s --check-prefix=OTHER
+// OTHER: is not a block of this program
+// --reach-fold-facts (sea-vc-lower{reach=true reach-fold-facts=true}):
+// the pass under --reach, for performance work; the blocks of the pruned
+// edge are no targets any more.
+// RUN: sea-vc %t/p.mlir --lower --reach=blocks --reach-fold-facts 2>/dev/null | FileCheck %s --check-prefix=OPTION
+// OPTION: vc.prune-edges: edges=1
+// OPTION: reach.summary: targets=3 reachable=3
+// RUN: not sea-vc %t/p.mlir --lower --reach-fold-facts 2>&1 | FileCheck %s --check-prefix=NEEDS
+// NEEDS: need --reach
+
+//--- p.mlir
+sea.program @r {
+  %f = sea.const 0 : i1
+  %t = sea.const 1 : i1
+  %c5 = sea.const 5 : i8
+  %x = sea.nondet "x" [0] : i8
+  %c = sea.nondet "c" [1] : i1
+  sea.cond_br %c, ^a, ^b loc("r.c":1:1)
+^a:
+  %p = sea.icmp ult, %x, %c5 : i8
+  sea.assume %p loc("r.c":2:1)
+  sea.br ^j(%f : i1) loc("r.c":3:1)
+^b:
+  sea.br ^j(%t : i1) loc("r.c":4:1)
+^j(%ok : i1):
+  sea.assume %ok loc("r.c":5:1)
+  %q = sea.icmp ne, %x, %c5 : i8
+  sea.assert %q loc("r.c":6:1)
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

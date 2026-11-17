@@ -21,6 +21,7 @@ thm = "thm"     # theorem (Thm 5, testThm4)
 pn = "pn"       # a pointer named p_n
 fpt = "fpt"     # fat pointer type (utils/fuzz-seam.py)
 als = "als"     # array_list_swap (test file names)
+som = "som"     # z3's sum-of-monomials simplifier option (docs/design/SumNames.md)
 
 [default.extend-identifiers]
 # local names in code

@@ -27,6 +27,8 @@ add_mlir_library(SeaTransforms
   WrapFlags.cpp
   PrintRefs.cpp
   RangeFold.cpp
+  AssumeFold.cpp
+  PruneEdges.cpp
   LowerBoxAll.cpp
   TestInsertPrints.cpp
 

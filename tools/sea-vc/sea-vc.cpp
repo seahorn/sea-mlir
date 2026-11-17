@@ -18,6 +18,7 @@
 #include "sea/Expr/ReadCells.hh"
 #include "sea/Expr/SeaMRules.hh"
 #include "sea/Expr/Smt/Yices2SolverImpl.hh"
+#include "sea/Expr/SumNames.hh"
 #ifdef WITH_BITWUZLA
 #include "sea/Expr/Smt/BitwuzlaSolverImpl.hh"
 #endif
@@ -35,7 +36,9 @@
 #include "sea/Support/Timer.h"
 #include "sea/Support/Version.h"
 #include "sea/Support/WriteFile.h"
+#include "sea/Transforms/AssumeFold.h"
 #include "sea/Transforms/Passes.h"
+#include "sea/Transforms/PruneEdges.h"
 #include "sea/Transforms/RangeFold.h"
 
 #include "mlir/Pass/PassManager.h"
@@ -163,7 +166,7 @@ static cl::opt<unsigned> boxAllExpandOpt(
 static cl::list<std::string> lowerDisable(
     "lower-disable",
     cl::desc("With --lower: leave these optimization passes out of the "
-             "lowering (sccp, cse, canonicalize; "
+             "lowering (sccp, cse, canonicalize, assume-fold, prune-edges; "
              "comma-separated): a lowering with and without one, compared "
              "by utils/cover-diff.py, validates it"),
     cl::value_desc("pass,..."), cl::CommaSeparated);
@@ -512,6 +515,37 @@ static cl::opt<bool> ackStride(
              "vc.ackermann-stride-pairs; default on, --ack-stride=false off"),
     cl::init(true));
 
+static cl::opt<bool> narrowOffsets(
+    "narrow-offsets",
+    cl::desc("With --seam and the Ackermann lowering: a read whose address "
+             "lies in a recorded access of an object of size N reads at "
+             "base + zext(low k bits of its offset), 2^k >= N; two such "
+             "reads of one object are compared at k bits. Rests on A-INB "
+             "for each such access (assume.a-inb, --seam-check states it; "
+             "docs/design/Ackermann.md, \"Narrowed offsets\"). Off by "
+             "default"),
+    cl::init(false));
+
+static cl::opt<uint64_t> narrowCheckRlimit(
+    "narrow-check-rlimit",
+    cl::desc("z3's resource limit per --narrow-check obligation (0: none). "
+             "Default 50000000: untuned, a bound against runaway queries, "
+             "not measured on a corpus; an exhausted one is "
+             "narrow-check-unknown reason=rlimit. 64-bit; z3 enforces at "
+             "most 4294967295 (a larger value is clamped, "
+             "vc.limit-clamped)"),
+    cl::init(50000000));
+
+static cl::opt<bool> narrowCheck(
+    "narrow-check",
+    cl::desc("With --narrow-offsets: for each narrowed read index base + S, "
+             "check that the A-INB of its read addresses gives S < 2^k (the "
+             "narrow-check: lines of --seam-check, without the rule trail; "
+             "also with --vcgen-only). That the narrowed index then equals "
+             "the index is the LowBits lemma, not checked per run. Exit 5 "
+             "if one is invalid, 7 if one is not proven"),
+    cl::init(false));
+
 static cl::opt<bool> seamStride(
     "seam-stride",
     cl::desc("R-STRIDE in SeaM (with --seam): a store-map entry b + o is "
@@ -538,6 +572,27 @@ static cl::opt<AckMode> ackermannize(
                           "always (arrays used other than by select are kept)"),
                clEnumValN(AckMode::Off, "off", "never")),
     cl::init(AckMode::Auto));
+
+enum class VcDefs { Inline, Nest, Eq, Hidden };
+static cl::opt<VcDefs> vcDefs(
+    "vc-defs",
+    cl::desc("Named address sums, after the Ackermann lowering "
+             "(docs/design/SumNames.md): the index sums of the query that "
+             "share a prefix get fresh constants def.<k>, each address is "
+             "def.<k> + c or a parent's name plus the rest"),
+    cl::values(clEnumValN(VcDefs::Inline, "inline",
+                          "no names: the flat sums (default; not tuned)"),
+               clEnumValN(VcDefs::Nest, "nest",
+                          "no names: each shared sum is one node, its "
+                          "parent's sum plus the rest (z3's simplifier "
+                          "flattens it again)"),
+               clEnumValN(VcDefs::Eq, "eq",
+                          "names defined by top-level equations (a solver's "
+                          "variable elimination may substitute them back)"),
+               clEnumValN(VcDefs::Hidden, "hidden",
+                          "names defined by two bvule atoms each, no "
+                          "top-level equation")),
+    cl::init(VcDefs::Inline));
 
 static cl::opt<bool> dagStats(
     "dag-stats",
@@ -1025,6 +1080,17 @@ static cl::opt<bool> reachKeepSites(
              "assume / assert of the constant true by a reach-site marker "
              "(sea.print with its sea.reach_site; inert in the VC) instead "
              "of erasing it, so the site stays a target (utils/cover-diff.py)"),
+    cl::init(false));
+static cl::opt<bool> reachFoldFacts(
+    "reach-fold-facts",
+    cl::desc("With --reach and --lower: run sea-assume-fold and "
+             "sea-prune-edges (off under --reach by default: everything stays "
+             "visible). Exact for the safety query only: they can make "
+             "checks constant (canonicalize erases them with their reach "
+             "sites) and blocks dead (erased with their checks), and remove "
+             "prefixes of executions that block later, so targets disappear "
+             "and reach sites change; an opt-in for performance "
+             "(docs/design/AssumeFold.md, docs/design/PruneEdges.md)"),
     cl::init(false));
 static cl::opt<bool> reachFailures(
     "reach-failures",
@@ -1758,11 +1824,12 @@ INPUT FORM (checked; anything else is an error, never approximated):
   reaches sea.assert through i1 sea.and / sea.or only; any other use is an
   error box-all.use-<assume|branch|negation|select|print|value> (no
   unrolling fallback). A box of constant upper bounds (the op folders
-  reduce them to one before sccp: sea.const, flag-free arithmetic on
-  constants) with at most K indices (--box-all-expand=K <= 1024, untuned
-  default 16) is expanded instead: the body at every index, and-reduced
-  (same polarity rule). Prints vc.box-all: dead= empty= expand-max=
-  expanded= guarded= lowered= nondets=. Use it for claims whose instances
+  reduce them to one before sccp: sea.const, arithmetic on constants;
+  nsw / nuw only when they keep the promise) with at most K indices
+  (--box-all-expand=K <= 1024, untuned default 16) is expanded instead:
+  the body at every index, and-reduced (same polarity rule). Prints
+  vc.box-all: dead= empty= expand-max= expanded= guarded= lowered=
+  nondets=. Use it for claims whose instances
   are each expensive (a read of a memory through many writes: one index
   replaces them all); keep a
   claim whose instances are each matched by an assumption instance (e.g.
@@ -1919,7 +1986,9 @@ TYPICAL:
                                  #   the clean-up)
   sea-vc p.mlir --lower --lower-disable=canonicalize  # leave
                                  #   optimization passes out (sccp, cse,
-                                 #   canonicalize; comma-separated): the A
+                                 #   canonicalize, assume-fold,
+                                 #   prune-edges;
+                                 #   comma-separated): the A
                                  #   side of a pass validation
                                  #   (utils/cover-diff.py). Not
                                  #   sea-drop-fresh-memhavoc: it decides
@@ -1951,6 +2020,16 @@ TYPICAL:
                                  #   marker (sea.print, op=sea.print
                                  #   of=<op>), a target, instead of
                                  #   erasing it
+  sea-vc p.mlir --lower --reach --reach-fold-facts  # also run
+                                 #   sea-assume-fold and sea-prune-edges
+                                 #   (off under --reach: they erase the
+                                 #   checks they make constant and the
+                                 #   blocks they make dead, and remove
+                                 #   prefixes that block later, so targets
+                                 #   disappear and reach sites change;
+                                 #   exact for the safety query only);
+                                 #   sea-opt --sea-vc-lower='reach=true
+                                 #   reach-fold-facts=true' is its lowering
   sea-vc p.mlir --lower --widen-memory=8 --widen-memory-report  # a remark
                                  #   per memory: widened, or kept as bytes
                                  #   and the first reason (remark: <loc>:
@@ -2237,6 +2316,41 @@ TYPICAL:
                                  #   The model's arrays are rebuilt from the
                                  #   reads (0 at unread cells) for replay.
                                  #   docs/design/Ackermann.md
+  sea-vc p.mlir --seam --vc-defs=hidden  # named address sums, after
+                                 #   Ackermann: index sums that share a
+                                 #   prefix (a parser cursor) become fresh
+                                 #   constants def.<k>, each defined from its
+                                 #   parent's name (exact, no assumption).
+                                 #   hidden: two bvule atoms per name (no
+                                 #   equation: survives z3's solve-eqs);
+                                 #   eq: an equation (solvers substitute it
+                                 #   back); nest: no names, each shared sum
+                                 #   one node (solver-neutral; z3 flattens
+                                 #   it again); inline (default, not tuned):
+                                 #   flat sums. docs/design/SumNames.md
+  sea-vc p.mlir --seam --narrow-offsets  # (off by default; rests on
+                                 #   A-INB) a program load's read at its own
+                                 #   address in an object of size N (also an
+                                 #   ite of such addresses) reads at
+                                 #   base + zext(low k bits of its offset),
+                                 #   2^k >= N: two reads of one object are
+                                 #   compared at k bits, the offset sums
+                                 #   computed at k bits (with --vc-defs: k-bit
+                                 #   names). Exact for an access that stays
+                                 #   in its object: assume.a-inb counts the
+                                 #   reads. --narrow-check (alone, also with
+                                 #   --vcgen-only; also under --seam-check)
+                                 #   checks per run, for each narrowed index
+                                 #   base + S, that the A-INB of its read
+                                 #   addresses gives S < 2^k (z3, rlimit
+                                 #   --narrow-check-rlimit); that i' = i then
+                                 #   rests on the LowBits lemma (unit test,
+                                 #   not per run). Exit 7 if one is not
+                                 #   proven. A pointer compare of the
+                                 #   program is not narrowed.
+                                 #   Needs the premises and the Ackermann
+                                 #   lowering (else vc.narrow: off-...).
+                                 #   docs/design/Ackermann.md
   sea-vc p.mlir --seam --seam-wide --seam-words=all|auto [--words-check]
                                  # initial byte memories (nd.<site>,
                                  #   memhavoc arrays) only read in the query
@@ -2379,6 +2493,57 @@ OUTPUT (stdout, `key: value` lines):
   vc.config: <path>               (--config: each config loaded, in order,
                                   first; with --smt2 on stderr)
   program: @<name>
+  vc.assume-fold: uses=<n> by-assume=<n> by-assert=<n> by-edge=<n>
+      values=<n> branches=<n> selects=<n> asserts-held=<n>
+      asserts-failed=<n> blocks=<n> int-uses=<n> int-values=<n>
+      rounds=<n>
+                                  (--lower, when it folded a use:
+                                  sea-assume-fold, on by default, exact;
+                                  uses of an i1 a dominating assume or
+                                  assert fixes (its condition, conjuncts,
+                                  negations), or every edge into a
+                                  dominating block fixes (cond_br %c: 1 on
+                                  the true edge, 0 on the false one),
+                                  became constants, by-*: by which kind of
+                                  fact; branches / selects:
+                                  ops whose condition did; asserts-held /
+                                  -failed: asserts made 1 (dropped) / 0
+                                  (a direct failure); blocks: no
+                                  longer reachable, erased by canonicalize;
+                                  int-uses / int-values: uses of an
+                                  integer x replaced by K under a fact
+                                  x == K (icmp eq x, K true or icmp ne
+                                  false, same sources and regions; not
+                                  pointers or addresses), and distinct x;
+                                  rounds: rounds that replaced a use (a
+                                  substitution can make a new fact);
+                                  off: --lower-disable=assume-fold;
+                                  docs/design/AssumeFold.md)
+  vc.prune-edges: edges=<n> by-args=<n> dead-target=<n> falsified=<n>
+      cond-br=<n> unreachable=<n> blocks=<n> rounds=<n> fold-uses=<n>
+                                  (--lower, when it pruned an edge:
+                                  sea-prune-edges, on by default, exact for
+                                  the safety query, not under --reach
+                                  unless --reach-fold-facts;
+                                  edges on which no run reaches an assert
+                                  or a halt removed: by-args: constant
+                                  block arguments make the target's leading
+                                  assume 0; dead-target: every path from
+                                  the target blocks; falsified: such
+                                  argument edges where they are; cond-br:
+                                  branches made assume + br; unreachable:
+                                  branches made sea.unreachable; blocks: cut
+                                  off; rounds: with assume-fold /
+                                  canonicalize / cse between them;
+                                  fold-uses: folded in those rounds; off:
+                                  --lower-disable=prune-edges;
+                                  docs/design/PruneEdges.md)
+  vc.assumed-branches: branches=<n> selects=<n> values=<n>
+                                  (cond_br / select ops left whose condition
+                                  an assume fixes: not under the assume, or
+                                  the fold is off; only when there is one;
+                                  each value is a split.assumed-candidate
+                                  of --split-candidates)
   vc.box-all: dead=<n> empty=<n> expand-max=<K> expanded=<n> guarded=<n>
       lowered=<n> nondets=<n>     (--lower, a program with sea.box.all:
                                   ops erased unused, constant empty boxes
@@ -2397,10 +2562,12 @@ OUTPUT (stdout, `key: value` lines):
                                   right before the halt, or has a source
                                   location (SeaHorn's unlocated error
                                   marker `assert false; halt` is not
-                                  reported); only if one fired). Not
-                                  reported: an assert that becomes
-                                  constant only in the lowering's
-                                  canonicalize (icmp ne x, x); the
+                                  reported), and from canonicalize for a
+                                  merged assert's branch that a later
+                                  lowering made constant 0; only if one
+                                  fired. Not reported: an assert that
+                                  becomes constant only in canonicalize's
+                                  own folders (icmp ne x, x); the
                                   verdict still shows it. Counts
                                   of the whole file: every program the
                                   lowering ran on, not only --program's
@@ -2456,6 +2623,34 @@ OUTPUT (stdout, `key: value` lines):
                                   c2 - c1 is not (no constraint: never
                                   equal), constraints added; with vc-time,
                                   stderr with --smt2)
+  vc.narrow: on|off-no-premises|off-no-ackermann   (--narrow-offsets; on:
+                                  vc.narrow-indices / -eligible / -skip-not-
+                                  own / -skip-shared-boundary / -skip-no-
+                                  object / -skip-shadow /
+                                  -skip-size / -skip-many / -skip-shape /
+                                  -reads / -objects / -k-max / -pairs /
+                                  -pair-bits / -mixed: read indices seen,
+                                  those whose every select is a program
+                                  load's read at its own address into one
+                                  object of known size, the others by reason
+                                  (a select the boundary made, such as a
+                                  memmove's read; an own read that is also
+                                  such a select, one node; not one object,
+                                  a shadow
+                                  memory, size 0 or too large, more than 8
+                                  addresses, not base + offset after the
+                                  boundary), reads narrowed, their objects,
+                                  the largest k, constraints compared at k
+                                  bits and the sum of their k, constraints
+                                  with one narrowed read and another (64
+                                  bits); with vc-time, stderr with --smt2)
+  vc.defs: inline|nest|eq|hidden  (--vc-defs; not inline: vc.defs-sums /
+                                  -index-sums / -names / -atoms / -rewritten:
+                                  distinct sums of the query, those at an
+                                  index, names made (nest: shared sums),
+                                  definition atoms
+                                  asserted, bvadd nodes replaced; with
+                                  vc-time, stderr with --smt2)
   vc.ackermann-model: defaulted=<n> inconsistent=<n>
                                   (sat, lowering on: reads at indices the
                                   query does not read (cell 0; any value
@@ -2746,6 +2941,12 @@ OUTPUT (stdout, `key: value` lines):
                                   fresh objects whose no-op rests on A-SEP;
                                   also without --seam and with
                                   --seam-premises=0, then the only field)
+  assume.a-inb: narrow-reads=<n> narrow-pairs=<m>   (--narrow-offsets, on:
+                                  n reads whose index was narrowed rest on
+                                  the A-INB of their access (each stays in
+                                  its object), m pairs of them compared at
+                                  k bits; a bounds check of the program
+                                  discharges it)
   assume.memset-bound: count=<n> bound=<K>   (n > 0: --lower without --seam
                                   expanded n symbolic-length memsets /
                                   memmoves with assume(len <= K), the
@@ -2860,6 +3061,25 @@ OUTPUT (stdout, `key: value` lines):
                                   --seam-check-rlimit, `-` for another
                                   backend; the premise's satisfiability
                                   check is not counted)
+  narrow-check: indices=<n> checked=<n> valid=<n> invalid=<n> unknown=<n>
+      unexpressible=<n> not-narrowed=<n> syntactic=<n>   (--seam-check or
+                                  --narrow-check with --narrow-offsets: per
+                                  narrowed index i = base + S, the premise
+                                  bound S <u 2^k under the layout and
+                                  inBounds(a, 1) of each read address a:
+                                  syntactic when a premise conjunct is the
+                                  bound (counted), else z3, rlimit
+                                  --narrow-check-rlimit; proves A-INB =>
+                                  S < 2^k, never A-INB. That i' = i then is
+                                  the LowBits lemma (unit test, proved in
+                                  seam-lean; not checked per run). invalid: exit 5,
+                                  narrow-check-invalid: index=<term> k=<k>;
+                                  narrow-check-unknown: index=<term>
+                                  [reason=rlimit],
+                                  narrow-check-unexpressible: index=<term>
+                                  why=shape|premise (--narrow-check: exit 7);
+                                  narrow-check-not-narrowed: index=<term>,
+                                  eligible but not narrowed by the lowering)
   seam.<counter>: <n>              (--seam-stats, before `result:`; with
                                   --smt2 on stderr): rule-calls, rules-fired,
                                   cache-hits, ..., and seam.rule.<rule>: the
@@ -3278,6 +3498,10 @@ vc.split-max-paths).
     open-aliases=0: reads, cond-reads, covers, addrs, encoding order. Only
     those behind a question or in a read index; at most
     --split-candidates-max (20; 0: all). A guard's loc is its first op's.
+  split.assumed-candidate: name= assumed=1|0 branches= selects= loc=
+    an i1 value an assume fixes (to assumed) that still guards branches /
+    selects (vc.assumed-branches; name: a --split selector); a split on it
+    keeps the assumed case in one part. Program order, not ranked.
   split.arith-candidates: arith-nodes= int-values= candidates= listed=
     dropped=
     (arith-nodes: bvmul / bvudiv / bvsdiv / bvurem / bvsrem / bvsmod and
@@ -3350,6 +3574,7 @@ Kinds and fields:
   split-bool-candidate name, loc, target (value|guard), open_aliases, addrs,
                 reads, cond_reads, covers, same (names, comma-separated;
                 - for none)
+  split-assumed-candidate name, loc, assumed, branches, selects
   split-arith-candidates arith_nodes, int_values, candidates, listed,
                 dropped
   split-arith-candidate name, loc, target (int|value|guard), arith, mul,
@@ -3453,7 +3678,13 @@ memory-safety violation and did not fail the same assertion
 the lowered program, but the original program on the same inputs does not
 fail the same assertion (vc.replay-original-mismatch): the lowering changed
 what the program does, a bug in a pass, or a program whose behavior depends
-on placement (a pointer compare across objects).
+on placement (a pointer compare across objects). 4 also (--narrow-offsets)
+when the replay fails and a narrowed read's index differs from its narrowed
+index in the model (seam.narrow-inb-violation, vc.narrow-inb-spurious): a
+run that executes that load leaves its object. 7 (--narrow-check) a
+narrowed read index whose obligation is not proven (narrow-check-unknown /
+-unexpressible lines, vc.narrow-check-unproven): the narrowing is not
+discharged (takes precedence over 0 and 3).
 Split (--split*): the status of the verdict (0 sat or unsat, 3 unknown); a
 part's status 1, 2, 4, 5 or 6 stops the split with that status; 5 also for
 a failed --split-check.
@@ -3800,12 +4031,15 @@ int main(int argc, char **argv) {
        reachIncremental.getNumOccurrences() || !reachCorpus.empty() ||
        reachModelRuns.getNumOccurrences() || reachOrder.getNumOccurrences() ||
        reachFuzz || reachSeed.getNumOccurrences() || !reachPrograms.empty() ||
-       reachQuery.getNumOccurrences() || reachKeepSites || reachFailures))
+       reachQuery.getNumOccurrences() || reachKeepSites || reachFailures ||
+       reachFoldFacts))
     return fail("--reach-rlimit, --reach-witness, --reach-incremental, "
                 "--reach-model-runs, --reach-order, --reach-corpus, "
                 "--reach-fuzz, --reach-seed, --reach-programs, "
-                "--reach-query, --reach-keep-sites and --reach-failures "
-                "need --reach");
+                "--reach-query, --reach-keep-sites, --reach-failures and "
+                "--reach-fold-facts need --reach");
+  if (reachFoldFacts && !lower)
+    return fail("--reach-fold-facts needs --lower");
   if (!reachQuery && reachCorpus.empty() && !reachFuzz)
     return fail("--reach-query=false decides by runs only: give "
                 "--reach-corpus or --reach-fuzz");
@@ -3815,6 +4049,8 @@ int main(int argc, char **argv) {
                        .Case("sccp", sea::LowerDisableSccp)
                        .Case("cse", sea::LowerDisableCse)
                        .Case("canonicalize", sea::LowerDisableCanonicalize)
+                       .Case("assume-fold", sea::LowerDisableAssumeFold)
+                       .Case("prune-edges", sea::LowerDisablePruneEdges)
                        .Default(0);
     if (p == "sea-drop-fresh-memhavoc")
       return fail("--lower-disable: sea-drop-fresh-memhavoc is a semantics "
@@ -3823,11 +4059,19 @@ int main(int argc, char **argv) {
                   "so the lowering without it means something else");
     if (!bit)
       return fail("--lower-disable: '" + p +
-                  "' is not one of sccp, cse, canonicalize");
+                  "' is not one of sccp, cse, canonicalize, assume-fold, "
+                  "prune-edges");
     lowerDisableMask |= bit;
   }
   if (!lowerDisable.empty() && !lower)
     return fail("--lower-disable needs --lower");
+  // --reach: everything visible by default (vacuity-safe); the fold of
+  // facts can erase checks and blocks, and sea-prune-edges removes the
+  // prefixes of executions that block later (exact for the safety query
+  // only), so both run only on request
+  if (reach && !reachFoldFacts)
+    lowerDisableMask |=
+        sea::LowerDisableAssumeFold | sea::LowerDisablePruneEdges;
   if (rangeFoldOpt != sea::RangeFoldMode::Off && !lower)
     return fail("--range-fold needs --lower");
   if (expandMemMoveOpt && !lower)
@@ -3945,6 +4189,14 @@ int main(int argc, char **argv) {
     return fail("--seam-words needs --seam");
   if (wordsCheck && seamWords == WordsMode::Off)
     return fail("--words-check needs --seam-words");
+  if (narrowCheck && !narrowOffsets)
+    return fail("--narrow-check needs --narrow-offsets");
+  if (narrowOffsets && !seam)
+    return fail("--narrow-offsets needs --seam (it rests on A-INB of the "
+                "accesses SeaM records)");
+  if (narrowOffsets && seamWords != WordsMode::Off)
+    return fail("--narrow-offsets does not support --seam-words (the words "
+                "boundary records no read addresses)");
   if (vcJoinCases && joinEncoding != sea::JoinEncoding::Ite)
     return fail("--vc-join-cases builds the ite joins: needs --vc-join=ite");
   if ((vcCasesReorder || vcCasesDropDefault) && !vcJoinCases)
@@ -4071,6 +4323,9 @@ int main(int argc, char **argv) {
   std::string checkReport;
   std::string auditReport;
   uint64_t checkInvalid = 0;
+  // --narrow-check: narrowed indices whose obligation is not proven valid
+  // (unknown, unexpressible)
+  uint64_t narrowUnproven = 0;
   if (!program)
     return fail(programName.empty() ? "no sea.program in input"
                                     : "no program named '" + programName + "'");
@@ -4247,6 +4502,59 @@ int main(int argc, char **argv) {
     for (NamedAttribute a : d)
       if (auto i = dyn_cast<IntegerAttr>(a.getValue()))
         l.kv(a.getName().getValue(), i.getInt());
+  }
+  // sea-assume-fold's counters (on by default with --lower; the line only
+  // when it folded a use)
+  if (auto d =
+          program->getAttrOfType<DictionaryAttr>(sea::kAssumeFoldStatsAttr)) {
+    sea::stats::Line &l = lowerStats.line("vc.assume-fold");
+    for (StringRef key :
+         {"uses", "by-assume", "by-assert", "by-edge", "values", "branches",
+          "selects", "asserts-held", "asserts-failed", "blocks", "int-uses",
+          "int-values", "rounds"})
+      if (auto i = d.getAs<IntegerAttr>(key))
+        l.kv(key, i.getInt());
+  }
+  // sea-prune-edges' counters (on by default with --lower; the line only
+  // when it pruned an edge)
+  if (auto d =
+          program->getAttrOfType<DictionaryAttr>(sea::kPruneEdgesStatsAttr)) {
+    sea::stats::Line &l = lowerStats.line("vc.prune-edges");
+    for (StringRef key :
+         {"edges", "by-args", "dead-target", "falsified", "cond-br",
+          "unreachable", "blocks", "rounds", "fold-uses"})
+      if (auto i = d.getAs<IntegerAttr>(key))
+        l.kv(key, i.getInt());
+  }
+  // the branches and selects on assumed i1 values the program still has
+  // (the assume does not dominate them, sea-assume-fold is off, or the
+  // program was not lowered): each one a --split candidate
+  struct AssumedCandidate {
+    Value value;
+    bool truth;
+    unsigned branches = 0, selects = 0;
+  };
+  std::vector<AssumedCandidate> assumedCandidates;
+  {
+    SmallVector<sea::BranchOnAssumed> left;
+    sea::findBranchesOnAssumed(program, left);
+    llvm::DenseMap<Value, unsigned> at;
+    unsigned branches = 0, selects = 0;
+    for (const sea::BranchOnAssumed &b : left) {
+      auto [it, fresh] =
+          at.try_emplace(b.fact.value, unsigned(assumedCandidates.size()));
+      if (fresh)
+        assumedCandidates.push_back({b.fact.value, b.fact.truth});
+      bool br = isa<sea::CondBrOp>(b.op);
+      ++(br ? assumedCandidates[it->second].branches
+            : assumedCandidates[it->second].selects);
+      ++(br ? branches : selects);
+    }
+    if (!left.empty())
+      lowerStats.line("vc.assumed-branches")
+          .kv("branches", branches)
+          .kv("selects", selects)
+          .kv("values", uint64_t(assumedCandidates.size()));
   }
   // sea-expand-small-memmove's counters (--expand-memmove)
   if (auto d = program->getAttrOfType<DictionaryAttr>(
@@ -4664,6 +4972,7 @@ int main(int argc, char **argv) {
     seamOpts.expandUnknownRow = seamRowExpand;
     seamOpts.groupSameValueRow = seamRowGroup;
     seamOpts.checkInbPremise = seamCheckInbPremise;
+    seamOpts.trackOwnReads = narrowOffsets;
     seamOpts.layoutDecide = seamLayout;
     seamOpts.pruneSize0 = seamPruneSize0;
     seamOpts.wideAccess = seamWide;
@@ -5317,6 +5626,9 @@ int main(int argc, char **argv) {
     // the stride rule's record (--ack-stride; the plain boundary only: the
     // words path expands the nodes first and record nothing)
     expr::AccessOrigins accessOrigins;
+    // --narrow-offsets: with the premises only (A-INB implies them; a run
+    // without them, such as the out-of-object fallback, narrows nothing)
+    const bool narrowOn = narrowOffsets && inb && sem.seamRewriter();
     if (seamWords != WordsMode::Off)
       words = std::make_unique<expr::InitialWords>(
           8,
@@ -5419,8 +5731,8 @@ int main(int argc, char **argv) {
       }
     } else {
       // the stride rule's record: the address each read had before the
-      // nodes were expanded (the query only)
-      if (strideOn && sem.seamRewriter())
+      // nodes were expanded (the query only); also --narrow-offsets'
+      if ((strideOn || narrowOn) && sem.seamRewriter())
         sem.seamRewriter()->recordAccesses(&accessOrigins);
       query = sem.solverTerm(query);
       if (sem.seamRewriter())
@@ -5472,11 +5784,111 @@ int main(int argc, char **argv) {
                             ex);
       }
     }
+    // --narrow-offsets (docs/design/Ackermann.md, "Narrowed offsets"): the
+    // read indices whose every select is an own read of a program load (at
+    // the load's own address, Rules::noteOwnReads) into one object of size
+    // N > 0, with that object's erased base and k (2^k >= N); the read
+    // addresses for the check
+    expr::NarrowTable narrowTable;
+    struct NarrowSite {
+      expr::Expr key, base;
+      unsigned k;
+      std::vector<expr::Expr> addrs;
+    };
+    std::vector<NarrowSite> narrowSites;
+    struct {
+      uint64_t indices = 0, notOwn = 0, shared = 0, shadow = 0, noObject = 0,
+               size = 0, many = 0;
+    } narrowSkip;
+    if (narrowOn) {
+      const auto &rules = sem.seamRewriter()->rules();
+      const expr::BaseRegistry &reg = vcgen.baseRegistry();
+      // in a deterministic order (the check's lines)
+      std::vector<const expr::AccessOrigins::Entry *> entries;
+      for (const auto &kv : accessOrigins.byIndex)
+        entries.push_back(&kv.second);
+      std::sort(entries.begin(), entries.end(),
+                [](const auto *a, const auto *b) {
+                  return a->key->getId() < b->key->getId();
+                });
+      for (const expr::AccessOrigins::Entry *e : entries) {
+        ++narrowSkip.indices;
+        if (e->many) {
+          ++narrowSkip.many;
+          continue;
+        }
+        if (e->shadow) {
+          ++narrowSkip.shadow;
+          continue;
+        }
+        if (e->shared) {
+          ++narrowSkip.shared;
+          continue;
+        }
+        if (e->notOwn) {
+          ++narrowSkip.notOwn;
+          continue;
+        }
+        expr::Expr base;
+        const expr::ObjectBase *obj = nullptr;
+        NarrowSite site;
+        bool ok = !e->addrs.empty();
+        for (const expr::Expr &a : e->addrs) {
+          // the address, or each leaf of an ite of addresses (a pointer
+          // phi), is in one object
+          std::vector<expr::Expr> leaves, stack{a};
+          while (!stack.empty() && ok) {
+            expr::Expr x = stack.back();
+            stack.pop_back();
+            if (expr::isOpX<expr::ITE>(x)) {
+              stack.push_back(expr::Expr(x->arg(1)));
+              stack.push_back(expr::Expr(x->arg(2)));
+              continue;
+            }
+            leaves.push_back(x);
+            if (leaves.size() > expr::Ackermannizer::kMaxSplitLeaves)
+              ok = false;
+          }
+          for (const expr::Expr &x : leaves) {
+            if (!ok)
+              break;
+            std::optional<expr::seam::PtrView> v = rules.view(x);
+            const expr::ObjectBase *o = v ? reg.lookup(v->base) : nullptr;
+            if (!o || (base && base != v->base)) {
+              ok = false;
+              break;
+            }
+            base = v->base;
+            obj = o;
+          }
+          if (!ok)
+            break;
+          site.addrs.push_back(a);
+        }
+        if (!ok) {
+          ++narrowSkip.noObject;
+          continue;
+        }
+        if (obj->size.isZero() || obj->size.getActiveBits() > 63) {
+          ++narrowSkip.size;
+          continue;
+        }
+        unsigned k = std::max(1u, (obj->size - 1).getActiveBits()); // 2^k >= N
+        site.key = e->key;
+        site.base = rules.erase(base);
+        site.k = k;
+        narrowTable.byIndex.emplace(e->key.get(),
+                                    expr::NarrowTable::Entry{site.base, k});
+        narrowSites.push_back(std::move(site));
+      }
+    }
     // Ackermann lowering of read-only arrays (an encoding step of the query,
     // docs/design/Ackermann.md); its table rebuilds the arrays on a model
     Phase ackPhase("ackermann");
     expr::Ackermannizer ack;
     ack.setValues(layoutValues);
+    if (narrowOn)
+      ack.setNarrow(&narrowTable);
     if (strideOn && !accessOrigins.byIndex.empty()) {
       ack.setAccessOrigins(&accessOrigins);
       std::unordered_set<expr::ENode *> size0;
@@ -5558,6 +5970,43 @@ int main(int argc, char **argv) {
         .kv("arrays", ack.stats().lowered)
         .kv("pairs", ack.stats().pairs)
         .kv("nodes-made", efac.nodesMade());
+    // named address sums (an encoding step of the query, after Ackermann,
+    // which decides its pairs on the flat sums; docs/design/SumNames.md)
+    std::optional<expr::SumNamer::Stats> defStats;
+    if (vcDefs != VcDefs::Inline) {
+      using Form = expr::SumNamer::DefForm;
+      expr::SumNamer namer(vcDefs == VcDefs::Nest ? Form::Nest
+                           : vcDefs == VcDefs::Eq ? Form::Eq
+                                                  : Form::Hidden);
+      // a narrowed read's index sum is its k-bit offset (the query
+      // compares those); the names then form a k-bit prefix chain
+      if (ackOn)
+        for (const auto &arr : ack.arrays())
+          for (const auto &rd : arr.reads)
+            namer.addIndex(rd.low ? rd.low : rd.index);
+      // a VC constant of the prefix would be the same term as a name
+      {
+        expr::ExprSet consts;
+        expr::filter(query, expr::op::bind::IsConst(),
+                     std::inserter(consts, consts.begin()));
+        for (const expr::Expr &c : consts) {
+          std::ostringstream os;
+          os << *expr::op::bind::fname(expr::op::bind::fname(c));
+          if (llvm::StringRef(os.str()).starts_with("def."))
+            return fail("--vc-defs: the VC constant '" + os.str() +
+                        "' has the prefix of the names (def.)");
+        }
+      }
+      query = namer.name(query);
+      defStats = namer.stats();
+      if (originsOn)
+        origins = origins.through(
+            [&](const expr::Expr &n) { return namer.image(n); });
+      if (failed(sea::verifyUniqueNames(query, clash)))
+        return fail("--vc-defs: two distinct VC constants are both named '" +
+                    clash + "'");
+      lap("vc-defs");
+    }
     // the size of what the solver gets: distinct nodes (shared subterms
     // once), per operator
     if (dagStats) {
@@ -5813,6 +6262,42 @@ int main(int argc, char **argv) {
                              : ackStride ? Stride::Fallback
                                          : Stride::Off);
       }
+      // --narrow-offsets: whether it ran (and why not), what it narrowed
+      if (narrowOffsets) {
+        const auto &as = ack.stats();
+        r.line("vc.narrow")
+            .value(!narrowOn ? "off-no-premises"
+                   : !ackOn  ? "off-no-ackermann"
+                             : "on");
+        if (narrowOn && ackOn) {
+          r.line("vc.narrow-indices").value(narrowSkip.indices);
+          r.line("vc.narrow-eligible").value(narrowSites.size());
+          r.line("vc.narrow-skip-not-own").value(narrowSkip.notOwn);
+          r.line("vc.narrow-skip-shared-boundary").value(narrowSkip.shared);
+          r.line("vc.narrow-skip-no-object").value(narrowSkip.noObject);
+          r.line("vc.narrow-skip-shadow").value(narrowSkip.shadow);
+          r.line("vc.narrow-skip-size").value(narrowSkip.size);
+          r.line("vc.narrow-skip-many").value(narrowSkip.many);
+          r.line("vc.narrow-skip-shape").value(as.narrowShape);
+          r.line("vc.narrow-reads").value(as.narrowReads);
+          r.line("vc.narrow-objects").value(as.narrowObjects);
+          r.line("vc.narrow-k-max").value(as.narrowKMax);
+          r.line("vc.narrow-pairs").value(as.narrowPairs);
+          r.line("vc.narrow-pair-bits").value(as.narrowPairBits);
+          r.line("vc.narrow-mixed").value(as.narrowMixed);
+        }
+      }
+      r.line("vc.defs").value(vcDefs == VcDefs::Inline ? "inline"
+                              : vcDefs == VcDefs::Nest ? "nest"
+                              : vcDefs == VcDefs::Eq   ? "eq"
+                                                       : "hidden");
+      if (defStats) {
+        r.line("vc.defs-sums").value(defStats->sums);
+        r.line("vc.defs-index-sums").value(defStats->indexSums);
+        r.line("vc.defs-names").value(defStats->names);
+        r.line("vc.defs-atoms").value(defStats->atoms);
+        r.line("vc.defs-rewritten").value(defStats->rewritten);
+      }
       // the named assumptions of the VC (BRUNCH_STAT <key>-<field>)
       sea::assume::Ledger vcAssumes;
       using sea::assume::Name;
@@ -5831,6 +6316,12 @@ int main(int argc, char **argv) {
         vcAssumes.site(Name::ASep, "seam", count("premise.a-sep"));
         vcAssumes.site(Name::ANull, "seam", count("premise.a-null"));
         vcAssumes.site(Name::ANoWrap, "seam", count("premise.a-nowrap"));
+      }
+      // --narrow-offsets: every narrowed read rests on the A-INB of its
+      // access; the k-bit pairs compare two of them
+      if (narrowOn && ackOn) {
+        vcAssumes.site(Name::AInb, "narrow-reads", ack.stats().narrowReads);
+        vcAssumes.site(Name::AInb, "narrow-pairs", ack.stats().narrowPairs);
       }
       // A-SEP, also without --seam: the lowering dropped memhavocs that
       // are no-ops only if no access through another object touches their
@@ -6165,6 +6656,202 @@ int main(int argc, char **argv) {
       os << "\n";
       checkInvalid += invalid;
     };
+
+    // --narrow-offsets: each narrowed index against its representative
+    // (--seam-check or --narrow-check; no rule trail needed)
+    auto runNarrowCheck = [&]() {
+      // --narrow-offsets: for each narrowed index i = base + S (the query's,
+      // before the lowering), the premise bound: under the layout and the
+      // A-INB of each of its read addresses a (inBounds(a, 1): what the
+      // executing load's A-INB gives for the byte it reads), S <u 2^k;
+      // `layout && inb && !(S <u 2^k)` must be unsat. That then i' = base +
+      // zext(low_k(S)) = i is the LowBits lemma (its unit test; proved in
+      // seam-lean), not checked per run. It proves inb => S < 2^k, never
+      // inb itself (the discharge of A-INB is a bounds check of the program).
+      if ((!checkOn && !narrowCheck) || !narrowOn || !ackOn)
+        return;
+      raw_string_ostream os(checkReport);
+      // a fresh solver per obligation (released after it), bounded by z3's
+      // resource limit (deterministic), not by time
+      auto mkCheckSolver = [&]() -> std::unique_ptr<sea::solver::Solver> {
+        sea::solver::Limits cl;
+        cl.rlimit = narrowCheckRlimit;
+        sea::solver::SolverConfig cc = solverConfig;
+        // the solver's default configuration (no push): the obligations are
+        // bit-vector arithmetic that its preprocessing settles
+        return sea::solver::makeSolver(efac, backend, cl, cc);
+      };
+      uint64_t nValid = 0, nInvalid = 0, nUnknown = 0, nUnexpr = 0;
+      uint64_t nSyntactic = 0; // of nValid: the bound is a premise conjunct
+      expr::Expr layout = sem.layoutFacts();
+      std::unordered_map<expr::ENode *, expr::Expr> narrowFree;
+      // the indices the lowering narrowed (an eligible index it did not:
+      // vc.narrow-skip-shape, or an array it kept)
+      std::unordered_set<expr::ENode *> narrowedKeys;
+      for (const auto &kv : ack.narrowedSelects())
+        narrowedKeys.insert(kv.second.select->arg(1));
+      uint64_t nNarrowed = 0, nNotNarrowed = 0;
+      for (const NarrowSite &site : narrowSites) {
+        if (!narrowedKeys.count(site.key.get())) {
+          ++nNotNarrowed;
+          os << "narrow-check-not-narrowed: index="
+             << expr::RewriteTrail::text(site.key, 300) << "\n";
+          continue;
+        }
+        ++nNarrowed;
+        unsigned w = ack.lowBits().width(site.key);
+        expr::Expr rest;
+        if (!w ||
+            !expr::Ackermannizer::splitBase(site.key, site.base, w, rest)) {
+          ++nUnexpr;
+          os << "narrow-check-unexpressible: index="
+             << expr::RewriteTrail::text(site.key, 300) << " why=shape\n";
+          continue;
+        }
+        // the premise bound only: S = i - base below 2^k. That i' =
+        // base + zext(low_k(S)) equals i for such S is the LowBits lemma
+        // (low_k rebuilt = extract(k-1, 0, S)), checked by its unit test,
+        // not per run
+        expr::Expr bound =
+            expr::op::bv::bvnum(expr::mpz_class(1UL) << site.k, w, efac);
+        expr::ExprVector conj{layout};
+        std::string why;
+        bool expressible = true;
+        for (const expr::Expr &a : site.addrs) {
+          bool violated = false;
+          expr::Expr c = sem.seamRewriter()->rules().inBounds(a, 1, violated);
+          c = c ? sem.solverTerm(c, why) : c;
+          if (!c || violated) {
+            expressible = false;
+            break;
+          }
+          conj.push_back(c);
+        }
+        if (!expressible) {
+          ++nUnexpr;
+          os << "narrow-check-unexpressible: index="
+             << expr::RewriteTrail::text(site.key, 300) << " why=premise\n";
+          continue;
+        }
+        conj.push_back(expr::mk<expr::NEG>(expr::mk<expr::BULT>(rest, bound)));
+        std::unique_ptr<sea::solver::Solver> cs = mkCheckSolver();
+        if (!cs)
+          return;
+        // first with the reads as free constants: valid for every value
+        // of them is valid for the arrays' values (no array reasoning: the
+        // obligation is about the offset arithmetic); a model of that one
+        // may break the arrays' congruence, so it is checked again with
+        // the reads (sat there: invalid)
+        expr::Expr concrete = expr::mknary<expr::AND>(conj.begin(), conj.end());
+        expr::Expr ob = concrete;
+        {
+          std::unordered_map<expr::ENode *, expr::Expr> memo;
+          std::vector<expr::Expr> keep;
+          ob = expr::ackermann_detail::rewriteDag(
+              ob, memo, keep, [](expr::ENode *n) { return expr::Expr(n); },
+              [&](expr::ENode *n, SmallVectorImpl<expr::Expr> &kids) {
+                // a sum's summands in one order (by node id): the offset
+                // of the premise and of the index are then one node
+                if (expr::isOpX<expr::BADD>(n)) {
+                  std::sort(kids.begin(), kids.end(),
+                            [](const expr::Expr &a, const expr::Expr &b) {
+                              return a->getId() < b->getId();
+                            });
+                  return efac.mkNary(n->op(), kids.begin(), kids.end());
+                }
+                if (!expr::isOpX<expr::SELECT>(n))
+                  return expr::ackermann_detail::withKids(n, kids);
+                unsigned wv = ack.lowBits().width(expr::Expr(n));
+                auto it = narrowFree.find(n);
+                if (it == narrowFree.end())
+                  it = narrowFree
+                           .emplace(
+                               n, expr::op::bv::bvConst(
+                                      expr::mkTerm<std::string>(
+                                          "narrow.read." +
+                                              std::to_string(narrowFree.size()),
+                                          efac),
+                                      wv))
+                           .first;
+                return it->second;
+              });
+        }
+        // syntactic first: a premise conjunct bvule(S, c) with c < 2^k over
+        // the same (canonical) S is the bound itself (the in-bounds
+        // condition of a load at base + S, A-INB's `off <= size - units`);
+        // z3's incremental solver bit-blasts S instead of seeing it
+        // (through ites of one condition on both sides: a pointer phi's
+        // offset under the ite of its leaves' conditions)
+        expr::mpz_class kmax = (expr::mpz_class(1UL) << site.k);
+        std::function<bool(expr::ENode *, expr::ENode *)> bounds =
+            [&](expr::ENode *sv, expr::ENode *pv) -> bool {
+          if (expr::isOpX<expr::AND>(pv)) {
+            for (size_t q = 0; q < pv->arity(); ++q)
+              if (bounds(sv, pv->arg(q)))
+                return true;
+            return false;
+          }
+          if (expr::isOpX<expr::BULE>(pv) && pv->arg(0) == sv &&
+              expr::op::bv::isBvNum(expr::Expr(pv->arg(1))))
+            return expr::ackermann_detail::reducedValue(
+                       expr::Expr(pv->arg(1))) < kmax;
+          if (expr::isOpX<expr::ITE>(sv) && expr::isOpX<expr::ITE>(pv) &&
+              sv->arg(0) == pv->arg(0))
+            return bounds(sv->arg(1), pv->arg(1)) &&
+                   bounds(sv->arg(2), pv->arg(2));
+          return false;
+        };
+        bool syntactic = false;
+        if (expr::isOpX<expr::AND>(ob) && ob->arity() >= 2) {
+          expr::Expr last(ob->arg(ob->arity() - 1)); // !(S <u 2^k)
+          if (expr::isOpX<expr::NEG>(last) &&
+              expr::isOpX<expr::BULT>(last->arg(0)))
+            for (size_t q = 0; q + 1 < ob->arity() && !syntactic; ++q)
+              syntactic = bounds(last->arg(0)->arg(0), ob->arg(q));
+        }
+        if (syntactic) {
+          ++nValid;
+          ++nSyntactic;
+          continue;
+        }
+        bool added = cs->add(ob);
+        sea::solver::SolverResult res =
+            added ? cs->check() : sea::solver::SolverResult::UNKNOWN;
+        // no timeout is set: a canceled check ran out of the rlimit
+        bool rlimitHit = added && res == sea::solver::SolverResult::UNKNOWN &&
+                         hitRlimit(*cs, narrowCheckRlimit, 0, 0);
+        if (res == sea::solver::SolverResult::SAT) {
+          std::unique_ptr<sea::solver::Solver> cc = mkCheckSolver();
+          if (!cc)
+            return;
+          bool cadded = cc->add(concrete);
+          res = cadded ? cc->check() : sea::solver::SolverResult::UNKNOWN;
+          rlimitHit = cadded && res == sea::solver::SolverResult::UNKNOWN &&
+                      hitRlimit(*cc, narrowCheckRlimit, 0, 0);
+        }
+        if (res == sea::solver::SolverResult::UNSAT) {
+          ++nValid;
+        } else if (res == sea::solver::SolverResult::SAT) {
+          ++nInvalid;
+          os << "narrow-check-invalid: index="
+             << expr::RewriteTrail::text(site.key, 300) << " k=" << site.k
+             << "\n";
+        } else {
+          ++nUnknown;
+          os << "narrow-check-unknown: index="
+             << expr::RewriteTrail::text(site.key, 300)
+             << (rlimitHit ? " reason=rlimit" : "") << "\n";
+        }
+      }
+      os << "narrow-check: indices=" << nNarrowed
+         << " checked=" << (nValid + nInvalid + nUnknown) << " valid=" << nValid
+         << " invalid=" << nInvalid << " unknown=" << nUnknown
+         << " unexpressible=" << nUnexpr << " not-narrowed=" << nNotNarrowed
+         << " syntactic=" << nSyntactic << "\n";
+      checkInvalid += nInvalid;
+      if (narrowCheck)
+        narrowUnproven += nUnknown + nUnexpr;
+    };
     if (smt2) {
       // the block ids of each guard (kBlockIdsAttr), as SMT-LIB comments:
       // `; sea.block-ids <guard> <id>,<id>...` (utils/query-diff.py's
@@ -6206,6 +6893,7 @@ int main(int argc, char **argv) {
       }
       printSeamStats(statOut());
       runSeamCheck();
+      runNarrowCheck();
       runEqAudit();
       return 0;
     }
@@ -6283,6 +6971,7 @@ int main(int argc, char **argv) {
       // its checks are its own z3 instance with their own timeout, on terms
       // of the VC only
       runEqAudit();
+      runNarrowCheck();
       if (checkOn)
         sea::diag::warn("vc.vcgen-only-check-skipped",
                         "--seam-check does not run: --vcgen-only skips it");
@@ -6291,6 +6980,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     runSeamCheck();
+    runNarrowCheck();
     runEqAudit();
     if (reach) {
       // the reach queries (lib/VC/Reach.cpp); the solver above holds the
@@ -6814,6 +7504,53 @@ int main(int argc, char **argv) {
     // premises is a separate memory-safety check's work.
     bool replayFailed = replay.run.status == sea::RunStatus::Error ||
                         !replay.mismatches.empty() || !claimSeen;
+    // --narrow-offsets: a failed replay of a model in which a narrowed read's
+    // index i differs from its narrowed index i' (the model reads the cell
+    // at i', a run at i). If that read executes, its load leaves its object
+    // (A-INB does not hold); the answer rests on it: inconclusive, as for
+    // vc.seam-inb-spurious (docs/design/Ackermann.md, "Narrowed offsets").
+    if (replayFailed && ackModel && !ack.narrowedSelects().empty()) {
+      std::vector<const expr::Ackermannizer::NarrowedSelect *> ns;
+      for (const auto &kv : ack.narrowedSelects())
+        ns.push_back(&kv.second);
+      std::sort(ns.begin(), ns.end(), [](const auto *a, const auto *b) {
+        return a->select->getId() < b->select->getId();
+      });
+      uint64_t differ = 0;
+      std::string first;
+      for (const auto *n : ns) {
+        expr::Expr vi = model.eval(n->index, /*complete=*/true);
+        expr::Expr vn = model.eval(n->narrowed, /*complete=*/true);
+        if (!vi || !vn || !expr::op::bv::is_bvnum(vi) ||
+            !expr::op::bv::is_bvnum(vn) ||
+            expr::ackermann_detail::reducedValue(vi) ==
+                expr::ackermann_detail::reducedValue(vn))
+          continue;
+        if (!differ++) {
+          raw_string_ostream fs(first);
+          fs << expr::RewriteTrail::text(n->index, 300) << " = "
+             << expr::ackermann_detail::reducedValue(vi).to_string()
+             << ", narrowed "
+             << expr::ackermann_detail::reducedValue(vn).to_string();
+        }
+      }
+      if (differ) {
+        vout() << "seam.narrow-inb-violation: reads=" << differ
+               << " first: " << first << "\n";
+        gOut->flush();
+        sea::diag::error(
+            "vc.narrow-inb-spurious",
+            "sat, but the counterexample does not replay, and in the model " +
+                Twine(differ) +
+                " narrowed read(s) lie outside their object (index != its "
+                "narrowed index): the answer rests on A-INB "
+                "(--narrow-offsets), which a run that executes such a load "
+                "breaks; inconclusive (a memory-safety check of the program "
+                "discharges A-INB; without --narrow-offsets the VC does not "
+                "use it)");
+        return 4;
+      }
+    }
     if (replayFailed && inb && abstractModule) {
       sea::ProgramOp absProg;
       for (auto p : abstractModule->getOps<sea::ProgramOp>())
@@ -7064,6 +7801,28 @@ int main(int argc, char **argv) {
                    " same=" + (c.same.empty() ? "-" : llvm::join(c.same, ",")) +
                    " loc=" + (c.loc.empty() ? "-" : c.loc);
         gOut->emit(rec);
+      }
+      // the assumed i1 values that still guard a branch or select: a split
+      // on one keeps only the case the assume allows
+      // (vc.assumed-branches), not ranked by the query
+      if (!assumedCandidates.empty()) {
+        sea::ValueNames avn(program);
+        for (const AssumedCandidate &c : assumedCandidates) {
+          std::string name = avn.name(c.value).str();
+          std::string loc = sea::formatLoc(c.value.getLoc());
+          sea::out::Record rec("split-assumed-candidate");
+          rec.str("name", name)
+              .str("loc", loc)
+              .num("assumed", c.truth ? 1 : 0)
+              .num("branches", c.branches)
+              .num("selects", c.selects);
+          rec.text = "split.assumed-candidate: name=" + name +
+                     " assumed=" + (c.truth ? "1" : "0") +
+                     " branches=" + std::to_string(c.branches) +
+                     " selects=" + std::to_string(c.selects) +
+                     " loc=" + (loc.empty() ? "-" : loc);
+          gOut->emit(rec);
+        }
       }
       const size_t nArith = splitArithCandidates.size();
       const size_t arithListed =
@@ -7333,16 +8092,26 @@ int main(int argc, char **argv) {
     statOut() << auditReport;
     gOut->flush();
   }
-  if (checkOn) {
+  if (checkOn || narrowCheck) {
     statOut() << checkReport;
     gOut->flush();
     if (checkInvalid && rc != 1) {
       sea::diag::error("seam.check-invalid",
                        Twine(checkInvalid) +
-                           " rule firing(s) are not valid under their "
-                           "premises: a rewriting bug (seam-check-invalid "
+                           " rule firing(s) or narrowed read indices are "
+                           "not valid under their premises: a rewriting bug "
+                           "(seam-check-invalid / narrow-check-invalid "
                            "lines)");
       rc = 5;
+    }
+    if (narrowUnproven && (rc == 0 || rc == 3)) {
+      sea::diag::error("vc.narrow-check-unproven",
+                       Twine(narrowUnproven) +
+                           " narrowed read index(es) whose --narrow-check "
+                           "obligation is not proven (narrow-check-unknown / "
+                           "-unexpressible lines): the narrowing of the "
+                           "answer is not discharged");
+      rc = 7;
     }
   }
   gOut->flush();

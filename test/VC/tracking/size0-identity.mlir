@@ -5,7 +5,8 @@
 // unit), so its shadow cell is not q's; the shadow memory is read by object
 // identity (shadow.distinct-base, premise LAYOUT), never by A-INB
 // (no cmp.size0-vacuous, no fallback) on its accesses.
-// @track: reset through select(c, p, a) does not reset q: assert fails.
+// @track: reset through select(c, p, a) does not reset q: assert fails
+// (the assume after the select: sea-assume-fold leaves the select).
 // @null: reset of null does not reset q: assert fails.
 // @self: is_modified(p) after a tracked store to q is false: holds.
 // @open: a tracked store through x, a pointer loaded from memory (no
@@ -52,8 +53,8 @@ sea.program @track {
   %q = sea.malloc %four align 4 [2] : i64 -> !sea.ptr<64>
   %a = sea.malloc %four align 4 [3] : i64 -> !sea.ptr<64>
   %c = sea.nondet "c" [4] : i1
-  sea.assume %c
   %s = sea.select %c, %p, %a : !sea.ptr<64>
+  sea.assume %c
   %v = sea.const 1 : i8
   %m1 = sea.store %m0[%q], %v inplace tracked : !m, i8
   %m2 = sea.mem.reset_modified %m1[%s] inplace : !m

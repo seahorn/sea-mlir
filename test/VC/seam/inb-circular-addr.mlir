@@ -4,11 +4,18 @@
 // that byte is 200. Plain: sat (the store into c leaves c, replayed). With
 // A-INB the read of b is 0, the assumption is false: --seam answers unsat,
 // `seam.premises: assumed`: conditional on A-INB, which is not discharged.
+// The SEAM runs leave sea-assume-fold out: it replaces the loaded byte by
+// 200 (the assumed equality), so the store into c has a numeral offset and
+// is reported out of its object (the FOLD run), and the circular address is gone.
 // RUN: sea-vc %s --lower --solver=z3 | FileCheck %s --check-prefix=PLAIN
 // (no yices on the plain run: its model evaluation fails on the lambda of the memory)
 // RUN: sea-vc %s --lower --solver=z3 --seam --seam-premises=0 | FileCheck %s --check-prefix=NOINB
-// RUN: sea-vc %s --lower --solver=z3 --seam 2>&1 | FileCheck %s --check-prefix=SEAM
-// RUN: %if yices %{ sea-vc %s --lower --solver=yices --seam 2>&1 | FileCheck %s --check-prefix=SEAM %}
+// RUN: sea-vc %s --lower --lower-disable=assume-fold --solver=z3 --seam 2>&1 | FileCheck %s --check-prefix=SEAM
+// RUN: %if yices %{ sea-vc %s --lower --lower-disable=assume-fold --solver=yices --seam 2>&1 | FileCheck %s --check-prefix=SEAM %}
+// RUN: sea-vc %s --lower --solver=z3 --seam 2>&1 | FileCheck %s --check-prefix=FOLD
+// FOLD: vc.assume-fold: {{.*}}int-uses=1
+// FOLD: seam.out-of-object: accesses=1 {{.*}}gap=1
+// FOLD: result: unsat
 // PLAIN: result: sat
 // PLAIN: replay: assert-failed
 // NOINB: seam.premises: off
