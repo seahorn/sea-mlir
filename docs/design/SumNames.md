@@ -152,6 +152,10 @@ aig step only below 300 MB.
   (without them the `txn-pf-v1-writes` query bit-blasts to 0.96M). On
   `txn-reach-v0-alt`, 39k pairs keep it at 8.9M: naming cannot reduce the
   number or the width of the comparisons.
+- `--narrow-offsets` ([Ackermann.md](Ackermann.md), "Narrowed offsets",
+  rests on A-INB) compares two reads of one object at k bits, 2^k >= the
+  object's size; a narrowed read's index sum is then its k-bit offset, and
+  the names of the prefix chain are k bits wide.
 - Yices and Bitwuzla share common sums themselves; names cost them up to
   2x, while `nest` was the fastest form for both on `txn-pf-v1-writes`.
 

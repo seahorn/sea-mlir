@@ -174,6 +174,122 @@ noise except array_eq with z3 (0.48 -> 1.24 s). Yices gains where the
 constraints are few relative to the reads (hash_iter_begin: 36884 of 39340
 pairs dropped as offset pairs) and loses where they are many.
 
+## Narrowed offsets (`--narrow-offsets`)
+
+Status: implemented, off by default. It rests on A-INB, which `--seam`
+does not assume by itself (its premises are A-SEP, A-NULL and A-NOWRAP):
+A-INB is used only when this switch is on, and it is counted and checked
+like the other premises (below).
+
+### Why
+
+After `--vc-defs=hidden` names the shared address sums
+([SumNames.md](SumNames.md)), what is left of a parser's query is the pairs
+themselves: one 64-bit address equality per constraint, about 210
+bit-blasted expressions each. On firedancer's `txn-pf-v1-writes` (8101
+constraints) about 97% of them compare two reads of one object, the
+1232-byte payload. An offset into that object needs 11 bits, not 64.
+
+### What it does
+
+Where: in the lowering, on the index of each read, before the pairs are
+formed (`Ackermannizer::setNarrow`, a `NarrowTable` filled by sea-vc).
+
+A read index i is eligible when every read address it had before the
+boundary (`AccessOrigins`, the stride rule's record, now keeping every
+address) lies in a recorded program access (`seam::Rules::inbCover`, the
+matcher of `--seam-check-inb-premise`: the access's own address, or
+`p + d` with `0 <= d < units` of a recorded access p), all of them (or all
+leaves of an ite of them: a pointer phi) point into one object of size
+N > 0, and no select at i reads a shadow memory. Let k be the least width
+with `2^k >= N`. After the boundary the index is `base + o` (a flat sum
+with the object's constant as one summand, or an ite of such sums); the
+read's index becomes
+
+    i' = base + zext(low_k(o))
+
+where `low_k(o)` is computed at k bits from truncated operands
+(`include/sea/Expr/LowBits.hh`: truncation is a ring homomorphism for +,
+-, *, negation; it commutes with the bitwise operators, ite and shifts by a
+numeral; zext, sext, concat and extract are read off; anything else is an
+`extract`). So the cursor's sums become k-bit sums, and the bit-blast
+shrinks; extracting the low bits of a 64-bit sum would not.
+
+The lowering then works on i' as on any index (read sharing, the exact
+drops), with one addition: two narrowed reads of one object compare
+`base + zext(t_k) = base + zext(t_l)`, which holds iff `t_k = t_l`; the
+pair gets the k-bit constraint `t_k = t_l -> r_k = r_l`, after the exact
+drops are tried on the k-bit forms (same symbolic part with different
+numerals modulo 2^k, residues, leaves). A pair with one narrowed read and
+another (a read of another object, or one not eligible) keeps a 64-bit
+equality, over i'. The stride rule is not applied to a narrowed read.
+
+With `--vc-defs`, a narrowed read's index sum is its k-bit offset
+`low_k(o)`: SumNames names the k-bit prefix chain (the names are k bits
+wide). The 64-bit sums stay wherever else the query uses them.
+
+### Soundness
+
+Each narrowed read is a rewrite of its own index, justified by the A-INB of
+its own access, the same way a SeaM rewrite of a load is justified by the
+premises of the accesses it compares. If the access executes and stays in
+its object (A-INB), its offset o (the 64-bit value of i - base, so o mod
+2^64) lies in [0, N), so `low_k(o) = o` (`2^k >= N`) and i' = i. If the
+access does not execute, its value is not used by the query (the read
+stands for a load the run does not do; every SeaM rewrite of a load rests
+on the same argument), so its index does not matter: the cells are
+A(i') for every read, which equals A(i) for every read that executes. The
+lowered query is then the Ackermann lowering of the query with i' in place
+of i: functional consistency over the i', so every model reconstruction
+(`AckermannModel`, keyed by the values of i') is consistent.
+
+A-NOWRAP is not needed: the 64-bit address arithmetic is modular already,
+and A-INB constrains the wrapped value o mod 2^64. `base + o = base + o'`
+(mod 2^64) iff `o = o'` (mod 2^64), and for o, o' in [0, N) that is
+`low_k(o) = low_k(o')`.
+
+Why per read and not per pair: replacing only the pair equality
+`i_k = i_l` by `low_k(o_k) = low_k(o_l)` would be stronger than the original
+constraint only when an offset is out of range, which happens for a read on
+a path the run does not take (a parser reads past a length it has not
+checked yet on the other branch). Such a read's 64-bit pairs with other
+objects' reads would remain, and the two kinds of constraints together can
+equate the cells of two in-bounds reads at different addresses (a k-bit
+pair to one, a 64-bit pair to the other through the out-of-range read). The
+per-read representative has no such mix: every constraint of a narrowed
+read is over i'.
+
+Unsat holds for the executions in which every narrowed read's access stays
+in its object. A sat model whose run leaves an object at a narrowed read
+does not replay at that load (the run reads at i, the model at i'), and
+sea-vc classifies it as for every other premise (`vc.seam-inb-spurious`,
+status 4).
+
+What it does not apply to:
+- pairs of reads of different objects, or with a read whose base is
+  unknown: their constraint is the 64-bit address equality (no A-SEP is
+  used here);
+- a pointer comparison of the program (`PTR_EQ`, `sea.ptr.cmp`, a
+  one-past-the-end pointer): not a read index, untouched;
+- every other use of the offsets: only the read's index changes; the
+  program's arithmetic on the cursor stays 64-bit;
+- runs without the premises (`--seam-premises=0`, the out-of-object
+  fallback) and runs without the Ackermann lowering (`vc.narrow:
+  off-no-premises` / `off-no-ackermann`); `--seam-words` is refused.
+
+### Accounting
+
+- `assume.a-inb: narrow-reads=<n> narrow-pairs=<m>`: n reads rest on the
+  A-INB of their access, m pairs of them are compared at k bits.
+- `vc.narrow-*`: indices seen, eligible, skipped by reason (`not-access`,
+  `no-object`, `shadow`, `size`, `many`, `shape`), reads narrowed, their
+  objects, the largest k, k-bit constraints and the sum of their widths,
+  mixed (64-bit) constraints with one narrowed read.
+- `--seam-check`: for each eligible index, `layout && inb(access) &&
+  i != i'` must be unsat, with inb the in-bounds condition of every access
+  the index lies in (`narrow-check:` line; an invalid one exits 5 as an
+  invalid rule firing does).
+
 ## Model reconstruction
 
 A model of the lowered query has values for every i_k and r_k, none for A

@@ -3456,10 +3456,21 @@ public:
       m_inbByBase[v->base.get()].push_back(p.get());
   }
   bool inbRecorded(const Expr &x0, uint64_t span) const {
+    Expr p;
+    uint64_t units;
+    return inbCover(x0, span, p, units);
+  }
+  /// The recorded access whose bytes hold the \p span units at \p x0 (as
+  /// inbRecorded): its normal-form address \p p and its \p units. Under
+  /// that access's A-INB, every byte of [x0, x0 + span) is in its object.
+  bool inbCover(const Expr &x0, uint64_t span, Expr &p, uint64_t &units) const {
     const Expr x = op::ptr::stripObservation(x0);
     auto it = m_inbRec.find(x.get());
-    if (it != m_inbRec.end() && it->second.units >= span)
+    if (it != m_inbRec.end() && it->second.units >= span) {
+      p = it->second.p;
+      units = it->second.units;
       return true;
+    }
     std::optional<PtrView> v = view(x);
     if (!v)
       return false;
@@ -3471,8 +3482,11 @@ public:
       mpz_class dv;
       if (cancelDiff(x, r.p, dv) && dv >= mpz_class(0L) &&
           dv + mpz_class((unsigned long)span) <=
-              mpz_class((unsigned long)r.units))
+              mpz_class((unsigned long)r.units)) {
+        p = r.p;
+        units = r.units;
         return true;
+      }
     }
     return false;
   }
@@ -5963,7 +5977,8 @@ class SeaMRewriter {
         continue;
       if (isOpX<SELECT>(n)) {
         Expr idx(n->arg(1));
-        m_record->add(m_config.rules().erase(idx), idx);
+        m_record->add(m_config.rules().erase(idx), idx,
+                      m_config.rules().shadowMemory(Expr(n->arg(0))));
       }
       for (size_t i = 0; i < n->arity(); ++i)
         stack.push_back(n->arg(i));

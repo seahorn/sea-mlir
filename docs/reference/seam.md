@@ -83,6 +83,11 @@ assume.a-nowrap: seam=<n>
 seam.premises: assumed accesses=<n> conditions=<m>
 ```
 
+`sea-vc --narrow-offsets` (off by default) uses A-INB itself: it
+compares two reads of one object by the low bits of their offsets, enough
+bits for the object's size, and reports `assume.a-inb: narrow-reads=<n>
+narrow-pairs=<m>`.
+
 An `unsat` under `--seam` holds for the executions that satisfy the
 premises with a count above 0. `sea-vc` does not discharge them; that
 takes a separate memory-safety check of the program (a bounds check

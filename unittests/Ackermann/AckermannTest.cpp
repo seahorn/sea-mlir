@@ -19,18 +19,24 @@
 //    the same function;
 //  - a seeded random test at 3-bit indices: original and lowered formulas
 //    agree on sat / unsat (Yices), and every sat model of the lowered one
-//    makes the original true through AckermannModel (also with z3).
+//    makes the original true through AckermannModel (also with z3);
+//  - LowBits: random terms against extract(k-1, 0, e) (z3, validity);
+//  - narrowed offsets (setNarrow): with every read's offset in its object
+//    (the A-INB the narrowing rests on, conjoined), original and lowered
+//    formulas agree, and sat models are models of the original.
 //
 //===----------------------------------------------------------------------===//
 
 #include "sea/Expr/Ackermann.hh"
 #include "sea/Expr/Expr.hh"
+#include "sea/Expr/LowBits.hh"
 #include "sea/Expr/Smt/Yices2SolverImpl.hh"
 #include "sea/Expr/Smt/Z3SolverImpl.hh"
 #include <boost/functional/hash.hpp>
 
 #include "llvm/Support/raw_ostream.h"
 
+#include <functional>
 #include <random>
 #include <string>
 #include <vector>
@@ -419,6 +425,178 @@ void testRandom() {
   llvm::outs() << "test: random ok\n";
 }
 
+/// LowBits::of(e, k) = extract(k-1, 0, e) for random 16-bit terms over 8-
+/// and 16-bit variables, every k in [1, 16]: `of != extract` unsat (z3).
+void testLowBits() {
+  std::mt19937 rng(11);
+  int checked = 0;
+  for (int round = 0; round < 60; ++round) {
+    ExprFactory efac;
+    auto var = [&](const char *n, unsigned w) {
+      return op::bv::bvConst(mkTerm<std::string>(n, efac), w);
+    };
+    auto num = [&](long v, unsigned w) {
+      return op::bv::bvnum(mpz_class(v), w, efac);
+    };
+    Expr a8 = var("a", 8), b8 = var("b", 8), c = var("c", 16), d = var("d", 16);
+    Expr cond = mk<EQ>(var("e", 8), num(3, 8));
+    auto pick = [&](size_t n) { return size_t(rng() % n); };
+    std::function<Expr(int)> gen = [&](int depth) -> Expr {
+      if (depth == 0) {
+        switch (pick(5)) {
+        case 0:
+          return op::bv::zext(a8, 16);
+        case 1:
+          return op::bv::sext(b8, 16);
+        case 2:
+          return c;
+        case 3:
+          return d;
+        default:
+          return num(long(pick(70000)) - 2000, 16);
+        }
+      }
+      Expr x = gen(depth - 1), y = gen(depth - 1);
+      switch (pick(12)) {
+      case 0:
+        return mk<BADD>(x, y, gen(depth - 1));
+      case 1:
+        return mk<BSUB>(x, y);
+      case 2:
+        return mk<BMUL>(x, y);
+      case 3:
+        return mk<BNEG>(x);
+      case 4:
+        return mk<BAND>(x, y);
+      case 5:
+        return mk<BOR>(x, y);
+      case 6:
+        return mk<BXOR>(x, mk<BNOT>(y));
+      case 7:
+        return mk<ITE>(cond, x, y);
+      case 8:
+        return mk<BSHL>(x, num(long(pick(18)), 16));
+      case 9:
+        return op::bv::concat(op::bv::extract(7, 0, x),
+                              op::bv::extract(15, 8, y));
+      case 10:
+        return op::bv::zext(op::bv::extract(11, 2, x), 16);
+      default:
+        return mk<BLSHR>(x, y); // not pushed: extract
+      }
+    };
+    Expr e = gen(3);
+    LowBits lb;
+    for (unsigned k = 1; k <= 16; ++k) {
+      Expr low = lb.of(e, k);
+      CHECK(lb.width(low) == k, "round " << round << " k " << k << " width");
+      Expr q = mk<NEQ>(low, op::bv::extract(k - 1, 0, e));
+      sea::solver::z3_solver_impl z(efac);
+      z.add(q);
+      CHECK(z.check() == sea::solver::SolverResult::UNSAT,
+            "round " << round << " k " << k << ": low bits differ");
+      ++checked;
+    }
+  }
+  llvm::outs() << "lowbits: checked=" << checked << "\n";
+  llvm::outs() << "test: lowbits ok\n";
+}
+
+/// Narrowed offsets: 6-bit addresses, an object at base B (a constant) of
+/// size 5 (k = 3); every read is at B + offset, the offset a random term
+/// over x, y, z. With in(i) = (i - B) <u 5 conjoined for every read index
+/// (A-INB for every read), the lowering with the narrowing agrees with the
+/// original on sat / unsat (Yices) and its models are models of the
+/// original (AckermannModel, consistent).
+void testNarrow() {
+  constexpr unsigned kW = 6, kV = 4, kN = 5, kK = 3;
+  std::mt19937 rng(13);
+  int sat = 0, unsat = 0, narrowed = 0, kpairs = 0;
+  for (int round = 0; round < 300; ++round) {
+    ExprFactory efac;
+    using op::array::select;
+    auto num = [&](long v, unsigned w) {
+      return op::bv::bvnum(mpz_class(v), w, efac);
+    };
+    Expr A = op::bind::mkConst(
+        mkTerm<std::string>("A", efac),
+        sort::arrayTy(op::bv::bvsort(kW, efac), op::bv::bvsort(kV, efac)));
+    Expr B = op::bv::bvConst(mkTerm<std::string>("B", efac), kW);
+    std::vector<Expr> xs = {
+        op::bv::bvConst(mkTerm<std::string>("x", efac), kW),
+        op::bv::bvConst(mkTerm<std::string>("y", efac), kW),
+        op::bv::bvConst(mkTerm<std::string>("z", efac), kW)};
+    auto pick = [&](size_t n) { return size_t(rng() % n); };
+    NarrowTable table;
+    std::vector<Expr> vals, ins;
+    for (int r = 0; r < 7; ++r) {
+      Expr off;
+      Expr x = xs[pick(3)], y = xs[pick(3)];
+      switch (pick(5)) {
+      case 0:
+        off = num(long(pick(8)), kW);
+        break;
+      case 1:
+        off = mk<BADD>(x, num(long(pick(8)), kW));
+        break;
+      case 2:
+        off = mk<BADD>(x, y, num(long(pick(8)), kW));
+        break;
+      case 3:
+        off = mk<ITE>(mk<EQ>(x, y), mk<BADD>(x, num(1, kW)),
+                      mk<BSUB>(y, num(long(pick(8)), kW)));
+        break;
+      default:
+        off = mk<BMUL>(x, num(long(pick(4)) + 1, kW));
+      }
+      Expr idx = pick(4) ? mk<BADD>(B, off) : B;
+      table.byIndex.emplace(idx.get(), NarrowTable::Entry{B, kK});
+      ins.push_back(mk<BULT>(mk<BSUB>(idx, B), num(kN, kW)));
+      vals.push_back(select(A, idx));
+    }
+    std::vector<Expr> lits(ins.begin(), ins.end());
+    for (int k = 0; k < 5; ++k) {
+      Expr a = vals[pick(vals.size())];
+      Expr b = pick(2) ? vals[pick(vals.size())] : num(long(pick(16)), kV);
+      lits.push_back(pick(3) ? mk<EQ>(a, b) : mk<NEQ>(a, b));
+    }
+    {
+      Expr a = xs[pick(3)], b = pick(2) ? xs[pick(3)] : num(long(pick(8)), kW);
+      lits.push_back(pick(2) ? mk<EQ>(a, b) : mk<NEQ>(a, b));
+    }
+    Expr f = mknary<AND>(lits.begin(), lits.end());
+    Ackermannizer ack;
+    ack.setNarrow(&table);
+    Expr g = ack.lower(f);
+    narrowed += ack.stats().narrowReads;
+    kpairs += ack.stats().narrowPairs;
+    sea::solver::yices_solver_impl so(efac);
+    so.add(f);
+    auto ro = so.check();
+    std::unique_ptr<sea::solver::Solver> sl =
+        std::make_unique<sea::solver::yices_solver_impl>(efac);
+    sl->add(g);
+    auto rl = sl->check();
+    CHECK(ro == rl, "round " << round << ": original and narrowed disagree");
+    if (rl == sea::solver::SolverResult::SAT) {
+      ++sat;
+      auto m = sl->get_model();
+      AckermannModel am(*m, ack);
+      CHECK(isTrue(am.eval(f, true)),
+            "round " << round << ": original false in model");
+      CHECK(am.inconsistent() == 0, "round " << round << ": inconsistent");
+    } else {
+      ++unsat;
+    }
+  }
+  CHECK(sat > 10 && unsat > 10,
+        "both verdicts: sat " << sat << " unsat " << unsat);
+  CHECK(kpairs > 100, "k-bit pairs " << kpairs);
+  llvm::outs() << "narrow: sat=" << sat << " unsat=" << unsat
+               << " reads=" << narrowed << " k-pairs=" << kpairs << "\n";
+  llvm::outs() << "test: narrow ok\n";
+}
+
 } // namespace
 
 /// Leaf pairs (LeafDecider): indices never equal leaf by leaf through ites,
@@ -523,6 +701,8 @@ int main() {
   testAliasing();
   testModel();
   testRandom();
+  testLowBits();
+  testNarrow();
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

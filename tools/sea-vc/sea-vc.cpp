@@ -515,6 +515,17 @@ static cl::opt<bool> ackStride(
              "vc.ackermann-stride-pairs; default on, --ack-stride=false off"),
     cl::init(true));
 
+static cl::opt<bool> narrowOffsets(
+    "narrow-offsets",
+    cl::desc("With --seam and the Ackermann lowering: a read whose address "
+             "lies in a recorded access of an object of size N reads at "
+             "base + zext(low k bits of its offset), 2^k >= N; two such "
+             "reads of one object are compared at k bits. Rests on A-INB "
+             "for each such access (assume.a-inb, --seam-check states it; "
+             "docs/design/Ackermann.md, \"Narrowed offsets\"). Off by "
+             "default"),
+    cl::init(false));
+
 static cl::opt<bool> seamStride(
     "seam-stride",
     cl::desc("R-STRIDE in SeaM (with --seam): a store-map entry b + o is "
@@ -2297,6 +2308,22 @@ TYPICAL:
                                  #   one node (solver-neutral; z3 flattens
                                  #   it again); inline (default, not tuned):
                                  #   flat sums. docs/design/SumNames.md
+  sea-vc p.mlir --seam --narrow-offsets  # (off by default; rests on
+                                 #   A-INB) a read whose address lies in a
+                                 #   recorded access of an object of size N
+                                 #   (also an ite of such addresses) reads at
+                                 #   base + zext(low k bits of its offset),
+                                 #   2^k >= N: two reads of one object are
+                                 #   compared at k bits, the offset sums
+                                 #   computed at k bits (with --vc-defs: k-bit
+                                 #   names). Exact for an access that stays
+                                 #   in its object: assume.a-inb counts the
+                                 #   reads, --seam-check states and checks
+                                 #   each one (narrow-check:). A pointer
+                                 #   compare of the program is not narrowed.
+                                 #   Needs the premises and the Ackermann
+                                 #   lowering (else vc.narrow: off-...).
+                                 #   docs/design/Ackermann.md
   sea-vc p.mlir --seam --seam-wide --seam-words=all|auto [--words-check]
                                  # initial byte memories (nd.<site>,
                                  #   memhavoc arrays) only read in the query
@@ -2569,6 +2596,22 @@ OUTPUT (stdout, `key: value` lines):
                                   c2 - c1 is not (no constraint: never
                                   equal), constraints added; with vc-time,
                                   stderr with --smt2)
+  vc.narrow: on|off-no-premises|off-no-ackermann   (--narrow-offsets; on:
+                                  vc.narrow-indices / -eligible / -skip-not-
+                                  access / -skip-no-object / -skip-shadow /
+                                  -skip-size / -skip-many / -skip-shape /
+                                  -reads / -objects / -k-max / -pairs /
+                                  -pair-bits / -mixed: read indices seen,
+                                  those in a recorded access of one object
+                                  of known size, the others by reason (not
+                                  in an access, not one object, a shadow
+                                  memory, size 0 or too large, more than 8
+                                  addresses, not base + offset after the
+                                  boundary), reads narrowed, their objects,
+                                  the largest k, constraints compared at k
+                                  bits and the sum of their k, constraints
+                                  with one narrowed read and another (64
+                                  bits); with vc-time, stderr with --smt2)
   vc.defs: inline|nest|eq|hidden  (--vc-defs; not inline: vc.defs-sums /
                                   -index-sums / -names / -atoms / -rewritten:
                                   distinct sums of the query, those at an
@@ -2866,6 +2909,12 @@ OUTPUT (stdout, `key: value` lines):
                                   fresh objects whose no-op rests on A-SEP;
                                   also without --seam and with
                                   --seam-premises=0, then the only field)
+  assume.a-inb: narrow-reads=<n> narrow-pairs=<m>   (--narrow-offsets, on:
+                                  n reads whose index was narrowed rest on
+                                  the A-INB of their access (each stays in
+                                  its object), m pairs of them compared at
+                                  k bits; a bounds check of the program
+                                  discharges it)
   assume.memset-bound: count=<n> bound=<K>   (n > 0: --lower without --seam
                                   expanded n symbolic-length memsets /
                                   memmoves with assume(len <= K), the
@@ -2980,6 +3029,14 @@ OUTPUT (stdout, `key: value` lines):
                                   --seam-check-rlimit, `-` for another
                                   backend; the premise's satisfiability
                                   check is not counted)
+  narrow-check: indices=<n> checked=<n> valid=<n> invalid=<n> unknown=<n>
+      unexpressible=<n>           (--seam-check with --narrow-offsets: each
+                                  narrowed index i against base +
+                                  zext(low_k(i - base)) under the layout and
+                                  the A-INB of the accesses it lies in;
+                                  invalid: exit 5, narrow-check-invalid:
+                                  index=<term> k=<k>; narrow-check-unknown:
+                                  / -unexpressible: index=<term>)
   seam.<counter>: <n>              (--seam-stats, before `result:`; with
                                   --smt2 on stderr): rule-calls, rules-fired,
                                   cache-hits, ..., and seam.rule.<rule>: the
@@ -4083,6 +4140,12 @@ int main(int argc, char **argv) {
     return fail("--seam-words needs --seam");
   if (wordsCheck && seamWords == WordsMode::Off)
     return fail("--words-check needs --seam-words");
+  if (narrowOffsets && !seam)
+    return fail("--narrow-offsets needs --seam (it rests on A-INB of the "
+                "accesses SeaM records)");
+  if (narrowOffsets && seamWords != WordsMode::Off)
+    return fail("--narrow-offsets does not support --seam-words (the words "
+                "boundary records no read addresses)");
   if (vcJoinCases && joinEncoding != sea::JoinEncoding::Ite)
     return fail("--vc-join-cases builds the ite joins: needs --vc-join=ite");
   if ((vcCasesReorder || vcCasesDropDefault) && !vcJoinCases)
@@ -5508,6 +5571,9 @@ int main(int argc, char **argv) {
     // the stride rule's record (--ack-stride; the plain boundary only: the
     // words path expands the nodes first and record nothing)
     expr::AccessOrigins accessOrigins;
+    // --narrow-offsets: with the premises only (A-INB implies them; a run
+    // without them, such as the out-of-object fallback, narrows nothing)
+    const bool narrowOn = narrowOffsets && inb && sem.seamRewriter();
     if (seamWords != WordsMode::Off)
       words = std::make_unique<expr::InitialWords>(
           8,
@@ -5610,8 +5676,8 @@ int main(int argc, char **argv) {
       }
     } else {
       // the stride rule's record: the address each read had before the
-      // nodes were expanded (the query only)
-      if (strideOn && sem.seamRewriter())
+      // nodes were expanded (the query only); also --narrow-offsets'
+      if ((strideOn || narrowOn) && sem.seamRewriter())
         sem.seamRewriter()->recordAccesses(&accessOrigins);
       query = sem.solverTerm(query);
       if (sem.seamRewriter())
@@ -5663,11 +5729,113 @@ int main(int argc, char **argv) {
                             ex);
       }
     }
+    // --narrow-offsets (docs/design/Ackermann.md, "Narrowed offsets"): the
+    // read indices whose every read address lies in a recorded access
+    // (Rules::inbCover) of one object of size N > 0, with that object's
+    // erased base and k (2^k >= N); the accesses for --seam-check
+    expr::NarrowTable narrowTable;
+    struct NarrowSite {
+      expr::Expr key, base;
+      unsigned k;
+      std::vector<std::pair<expr::Expr, uint64_t>> covers;
+    };
+    std::vector<NarrowSite> narrowSites;
+    struct {
+      uint64_t indices = 0, notAccess = 0, shadow = 0, noObject = 0, size = 0,
+               many = 0;
+    } narrowSkip;
+    if (narrowOn) {
+      const auto &rules = sem.seamRewriter()->rules();
+      const expr::BaseRegistry &reg = vcgen.baseRegistry();
+      // in a deterministic order (the check's sample and its lines)
+      std::vector<const expr::AccessOrigins::Entry *> entries;
+      for (const auto &kv : accessOrigins.byIndex)
+        entries.push_back(&kv.second);
+      std::sort(entries.begin(), entries.end(),
+                [](const auto *a, const auto *b) {
+                  return a->key->getId() < b->key->getId();
+                });
+      for (const expr::AccessOrigins::Entry *e : entries) {
+        ++narrowSkip.indices;
+        if (e->many) {
+          ++narrowSkip.many;
+          continue;
+        }
+        if (e->shadow) {
+          ++narrowSkip.shadow;
+          continue;
+        }
+        expr::Expr base;
+        const expr::ObjectBase *obj = nullptr;
+        NarrowSite site;
+        bool ok = !e->addrs.empty();
+        bool access = true;
+        for (const expr::Expr &a : e->addrs) {
+          // the address, or each leaf of an ite of addresses (a pointer
+          // phi), is in one object; the access is the whole address
+          std::vector<expr::Expr> leaves, stack{a};
+          while (!stack.empty() && ok) {
+            expr::Expr x = stack.back();
+            stack.pop_back();
+            if (expr::isOpX<expr::ITE>(x)) {
+              stack.push_back(expr::Expr(x->arg(1)));
+              stack.push_back(expr::Expr(x->arg(2)));
+              continue;
+            }
+            leaves.push_back(x);
+            if (leaves.size() > expr::Ackermannizer::kMaxSplitLeaves)
+              ok = false;
+          }
+          for (const expr::Expr &x : leaves) {
+            if (!ok)
+              break;
+            std::optional<expr::seam::PtrView> v = rules.view(x);
+            const expr::ObjectBase *o = v ? reg.lookup(v->base) : nullptr;
+            if (!o || (base && base != v->base)) {
+              ok = false;
+              break;
+            }
+            base = v->base;
+            obj = o;
+          }
+          if (!ok)
+            break;
+          expr::Expr p;
+          uint64_t units = 0;
+          if (!rules.inbCover(a, 1, p, units)) {
+            access = false;
+            break;
+          }
+          site.covers.push_back({p, units});
+        }
+        if (!ok) {
+          ++narrowSkip.noObject;
+          continue;
+        }
+        if (!access) {
+          ++narrowSkip.notAccess;
+          continue;
+        }
+        if (obj->size.isZero() || obj->size.getActiveBits() > 63) {
+          ++narrowSkip.size;
+          continue;
+        }
+        unsigned k = std::max(1u, (obj->size - 1).getActiveBits()); // 2^k >= N
+        site.key = e->key;
+        site.base = rules.erase(base);
+        site.k = k;
+        narrowTable.byIndex.emplace(e->key.get(),
+                                    expr::NarrowTable::Entry{site.base, k});
+        narrowSites.push_back(std::move(site));
+      }
+    }
     // Ackermann lowering of read-only arrays (an encoding step of the query,
     // docs/design/Ackermann.md); its table rebuilds the arrays on a model
     Phase ackPhase("ackermann");
     expr::Ackermannizer ack;
     ack.setValues(layoutValues);
+    if (narrowOn)
+      ack.setNarrow(&narrowTable);
     if (strideOn && !accessOrigins.byIndex.empty()) {
       ack.setAccessOrigins(&accessOrigins);
       std::unordered_set<expr::ENode *> size0;
@@ -5757,10 +5925,12 @@ int main(int argc, char **argv) {
       expr::SumNamer namer(vcDefs == VcDefs::Nest ? Form::Nest
                            : vcDefs == VcDefs::Eq ? Form::Eq
                                                   : Form::Hidden);
+      // a narrowed read's index sum is its k-bit offset (the query
+      // compares those); the names then form a k-bit prefix chain
       if (ackOn)
         for (const auto &arr : ack.arrays())
           for (const auto &rd : arr.reads)
-            namer.addIndex(rd.index);
+            namer.addIndex(rd.low ? rd.low : rd.index);
       // a VC constant of the prefix would be the same term as a name
       {
         expr::ExprSet consts;
@@ -6039,6 +6209,30 @@ int main(int argc, char **argv) {
                              : ackStride ? Stride::Fallback
                                          : Stride::Off);
       }
+      // --narrow-offsets: whether it ran (and why not), what it narrowed
+      if (narrowOffsets) {
+        const auto &as = ack.stats();
+        r.line("vc.narrow")
+            .value(!narrowOn ? "off-no-premises"
+                   : !ackOn  ? "off-no-ackermann"
+                             : "on");
+        if (narrowOn && ackOn) {
+          r.line("vc.narrow-indices").value(narrowSkip.indices);
+          r.line("vc.narrow-eligible").value(narrowSites.size());
+          r.line("vc.narrow-skip-not-access").value(narrowSkip.notAccess);
+          r.line("vc.narrow-skip-no-object").value(narrowSkip.noObject);
+          r.line("vc.narrow-skip-shadow").value(narrowSkip.shadow);
+          r.line("vc.narrow-skip-size").value(narrowSkip.size);
+          r.line("vc.narrow-skip-many").value(narrowSkip.many);
+          r.line("vc.narrow-skip-shape").value(as.narrowShape);
+          r.line("vc.narrow-reads").value(as.narrowReads);
+          r.line("vc.narrow-objects").value(as.narrowObjects);
+          r.line("vc.narrow-k-max").value(as.narrowKMax);
+          r.line("vc.narrow-pairs").value(as.narrowPairs);
+          r.line("vc.narrow-pair-bits").value(as.narrowPairBits);
+          r.line("vc.narrow-mixed").value(as.narrowMixed);
+        }
+      }
       r.line("vc.defs").value(vcDefs == VcDefs::Inline ? "inline"
                               : vcDefs == VcDefs::Nest ? "nest"
                               : vcDefs == VcDefs::Eq   ? "eq"
@@ -6068,6 +6262,12 @@ int main(int argc, char **argv) {
         vcAssumes.site(Name::ASep, "seam", count("premise.a-sep"));
         vcAssumes.site(Name::ANull, "seam", count("premise.a-null"));
         vcAssumes.site(Name::ANoWrap, "seam", count("premise.a-nowrap"));
+      }
+      // --narrow-offsets: every narrowed read rests on the A-INB of its
+      // access; the k-bit pairs compare two of them
+      if (narrowOn && ackOn) {
+        vcAssumes.site(Name::AInb, "narrow-reads", ack.stats().narrowReads);
+        vcAssumes.site(Name::AInb, "narrow-pairs", ack.stats().narrowPairs);
       }
       // A-SEP, also without --seam: the lowering dropped memhavocs that
       // are no-ops only if no access through another object touches their
@@ -6401,6 +6601,68 @@ int main(int argc, char **argv) {
         os << " unknown-rlimit=" << unknownRlimit;
       os << "\n";
       checkInvalid += invalid;
+      // --narrow-offsets: each narrowed index i (the query's, before the
+      // lowering) against its in-object representative i' = base +
+      // zext(low_k(i - base)), under the layout and the A-INB of every
+      // access its reads lie in: `layout && inb && i != i'` must be unsat
+      if (!narrowOn || !ackOn)
+        return;
+      uint64_t nValid = 0, nInvalid = 0, nUnknown = 0, nUnexpr = 0;
+      expr::Expr layout = sem.layoutFacts();
+      for (const NarrowSite &site : narrowSites) {
+        unsigned w = ack.lowBits().width(site.key);
+        expr::Expr rest;
+        if (!w ||
+            !expr::Ackermannizer::splitBase(site.key, site.base, w, rest)) {
+          ++nUnexpr; // not narrowed either (vc.narrow-skip-shape)
+          continue;
+        }
+        expr::Expr repr = expr::Ackermannizer::narrowIndex(
+            site.base, ack.lowBits().of(rest, site.k), w);
+        expr::ExprVector conj{layout};
+        std::string why;
+        bool expressible = true;
+        for (const auto &[p, units] : site.covers) {
+          bool violated = false;
+          expr::Expr c =
+              sem.seamRewriter()->rules().inBounds(p, units, violated);
+          c = c ? sem.solverTerm(c, why) : c;
+          if (!c || violated) {
+            expressible = false;
+            break;
+          }
+          conj.push_back(c);
+        }
+        if (!expressible) {
+          ++nUnexpr;
+          os << "narrow-check-unexpressible: index=" << *site.key << "\n";
+          continue;
+        }
+        conj.push_back(expr::mk<expr::NEQ>(site.key, repr));
+        std::unique_ptr<sea::solver::Solver> cs = mkCheckSolver();
+        if (!cs)
+          return;
+        bool added = true;
+        for (const expr::Expr &c : conj)
+          added = added && cs->add(c);
+        sea::solver::SolverResult res =
+            added ? cs->check() : sea::solver::SolverResult::UNKNOWN;
+        if (res == sea::solver::SolverResult::UNSAT) {
+          ++nValid;
+        } else if (res == sea::solver::SolverResult::SAT) {
+          ++nInvalid;
+          os << "narrow-check-invalid: index=" << *site.key << " k=" << site.k
+             << "\n";
+        } else {
+          ++nUnknown;
+          os << "narrow-check-unknown: index=" << *site.key << "\n";
+        }
+      }
+      os << "narrow-check: indices=" << narrowSites.size()
+         << " checked=" << (nValid + nInvalid + nUnknown) << " valid=" << nValid
+         << " invalid=" << nInvalid << " unknown=" << nUnknown
+         << " unexpressible=" << nUnexpr << "\n";
+      checkInvalid += nInvalid;
     };
     if (smt2) {
       // the block ids of each guard (kBlockIdsAttr), as SMT-LIB comments:
@@ -7598,8 +7860,9 @@ int main(int argc, char **argv) {
     if (checkInvalid && rc != 1) {
       sea::diag::error("seam.check-invalid",
                        Twine(checkInvalid) +
-                           " rule firing(s) are not valid under their "
-                           "premises: a rewriting bug (seam-check-invalid "
+                           " rule firing(s) or narrowed read indices are "
+                           "not valid under their premises: a rewriting bug "
+                           "(seam-check-invalid / narrow-check-invalid "
                            "lines)");
       rc = 5;
     }
