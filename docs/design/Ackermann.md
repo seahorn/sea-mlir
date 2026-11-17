@@ -291,7 +291,43 @@ What it does not apply to:
   invalid rule firing does). `--narrow-check` runs these obligations
   alone, without the rule trail (also with `--vcgen-only`): on the
   firedancer jobs `--seam-check` did not finish generating the VC in 13
-  minutes (the trail of every firing, 22-29 GB).
+  minutes (the trail of every firing, 22-29 GB). Each obligation is
+  solved with the reads as free constants and the sums' summands in one
+  order (a sat answer is checked again with the reads), on the solver's
+  default configuration: in `--seam-check`'s incremental configuration
+  (relevancy 0, one push) z3 took 11-60 s per obligation on
+  `txn-pf-v1-writes` and ran out of memory, while its default tactic
+  proves the same obligation at once. Whether the revised check finishes
+  on the firedancer jobs is not measured yet.
+
+### Measured
+
+Two firedancer jobs, `--lower --seam --widen-memory=4 --vc-defs=hidden`,
+without and with `--narrow-offsets`; z3 5.3.3 on the `--smt2` dumps
+(`-v:10`, seeds 0-3 as `sat.random_seed` = `smt.random_seed`, timeout
+900 s, three runs at a time on a shared machine: the times are noisy).
+
+| job | constraints (k-bit) | z3 bit-blast | aig | z3 seeds 0-3 (s) |
+|---|---|---|---|---|
+| pf-v1-writes (unsat), off | 8101 (0) | 2.27M | no | 80, 46, 80, 43 |
+| pf-v1-writes, on (k = 11, 12) | 8111 (7983) | 1.15M | yes (0.91M) | 37, 97, 63, 57 |
+| reach-v0-alt (sat), off | 39287 (0) | 8.94M | no | 169, 125, 171, 134 |
+| reach-v0-alt, on (k = 10) | 39232 (39232) | 2.66M | no | 94, 282, 645, 323 |
+
+- The bit-blast halves on the unsat job and shrinks 3.4x on the sat job;
+  z3's post-blast aig step now runs on the unsat job. Solve times do not
+  follow: no change beyond the seed spread on the unsat job, and slower
+  with a wide spread on the sat job.
+- [OBS] On the sat job the narrowed query is the smaller one by every
+  count z3 prints (SAT clauses 1.8M vs 5.7M, memory 1.46 vs 3.6 GB), and
+  the slow seeds are search: seed 2 needed 593k conflicts against 85k for
+  the baseline's seed 0. Hypothesis: the k-bit offsets change the
+  decision order on the cursor's bytes; one sat job and four seeds do
+  not separate that from luck.
+- Of the k-bit pairs on `txn-pf-v1-writes`, 128 constraints stay mixed
+  (64-bit): one read index is not in one object. On `txn-reach-v0-alt`
+  every read is narrowed once ites of addresses in one object are taken.
+- Yices and Bitwuzla: not measured yet.
 
 ## Model reconstruction
 

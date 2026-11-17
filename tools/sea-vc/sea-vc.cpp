@@ -6626,18 +6626,20 @@ int main(int argc, char **argv) {
       if ((!checkOn && !narrowCheck) || !narrowOn || !ackOn)
         return;
       raw_string_ostream os(checkReport);
-      // a fresh solver per obligation, as --seam-check's
+      // a fresh solver per obligation, with --seam-check's limits
       auto mkCheckSolver = [&]() -> std::unique_ptr<sea::solver::Solver> {
         sea::solver::Limits cl;
         if (backend != Backend::Yices)
           cl.timeoutMs = seamCheckTimeout * 1000;
         cl.rlimit = seamCheckRlimit;
         sea::solver::SolverConfig cc = solverConfig;
-        cc.z3Relevancy0Push = true;
+        // the solver's default configuration (no push): the obligations are
+        // bit-vector arithmetic that its preprocessing settles
         return sea::solver::makeSolver(efac, backend, cl, cc);
       };
       uint64_t nValid = 0, nInvalid = 0, nUnknown = 0, nUnexpr = 0;
       expr::Expr layout = sem.layoutFacts();
+      std::unordered_map<expr::ENode *, expr::Expr> narrowFree;
       for (const NarrowSite &site : narrowSites) {
         unsigned w = ack.lowBits().width(site.key);
         expr::Expr rest;
@@ -6671,11 +6673,55 @@ int main(int argc, char **argv) {
         std::unique_ptr<sea::solver::Solver> cs = mkCheckSolver();
         if (!cs)
           return;
-        bool added = true;
-        for (const expr::Expr &c : conj)
-          added = added && cs->add(c);
+        // first with the reads as free constants: valid for every value
+        // of them is valid for the arrays' values (no array reasoning: the
+        // obligation is about the offset arithmetic); a model of that one
+        // may break the arrays' congruence, so it is checked again with
+        // the reads (sat there: invalid)
+        expr::Expr concrete = expr::mknary<expr::AND>(conj.begin(), conj.end());
+        expr::Expr ob = concrete;
+        {
+          std::unordered_map<expr::ENode *, expr::Expr> memo;
+          std::vector<expr::Expr> keep;
+          ob = expr::ackermann_detail::rewriteDag(
+              ob, memo, keep, [](expr::ENode *n) { return expr::Expr(n); },
+              [&](expr::ENode *n, SmallVectorImpl<expr::Expr> &kids) {
+                // a sum's summands in one order (by node id): the offset
+                // of the premise and of the index are then one node
+                if (expr::isOpX<expr::BADD>(n)) {
+                  std::sort(kids.begin(), kids.end(),
+                            [](const expr::Expr &a, const expr::Expr &b) {
+                              return a->getId() < b->getId();
+                            });
+                  return efac.mkNary(n->op(), kids.begin(), kids.end());
+                }
+                if (!expr::isOpX<expr::SELECT>(n))
+                  return expr::ackermann_detail::withKids(n, kids);
+                unsigned wv = ack.lowBits().width(expr::Expr(n));
+                auto it = narrowFree.find(n);
+                if (it == narrowFree.end())
+                  it = narrowFree
+                           .emplace(
+                               n, expr::op::bv::bvConst(
+                                      expr::mkTerm<std::string>(
+                                          "narrow.read." +
+                                              std::to_string(narrowFree.size()),
+                                          efac),
+                                      wv))
+                           .first;
+                return it->second;
+              });
+        }
+        bool added = cs->add(ob);
         sea::solver::SolverResult res =
             added ? cs->check() : sea::solver::SolverResult::UNKNOWN;
+        if (res == sea::solver::SolverResult::SAT) {
+          std::unique_ptr<sea::solver::Solver> cc = mkCheckSolver();
+          if (!cc)
+            return;
+          res = cc->add(concrete) ? cc->check()
+                                  : sea::solver::SolverResult::UNKNOWN;
+        }
         if (res == sea::solver::SolverResult::UNSAT) {
           ++nValid;
         } else if (res == sea::solver::SolverResult::SAT) {
