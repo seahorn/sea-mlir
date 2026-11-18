@@ -547,10 +547,9 @@ static cl::opt<bool> ackOwn(
              "pair of reads of two different objects (every address of each "
              "index a pointer into its object; a load's reads and the selects "
              "the boundary made for memory operations, not shadow reads) gets "
-             "no constraint. Rests on A-INB of the access behind one read and "
-             "A-OWN (no access "
-             "through one object touches another object's cells, reads "
-             "included): assume.a-inb own-pairs, assume.a-own ack-pairs. A "
+             "no constraint. An unsat answer needs no premise (dropping "
+             "constraints only adds models); the sat answers rest on "
+             "A-INB/A-OWN, shown by the vc.ackermann-own-* counters. A "
              "sat model that puts two such reads at one index is "
              "vc.ackermann-inconsistent (status 2), unless the replayed run "
              "fails the assertion and validates (vc.ack-own-collision-"
@@ -2461,9 +2460,9 @@ TYPICAL:
                                  #   2), unless the replayed run fails the
                                  #   assertion and validates (sat on that
                                  #   run, warning vc.ack-own-collision-
-                                 #   excused). assume.a-inb
-                                 #   own-pairs, assume.a-own ack-pairs;
-                                 #   vc.ackermann-own-*; needs the premises
+                                 #   excused). No premise line: an
+                                 #   unsat needs none; vc.ackermann-own-*;
+                                 #   needs the premises
                                  #   (else vc.ack-own: off-...).
                                  #   docs/design/Ackermann.md
   sea-vc p.mlir --seam --ack-stride=false   # (default on) the stride rule in the Ackermann
@@ -3071,13 +3070,6 @@ OUTPUT (stdout, `key: value` lines):
                                   its object), m pairs of them compared at
                                   k bits; a bounds check of the program
                                   discharges it)
-                                  own-pairs=<k>   (--ack-own, on: k
-                                  Ackermann pairs of two objects dropped,
-                                  each on the A-INB of one of its reads)
-  assume.a-own: ack-pairs=<k>     (--ack-own, on: the same k pairs rest on
-                                  A-OWN, no access through one object
-                                  touches another object's cells; A-INB of
-                                  every access implies it)
   assume.memset-bound: count=<n> bound=<K>   (n > 0: --lower without --seam
                                   expanded n symbolic-length memsets /
                                   memmoves with assume(len <= K), the
@@ -6501,12 +6493,6 @@ int main(int argc, char **argv) {
       if (narrowOn && ackOn) {
         vcAssumes.site(Name::AInb, "narrow-reads", ack.stats().narrowReads);
         vcAssumes.site(Name::AInb, "narrow-pairs", ack.stats().narrowPairs);
-      }
-      // --ack-own: every dropped cross-object pair rests on the A-INB of one
-      // of its reads and on A-OWN
-      if (ownOn && ackOn) {
-        vcAssumes.site(Name::AInb, "own-pairs", ack.stats().ownPairs);
-        vcAssumes.site(Name::AOwn, "ack-pairs", ack.stats().ownPairs);
       }
       // A-SEP, also without --seam: the lowering dropped memhavocs that
       // are no-ops only if no access through another object touches their

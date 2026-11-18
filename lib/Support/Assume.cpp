@@ -17,10 +17,9 @@ struct Info {
 };
 // in Name order
 constexpr Info kInfo[kNames] = {
-    {"memset-bound", false}, {"a-sep", false},
-    {"a-null", false},       {"a-nowrap", false},
-    {"a-inb", false},        {"a-own", false},
-    {"addr0-is-null", true}, {"memhavoc-null-noop", true},
+    {"memset-bound", false},      {"a-sep", false}, {"a-null", false},
+    {"a-nowrap", false},          {"a-inb", false}, {"addr0-is-null", true},
+    {"memhavoc-null-noop", true},
 };
 } // namespace
 

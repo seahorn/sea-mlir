@@ -270,8 +270,10 @@ there stays status 2. The run is not repeated without the rule (unlike the
 stride rule).
 
 Accounting:
-- `assume.a-inb: own-pairs=<n>` and `assume.a-own: ack-pairs=<n>`: the n
-  dropped pairs, each resting on A-INB of one of its reads and on A-OWN.
+- No `assume.*` line: an unsat answer needs no premise (dropping constraints
+  only adds models). A-INB of one read and A-OWN matter for the sat
+  answers, which the replay check and the `own-broken` / excused handling
+  cover; the dropped pairs are counted by `vc.ackermann-own-pairs`.
 - `vc.ackermann-own-reads` (reads in one known object), `-own-pairs`
   (dropped), `-own-same-object` (two reads of one object, kept),
   `-own-not-eligible` (a read in no known object, kept); the last two count

@@ -48,9 +48,8 @@ claim your harness is intended to establish.
    accesses; for 9 of them the in-bounds condition, which a bounds check
    would check, was not constant. The other assumption lines are
    `assume.memset-bound` (a memset of symbolic length was bounded),
-   `assume.a-inb` and `assume.a-own` (opt-in premises: every access stays
-   in its object, no access through one object touches another's cells;
-   only with `--narrow-offsets` or `--ack-own`),
+   `assume.a-inb` (opt-in premise: every access stays
+   in its object; only with `--narrow-offsets`),
    `seam.premises: off (fallback: ...)` (the premises were dropped),
    `seam.out-of-object:` (accesses that leave their object on every path
    alternative: the `unsat` holds only if they do not execute) and

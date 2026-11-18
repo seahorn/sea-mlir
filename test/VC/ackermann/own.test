@@ -15,8 +15,6 @@
 // CROSS: vc.ackermann-own-not-eligible: 0
 // CROSS: vc.ackermann-constraints: 1
 // CROSS: vc.ack-own: on
-// CROSS: assume.a-inb: own-pairs=1
-// CROSS: assume.a-own: ack-pairs=1
 // CROSS: result: sat
 // CROSS: vc.ackermann-model: {{.*}} own-broken=0
 // CROSS: replay: assert-failed
@@ -26,7 +24,6 @@
 // OFF-NOT: vc.ackermann-own
 // OFF: vc.ackermann-constraints: 2
 // OFF-NOT: vc.ack-own
-// OFF-NOT: assume.a-own
 // OFF: result: sat
 //
 // inb: assert that a + i and b + j, both in bounds, are different addresses
@@ -113,7 +110,6 @@
 // RUN: sea-vc %t/broken.mlir --lower --seam --seam-premises=0 --ack-own 2>&1 | FileCheck %s --check-prefix=NOPREM
 // NOPREM-NOT: vc.ackermann-own
 // NOPREM: vc.ack-own: off-no-premises
-// NOPREM-NOT: assume.a-own
 // NOPREM: result: unsat
 // RUN: not sea-vc %t/broken.mlir --lower --ack-own 2>&1 | FileCheck %s --check-prefix=NOSEAM
 // NOSEAM: --ack-own needs --seam

@@ -16,10 +16,7 @@
 //            a-nowrap            SeaM's rewrites that rest on "an access
 //                                address does not wrap" (VC)
 //            a-inb               every access stays in its object, used
-//                                directly: --narrow-offsets, --ack-own (VC)
-//            a-own               no access through one object touches
-//                                another object's cells, reads included:
-//                                --ack-own (VC)
+//                                directly: --narrow-offsets (VC)
 //            addr0-is-null       address 0 is null (VC and runs)
 //            memhavoc-null-noop  memhavoc(null) is a no-op (VC and runs)
 //  Ledger  what one run / one VC / one report relied on:
@@ -75,11 +72,10 @@ enum class Name : unsigned {
   ANull,
   ANoWrap,
   AInb,
-  AOwn,
   Addr0IsNull,
   MemhavocNullNoop,
 };
-constexpr unsigned kNames = 8;
+constexpr unsigned kNames = 7;
 
 /// `memset-bound`, `a-sep`, ...
 llvm::StringRef nameOf(Name a);
