@@ -229,7 +229,8 @@ private:
       res.insert(res.end(), f.begin(), f.end());
       if (res.size() > kMaxLeaves)
         res.clear();
-    } else if ((isOpX<BADD>(n) || isOpX<BSUB>(n)) && n->arity() >= 1) {
+    } else if ((isOpX<BADD>(n) && n->arity() >= 1) ||
+               (isOpX<BSUB>(n) && n->arity() == 2)) {
       res = leaves(n->arg(0));
       for (size_t i = 1; i < n->arity() && !res.empty(); ++i)
         res = combine(res, leaves(n->arg(i)), isOpX<BSUB>(n));

@@ -135,7 +135,9 @@ private:
     const mpz_class one(1UL);
     mpz_class minusOne;
     mpz_sub_ui(minusOne.get_mpz_t(), m_mod.get_mpz_t(), 1);
-    if (isOpX<BADD>(n) || isOpX<BSUB>(n)) {
+    // bvsub is binary (the marshallers read two arguments); another arity is
+    // an atom.
+    if (isOpX<BADD>(n) || (isOpX<BSUB>(n) && n->arity() == 2)) {
       Linear l;
       for (size_t i = 0; i < n->arity(); ++i) {
         const Linear &k = of(n->arg(i));

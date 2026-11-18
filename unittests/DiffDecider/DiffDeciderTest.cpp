@@ -24,6 +24,7 @@
 #include "sea/Expr/DiffDecider.hh"
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/Smt/Z3SolverImpl.hh"
+#include "sea/Expr/TypeChecker.hh"
 #include <boost/functional/hash.hpp>
 
 #include "llvm/Support/raw_ostream.h"
@@ -441,7 +442,25 @@ void testRandom() {
 
 } // namespace
 
+/// bvsub is binary: a 3-ary bvsub is an atom of the linear forms (not
+/// a - b - c, which the marshallers would read as a - b) and is ill-sorted.
+void testNarySub() {
+  constexpr unsigned W = 8;
+  Env env;
+  Expr a = env.var("a", W), b = env.var("b", W), c = env.var("c", W);
+  Expr s3 = mk<BSUB>(a, b, c);
+  ackermann_detail::LinearForms lf(W);
+  const ackermann_detail::Linear &l3 = lf.of(&*s3);
+  CHECK(l3.coef.size() == 1 && l3.coef.count(&*s3) == 1, "3-ary bvsub: atom");
+  Expr s2 = mk<BSUB>(a, b);
+  CHECK(lf.of(&*s2).coef.size() == 2, "2-ary bvsub: a - b");
+  TypeChecker tc;
+  CHECK(tc.typeOf(s3) == sort::errorTy(env.efac), "3-ary bvsub: ill-sorted");
+  CHECK(tc.typeOf(s2) != sort::errorTy(env.efac), "2-ary bvsub: sorted");
+}
+
 int main() {
+  testNarySub();
   testShapes();
   llvm::outs() << "test: shapes ok\n";
   testSplit();
