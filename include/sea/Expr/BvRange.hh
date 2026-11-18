@@ -296,7 +296,7 @@ private:
         return full(w);
       return {lo, hi, true};
     }
-    if (isOpX<BADD>(n) || isOpX<BSUB>(n)) {
+    if (isOpX<BADD>(n) || (isOpX<BSUB>(n) && n->arity() == 2)) {
       BvInterval r = repr(kid(0));
       for (size_t i = 1; i < n->arity() && r.known; ++i)
         r = add(r, isOpX<BSUB>(n) ? neg(repr(kid(i))) : repr(kid(i)));

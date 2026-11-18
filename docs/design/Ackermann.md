@@ -141,7 +141,7 @@ ite conditions it was taken under; a combination that takes one condition
 feasible leaf pair is NEVER. Splitting is not monotone, so both are tried.
 Budgets (`--ack-decider-leaves`, default 256 leaves per node, else that
 node is one leaf; `--ack-decider-leaf-pairs`, default 16384 leaf pairs per
-read pair, else no split): the census leaf model, untuned. Each test runs
+read pair, else no split): a first guess (untuned). Each test runs
 first without the layout values, then with them.
 
 A wrong NEVER is not a wrong unsat: dropping a constraint only weakens the
@@ -284,8 +284,8 @@ drops), with one addition: two narrowed reads of one object compare
 `base + zext(t_k) = base + zext(t_l)`, which holds iff `t_k = t_l`; the
 pair gets the k-bit constraint `t_k = t_l -> r_k = r_l`, after the exact
 drops are tried on the k-bit forms (same symbolic part with different
-numerals modulo 2^k, residues, leaves, the difference decider at k bits). A pair with one narrowed read and
-another (a read of another object, or one not eligible) keeps a w-bit
+numerals modulo 2^k, residues, leaves, the difference decider at k bits). A
+pair with one narrowed read and another (a read of another object, or one not eligible) keeps a w-bit
 equality, over i'. The stride rule is not applied to a narrowed read.
 
 With `--vc-defs`, a narrowed read's index sum is its k-bit offset

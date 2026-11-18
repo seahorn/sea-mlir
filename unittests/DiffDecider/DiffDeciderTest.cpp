@@ -8,12 +8,12 @@
 // check fails. Run by test/Expr/diff-decider.test.
 //
 // What is tested (include/sea/Expr/DiffDecider.hh, BvRange.hh):
-//  - shapes from the census, each NEVER with a can-equal sibling (z3 checks
-//    both: a = b unsat for NEVER, sat for the sibling): residue, interval on
-//    zero-extended bytes and masks, congruence + interval, signed sext
-//    representatives (c * sext(x) + K), layout substitution, leaf splitting
-//    through ite / bvadd / bvsub with the layout (key-selected objects), the
-//    leaf budget;
+//  - shapes seen in the benchmarks, each NEVER with a can-equal sibling (z3
+//    checks both: a = b unsat for NEVER, sat for the sibling): residue,
+//    interval on zero-extended bytes and masks, congruence + interval, signed
+//    sext representatives (c * sext(x) + K), layout substitution, leaf
+//    splitting through ite / bvadd / bvsub with the layout (key-selected
+//    objects), the leaf budget;
 //  - the width: a 64-bit NEVER is not a k-bit NEVER (k = 11, offsets 0 vs
 //    2048, and zext bytes 2048 apart); a k-bit NEVER with its sibling;
 //  - seeded random terms at 8 bits: every NEVER / ALWAYS confirmed by z3 (with

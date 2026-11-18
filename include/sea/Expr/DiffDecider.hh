@@ -64,8 +64,8 @@ namespace expr {
 
 /// The leaf budgets of DiffDecider.
 struct DiffDeciderOptions {
-  /// at most this many leaves per node (else the node is one leaf); the
-  /// census leaf model d (untuned)
+  /// at most this many leaves per node (else the node is one leaf); a first
+  /// guess (untuned)
   size_t maxLeaves = 256;
   /// at most this many leaf pairs per term pair (else no split)
   size_t maxLeafPairs = 16384;
@@ -132,14 +132,15 @@ public:
       bool never = true;
       for (const Leaf &x : la.leaves) {
         for (const Leaf &y : lb.leaves) {
-          if (!compatible(x.conds, y.conds))
-            continue;
           Test t = leafPair(ps, x.id, y.id);
-          if (t.verdict != Verdict::Never) {
-            never = false;
-            break;
+          if (t.verdict == Verdict::Never) {
+            worst = std::max(worst, t.cls);
+            continue;
           }
-          worst = std::max(worst, t.cls);
+          if (!compatible(x.conds, y.conds))
+            continue; // infeasible: the pair does not occur
+          never = false;
+          break;
         }
         if (!never)
           break;
@@ -184,6 +185,7 @@ private:
     LinearForms lf;
     BvRanges ranges;
     std::unordered_map<ENode *, LeafSet> leafMemo;
+    std::vector<Expr> keep; ///< keeps the leafMemo keys alive
     std::map<std::pair<LinearForms::Key, mpz_class>, uint32_t> ids;
     std::vector<Linear> forms;
     std::unordered_map<uint64_t, Test> pairMemo;
@@ -221,8 +223,26 @@ private:
     return true;
   }
   static bool compatible(const Conds &x, const Conds &y) {
-    Conds tmp;
-    return merge(x, y, tmp);
+    size_t i = 0, j = 0;
+    while (i < x.size() && j < y.size()) {
+      if (x[i].first < y[j].first)
+        ++i;
+      else if (y[j].first < x[i].first)
+        ++j;
+      else {
+        if (x[i].second != y[j].second)
+          return false;
+        ++i;
+        ++j;
+      }
+    }
+    return true;
+  }
+
+  /// bvadd (any arity) or a binary bvsub; other bvsub arities are atoms
+  static bool isSplitSum(ENode *n) {
+    return (isOpX<BADD>(n) && n->arity() >= 1) ||
+           (isOpX<BSUB>(n) && n->arity() == 2);
   }
 
   const LeafSet &leaves(Pass &ps, ENode *n) {
@@ -246,7 +266,7 @@ private:
         if (res.leaves.size() > m_opt.maxLeaves)
           split = false;
       }
-    } else if ((isOpX<BADD>(n) || isOpX<BSUB>(n)) && n->arity() >= 1) {
+    } else if (isSplitSum(n)) {
       split = true;
       const LeafSet &s0 = leaves(ps, n->arg(0));
       res.truncated = s0.truncated;
@@ -273,12 +293,12 @@ private:
     }
     if (!split || res.leaves.empty()) {
       // a node that splits but has too many leaves: one leaf, its form
-      bool splits = (isOpX<ITE>(n) && n->arity() == 3) ||
-                    ((isOpX<BADD>(n) || isOpX<BSUB>(n)) && n->arity() >= 1);
+      bool splits = (isOpX<ITE>(n) && n->arity() == 3) || isSplitSum(n);
       res.truncated = res.truncated || (splits && !split);
       res.leaves.clear();
       res.leaves.push_back(Leaf{intern(ps, ps.lf.of(n)), {}});
     }
+    ps.keep.push_back(Expr(n));
     return ps.leafMemo.emplace(n, std::move(res)).first->second;
   }
 
@@ -329,8 +349,11 @@ private:
         lo = bvz::add(lo, bvz::mul(s, xl));
         hi = bvz::add(hi, bvz::mul(s, xh));
       }
-      if (!bounded)
-        break;
+      if (!bounded) {
+        if (sgn)
+          break;
+        continue; // the signed pass may still decide
+      }
       if (sgn && !anySigned)
         break; // the same intervals as the unsigned pass
       Class cls = noMultiple(lo, hi, symmetric(d.c), g);

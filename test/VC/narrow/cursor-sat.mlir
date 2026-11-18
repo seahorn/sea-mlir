@@ -10,6 +10,8 @@
 // RUN: sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --vc-defs=hidden 2>&1 | FileCheck %s
 // RUN: %if yices %{ sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --solver=yices 2>&1 | FileCheck %s %}
 // RUN: %if bitwuzla %{ sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --ackermannize=on --solver=bitwuzla 2>&1 | FileCheck %s %}
+// RUN: sea-vc %s --lower --seam --narrow-offsets 2>&1 | FileCheck %s --check-prefix=DEC
+// RUN: %if yices %{ sea-vc %s --lower --seam --narrow-offsets --solver=yices 2>&1 | FileCheck %s --check-prefix=DEC %}
 // CHECK: vc.narrow: on
 // CHECK: vc.narrow-reads: 6
 // CHECK: vc.narrow-objects: 1
@@ -20,6 +22,10 @@
 // CHECK: result: sat
 // CHECK: replay: assert-failed
 // CHECK: validate: checked={{[0-9]+}} mismatches=0
+// The difference decider drops the 15 narrowed read pairs; same verdict.
+// DEC: vc.ackermann-decider-pairs: 15
+// DEC: result: sat
+// DEC: validate: checked={{[0-9]+}} mismatches=0
 // The query compares 12-bit offsets; no read index is a 64-bit sum. With
 // --vc-defs=hidden the shared prefixes are 12-bit names.
 // RUN: sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --smt2 2>/dev/null | FileCheck %s --check-prefix=SMT
