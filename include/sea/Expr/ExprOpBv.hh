@@ -12,6 +12,8 @@
 #include "sea/Expr/TypeChecker.hh"
 #include "sea/Expr/TypeCheckerUtils.hh"
 
+#include <iterator>
+
 /** Bit-Vector expressions
 
  * This file is included from middle of Expr.hh
@@ -468,11 +470,11 @@ NOP(BNEG, "bvneg", FUNCTIONAL, BvOp, typeCheck::bvType::Unary)
 NOP(BADD, "bvadd", FUNCTIONAL, BvOp, typeCheck::bvType::Nary)
 NOP(BSUB, "bvsub", FUNCTIONAL, BvOp, typeCheck::bvType::Binary)
 NOP(BMUL, "bvmul", FUNCTIONAL, BvOp, typeCheck::bvType::Nary)
-NOP(BUDIV, "bvudiv", FUNCTIONAL, BvOp, typeCheck::bvType::Nary)
-NOP(BSDIV, "bvsdiv", FUNCTIONAL, BvOp, typeCheck::bvType::Nary)
-NOP(BUREM, "bvurem", FUNCTIONAL, BvOp, typeCheck::bvType::Nary)
-NOP(BSREM, "bvsrem", FUNCTIONAL, BvOp, typeCheck::bvType::Nary)
-NOP(BSMOD, "bvsmod", FUNCTIONAL, BvOp, typeCheck::bvType::Nary)
+NOP(BUDIV, "bvudiv", FUNCTIONAL, BvOp, typeCheck::bvType::Binary)
+NOP(BSDIV, "bvsdiv", FUNCTIONAL, BvOp, typeCheck::bvType::Binary)
+NOP(BUREM, "bvurem", FUNCTIONAL, BvOp, typeCheck::bvType::Binary)
+NOP(BSREM, "bvsrem", FUNCTIONAL, BvOp, typeCheck::bvType::Binary)
+NOP(BSMOD, "bvsmod", FUNCTIONAL, BvOp, typeCheck::bvType::Binary)
 NOP(BULT, "bvult", FUNCTIONAL, BvOp, typeCheck::bvType::BinaryBool)
 NOP(BSLT, "bvslt", FUNCTIONAL, BvOp, typeCheck::bvType::BinaryBool)
 NOP(BULE, "bvule", FUNCTIONAL, BvOp, typeCheck::bvType::BinaryBool)
@@ -590,6 +592,20 @@ inline Expr zext(const Expr &v, unsigned width) {
 }
 
 inline Expr concat(const Expr &v, const Expr &u) { return mk<BCONCAT>(v, u); }
+
+/// A binary operator (bvsub, bvudiv, ...) over the arguments [b, e), folded
+/// to the left: op(op(a, b), c). A backend's n-ary application of such an
+/// operator becomes binary nodes. Fewer than two arguments are kept as given
+/// (the sort rule rejects them).
+template <typename Op, typename It>
+Expr mkLeftFold(It b, It e) {
+  if (std::distance(b, e) < 2)
+    return mknary<Op>(b, e);
+  Expr r = *b;
+  for (++b; b != e; ++b)
+    r = mk<Op>(r, *b);
+  return r;
+}
 
 } // namespace bv
 } // namespace op

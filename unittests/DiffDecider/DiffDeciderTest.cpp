@@ -457,6 +457,19 @@ void testNarySub() {
   TypeChecker tc;
   CHECK(tc.typeOf(s3) == sort::errorTy(env.efac), "3-ary bvsub: ill-sorted");
   CHECK(tc.typeOf(s2) != sort::errorTy(env.efac), "2-ary bvsub: sorted");
+  // the other binary operators are ill-sorted at arity 3 as well
+  Expr d3 = mk<BUDIV>(a, b, c), r3 = mk<BUREM>(a, b, c);
+  CHECK(tc.typeOf(d3) == sort::errorTy(env.efac), "3-ary bvudiv: ill-sorted");
+  CHECK(tc.typeOf(r3) == sort::errorTy(env.efac), "3-ary bvurem: ill-sorted");
+  CHECK(tc.typeOf(mk<BUDIV>(a, b)) != sort::errorTy(env.efac),
+        "2-ary bvudiv: sorted");
+  // a backend's n-ary application is folded to the left into binary nodes
+  std::vector<Expr> abc = {a, b, c};
+  CHECK(op::bv::mkLeftFold<BSUB>(abc.begin(), abc.end()) == mk<BSUB>(s2, c),
+        "left fold: (a - b) - c");
+  CHECK(op::bv::mkLeftFold<BUDIV>(abc.begin(), abc.end()) ==
+            mk<BUDIV>(mk<BUDIV>(a, b), c),
+        "left fold: (a / b) / c");
 }
 
 int main() {

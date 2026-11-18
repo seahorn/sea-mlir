@@ -555,7 +555,7 @@ private:
         res = mknary<BADD>(kids_it, kids_it_end);
         break;
       case Z3_OP_BSUB:
-        res = mknary<BSUB>(kids_it, kids_it_end);
+        res = op::bv::mkLeftFold<BSUB>(kids_it, kids_it_end);
         break;
       case Z3_OP_BMUL:
         res = mknary<BMUL>(kids_it, kids_it_end);
@@ -571,23 +571,23 @@ private:
         break;
       case Z3_OP_BSDIV:
       case Z3_OP_BSDIV_I:
-        res = mknary<BSDIV>(kids_it, kids_it_end);
+        res = op::bv::mkLeftFold<BSDIV>(kids_it, kids_it_end);
         break;
       case Z3_OP_BUDIV:
       case Z3_OP_BUDIV_I:
-        res = mknary<BUDIV>(kids_it, kids_it_end);
+        res = op::bv::mkLeftFold<BUDIV>(kids_it, kids_it_end);
         break;
       case Z3_OP_BSREM:
       case Z3_OP_BSREM_I:
-        res = mknary<BSREM>(kids_it, kids_it_end);
+        res = op::bv::mkLeftFold<BSREM>(kids_it, kids_it_end);
         break;
       case Z3_OP_BUREM:
       case Z3_OP_BUREM_I:
-        res = mknary<BUREM>(kids_it, kids_it_end);
+        res = op::bv::mkLeftFold<BUREM>(kids_it, kids_it_end);
         break;
       case Z3_OP_BSMOD:
       case Z3_OP_BSMOD_I:
-        res = mknary<BSMOD>(kids_it, kids_it_end);
+        res = op::bv::mkLeftFold<BSMOD>(kids_it, kids_it_end);
         break;
       case Z3_OP_ULEQ:
         res = mknary<BULE>(kids_it, kids_it_end);
