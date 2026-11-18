@@ -190,17 +190,46 @@ meet in a gap cell. A-SEP does not imply A-OWN; A-INB of every access does
 (placement's objects are disjoint), so the bounds check of the program that
 discharges A-INB discharges A-OWN too.
 
-The rule. A read is in object a when every select at its index is a program
-load's own read whose every address (or every leaf of an ite of addresses)
-is a pointer into a, a registered object of nonzero size: the eligibility of
-`--narrow-offsets` (not own, shared with a boundary read, a shadow memory,
-more than 8 addresses, no object or another object per leaf, size 0: not
-eligible). A read the lowering merged from several index terms is in a only
-if every one of them is. Two reads in different objects a and b get no
-constraint: under A-INB of the read in a its index is a cell of a, and under
-A-OWN the read through b does not touch a cell of a, so the indices differ.
-Two reads of one object, or with a read in no known object (a loaded pointer,
-a memmove's source read), keep their constraint.
+The rule. A read index is in object a when every address the selects at it
+had before the boundary (`AccessOrigins`, or every leaf of an ite of
+addresses, a pointer phi) is a pointer into a, a registered object of
+nonzero size. Not in an object: an index with a select of a shadow memory
+(keyed by object identity, not an access), more than 8 addresses, an
+address with no view or a view of no registered object (a loaded pointer),
+leaves in two objects, size 0. A read the lowering merged from several index
+terms is in a only if every one of them is. Two reads in different objects a
+and b get no constraint: under the A-INB of the access the read in a stands
+for, its index is a cell of a, and under A-OWN the read through b does not
+touch a cell of a, so the indices differ. Two reads of one object, or with a
+read in no known object, keep their constraint.
+
+Unlike `--narrow-offsets`, which takes only a load's own reads (its rewrite
+of the index needs the use lemma's one case), the drop also takes the selects
+the boundary made (`vc.narrow-skip-not-own`, `-shared-boundary` there): it
+does not change an index, it only needs the index to be a cell of its object
+whenever the read's value matters. Which A-INB each kind of select rests on:
+
+- a load's own read (a byte of `[q, q + units)` for a load at q): the A-INB
+  of that load;
+- store-map expansion (`ite(q = s, v, select(M, q))`, a load reading through
+  stores the boundary expands) and the reads of a memhavoc array or of a
+  memory operation's destination outside its range: the select is at the
+  load's own address q; the A-INB of the load;
+- wide expansion (`--seam-wide`, the bytes `q + k`, k < units, of a wide
+  load): the A-INB of the wide load, whose access covers them;
+- a memory operation's source read (`memmove` / `mcopy`: `select(M, s + (p -
+  d))`, chosen when the read address p is in the destination range `[d, d +
+  len)`): the A-INB of the operation's source access, `[s, s + len)` in the
+  source object; when the guard holds, `s + (p - d)` is a byte of it. The
+  view of the index (base s's object) is that access's provenance.
+
+In each case the value of the select matters only where the access that made
+it executes and its guard holds (the same argument SeaM's rewrites of a load
+use); then its index is a cell of the object. Where it does not, the index is
+unconstrained and may meet another object's read: the model check below
+catches that (no answer). `vc.ack-own-indices` counts the indices in one
+object, `vc.ack-own-boundary-indices` those of them with a select the
+boundary made.
 
 Where: after every other rule (the exact drops, the decider and the stride
 rule), on the index the lowering compares (with `--narrow-offsets` too: two
@@ -213,8 +242,9 @@ Soundness. Unsat: dropping a constraint only weakens the lowered query, so
 an unsat holds with no premise at all. Sat: `AckermannModel` compares every
 read with the first read at its index value (Model reconstruction, below).
 A model that puts two reads whose constraint this rule dropped at one index
-with different cells breaks the A-INB of a read or A-OWN, or puts a read that
-does not execute at another object's cell; it is counted `own-broken=` on
+with different cells breaks the A-INB of an access or A-OWN, or puts a read
+whose access does not execute (or whose guard is false) at another object's
+cell; it is counted `own-broken=` on
 the `vc.ackermann-model:` line and in `inconsistent=`, and sea-vc reports
 `vc.ackermann-inconsistent` (status 2) instead of an answer. A replay that
 leaves an object takes precedence (status 4, `vc.seam-inb-spurious`). A
@@ -229,13 +259,17 @@ Accounting:
   `-own-not-eligible` (a read in no known object, kept); the last two count
   the pairs that reach the rule.
 
-Measured (`--vcgen-only`): on nki `sweep-scatter-N2-D5-K3-pmax2-fmax1-good`
-the rule drops nothing: 20 of its 262 reads are a load's own read; the
-other 242 are selects the boundary made (the job has 21 memmoves; 200 not
-own, 42 also an own read), and each of the 2848 constraints the other rules
-leave has such a read. A read made for a memory operation is in an object
-by the A-INB of that operation's access, not of a load's; taking such reads
-needs that argument (open).
+Measured (`--lower --seam --ack-own`, z3, one run each): nki
+`sweep-scatter-N2-D5-K3-pmax2-fmax1-good` 2442 pairs dropped, 406
+constraints left (2848 without the switch), unsat as without it.
+Of its 262 read indices 242 are selects the boundary made (the job has 21
+memmoves); with a load's own reads only the rule dropped nothing. Its sat
+siblings `-mut-src-k0`, `-mut-drop-existing`, `-nopre-range`,
+`-nopre-unique` replay and validate with `own-broken=0`; `-mut-store-d0`
+replays and validates too, but its model puts 6 dropped pairs at one index
+(memmove source reads whose guard is false, indices far outside every
+object), so the run ends in `vc.ackermann-inconsistent` (status 2) although
+the counterexample is a run of the program.
 
 Reported (`vc.ackermann-*`, with `--brunch-stats` as BRUNCH_STAT):
 arrays lowered / kept, distinct reads, pairs = sum of n(n-1)/2, numeral,

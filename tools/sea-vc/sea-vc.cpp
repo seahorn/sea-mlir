@@ -544,9 +544,11 @@ static cl::opt<unsigned> ackDeciderLeafPairs(
 static cl::opt<bool> ackOwn(
     "ack-own",
     cl::desc("The ownership drop in the Ackermann lowering (with --seam): a "
-             "pair of program loads' own reads of two different objects "
-             "(known provenance, as --narrow-offsets takes them) gets no "
-             "constraint. Rests on A-INB of one read and A-OWN (no access "
+             "pair of reads of two different objects (every address of each "
+             "index a pointer into its object; a load's reads and the selects "
+             "the boundary made for memory operations, not shadow reads) gets "
+             "no constraint. Rests on A-INB of the access behind one read and "
+             "A-OWN (no access "
              "through one object touches another object's cells, reads "
              "included): assume.a-inb own-pairs, assume.a-own ack-pairs. A "
              "sat model that puts two such reads at one index is "
@@ -2442,10 +2444,15 @@ TYPICAL:
                                  #   docs/design/Ackermann.md
   sea-vc p.mlir --seam --ack-own  # (off by default; rests on A-INB and
                                  #   A-OWN) the ownership drop in the
-                                 #   Ackermann lowering: two program loads'
-                                 #   own reads (as --narrow-offsets takes
-                                 #   them) of different objects get no
-                                 #   constraint. Unsat needs no premise (a
+                                 #   Ackermann lowering: two reads of
+                                 #   different objects (every address of the
+                                 #   index in its object: loads' reads and
+                                 #   the selects the boundary made for
+                                 #   memmoves, store maps, wide loads; not
+                                 #   shadow reads or loaded pointers) get no
+                                 #   constraint. vc.ack-own-indices / -boundary-
+                                 #   indices: the read indices in one object,
+                                 #   of them those of boundary selects. Unsat needs no premise (a
                                  #   drop weakens the query); a sat model
                                  #   that puts two such reads at one index
                                  #   is vc.ackermann-inconsistent (status
@@ -2720,7 +2727,12 @@ OUTPUT (stdout, `key: value` lines):
                                   equal), constraints added; with vc-time,
                                   stderr with --smt2)
   vc.ack-own: on|off-no-premises|off-no-ackermann   (--ack-own: whether
-                                  the ownership drop ran; its counters are
+                                  the ownership drop ran; on:
+                                  vc.ack-own-indices / -boundary-indices:
+                                  read indices in one known object, of them
+                                  those with a select the boundary made
+                                  (resting on a memory operation's or an
+                                  expansion's A-INB); the pair counters are
                                   vc.ackermann-own-*)
   vc.narrow: on|off-no-premises|off-no-ackermann   (--narrow-offsets; on:
                                   vc.narrow-indices / -eligible / -skip-not-
@@ -5742,7 +5754,7 @@ int main(int argc, char **argv) {
     // --narrow-offsets: with the premises only (A-INB implies them; a run
     // without them, such as the out-of-object fallback, narrows nothing)
     const bool narrowOn = narrowOffsets && inb && sem.seamRewriter();
-    // --ack-own: the same premises and reads (one object, own reads)
+    // --ack-own: the same premises
     const bool ownOn = ackOwn && inb && sem.seamRewriter();
     if (seamWords != WordsMode::Off)
       words = std::make_unique<expr::InitialWords>(
@@ -5904,8 +5916,13 @@ int main(int argc, char **argv) {
     // the load's own address, Rules::noteOwnReads) into one object of size
     // N > 0, with that object's erased base and k (2^k >= N); the read
     // addresses for the check. --ack-own ("The ownership drop") takes the
-    // same table as the reads in one known object.
-    expr::NarrowTable narrowTable;
+    // indices whose every address is in one known object of size N > 0,
+    // also those of selects the boundary made (a memory operation's reads,
+    // store-map expansion, wide expansion: not own, or shared), in its own
+    // table; shadow reads and indices with more than kMaxAddrs addresses are
+    // in neither.
+    expr::NarrowTable narrowTable, ownTable;
+    uint64_t ownBoundaryIndices = 0;
     struct NarrowSite {
       expr::Expr key, base;
       unsigned k;
@@ -5937,14 +5954,18 @@ int main(int argc, char **argv) {
           ++narrowSkip.shadow;
           continue;
         }
+        // --narrow-offsets: a load's own reads only (its use lemma);
+        // --ack-own also takes the selects the boundary made
+        bool narrowOk = true;
         if (e->shared) {
           ++narrowSkip.shared;
-          continue;
-        }
-        if (e->notOwn) {
+          narrowOk = false;
+        } else if (e->notOwn) {
           ++narrowSkip.notOwn;
-          continue;
+          narrowOk = false;
         }
+        if (!narrowOk && !ownOn)
+          continue;
         expr::Expr base;
         const expr::ObjectBase *obj = nullptr;
         NarrowSite site;
@@ -5982,17 +6003,24 @@ int main(int argc, char **argv) {
           site.addrs.push_back(a);
         }
         if (!ok) {
-          ++narrowSkip.noObject;
+          narrowSkip.noObject += narrowOk;
           continue;
         }
         if (obj->size.isZero() || obj->size.getActiveBits() > 63) {
-          ++narrowSkip.size;
+          narrowSkip.size += narrowOk;
           continue;
         }
         unsigned k = std::max(1u, (obj->size - 1).getActiveBits()); // 2^k >= N
         site.key = e->key;
         site.base = rules.erase(base);
         site.k = k;
+        if (ownOn) {
+          ownTable.byIndex.emplace(e->key.get(),
+                                   expr::NarrowTable::Entry{site.base, k});
+          ownBoundaryIndices += !narrowOk;
+        }
+        if (!narrowOn || !narrowOk)
+          continue;
         narrowTable.byIndex.emplace(e->key.get(),
                                     expr::NarrowTable::Entry{site.base, k});
         narrowSites.push_back(std::move(site));
@@ -6010,7 +6038,7 @@ int main(int argc, char **argv) {
     if (narrowOn)
       ack.setNarrow(&narrowTable);
     if (ownOn)
-      ack.setOwn(&narrowTable);
+      ack.setOwn(&ownTable);
     if (strideOn && !accessOrigins.byIndex.empty()) {
       ack.setAccessOrigins(&accessOrigins);
       std::unordered_set<expr::ENode *> size0;
@@ -6387,11 +6415,19 @@ int main(int argc, char **argv) {
       }
       // --ack-own: whether it ran (and why not); its counters are
       // vc.ackermann-own-*
-      if (ackOwn)
+      if (ackOwn) {
         r.line("vc.ack-own")
             .value(!ownOn   ? "off-no-premises"
                    : !ackOn ? "off-no-ackermann"
                             : "on");
+        // the read indices in one known object, and of them those of
+        // selects the boundary made (they rest on the A-INB of the memory
+        // operation or expansion that made them)
+        if (ownOn && ackOn) {
+          r.line("vc.ack-own-indices").value(ownTable.byIndex.size());
+          r.line("vc.ack-own-boundary-indices").value(ownBoundaryIndices);
+        }
+      }
       // --narrow-offsets: whether it ran (and why not), what it narrowed
       if (narrowOffsets) {
         const auto &as = ack.stats();

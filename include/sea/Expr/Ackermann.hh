@@ -42,8 +42,10 @@
 // that puts two such reads at one index breaks one, is detected
 // (AckermannModel::strideBroken) before the result, and sea-vc reruns without
 // the rule. One more, off by default (sea-vc --ack-own): the ownership drop, a
-// pair of program loads' own reads of two different objects (known
-// provenance), resting on A-INB of one read and A-OWN (no access through one
+// pair of reads of two different objects (every address of each index a
+// pointer into its object: a load's read or a select the boundary made for a
+// memory operation), resting on A-INB of the access behind one read and A-OWN
+// (no access through one
 // object touches another object's cells, reads included); a sat model that
 // puts two such reads at one index with different cells is counted as
 // inconsistent (AckermannModel::ownBroken). Otherwise no pair is dropped. An
@@ -327,13 +329,13 @@ struct AccessOrigins {
 };
 
 /// The reads --narrow-offsets narrows (docs/design/Ackermann.md, "Narrowed
-/// offsets"), and the reads the ownership drop (--ack-own, "The ownership
-/// drop") takes as in one object: per read index (the expanded index term of
-/// a select, as the query has it before the lowering), the object its
-/// address is in. sea-vc
+/// offsets"): per read index (the expanded index term of a select, as the
+/// query has it before the lowering), the object its address is in. sea-vc
 /// fills it with the indices whose every select is a program load's own read
 /// (seam::Rules::noteOwnReads) into an object of known size N > 0;
-/// k is the least width with 2^k >= N. Under the A-INB of that access the
+/// k is the least width with 2^k >= N. The ownership drop (--ack-own, "The
+/// ownership drop") takes a table of the same form, with the selects the
+/// boundary made too (k unused). Under the A-INB of that access the
 /// index is base + o with o in [0, N), so it equals base + zext(low_k(o)).
 struct NarrowTable {
   struct Entry {
@@ -387,9 +389,9 @@ public:
              deciderCongruence = 0, deciderSigned = 0, deciderLayout = 0,
              deciderSplit = 0, deciderAlways = 0, deciderBudget = 0;
     /// the ownership drop (setOwn; A-INB + A-OWN), on the pairs every rule
-    /// above left: reads in one known object (an own read of a program
-    /// load), pairs of two such reads of different objects (dropped), of one
-    /// object (kept), with a read not in one known object (kept)
+    /// above left: reads in one known object (setOwn's table), pairs of two
+    /// such reads of different objects (dropped), of one object (kept), with a
+    /// read not in one known object (kept)
     bool own = false;
     uint64_t ownReads = 0, ownPairs = 0, ownSameObject = 0, ownNotEligible = 0;
     uint64_t constraints = 0; ///< constraints added (the other pairs)

@@ -49,22 +49,42 @@
 // BROKEN-DAG: vc.ackermann-model: {{.*}} inconsistent=1 {{.*}}own-broken=1
 // BROKEN-DAG: --ack-own dropped {{.*}}[vc.ackermann-inconsistent]
 //
-// Reads not in one known object keep their constraints. mcopy: the load of
-// b + i reads a + i through a memmove (a boundary read, not own); its pair
-// with the load of c + j is kept, while the load's own out-of-range read at
-// b + i and c + j are dropped. loaded: a load through a loaded pointer (no
-// known base) against c + j.
+// mcopy: the load of b + i reads a + i through a memmove: a select the
+// boundary made (not a load's own read), in a by the A-INB of the memmove's
+// source access. Its pair with the load of c + j is dropped, as is the
+// load's own read at b + i (the memmove's guard false) against c + j.
 // RUN: sea-vc %t/mcopy.mlir --lower --seam --ack-own 2>&1 | FileCheck %s --check-prefix=MCOPY
-// MCOPY: vc.ackermann-own-reads: 2
-// MCOPY: vc.ackermann-own-pairs: 1
-// MCOPY: vc.ackermann-own-not-eligible: 1
+// MCOPY: vc.ackermann-own-reads: 3
+// MCOPY: vc.ackermann-own-pairs: 2
+// MCOPY: vc.ackermann-own-not-eligible: 0
+// MCOPY: vc.ack-own-indices: 3
+// MCOPY: vc.ack-own-boundary-indices: 1
 // MCOPY: result: sat
+// MCOPY: vc.ackermann-model: {{.*}} own-broken=0
 // MCOPY: validate: checked={{[0-9]+}} mismatches=0
+//
+// Reads not in one known object keep their constraints. loaded: a load
+// through a loaded pointer (no known base) against c + j; the bytes of the
+// pointer (in a) against c + j are dropped.
 // RUN: sea-vc %t/loaded.mlir --lower --seam --ack-own 2>&1 | FileCheck %s --check-prefix=LOADED
 // LOADED: vc.ackermann-own-pairs: 8
 // LOADED: vc.ackermann-own-not-eligible: 9
 // LOADED: result: sat
 // LOADED: validate: checked={{[0-9]+}} mismatches=0
+// shadow: the load at a and is_modified(a) share the index a; the latter
+// reads the shadow memory (keyed by object identity, not an access), so the
+// index is in no object and its pair with c + j is kept. noshadow: the same
+// without is_modified: dropped.
+// RUN: sea-vc %t/shadow.mlir --lower --seam --ack-own --ackermannize=on 2>&1 | FileCheck %s --check-prefix=SHADOW
+// SHADOW: vc.ackermann-own-pairs: 0
+// SHADOW: vc.ackermann-own-not-eligible: 1
+// SHADOW: result: sat
+// SHADOW: validate: checked={{[0-9]+}} mismatches=0
+// RUN: sea-vc %t/noshadow.mlir --lower --seam --ack-own --ackermannize=on 2>&1 | FileCheck %s --check-prefix=NOSHADOW
+// NOSHADOW: vc.ackermann-own-pairs: 1
+// NOSHADOW: vc.ackermann-own-not-eligible: 0
+// NOSHADOW: result: sat
+// NOSHADOW: validate: checked={{[0-9]+}} mismatches=0
 //
 // Without the premises nothing is dropped; without --seam the flag is refused.
 // RUN: sea-vc %t/broken.mlir --lower --seam --seam-premises=0 --ack-own 2>&1 | FileCheck %s --check-prefix=NOPREM
@@ -156,6 +176,11 @@ sea.program @mcopy {
   %c = sea.malloc %c16 align 8 [3] : i64 -> !sea.ptr<64>
   %i = sea.nondet "i" [4] : i64
   %j = sea.nondet "j" [5] : i64
+  %c16b = sea.const 16 : i64
+  %ilt = sea.icmp ult, %i, %c16b : i64
+  sea.assume %ilt
+  %jlt = sea.icmp ult, %j, %c16b : i64
+  sea.assume %jlt
   %m1 = sea.memmove %m[%b], %m[%a], %c16 inplace : !m
   %pb = sea.ptr.add %b, %i : !sea.ptr<64>, i64
   %x = sea.load %m1[%pb] : !m -> i8
@@ -173,11 +198,58 @@ sea.program @loaded {
   %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
   %c = sea.malloc %c16 align 8 [2] : i64 -> !sea.ptr<64>
   %j = sea.nondet "j" [3] : i64
+  %jlt = sea.icmp ult, %j, %c16 : i64
+  sea.assume %jlt
   %p = sea.load %m[%a] : !m -> !sea.ptr<64>
   %x = sea.load %m[%p] : !m -> i8
   %pc = sea.ptr.add %c, %j : !sea.ptr<64>, i64
   %y = sea.load %m[%pc] : !m -> i8
   %ok = sea.icmp eq, %x, %y : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- shadow.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @shadow {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %c = sea.malloc %c16 align 8 [2] : i64 -> !sea.ptr<64>
+  %j = sea.nondet "j" [3] : i64
+  %jlt = sea.icmp ult, %j, %c16 : i64
+  sea.assume %jlt
+  %k = sea.nondet "k" [4] : i64
+  %v = sea.const 1 : i8
+  %pk = sea.ptr.add %c, %k : !sea.ptr<64>, i64
+  %m1 = sea.store %m[%pk], %v inplace tracked : !m, i8
+  %mod = sea.mem.is_modified %m1[%a] : !m
+  %x = sea.load %m1[%a] : !m -> i8
+  %pc = sea.ptr.add %c, %j : !sea.ptr<64>, i64
+  %y = sea.load %m1[%pc] : !m -> i8
+  %e = sea.icmp eq, %x, %y : i8
+  %ok = sea.or %e, %mod : i1
+  sea.assert %ok
+  sea.halt
+}
+//--- noshadow.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @noshadow {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %c = sea.malloc %c16 align 8 [2] : i64 -> !sea.ptr<64>
+  %j = sea.nondet "j" [3] : i64
+  %jlt = sea.icmp ult, %j, %c16 : i64
+  sea.assume %jlt
+  %k = sea.nondet "k" [4] : i64
+  %v = sea.const 1 : i8
+  %pk = sea.ptr.add %c, %k : !sea.ptr<64>, i64
+  %m1 = sea.store %m[%pk], %v inplace tracked : !m, i8
+  %x = sea.load %m1[%a] : !m -> i8
+  %pc = sea.ptr.add %c, %j : !sea.ptr<64>, i64
+  %y = sea.load %m1[%pc] : !m -> i8
+  %e = sea.icmp eq, %x, %y : i8
+  %ok = sea.or %e, %e : i1
   sea.assert %ok
   sea.halt
 }
