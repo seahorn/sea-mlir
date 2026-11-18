@@ -41,8 +41,13 @@
 // what make the dropped constraints vacuous, so a sat model needs them: one
 // that puts two such reads at one index breaks one, is detected
 // (AckermannModel::strideBroken) before the result, and sea-vc reruns without
-// the rule. Otherwise no pair is dropped (pointers into different objects are
-// not taken to be different here). An array is lowered only if every use of it
+// the rule. One more, off by default (sea-vc --ack-own): the ownership drop, a
+// pair of program loads' own reads of two different objects (known
+// provenance), resting on A-INB of one read and A-OWN (no access through one
+// object touches another object's cells, reads included); a sat model that
+// puts two such reads at one index with different cells is counted as
+// inconsistent (AckermannModel::ownBroken). Otherwise no pair is dropped. An
+// array is lowered only if every use of it
 // is the array operand of a select: no store over it, no equality, no ite, no
 // other operator (then it is kept as it is, `kept` counts it). Indices of reads
 // may contain reads (of the same or other arrays): they are lowered first
@@ -322,8 +327,10 @@ struct AccessOrigins {
 };
 
 /// The reads --narrow-offsets narrows (docs/design/Ackermann.md, "Narrowed
-/// offsets"): per read index (the expanded index term of a select, as the
-/// query has it before the lowering), the object its address is in. sea-vc
+/// offsets"), and the reads the ownership drop (--ack-own, "The ownership
+/// drop") takes as in one object: per read index (the expanded index term of
+/// a select, as the query has it before the lowering), the object its
+/// address is in. sea-vc
 /// fills it with the indices whose every select is a program load's own read
 /// (seam::Rules::noteOwnReads) into an object of known size N > 0;
 /// k is the least width with 2^k >= N. Under the A-INB of that access the
@@ -379,6 +386,12 @@ public:
     uint64_t deciderPairs = 0, deciderResidue = 0, deciderInterval = 0,
              deciderCongruence = 0, deciderSigned = 0, deciderLayout = 0,
              deciderSplit = 0, deciderAlways = 0, deciderBudget = 0;
+    /// the ownership drop (setOwn; A-INB + A-OWN), on the pairs every rule
+    /// above left: reads in one known object (an own read of a program
+    /// load), pairs of two such reads of different objects (dropped), of one
+    /// object (kept), with a read not in one known object (kept)
+    bool own = false;
+    uint64_t ownReads = 0, ownPairs = 0, ownSameObject = 0, ownNotEligible = 0;
     uint64_t constraints = 0; ///< constraints added (the other pairs)
     /// --narrow-offsets (setNarrow): reads narrowed (their index is
     /// base + zext(low_k(offset))), objects they are in, the largest k;
@@ -430,6 +443,12 @@ public:
         line("stride-divides").value(strideDivides);
       } else if (stride == Stride::Fallback)
         line("stride").value("fallback");
+      if (own) {
+        line("own-reads").value(ownReads);
+        line("own-pairs").value(ownPairs);
+        line("own-same-object").value(ownSameObject);
+        line("own-not-eligible").value(ownNotEligible);
+      }
       line("constraints").value(constraints);
     }
   };
@@ -451,6 +470,10 @@ public:
     /// base + zext(low) (base + low's value for a numeral)
     Expr low;
     Expr nbase;
+    /// --ack-own: the object every index term merged into this read is in
+    /// (the own table's base); null if one is not in the table or two
+    /// disagree
+    Expr obase = Expr();
   };
   struct Array {
     Expr array; ///< the array constant A
@@ -570,6 +593,7 @@ public:
                 n, NarrowedSelect{Expr(n), kids[1], idx, a, p->second});
           if (!fresh) {
             noteOrigins(m_arrays[a].reads[p->second], n->arg(1), false);
+            noteOwn(m_arrays[a].reads[p->second], n->arg(1), false);
             if (m_keepImages)
               m_arrays[a].reads[p->second].selects.push_back(Expr(n));
             return m_arrays[a].reads[p->second].value;
@@ -578,6 +602,7 @@ public:
           m_arrays[a].reads.push_back(
               Read{idx, r, g->second, off, {}, true, {}, low, nbase});
           noteOrigins(m_arrays[a].reads.back(), n->arg(1), true);
+          noteOwn(m_arrays[a].reads.back(), n->arg(1), true);
           if (m_keepImages)
             m_arrays[a].reads.back().selects.push_back(Expr(n));
           ++m_stats.reads;
@@ -600,6 +625,13 @@ public:
                 std::max<uint64_t>(m_stats.narrowKMax, m_low.width(rd.low));
           }
       m_stats.narrowObjects = objs.size();
+    }
+    m_stats.own = m_own != nullptr;
+    if (m_own) {
+      m_ownDropped.assign(m_arrays.size(), {});
+      for (const Array &arr : m_arrays)
+        for (const Read &rd : arr.reads)
+          m_stats.ownReads += rd.obase ? 1 : 0;
     }
     // linear forms and leaf tests of the narrowed offsets, per width k
     std::map<unsigned, LinearForms> lowForms;
@@ -667,6 +699,20 @@ public:
             if (sp.noWrap)
               ++m_stats.strideANoWrapPairs;
             continue;
+          }
+          // the ownership drop (A-INB + A-OWN), after every other rule
+          if (m_own) {
+            if (rs[k].obase && rs[l].obase) {
+              if (rs[k].obase != rs[l].obase) {
+                ++m_stats.ownPairs;
+                m_ownDropped[size_t(&arr - m_arrays.data())].insert(
+                    ownKey(k, l, rs.size()));
+                continue;
+              }
+              ++m_stats.ownSameObject;
+            } else {
+              ++m_stats.ownNotEligible;
+            }
           }
           ++m_stats.constraints;
           if (rs[k].low || rs[l].low)
@@ -792,6 +838,20 @@ public:
     }
     return mk<BADD>(base, op::bv::zext(low, w));
   }
+  /// --ack-own (docs/design/Ackermann.md, "The ownership drop"): the reads
+  /// whose index is in \p t (null, the default: none) are in its object; a
+  /// pair of two such reads of different objects gets no constraint. Rests
+  /// on A-INB of one read and A-OWN (counted).
+  void setOwn(const NarrowTable *t) { m_own = t; }
+  /// Did the ownership drop drop the constraint of reads \p k and \p l of
+  /// lowered array \p a?
+  bool ownDropped(size_t a, size_t k, size_t l) const {
+    if (a >= m_ownDropped.size())
+      return false;
+    if (k > l)
+      std::swap(k, l);
+    return m_ownDropped[a].count(ownKey(k, l, m_arrays[a].reads.size()));
+  }
   /// Did the stride rule drop the constraint of reads \p a and \p b?
   bool strideDropped(const Read &a, const Read &b) const {
     return strideApart(a, b);
@@ -821,6 +881,21 @@ public:
   }
 
 private:
+  /// Merge the own object of index term \p idx into \p r (\p first: r's
+  /// first index term): null when idx has none or another one.
+  void noteOwn(Read &r, ENode *idx, bool first) {
+    if (!m_own)
+      return;
+    auto it = m_own->byIndex.find(idx);
+    Expr b = it == m_own->byIndex.end() ? Expr() : it->second.base;
+    if (first)
+      r.obase = b;
+    else if (r.obase != b)
+      r.obase = Expr();
+  }
+  static uint64_t ownKey(size_t k, size_t l, size_t n) {
+    return uint64_t(k) * uint64_t(n) + uint64_t(l);
+  }
   /// Merge the access addresses of index term \p idx into \p r (\p first:
   /// r's first index term).
   void noteOrigins(Read &r, ENode *idx, bool first) {
@@ -1067,6 +1142,9 @@ private:
   const AccessOrigins *m_origins = nullptr;
   const NarrowTable *m_narrow = nullptr;
   std::unordered_map<ENode *, NarrowedSelect> m_narrowSel;
+  const NarrowTable *m_own = nullptr;
+  /// per lowered array: the pairs the ownership drop dropped (ownKey)
+  std::vector<std::unordered_set<uint64_t>> m_ownDropped;
   LowBits m_low;
   std::unordered_set<ENode *> m_size0;
   bool m_premises = true;
@@ -1102,6 +1180,14 @@ public:
   /// wrapping offset; poison, UB in LLVM). Not a lowering bug: sea-vc
   /// reruns without the rule (--ack-stride).
   uint64_t strideBroken() const { return m_strideBroken; }
+  /// Of inconsistent(): read pairs at one index value with different cells
+  /// whose constraint the ownership drop (--ack-own) dropped. The model breaks
+  /// A-INB of a read or A-OWN (an access through one object reaches another
+  /// object's cells: a memory-safety error of the program), or puts a read
+  /// that does not execute at another object's cell. Counted in
+  /// inconsistent() too: sea-vc reports vc.ackermann-inconsistent (status 2),
+  /// never an answer built on that model.
+  uint64_t ownBroken() const { return m_ownBroken; }
   /// Reads (select(A, j) evaluated) at an index the VC did not read: default 0.
   uint64_t defaulted() const { return m_defaulted; }
 
@@ -1186,7 +1272,8 @@ private:
       return;
     m_built[a] = true;
     std::map<mpz_class, const Ackermannizer::Read *> first;
-    for (const Ackermannizer::Read &rd : m_ack.arrays()[a].reads) {
+    const auto &reads = m_ack.arrays()[a].reads;
+    for (const Ackermannizer::Read &rd : reads) {
       Expr i = m_inner.eval(rd.index, /*complete=*/true);
       Expr v = m_inner.eval(rd.value, /*complete=*/true);
       if (!i || !v || !op::bv::is_bvnum(i) || !op::bv::is_bvnum(v)) {
@@ -1198,10 +1285,17 @@ private:
       auto [it, fresh] = m_funcs[a].emplace(reducedValue(i), vn);
       if (fresh)
         first.emplace(reducedValue(i), &rd);
-      else if (it->second != vn)
-        ++(m_ack.strideDropped(*first.at(reducedValue(i)), rd)
-               ? m_strideBroken
-               : m_inconsistent);
+      else if (it->second != vn) {
+        const Ackermannizer::Read &f = *first.at(reducedValue(i));
+        if (m_ack.strideDropped(f, rd)) {
+          ++m_strideBroken;
+        } else {
+          if (m_ack.ownDropped(a, size_t(&f - reads.data()),
+                               size_t(&rd - reads.data())))
+            ++m_ownBroken;
+          ++m_inconsistent;
+        }
+      }
     }
   }
 
@@ -1309,6 +1403,7 @@ private:
   bool m_broken = false;
   uint64_t m_inconsistent = 0;
   uint64_t m_strideBroken = 0;
+  uint64_t m_ownBroken = 0;
   uint64_t m_defaulted = 0;
 };
 

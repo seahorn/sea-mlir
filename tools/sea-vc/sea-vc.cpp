@@ -541,6 +541,27 @@ static cl::opt<unsigned> ackDeciderLeafPairs(
              "default 16384 (untuned)"),
     cl::init(16384));
 
+static cl::opt<bool> ackOwn(
+    "ack-own",
+    cl::desc("The ownership drop in the Ackermann lowering (with --seam): a "
+             "pair of program loads' own reads of two different objects "
+             "(known provenance, as --narrow-offsets takes them) gets no "
+             "constraint. Rests on A-INB of one read and A-OWN (no access "
+             "through one object touches another object's cells, reads "
+             "included): assume.a-inb own-pairs, assume.a-own ack-pairs. A "
+             "sat model that puts two such reads at one index is "
+             "vc.ackermann-inconsistent (status 2). Off by default "
+             "(docs/design/Ackermann.md, \"The ownership drop\")"),
+    cl::init(false));
+
+/// vc.ackermann-inconsistent when the pairs at fault are --ack-own drops
+static constexpr const char *ownBrokenMessage =
+    "the model puts two reads of different objects whose constraint "
+    "--ack-own dropped at one index with different cells: it breaks A-INB "
+    "or A-OWN (an access through one object reaches another object's "
+    "cells), or a read that does not execute lands on another object; the "
+    "answer is not built on it (run without --ack-own)";
+
 static cl::opt<bool> narrowOffsets(
     "narrow-offsets",
     cl::desc("With --seam and the Ackermann lowering: a read whose address "
@@ -2419,6 +2440,20 @@ TYPICAL:
                                  #   --ack-decider-leaf-pairs=<n> (16384),
                                  #   untuned. vc.ackermann-decider-*;
                                  #   docs/design/Ackermann.md
+  sea-vc p.mlir --seam --ack-own  # (off by default; rests on A-INB and
+                                 #   A-OWN) the ownership drop in the
+                                 #   Ackermann lowering: two program loads'
+                                 #   own reads (as --narrow-offsets takes
+                                 #   them) of different objects get no
+                                 #   constraint. Unsat needs no premise (a
+                                 #   drop weakens the query); a sat model
+                                 #   that puts two such reads at one index
+                                 #   is vc.ackermann-inconsistent (status
+                                 #   2), not an answer. assume.a-inb
+                                 #   own-pairs, assume.a-own ack-pairs;
+                                 #   vc.ackermann-own-*; needs the premises
+                                 #   (else vc.ack-own: off-...).
+                                 #   docs/design/Ackermann.md
   sea-vc p.mlir --seam --ack-stride=false   # (default on) the stride rule in the Ackermann
                                  #   lowering: reads at sea.ptr.index nodes
                                  #   with a promise (inbounds / nusw / nuw:
@@ -2670,6 +2705,12 @@ OUTPUT (stdout, `key: value` lines):
                                   (undecided, a leaf budget hit)) /
                                   -stride-pairs
                                   (--ack-stride: trusted GEP promises) /
+                                  -own-reads / -own-pairs /
+                                  -own-same-object / -own-not-eligible
+                                  (--ack-own: reads in one known object,
+                                  pairs of two objects dropped, pairs of
+                                  one object and pairs with a read in no
+                                  known object kept) /
                                   -constraints: arrays lowered and kept,
                                   distinct reads, read pairs, pairs of two
                                   different numerals, pairs S + c1, S + c2
@@ -2678,6 +2719,9 @@ OUTPUT (stdout, `key: value` lines):
                                   c2 - c1 is not (no constraint: never
                                   equal), constraints added; with vc-time,
                                   stderr with --smt2)
+  vc.ack-own: on|off-no-premises|off-no-ackermann   (--ack-own: whether
+                                  the ownership drop ran; its counters are
+                                  vc.ackermann-own-*)
   vc.narrow: on|off-no-premises|off-no-ackermann   (--narrow-offsets; on:
                                   vc.narrow-indices / -eligible / -skip-not-
                                   own / -skip-shared-boundary / -skip-no-
@@ -2706,13 +2750,17 @@ OUTPUT (stdout, `key: value` lines):
                                   definition atoms
                                   asserted, bvadd nodes replaced; with
                                   vc-time, stderr with --smt2)
-  vc.ackermann-model: defaulted=<n> inconsistent=<n>
-                                  (sat, lowering on: reads at indices the
+  vc.ackermann-model: defaulted=<n> inconsistent=<n> [stride-broken=<n>]
+      [own-broken=<n>]            (sat, lowering on: reads at indices the
                                   query does not read (cell 0; any value
                                   satisfies the query), and read pairs the
                                   model gives equal indices but different
                                   cells: a lowering bug, error
-                                  vc.ackermann-inconsistent, status 2)
+                                  vc.ackermann-inconsistent, status 2;
+                                  own-broken, of them: pairs --ack-own
+                                  dropped, the model breaks A-INB / A-OWN
+                                  or a read that does not execute lands on
+                                  another object, same error)
   words.<counter>: <n>            (--seam-words: candidates, eligible,
                                   chosen, translated, word-reads,
                                   aligned-proved, aligned-by-annotation,
@@ -3002,6 +3050,13 @@ OUTPUT (stdout, `key: value` lines):
                                   its object), m pairs of them compared at
                                   k bits; a bounds check of the program
                                   discharges it)
+                                  own-pairs=<k>   (--ack-own, on: k
+                                  Ackermann pairs of two objects dropped,
+                                  each on the A-INB of one of its reads)
+  assume.a-own: ack-pairs=<k>     (--ack-own, on: the same k pairs rest on
+                                  A-OWN, no access through one object
+                                  touches another object's cells; A-INB of
+                                  every access implies it)
   assume.memset-bound: count=<n> bound=<K>   (n > 0: --lower without --seam
                                   expanded n symbolic-length memsets /
                                   memmoves with assume(len <= K), the
@@ -4246,6 +4301,9 @@ int main(int argc, char **argv) {
     return fail("--words-check needs --seam-words");
   if (narrowCheck && !narrowOffsets)
     return fail("--narrow-check needs --narrow-offsets");
+  if (ackOwn && !seam)
+    return fail("--ack-own needs --seam (it rests on A-INB and A-OWN of the "
+                "accesses SeaM records)");
   if (narrowOffsets && !seam)
     return fail("--narrow-offsets needs --seam (it rests on A-INB of the "
                 "accesses SeaM records)");
@@ -5027,7 +5085,7 @@ int main(int argc, char **argv) {
     seamOpts.expandUnknownRow = seamRowExpand;
     seamOpts.groupSameValueRow = seamRowGroup;
     seamOpts.checkInbPremise = seamCheckInbPremise;
-    seamOpts.trackOwnReads = narrowOffsets;
+    seamOpts.trackOwnReads = narrowOffsets || ackOwn;
     seamOpts.layoutDecide = seamLayout;
     seamOpts.pruneSize0 = seamPruneSize0;
     seamOpts.wideAccess = seamWide;
@@ -5684,6 +5742,8 @@ int main(int argc, char **argv) {
     // --narrow-offsets: with the premises only (A-INB implies them; a run
     // without them, such as the out-of-object fallback, narrows nothing)
     const bool narrowOn = narrowOffsets && inb && sem.seamRewriter();
+    // --ack-own: the same premises and reads (one object, own reads)
+    const bool ownOn = ackOwn && inb && sem.seamRewriter();
     if (seamWords != WordsMode::Off)
       words = std::make_unique<expr::InitialWords>(
           8,
@@ -5787,7 +5847,7 @@ int main(int argc, char **argv) {
     } else {
       // the stride rule's record: the address each read had before the
       // nodes were expanded (the query only); also --narrow-offsets'
-      if ((strideOn || narrowOn) && sem.seamRewriter())
+      if ((strideOn || narrowOn || ownOn) && sem.seamRewriter())
         sem.seamRewriter()->recordAccesses(&accessOrigins);
       query = sem.solverTerm(query);
       if (sem.seamRewriter())
@@ -5843,7 +5903,8 @@ int main(int argc, char **argv) {
     // read indices whose every select is an own read of a program load (at
     // the load's own address, Rules::noteOwnReads) into one object of size
     // N > 0, with that object's erased base and k (2^k >= N); the read
-    // addresses for the check
+    // addresses for the check. --ack-own ("The ownership drop") takes the
+    // same table as the reads in one known object.
     expr::NarrowTable narrowTable;
     struct NarrowSite {
       expr::Expr key, base;
@@ -5855,7 +5916,7 @@ int main(int argc, char **argv) {
       uint64_t indices = 0, notOwn = 0, shared = 0, shadow = 0, noObject = 0,
                size = 0, many = 0;
     } narrowSkip;
-    if (narrowOn) {
+    if (narrowOn || ownOn) {
       const auto &rules = sem.seamRewriter()->rules();
       const expr::BaseRegistry &reg = vcgen.baseRegistry();
       // in a deterministic order (the check's lines)
@@ -5948,6 +6009,8 @@ int main(int argc, char **argv) {
     ack.setDecider(ackDecider, deciderOpt);
     if (narrowOn)
       ack.setNarrow(&narrowTable);
+    if (ownOn)
+      ack.setOwn(&narrowTable);
     if (strideOn && !accessOrigins.byIndex.empty()) {
       ack.setAccessOrigins(&accessOrigins);
       std::unordered_set<expr::ENode *> size0;
@@ -6322,6 +6385,13 @@ int main(int argc, char **argv) {
                              : ackStride ? Stride::Fallback
                                          : Stride::Off);
       }
+      // --ack-own: whether it ran (and why not); its counters are
+      // vc.ackermann-own-*
+      if (ackOwn)
+        r.line("vc.ack-own")
+            .value(!ownOn   ? "off-no-premises"
+                   : !ackOn ? "off-no-ackermann"
+                            : "on");
       // --narrow-offsets: whether it ran (and why not), what it narrowed
       if (narrowOffsets) {
         const auto &as = ack.stats();
@@ -6382,6 +6452,12 @@ int main(int argc, char **argv) {
       if (narrowOn && ackOn) {
         vcAssumes.site(Name::AInb, "narrow-reads", ack.stats().narrowReads);
         vcAssumes.site(Name::AInb, "narrow-pairs", ack.stats().narrowPairs);
+      }
+      // --ack-own: every dropped cross-object pair rests on the A-INB of one
+      // of its reads and on A-OWN
+      if (ownOn && ackOn) {
+        vcAssumes.site(Name::AInb, "own-pairs", ack.stats().ownPairs);
+        vcAssumes.site(Name::AOwn, "ack-pairs", ack.stats().ownPairs);
       }
       // A-SEP, also without --seam: the lowering dropped memhavocs that
       // are no-ops only if no access through another object touches their
@@ -7101,8 +7177,11 @@ int main(int argc, char **argv) {
         use(wm ? static_cast<sea::solver::Model &>(*wm) : solved);
         if (am && am->inconsistent()) {
           sea::diag::error("vc.ackermann-inconsistent",
-                           "the model of the lowered query is not a function "
-                           "on an array: a bug in the Ackermann lowering");
+                           am->ownBroken()
+                               ? ownBrokenMessage
+                               : "the model of the lowered query is not a "
+                                 "function on an array: a bug in the "
+                                 "Ackermann lowering");
           return 2;
         }
         return 0;
@@ -7338,6 +7417,8 @@ int main(int argc, char **argv) {
              << " inconsistent=" << ackModel->inconsistent();
       if (strideOn)
         vout() << " stride-broken=" << ackModel->strideBroken();
+      if (ownOn)
+        vout() << " own-broken=" << ackModel->ownBroken();
       vout() << "\n";
       // decided before the result (above); here a bug
       if (ackModel->strideBroken())
@@ -7345,8 +7426,11 @@ int main(int argc, char **argv) {
                          "a stride-rule collision found after the result");
       if (ackModel->inconsistent())
         sea::diag::error("vc.ackermann-inconsistent",
-                         "the model of the lowered query is not a function on "
-                         "an array: a bug in the Ackermann lowering");
+                         ackModel->ownBroken()
+                             ? ownBrokenMessage
+                             : "the model of the lowered query is not a "
+                               "function on an array: a bug in the Ackermann "
+                               "lowering");
     }
     for (const sea::CellRead &cr : replay.run.cellReads) {
       sea::out::Record rec("memread");

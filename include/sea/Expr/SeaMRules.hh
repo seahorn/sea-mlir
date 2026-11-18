@@ -163,8 +163,8 @@ struct SeaMOptions {
   /// mirror, other normal forms of one address), to be refined.
   bool checkInbPremise = false;
   /// Record own reads and boundary-made reads (noteOwnReads,
-  /// noteBoundaryRead) for sea-vc --narrow-offsets. Off by default: no
-  /// effect on the rewriting either way.
+  /// noteBoundaryRead) for sea-vc --narrow-offsets and --ack-own. Off by
+  /// default: no effect on the rewriting either way.
   bool trackOwnReads = false;
   /// without the premises, decide the access pairs / memop ranges of two placed
   /// objects at numeral offsets by their placed numerals (cmp.layout,

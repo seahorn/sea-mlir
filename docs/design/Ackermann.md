@@ -169,11 +169,73 @@ why the rest were not (`-stride-not-eligible`, `-other-base`, `-divides`).
 On vcc hash_table_eq (seam-wide, yices): 95104 -> 43712 constraints, solve
 54 -> 26 s.
 
-No other pair is dropped. In particular pointers into different objects
-(`obj.a + 8` vs `obj.b + 8`) keep their constraint (a possible extension,
-with the same argument: a drop never makes unsat unsound).
+One more, off by default: the ownership drop (`--ack-own`, below), on the
+pairs every rule above leaves. No other pair is dropped. Without
+`--ack-own`, pointers into different objects (`obj.a + i` vs `obj.b + j`)
+whose offsets nothing bounds keep their constraint.
 (Possible extension, not done: drop pairs SeaM decided different, with the
 premise stated and reported as for the rewriter.)
+
+### The ownership drop (`--ack-own`)
+
+Status: implemented, off by default. It rests on A-INB and on A-OWN, neither
+of which `--seam` assumes by itself (its premises are A-SEP, A-NULL and
+A-NOWRAP); they are used only when this switch is on, and counted.
+
+**A-OWN (ownership):** no access through one object touches another
+object's cells, reads included. A-SEP is stated for write / write and write
+/ read pairs (SeaM.md, "Soundness stance"); an Ackermann pair is two reads,
+which A-SEP does not separate: two reads through a and b past their ends can
+meet in a gap cell. A-SEP does not imply A-OWN; A-INB of every access does
+(placement's objects are disjoint), so the bounds check of the program that
+discharges A-INB discharges A-OWN too.
+
+The rule. A read is in object a when every select at its index is a program
+load's own read whose every address (or every leaf of an ite of addresses)
+is a pointer into a, a registered object of nonzero size: the eligibility of
+`--narrow-offsets` (not own, shared with a boundary read, a shadow memory,
+more than 8 addresses, no object or another object per leaf, size 0: not
+eligible). A read the lowering merged from several index terms is in a only
+if every one of them is. Two reads in different objects a and b get no
+constraint: under A-INB of the read in a its index is a cell of a, and under
+A-OWN the read through b does not touch a cell of a, so the indices differ.
+Two reads of one object, or with a read in no known object (a loaded pointer,
+a memmove's source read), keep their constraint.
+
+Where: after every other rule (the exact drops, the decider and the stride
+rule), on the index the lowering compares (with `--narrow-offsets` too: two
+narrowed reads of different objects are compared at w bits, and the drop
+applies to them). It needs the premises on (`vc.ack-own: off-no-premises`
+under `--seam-premises=0` or the out-of-object fallback) and the lowering
+(`off-no-ackermann`).
+
+Soundness. Unsat: dropping a constraint only weakens the lowered query, so
+an unsat holds with no premise at all. Sat: `AckermannModel` compares every
+read with the first read at its index value (Model reconstruction, below).
+A model that puts two reads whose constraint this rule dropped at one index
+with different cells breaks the A-INB of a read or A-OWN, or puts a read that
+does not execute at another object's cell; it is counted `own-broken=` on
+the `vc.ackermann-model:` line and in `inconsistent=`, and sea-vc reports
+`vc.ackermann-inconsistent` (status 2) instead of an answer. A replay that
+leaves an object takes precedence (status 4, `vc.seam-inb-spurious`). A
+model in which no dropped pair collides is a model of the original query.
+The run is not repeated without the rule (unlike the stride rule).
+
+Accounting:
+- `assume.a-inb: own-pairs=<n>` and `assume.a-own: ack-pairs=<n>`: the n
+  dropped pairs, each resting on A-INB of one of its reads and on A-OWN.
+- `vc.ackermann-own-reads` (reads in one known object), `-own-pairs`
+  (dropped), `-own-same-object` (two reads of one object, kept),
+  `-own-not-eligible` (a read in no known object, kept); the last two count
+  the pairs that reach the rule.
+
+Measured (`--vcgen-only`): on nki `sweep-scatter-N2-D5-K3-pmax2-fmax1-good`
+the rule drops nothing: 20 of its 262 reads are a load's own read; the
+other 242 are selects the boundary made (the job has 21 memmoves; 200 not
+own, 42 also an own read), and each of the 2848 constraints the other rules
+leave has such a read. A read made for a memory operation is in an object
+by the A-INB of that operation's access, not of a load's; taking such reads
+needs that argument (open).
 
 Reported (`vc.ackermann-*`, with `--brunch-stats` as BRUNCH_STAT):
 arrays lowered / kept, distinct reads, pairs = sum of n(n-1)/2, numeral,
@@ -477,7 +539,8 @@ the solver's) rebuilds A as the finite function
     F_A = { value(i_k) -> value(r_k) }   with default 0
 
 consistent by the constraints (two reads with equal index values have
-equal cell values; a pair that is not, `inconsistent`, is a lowering bug:
+equal cell values; a pair that is not, `inconsistent`, is a lowering bug,
+or under `--ack-own` a model that breaks its premises (`own-broken`, above):
 sea-vc reports error `vc.ackermann-inconsistent`, status 2). Its `eval(e)`
 rewrites e bottom-up: `select(A, j)` becomes `F_A(value(j))` (j rewritten
 and evaluated first), any other occurrence of A becomes the store chain of
@@ -501,8 +564,9 @@ an address, validation sees the address values differ.
   (non-SeaM) VC and widened memories with store chains are left to the
   solver.
 - Pair reductions beyond linear forms and the difference decider's
-  structural ranges (no ARM, no A-INB, no ranges from assumes, no reasoning
-  on ite conditions beyond the identity of the condition node).
+  structural ranges (no ARM, no ranges from assumes, no reasoning on ite
+  conditions beyond the identity of the condition node; A-INB only under
+  `--narrow-offsets` and `--ack-own`).
 - The number of constraints is quadratic in the reads of one array with
   different symbolic parts (array_list_swap: 4753), and it is what makes
   the lowered query slower there for every solver. Fewer constraints need

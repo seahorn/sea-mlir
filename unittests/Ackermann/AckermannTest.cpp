@@ -24,6 +24,12 @@
 //  - narrowed offsets (setNarrow): with every read's offset in its object
 //    (the A-INB the narrowing rests on, conjoined), original and lowered
 //    formulas agree, and sat models are models of the original.
+//  - the ownership drop (setOwn): pairs of reads of two objects in the table
+//    get no constraint, one object or a read not in the table keep theirs;
+//    with each read's offset in its object conjoined (A-INB, which gives
+//    A-OWN for disjoint objects), original and lowered formulas agree and
+//    sat models are consistent; without it, a model that puts two dropped
+//    reads at one index is counted (ownBroken, inconsistent).
 //
 //===----------------------------------------------------------------------===//
 
@@ -809,6 +815,131 @@ void testDecider() {
   llvm::outs() << "test: decider ok\n";
 }
 
+void testOwn() {
+  constexpr unsigned kW = 6, kV = 2;
+  ExprFactory efac;
+  using op::array::select;
+  auto num = [&](long v, unsigned w) {
+    return op::bv::bvnum(mpz_class(v), w, efac);
+  };
+  auto bv = [&](const char *n, unsigned w) {
+    return op::bv::bvConst(mkTerm<std::string>(n, efac), w);
+  };
+  Expr A = op::bind::mkConst(
+      mkTerm<std::string>("A", efac),
+      sort::arrayTy(op::bv::bvsort(kW, efac), op::bv::bvsort(kV, efac)));
+  // objects of 16 cells at 8 and 40
+  Expr o1 = bv("obj1", kW), o2 = bv("obj2", kW);
+  std::unordered_map<ENode *, mpz_class> vals{{o1.get(), mpz_class(8L)},
+                                              {o2.get(), mpz_class(40L)}};
+  Expr lay = mk<AND>(mk<EQ>(o1, num(8, kW)), mk<EQ>(o2, num(40, kW)));
+  Expr x = bv("x", kW), y = bv("y", kW), z = bv("z", kW), w = bv("w", kW);
+  Expr i1 = mk<BADD>(o1, x), i2 = mk<BADD>(o1, y), i3 = mk<BADD>(o2, z);
+  NarrowTable table;
+  table.byIndex.emplace(i1.get(), NarrowTable::Entry{o1, 4});
+  table.byIndex.emplace(i2.get(), NarrowTable::Entry{o1, 4});
+  table.byIndex.emplace(i3.get(), NarrowTable::Entry{o2, 4});
+  // A-INB of the three reads in the table
+  auto inObj = [&](const Expr &i, const Expr &o) {
+    return mk<BULT>(mk<BSUB>(i, o), num(16, kW));
+  };
+  Expr inb = mk<AND>(inObj(i1, o1), mk<AND>(inObj(i2, o1), inObj(i3, o2)));
+  std::vector<Expr> reads{select(A, i1), select(A, i2), select(A, i3),
+                          select(A, w)};
+  // counts: 6 pairs; i1-i3, i2-i3 dropped; i1-i2 one object; w with each
+  // not eligible
+  {
+    Expr f = mk<AND>(
+        lay, mk<AND>(mk<NEQ>(reads[0], reads[2]), mk<NEQ>(reads[1], reads[3])));
+    Ackermannizer off;
+    off.setValues(vals);
+    off.lower(f);
+    CHECK(off.stats().constraints == 6 && !off.stats().own,
+          "own off: constraints " << off.stats().constraints);
+    Ackermannizer on;
+    on.setValues(vals);
+    on.setOwn(&table);
+    on.lower(f);
+    const auto &st = on.stats();
+    CHECK(st.own && st.ownReads == 3 && st.ownPairs == 2 &&
+              st.ownSameObject == 1 && st.ownNotEligible == 3 &&
+              st.constraints == 4,
+          "own on: reads " << st.ownReads << " pairs " << st.ownPairs
+                           << " same " << st.ownSameObject << " not-eligible "
+                           << st.ownNotEligible << " constraints "
+                           << st.constraints);
+  }
+  // under A-INB: original and lowered agree, sat models consistent
+  std::mt19937 rng(23);
+  int sat = 0, unsat = 0;
+  for (int round = 0; round < 200; ++round) {
+    auto pick = [&](size_t n) { return size_t(rng() % n); };
+    std::vector<Expr> lits{lay, inb};
+    for (int k = 0; k < 4; ++k) {
+      Expr a = reads[pick(reads.size())];
+      Expr b = pick(2) ? reads[pick(reads.size())] : num(long(pick(4)), kV);
+      lits.push_back(pick(2) ? mk<EQ>(a, b) : mk<NEQ>(a, b));
+    }
+    // index equalities across the objects (false under A-INB) and within
+    Expr is[] = {i1, i2, i3, w};
+    for (int k = 0; k < 2; ++k)
+      lits.push_back(mk<EQ>(is[pick(4)], is[pick(4)]));
+    Expr f = mknary<AND>(lits.begin(), lits.end());
+    Ackermannizer ack;
+    ack.setValues(vals);
+    ack.setOwn(&table);
+    Expr g = ack.lower(f);
+    sea::solver::yices_solver_impl so(efac);
+    so.add(f);
+    auto ro = so.check();
+    std::unique_ptr<sea::solver::Solver> sl;
+    if (round % 2)
+      sl = std::make_unique<sea::solver::z3_solver_impl>(efac);
+    else
+      sl = std::make_unique<sea::solver::yices_solver_impl>(efac);
+    sl->add(g);
+    auto rl = sl->check();
+    CHECK(ro == rl, "own round " << round << ": original and lowered disagree");
+    if (rl == sea::solver::SolverResult::SAT) {
+      ++sat;
+      auto m = sl->get_model();
+      AckermannModel am(*m, ack);
+      CHECK(isTrue(am.eval(f, true)),
+            "own round " << round << ": original false in model");
+      CHECK(am.inconsistent() == 0 && am.ownBroken() == 0,
+            "own round " << round << ": inconsistent");
+    } else {
+      ++unsat;
+    }
+  }
+  CHECK(sat > 10 && unsat > 10,
+        "own: both verdicts: sat " << sat << " unsat " << unsat);
+  // without A-INB: the original is unsat (one cell read twice), the lowered
+  // query is sat, and its model is caught (ownBroken, inconsistent)
+  {
+    Expr f = mk<AND>(lay, mk<AND>(mk<EQ>(i1, i3), mk<NEQ>(reads[0], reads[2])));
+    Ackermannizer ack;
+    ack.setValues(vals);
+    ack.setOwn(&table);
+    Expr g = ack.lower(f);
+    sea::solver::yices_solver_impl so(efac);
+    so.add(f);
+    CHECK(so.check() == sea::solver::SolverResult::UNSAT, "own: original sat");
+    sea::solver::yices_solver_impl sl(efac);
+    sl.add(g);
+    CHECK(sl.check() == sea::solver::SolverResult::SAT, "own: lowered not sat");
+    auto m = sl.get_model();
+    AckermannModel am(*m, ack);
+    for (size_t a = 0; a < ack.arrays().size(); ++a)
+      (void)am.function(a);
+    CHECK(am.ownBroken() == 1 && am.inconsistent() == 1,
+          "own: broken " << am.ownBroken() << " inconsistent "
+                         << am.inconsistent());
+  }
+  llvm::outs() << "own: sat=" << sat << " unsat=" << unsat << "\n";
+  llvm::outs() << "test: own ok\n";
+}
+
 int main() {
   testSharing();
   testLeaf();
@@ -819,6 +950,7 @@ int main() {
   testLowBits();
   testNarrow();
   testDecider();
+  testOwn();
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }
