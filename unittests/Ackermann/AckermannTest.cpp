@@ -694,6 +694,121 @@ void testLeaf() {
   llvm::outs() << "test: leaf ok (dropped " << dropped << ")\n";
 }
 
+/// The difference decider in the lowering (setDecider, DiffDecider.hh):
+/// indices at 6 bits built from zero- and sign-extended 2-bit reads of
+/// another array, masks and ites, two objects with layout values; original
+/// and lowered agree (Yices / z3), every sat model is a model of the
+/// original and consistent (a wrong drop shows as inconsistent). Also with
+/// narrowed reads (k = 3), compared at k bits.
+void testDecider() {
+  constexpr unsigned kW = 6, kV = 2;
+  std::mt19937 rng(17);
+  int sat = 0, unsat = 0;
+  uint64_t dropped = 0, kdropped = 0;
+  for (int round = 0; round < 300; ++round) {
+    ExprFactory efac;
+    using op::array::select;
+    auto num = [&](long v, unsigned w) {
+      return op::bv::bvnum(mpz_class(v), w, efac);
+    };
+    auto arr = [&](const char *n, unsigned iw, unsigned vw) {
+      return op::bind::mkConst(
+          mkTerm<std::string>(n, efac),
+          sort::arrayTy(op::bv::bvsort(iw, efac), op::bv::bvsort(vw, efac)));
+    };
+    Expr A = arr("A", kW, kV), C = arr("C", kW, kV);
+    Expr o1 = op::bv::bvConst(mkTerm<std::string>("obj1", efac), kW);
+    Expr o2 = op::bv::bvConst(mkTerm<std::string>("obj2", efac), kW);
+    Expr x = op::bv::bvConst(mkTerm<std::string>("x", efac), kW);
+    std::unordered_map<ENode *, mpz_class> vals{{o1.get(), mpz_class(8L)},
+                                                {o2.get(), mpz_class(40L)}};
+    Expr lay = mk<AND>(mk<EQ>(o1, num(8, kW)), mk<EQ>(o2, num(40, kW)));
+    auto pick = [&](size_t n) { return size_t(rng() % n); };
+    // 2-bit values read from C
+    std::vector<Expr> small;
+    for (int k = 0; k < 3; ++k)
+      small.push_back(select(C, num(long(k), kW)));
+    bool narrow = round % 3 == 2;
+    NarrowTable table;
+    std::vector<Expr> reads, ins;
+    for (int k = 0; k < 7; ++k) {
+      Expr s = small[pick(3)];
+      Expr off;
+      switch (pick(6)) {
+      case 0:
+        off = op::bv::zext(s, kW);
+        break;
+      case 1:
+        off = mk<BMUL>(num(3, kW), op::bv::sext(s, kW));
+        break;
+      case 2:
+        off = mk<BAND>(x, num(long(pick(8)), kW));
+        break;
+      case 3:
+        off = mk<ITE>(mk<EQ>(s, num(0, kV)), op::bv::zext(s, kW),
+                      num(long(pick(8)), kW));
+        break;
+      case 4:
+        off = mk<BSUB>(op::bv::zext(s, kW), op::bv::zext(small[pick(3)], kW));
+        break;
+      default:
+        off = num(long(pick(8)), kW);
+      }
+      Expr base = narrow ? o1 : (pick(2) ? o1 : o2);
+      Expr idx = mk<BADD>(base, off, num(long(pick(4)), kW));
+      if (narrow) {
+        table.byIndex.emplace(idx.get(), NarrowTable::Entry{o1, 3});
+        ins.push_back(mk<BULT>(mk<BSUB>(idx, o1), num(8, kW)));
+      }
+      reads.push_back(select(A, idx));
+    }
+    std::vector<Expr> lits{lay};
+    lits.insert(lits.end(), ins.begin(), ins.end());
+    for (int k = 0; k < 5; ++k) {
+      Expr a = reads[pick(reads.size())];
+      Expr b = pick(2) ? reads[pick(reads.size())] : num(long(pick(4)), kV);
+      lits.push_back(pick(3) ? mk<EQ>(a, b) : mk<NEQ>(a, b));
+    }
+    Expr f = mknary<AND>(lits.begin(), lits.end());
+    Ackermannizer ack;
+    ack.setValues(vals);
+    if (narrow)
+      ack.setNarrow(&table);
+    Expr g = ack.lower(f);
+    (narrow ? kdropped : dropped) += ack.stats().deciderPairs;
+    sea::solver::yices_solver_impl so(efac);
+    so.add(f);
+    auto ro = so.check();
+    std::unique_ptr<sea::solver::Solver> sl;
+    if (round % 2)
+      sl = std::make_unique<sea::solver::z3_solver_impl>(efac);
+    else
+      sl = std::make_unique<sea::solver::yices_solver_impl>(efac);
+    sl->add(g);
+    auto rl = sl->check();
+    CHECK(ro == rl, "decider round " << round << ": original and lowered "
+                                     << "disagree");
+    if (rl == sea::solver::SolverResult::SAT) {
+      ++sat;
+      auto m = sl->get_model();
+      AckermannModel am(*m, ack);
+      CHECK(isTrue(am.eval(f, true)),
+            "decider round " << round << ": original false in model");
+      CHECK(am.inconsistent() == 0,
+            "decider round " << round << ": inconsistent");
+    } else {
+      ++unsat;
+    }
+  }
+  CHECK(sat > 10 && unsat > 10,
+        "decider: both verdicts: sat " << sat << " unsat " << unsat);
+  CHECK(dropped > 100 && kdropped > 10,
+        "decider: dropped " << dropped << " k-bit " << kdropped);
+  llvm::outs() << "decider: sat=" << sat << " unsat=" << unsat
+               << " dropped=" << dropped << " k-bit=" << kdropped << "\n";
+  llvm::outs() << "test: decider ok\n";
+}
+
 int main() {
   testSharing();
   testLeaf();
@@ -703,6 +818,7 @@ int main() {
   testRandom();
   testLowBits();
   testNarrow();
+  testDecider();
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

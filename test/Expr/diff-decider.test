@@ -1,0 +1,14 @@
+// The difference decider of the Ackermann lowering (include/sea/Expr/
+// DiffDecider.hh, BvRange.hh; docs/design/Ackermann.md): census shapes with
+// can-equal siblings (z3), the width (a 64-bit NEVER is not a k-bit one),
+// leaf splitting and its budget, and seeded random terms whose every NEVER,
+// ALWAYS and unsigned range z3 confirms.
+RUN: sea-diff-decider-test | FileCheck %s
+CHECK: test: shapes ok
+CHECK: test: split ok
+CHECK: test: width ok
+CHECK: test: random ok
+CHECK: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

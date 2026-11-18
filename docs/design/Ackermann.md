@@ -101,6 +101,59 @@ the form equals the index for every assignment. Then:
   string_eq_ignore_case 1169 -> 617 constraints, linked_list_swap_contents
   1015 -> 108.
 
+### The difference decider
+
+`include/sea/Expr/DiffDecider.hh` (ranges: `include/sea/Expr/BvRange.hh`;
+tests `unittests/DiffDecider`, `test/Expr/diff-decider.test`); on by
+default, `--ack-decider=false` off. It runs on the pairs the tests above
+leave, before the stride rule, on the index the lowering compares and at
+its width: the w-bit indices (a narrowed read's index is `base +
+zext(low)`), and the k-bit offsets of two narrowed reads of one object. A
+NEVER at 64 bits is not one at k bits: offsets 0 and 2048 differ at 64
+bits and are equal at k = 11.
+
+For two terms a, b it answers NEVER (never equal: no constraint), ALWAYS
+(always equal: counted, the constraint is kept) or UNKNOWN, with the
+premise used: none, or LAYOUT (the object constants replaced by their
+numerals, the conjuncts `obj.k = <numeral>` of the query, so the drop is
+exact for the query as given). The difference `D = a - b` is a linear form
+`sum s_i x_i + c` over w bits; each atom x_i has an interval of integer
+representatives (BvRanges, exact: numerals, zext, sext, concat, extract,
+bvand, bvor, bvurem, bvudiv, shifts by a numeral, bvadd / bvsub / bvneg /
+bvmul by a numeral without reduction, ite as the hull; everything else the
+full range at its width). As an integer D lies in `[lo, hi]` and is
+congruent to `c` modulo `g = gcd(s_i)`; `a = b` iff `D = 0 (mod 2^w)`.
+Classes (counted by the weakest a pair needed):
+
+- residue: `c` is not a multiple of `gcd(g, 2^w)` (also: no atom, c != 0);
+- interval: no multiple of `2^w` in `[lo, hi]`;
+- congruence: no multiple `m` of `2^w` in `[lo, hi]` with `m = c (mod g)`;
+- signed: the two above with the signed representatives of the atoms
+  (`sext(x)` read as the signed x, negative numerals) instead of their
+  unsigned values: an nki tensor index `o + c sext(x) + K`, where the
+  unsigned reading of the sext spans 2^w.
+
+Leaves. The unsplit forms are tested first (an ite is an atom; an ite common
+to both indices cancels), then leaf by leaf: each index as the set of
+linear forms of its leaves through ite, bvadd and bvsub, each leaf with the
+ite conditions it was taken under; a combination that takes one condition
+(the same node) both ways is infeasible and dropped. NEVER if every
+feasible leaf pair is NEVER. Splitting is not monotone, so both are tried.
+Budgets (`--ack-decider-leaves`, default 256 leaves per node, else that
+node is one leaf; `--ack-decider-leaf-pairs`, default 16384 leaf pairs per
+read pair, else no split): the census leaf model, untuned. Each test runs
+first without the layout values, then with them.
+
+A wrong NEVER is not a wrong unsat: dropping a constraint only weakens the
+lowered query, and a sat model that puts two dropped reads at one index
+with different cells is caught by the model check below
+(`vc.ackermann-inconsistent`, status 2).
+
+Counted `vc.ackermann-decider-pairs` (dropped), by class `-residue`,
+`-interval`, `-congruence`, `-signed`; of them `-layout` (premise LAYOUT)
+and `-split` (decided leaf by leaf); `-always` (kept); `-budget`
+(undecided pairs on which a budget was hit).
+
 One more drop, on by default (`--ack-stride=false` turns it off): the stride rule (--ack-stride, docs/design/PtrIndex.md section 5): a pair
 of reads whose every address was a promised GEP node (inbounds / nusw /
 nuw) over one base, whose integer offsets can never be equal (the gcd of
@@ -124,8 +177,8 @@ premise stated and reported as for the rewriter.)
 
 Reported (`vc.ackermann-*`, with `--brunch-stats` as BRUNCH_STAT):
 arrays lowered / kept, distinct reads, pairs = sum of n(n-1)/2, numeral,
-offset, residue and leaf pairs, constraints added (= pairs - numeral -
-offset - residue - leaf pairs).
+offset, residue, leaf, decider and stride pairs, constraints added (= pairs
+minus the dropped ones).
 
 The point of the lowering is that no solver has to Ackermannize (z3 does it
 only below its lemma limit, else falls back to its SMT engine); its size is
@@ -231,7 +284,7 @@ drops), with one addition: two narrowed reads of one object compare
 `base + zext(t_k) = base + zext(t_l)`, which holds iff `t_k = t_l`; the
 pair gets the k-bit constraint `t_k = t_l -> r_k = r_l`, after the exact
 drops are tried on the k-bit forms (same symbolic part with different
-numerals modulo 2^k, residues, leaves). A pair with one narrowed read and
+numerals modulo 2^k, residues, leaves, the difference decider at k bits). A pair with one narrowed read and
 another (a read of another object, or one not eligible) keeps a w-bit
 equality, over i'. The stride rule is not applied to a narrowed read.
 
@@ -447,8 +500,9 @@ an address, validation sees the address values differ.
   `--ackermannize=auto` lowers only queries with no store, so the plain
   (non-SeaM) VC and widened memories with store chains are left to the
   solver.
-- Pair reductions beyond linear forms (no ARM, no A-INB, no case split on
-  ite conditions).
+- Pair reductions beyond linear forms and the difference decider's
+  structural ranges (no ARM, no A-INB, no ranges from assumes, no reasoning
+  on ite conditions beyond the identity of the condition node).
 - The number of constraints is quadratic in the reads of one array with
   different symbolic parts (array_list_swap: 4753), and it is what makes
   the lowered query slower there for every solver. Fewer constraints need

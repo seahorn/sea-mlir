@@ -6,10 +6,12 @@
 // parent's name. --smt2: hidden asserts each definition as two bvule atoms
 // and no equation over a name; eq as one equation; inline (the default) has
 // flat sums and no name.
-// RUN: sea-vc %s --lower --seam --smt2 --vc-defs=hidden 2>/dev/null | FileCheck %s --check-prefix=HID
-// RUN: sea-vc %s --lower --seam --smt2 --vc-defs=eq 2>/dev/null | FileCheck %s --check-prefix=EQ
-// RUN: sea-vc %s --lower --seam --smt2 2>/dev/null | FileCheck %s --check-prefix=INL
-// RUN: sea-vc %s --lower --seam --smt2 --vc-defs=nest 2>/dev/null | FileCheck %s --check-prefix=NEST
+// --ack-decider=false: the difference decider drops these pairs (their
+// offsets are bounded); the test needs them constrained.
+// RUN: sea-vc %s --lower --seam --ack-decider=false --smt2 --vc-defs=hidden 2>/dev/null | FileCheck %s --check-prefix=HID
+// RUN: sea-vc %s --lower --seam --ack-decider=false --smt2 --vc-defs=eq 2>/dev/null | FileCheck %s --check-prefix=EQ
+// RUN: sea-vc %s --lower --seam --ack-decider=false --smt2 2>/dev/null | FileCheck %s --check-prefix=INL
+// RUN: sea-vc %s --lower --seam --ack-decider=false --smt2 --vc-defs=nest 2>/dev/null | FileCheck %s --check-prefix=NEST
 // HID: (declare-fun def.0 () (_ BitVec 64))
 // HID-NOT: (= def.{{[0-9]+$}}
 // HID-DAG: (bvule def.1
@@ -22,12 +24,12 @@
 // NEST-NOT: def.
 // The names are counted, and a sat model replays and validates (the names
 // are not program values) with every backend.
-// RUN: sea-vc %s --lower --seam --vc-defs=hidden 2>&1 | FileCheck %s
-// RUN: sea-vc %s --lower --seam --vc-defs=eq 2>&1 | FileCheck %s
-// RUN: sea-vc %s --lower --seam --vc-defs=nest 2>&1 | FileCheck %s
-// RUN: sea-vc %s --lower --seam 2>&1 | FileCheck %s --check-prefix=OFF
-// RUN: %if yices %{ sea-vc %s --lower --seam --vc-defs=hidden --solver=yices 2>&1 | FileCheck %s %}
-// RUN: %if bitwuzla %{ sea-vc %s --lower --seam --vc-defs=hidden --ackermannize=on --solver=bitwuzla 2>&1 | FileCheck %s %}
+// RUN: sea-vc %s --lower --seam --ack-decider=false --vc-defs=hidden 2>&1 | FileCheck %s
+// RUN: sea-vc %s --lower --seam --ack-decider=false --vc-defs=eq 2>&1 | FileCheck %s
+// RUN: sea-vc %s --lower --seam --ack-decider=false --vc-defs=nest 2>&1 | FileCheck %s
+// RUN: sea-vc %s --lower --seam --ack-decider=false 2>&1 | FileCheck %s --check-prefix=OFF
+// RUN: %if yices %{ sea-vc %s --lower --seam --ack-decider=false --vc-defs=hidden --solver=yices 2>&1 | FileCheck %s %}
+// RUN: %if bitwuzla %{ sea-vc %s --lower --seam --ack-decider=false --vc-defs=hidden --ackermannize=on --solver=bitwuzla 2>&1 | FileCheck %s %}
 // CHECK-DAG: vc.defs-names: {{[1-9][0-9]*}}
 // CHECK-DAG: result: sat
 // CHECK-DAG: replay: assert-failed

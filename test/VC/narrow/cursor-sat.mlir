@@ -4,10 +4,12 @@
 // its index is p + zext(low_12(o_k)), and two reads compare their 12-bit
 // offsets. Counted (vc.narrow-*), on the ledger (assume.a-inb), and a sat
 // model replays and validates, with and without --vc-defs.
-// RUN: sea-vc %s --lower --seam --narrow-offsets 2>&1 | FileCheck %s
-// RUN: sea-vc %s --lower --seam --narrow-offsets --vc-defs=hidden 2>&1 | FileCheck %s
-// RUN: %if yices %{ sea-vc %s --lower --seam --narrow-offsets --solver=yices 2>&1 | FileCheck %s %}
-// RUN: %if bitwuzla %{ sea-vc %s --lower --seam --narrow-offsets --ackermannize=on --solver=bitwuzla 2>&1 | FileCheck %s %}
+// --ack-decider=false: the difference decider drops these pairs (their
+// offsets are bounded); the test needs them constrained.
+// RUN: sea-vc %s --lower --seam --ack-decider=false --narrow-offsets 2>&1 | FileCheck %s
+// RUN: sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --vc-defs=hidden 2>&1 | FileCheck %s
+// RUN: %if yices %{ sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --solver=yices 2>&1 | FileCheck %s %}
+// RUN: %if bitwuzla %{ sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --ackermannize=on --solver=bitwuzla 2>&1 | FileCheck %s %}
 // CHECK: vc.narrow: on
 // CHECK: vc.narrow-reads: 6
 // CHECK: vc.narrow-objects: 1
@@ -20,24 +22,24 @@
 // CHECK: validate: checked={{[0-9]+}} mismatches=0
 // The query compares 12-bit offsets; no read index is a 64-bit sum. With
 // --vc-defs=hidden the shared prefixes are 12-bit names.
-// RUN: sea-vc %s --lower --seam --narrow-offsets --smt2 2>/dev/null | FileCheck %s --check-prefix=SMT
+// RUN: sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --smt2 2>/dev/null | FileCheck %s --check-prefix=SMT
 // SMT: (bvadd ((_ zero_extend 4) ack.nd.0_0.0) #x002)
 // SMT-NOT: (_ zero_extend 56)
-// RUN: sea-vc %s --lower --seam --narrow-offsets --vc-defs=hidden --smt2 2>/dev/null | FileCheck %s --check-prefix=DEFS
+// RUN: sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --vc-defs=hidden --smt2 2>/dev/null | FileCheck %s --check-prefix=DEFS
 // DEFS: (declare-fun def.0 () (_ BitVec 12))
 // DEFS-NOT: (declare-fun def.{{[0-9]+}} () (_ BitVec 64))
 // --seam-check states the A-INB of each narrowed read's access and checks
 // that its index equals the narrowed one under it.
-// RUN: sea-vc %s --lower --seam --narrow-offsets --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
+// RUN: sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // CHK: narrow-check: indices=6 checked=6 valid=6 invalid=0 unknown=0 unexpressible=0
 // --narrow-check runs the same obligations alone (no rule trail), also
 // without solving the query.
-// RUN: sea-vc %s --lower --seam --narrow-offsets --narrow-check --vcgen-only 2>&1 | FileCheck %s --check-prefix=CHK
+// RUN: sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --narrow-check --vcgen-only 2>&1 | FileCheck %s --check-prefix=CHK
 // Off by default; without the premises it narrows nothing.
-// RUN: sea-vc %s --lower --seam 2>&1 | FileCheck %s --check-prefix=OFF
+// RUN: sea-vc %s --lower --seam --ack-decider=false 2>&1 | FileCheck %s --check-prefix=OFF
 // OFF-NOT: vc.narrow
 // OFF-NOT: assume.a-inb
-// RUN: sea-vc %s --lower --seam --narrow-offsets --seam-premises=0 2>&1 | FileCheck %s --check-prefix=NOPREM
+// RUN: sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --seam-premises=0 2>&1 | FileCheck %s --check-prefix=NOPREM
 // NOPREM: vc.narrow: off-no-premises
 // NOPREM-NOT: assume.a-inb
 // RUN: not sea-vc %s --lower --narrow-offsets 2>&1 | FileCheck %s --check-prefix=NOSEAM

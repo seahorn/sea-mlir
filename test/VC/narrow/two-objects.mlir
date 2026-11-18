@@ -1,8 +1,10 @@
 // --narrow-offsets narrows each read into its own object, but a pair of
 // reads of two different objects is not compared at k bits: it stays a
 // 64-bit address comparison (vc.narrow-mixed), over base + zext(low_k).
-// RUN: sea-vc %s --lower --seam --narrow-offsets 2>&1 | FileCheck %s
-// RUN: sea-vc %s --lower --seam --narrow-offsets --smt2 2>/dev/null | FileCheck %s --check-prefix=SMT
+// --ack-decider=false: the difference decider drops these pairs (their
+// offsets are bounded); the test needs them constrained.
+// RUN: sea-vc %s --lower --seam --ack-decider=false --narrow-offsets 2>&1 | FileCheck %s
+// RUN: sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --smt2 2>/dev/null | FileCheck %s --check-prefix=SMT
 // CHECK: vc.narrow-reads: 2
 // CHECK: vc.narrow-objects: 2
 // CHECK: vc.narrow-pairs: 0

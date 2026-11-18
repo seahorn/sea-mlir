@@ -12,6 +12,7 @@ CHECK: test: model ok
 CHECK: test: random ok
 CHECK: test: lowbits ok
 CHECK: test: narrow ok
+CHECK: test: decider ok
 CHECK: failures: 0
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors

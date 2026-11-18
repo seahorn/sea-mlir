@@ -515,6 +515,32 @@ static cl::opt<bool> ackStride(
              "vc.ackermann-stride-pairs; default on, --ack-stride=false off"),
     cl::init(true));
 
+static cl::opt<bool> ackDecider(
+    "ack-decider",
+    cl::desc("The difference decider in the Ackermann lowering: a pair of "
+             "reads whose indices are never equal by ranges of their "
+             "cancelled difference (intervals, congruences, signed "
+             "representatives of sext, the layout values; through ite / "
+             "bvadd / bvsub leaves) gets no constraint. Exact (premise "
+             "LAYOUT, a conjunct of the query); on the index the lowering "
+             "compares, at its width (k bits under --narrow-offsets). "
+             "Counted vc.ackermann-decider-*; default on, "
+             "--ack-decider=false off (docs/design/Ackermann.md)"),
+    cl::init(true));
+
+static cl::opt<unsigned> ackDeciderLeaves(
+    "ack-decider-leaves",
+    cl::desc("--ack-decider: at most this many leaves per index node (else "
+             "the node is one leaf); default 256 (untuned)"),
+    cl::init(256));
+
+static cl::opt<unsigned> ackDeciderLeafPairs(
+    "ack-decider-leaf-pairs",
+    cl::desc("--ack-decider: at most this many leaf pairs per read pair "
+             "(else no leaf split, counted vc.ackermann-decider-budget); "
+             "default 16384 (untuned)"),
+    cl::init(16384));
+
 static cl::opt<bool> narrowOffsets(
     "narrow-offsets",
     cl::desc("With --seam and the Ackermann lowering: a read whose address "
@@ -2380,6 +2406,19 @@ TYPICAL:
                                  #   untuned until a corpus sweep sets one;
                                  #   `words.check: unknown ... reason=rlimit`).
                                  #   docs/design/SeaM-initial-words.md
+  sea-vc p.mlir --seam --ack-decider=false  # (default on) the difference decider in
+                                 #   the Ackermann lowering: a pair whose
+                                 #   indices are never equal by ranges of
+                                 #   their cancelled difference (intervals,
+                                 #   congruences, signed sext readings, the
+                                 #   layout values; ite / bvadd / bvsub
+                                 #   leaves) gets no constraint. Exact; on the
+                                 #   index compared, at its width (k bits
+                                 #   under --narrow-offsets). Budgets:
+                                 #   --ack-decider-leaves=<n> (256),
+                                 #   --ack-decider-leaf-pairs=<n> (16384),
+                                 #   untuned. vc.ackermann-decider-*;
+                                 #   docs/design/Ackermann.md
   sea-vc p.mlir --seam --ack-stride=false   # (default on) the stride rule in the Ackermann
                                  #   lowering: reads at sea.ptr.index nodes
                                  #   with a promise (inbounds / nusw / nuw:
@@ -2621,7 +2660,15 @@ OUTPUT (stdout, `key: value` lines):
                                   -reads / -pairs / -numeral-pairs /
                                   -offset-pairs / -residue-pairs /
                                   -leaf-pairs (ites leaf by leaf, layout
-                                  values of the objects) / -stride-pairs
+                                  values of the objects) / -decider-pairs
+                                  (--ack-decider: ranges of the cancelled
+                                  difference; of them -decider-residue /
+                                  -interval / -congruence / -signed by
+                                  class, -decider-layout (premise LAYOUT),
+                                  -decider-split (leaf by leaf);
+                                  -decider-always (kept), -decider-budget
+                                  (undecided, a leaf budget hit)) /
+                                  -stride-pairs
                                   (--ack-stride: trusted GEP promises) /
                                   -constraints: arrays lowered and kept,
                                   distinct reads, read pairs, pairs of two
@@ -5895,6 +5942,10 @@ int main(int argc, char **argv) {
     Phase ackPhase("ackermann");
     expr::Ackermannizer ack;
     ack.setValues(layoutValues);
+    expr::DiffDecider::Options deciderOpt;
+    deciderOpt.maxLeaves = ackDeciderLeaves;
+    deciderOpt.maxLeafPairs = ackDeciderLeafPairs;
+    ack.setDecider(ackDecider, deciderOpt);
     if (narrowOn)
       ack.setNarrow(&narrowTable);
     if (strideOn && !accessOrigins.byIndex.empty()) {
@@ -5921,6 +5972,7 @@ int main(int argc, char **argv) {
       } else if (!ack.hasStore()) {
         auditAck = std::make_unique<expr::Ackermannizer>();
         auditAck->setValues(layoutValues);
+        auditAck->setDecider(ackDecider, deciderOpt);
         auditAck->recordPairs(true);
         (void)auditAck->lower(query);
       }

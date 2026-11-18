@@ -26,7 +26,10 @@
 //  - two reads with the same S and different c: S + c1 = S + c2 iff c1 = c2
 //    (mod 2^w), so i_k = i_l is false and the constraint is true (counted:
 //    numeral pairs when S is empty, offset pairs otherwise).
-// The other drops are exact. One more (sea-vc default; off:
+// The other drops are exact: residues, leaves, and the difference decider
+// (DiffDecider.hh: intervals and congruences of the cancelled difference,
+// signed representatives, the layout values; on the index compared, at its
+// width). One more (sea-vc default; off:
 // --ack-stride=false): the stride rule (--ack-stride, docs/design/PtrIndex.md
 // section 5): a pair of reads whose every address was a promised GEP node
 // (inbounds / nusw / nuw) over one base, whose integer offsets can never be
@@ -52,7 +55,9 @@
 // select(A, j) through that function (j evaluated first) and replaces any
 // other occurrence of A by the store chain over a constant 0 array, so every
 // consumer of the model (replay, validation) sees the same array.
+#include "sea/Expr/DiffDecider.hh"
 #include "sea/Expr/Expr.hh"
+#include "sea/Expr/LinearForms.hh"
 #include "sea/Expr/LowBits.hh"
 #include "sea/Expr/Smt/Model.hh"
 #include "sea/Support/Stats.h"
@@ -63,6 +68,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -71,17 +77,6 @@
 namespace expr {
 
 namespace ackermann_detail {
-/// A bit-vector numeral's value reduced modulo 2^w (bvnum does not reduce;
-/// a backend may return a signed numeral).
-inline mpz_class reducedValue(const Expr &num) {
-  unsigned w = op::bv::widthBvNum(num);
-  mpz_class mod;
-  mpz_ui_pow_ui(mod.get_mpz_t(), 2, w);
-  mpz_class r;
-  mpz_fdiv_r(r.get_mpz_t(), op::bv::toMpz(num).get_mpz_t(), mod.get_mpz_t());
-  return r;
-}
-
 /// A constant (0-ary application) of an array sort.
 inline bool isArrayConstant(ENode *n) {
   return op::bind::isArrayConst(Expr(n));
@@ -139,173 +134,6 @@ inline Expr withKids(ENode *n, llvm::SmallVectorImpl<Expr> &kids) {
   return changed ? n->getFactory().mkNary(n->op(), kids.begin(), kids.end())
                  : Expr(n);
 }
-/// A linear form of a w-bit term: sum of coef(a) * a over atoms a, plus c,
-/// modulo 2^w (coefficients nonzero, reduced).
-struct Linear {
-  std::map<ENode *, mpz_class> coef;
-  mpz_class c;
-};
-
-/// The linear forms of index terms of one width w: bvadd, bvsub, bvneg, a
-/// bvmul with one non-numeral factor, numerals; an ite whose two branches
-/// have the same constant c is ite(cond, S1, S2) + c (an atom built from the
-/// two symbolic parts, hash-consed, so equal structures meet); every other
-/// term is an atom. Exact identities of w-bit arithmetic: the form is equal
-/// to the term.
-class LinearForms {
-public:
-  using Key = std::vector<std::pair<ENode *, mpz_class>>;
-
-  explicit LinearForms(unsigned w) : m_w(w) {
-    mpz_ui_pow_ui(m_mod.get_mpz_t(), 2, w);
-  }
-  /// Constants with a known value (the layout: obj.k = <numeral>, a fact of
-  /// every model of the query): their form is that numeral. Set before the
-  /// first of(); null: none (the default, used for read sharing).
-  void setValues(const std::unordered_map<ENode *, mpz_class> *v) {
-    m_values = v;
-  }
-  /// acc += sign * l (sign 1 or -1)
-  void add(Linear &acc, const Linear &l, bool negate) const {
-    mpz_class k(1UL);
-    if (negate)
-      mpz_sub_ui(k.get_mpz_t(), m_mod.get_mpz_t(), 1);
-    addScaled(acc, l, k);
-  }
-  unsigned width() const { return m_w; }
-
-  const Linear &of(ENode *n) {
-    auto it = m_memo.find(n);
-    if (it != m_memo.end())
-      return it->second;
-    Linear l = compute(n);
-    m_keep.push_back(Expr(n));
-    return m_memo.emplace(n, std::move(l)).first->second;
-  }
-
-  /// The symbolic part as a key (atoms ordered, with coefficients).
-  Key key(const Linear &l) const { return Key(l.coef.begin(), l.coef.end()); }
-
-private:
-  mpz_class norm(const mpz_class &x) const {
-    mpz_class r;
-    mpz_fdiv_r(r.get_mpz_t(), x.get_mpz_t(), m_mod.get_mpz_t());
-    return r;
-  }
-  mpz_class mul(const mpz_class &x, const mpz_class &y) const {
-    mpz_class r;
-    mpz_mul(r.get_mpz_t(), x.get_mpz_t(), y.get_mpz_t());
-    return norm(r);
-  }
-  /// acc += k * l
-  void addScaled(Linear &acc, const Linear &l, const mpz_class &k) const {
-    mpz_class t;
-    mpz_addmul(t.get_mpz_t(), l.c.get_mpz_t(), k.get_mpz_t());
-    mpz_add(t.get_mpz_t(), t.get_mpz_t(), acc.c.get_mpz_t());
-    acc.c = norm(t);
-    for (const auto &[a, v] : l.coef) {
-      mpz_class s;
-      mpz_mul(s.get_mpz_t(), v.get_mpz_t(), k.get_mpz_t());
-      auto [p, fresh] = acc.coef.emplace(a, mpz_class(0UL));
-      mpz_add(s.get_mpz_t(), s.get_mpz_t(), p->second.get_mpz_t());
-      p->second = norm(s);
-      if (p->second == mpz_class(0UL))
-        acc.coef.erase(p);
-    }
-  }
-  Linear atom(ENode *n) const {
-    Linear l;
-    l.coef.emplace(n, mpz_class(1UL));
-    return l;
-  }
-  /// The symbolic part as a term (0 if empty).
-  Expr rebuild(const Linear &l, ExprFactory &ef) {
-    std::vector<Expr> terms;
-    for (const auto &[a, v] : l.coef)
-      terms.push_back(v == mpz_class(1UL)
-                          ? Expr(a)
-                          : mk<BMUL>(op::bv::bvnum(v, m_w, ef), Expr(a)));
-    Expr r = terms.empty()       ? op::bv::bvnum(mpz_class(0UL), m_w, ef)
-             : terms.size() == 1 ? terms[0]
-                                 : mknary<BADD>(terms.begin(), terms.end());
-    m_keep.push_back(r);
-    return r;
-  }
-  Linear compute(ENode *n) {
-    Expr e(n);
-    if (m_values) {
-      auto it = m_values->find(n);
-      if (it != m_values->end()) {
-        Linear l;
-        l.c = norm(it->second);
-        return l;
-      }
-    }
-    if (op::bv::is_bvnum(e)) {
-      Linear l;
-      l.c = norm(op::bv::toMpz(e));
-      return l;
-    }
-    const mpz_class one(1UL);
-    mpz_class minusOne;
-    mpz_sub_ui(minusOne.get_mpz_t(), m_mod.get_mpz_t(), 1);
-    if (isOpX<BADD>(n) || isOpX<BSUB>(n)) {
-      Linear l;
-      for (size_t i = 0; i < n->arity(); ++i) {
-        const Linear &k = of(n->arg(i));
-        addScaled(l, k, (isOpX<BSUB>(n) && i > 0) ? minusOne : one);
-      }
-      return l;
-    }
-    if (isOpX<BNEG>(n) && n->arity() == 1) {
-      Linear l;
-      addScaled(l, of(n->arg(0)), minusOne);
-      return l;
-    }
-    if (isOpX<BMUL>(n)) {
-      mpz_class k(1UL);
-      ENode *other = nullptr;
-      size_t others = 0;
-      for (size_t i = 0; i < n->arity(); ++i) {
-        Expr kid(n->arg(i));
-        if (op::bv::is_bvnum(kid))
-          k = mul(k, op::bv::toMpz(kid));
-        else {
-          other = n->arg(i);
-          ++others;
-        }
-      }
-      Linear l;
-      if (others == 0)
-        l.c = k;
-      else if (others == 1)
-        addScaled(l, of(other), k);
-      else
-        return atom(n);
-      return l;
-    }
-    if (isOpX<ITE>(n) && n->arity() == 3) {
-      Linear t = of(n->arg(1)), f = of(n->arg(2));
-      if (t.c != f.c)
-        return atom(n);
-      if (t.coef == f.coef)
-        return t; // ite(c, x, x) = x
-      Expr ite = mk<ITE>(Expr(n->arg(0)), rebuild(t, n->efac()),
-                         rebuild(f, n->efac()));
-      m_keep.push_back(ite);
-      Linear l = atom(ite.get());
-      l.c = t.c;
-      return l;
-    }
-    return atom(n);
-  }
-
-  unsigned m_w;
-  mpz_class m_mod;
-  const std::unordered_map<ENode *, mpz_class> *m_values = nullptr;
-  std::unordered_map<ENode *, Linear> m_memo;
-  std::vector<Expr> m_keep;
-};
 } // namespace ackermann_detail
 
 /// Leaf-wise "never equal" for two index terms (the Ackermann pair test
@@ -539,6 +367,17 @@ public:
     /// (they rest on A-NULL) and those with a byte of a wide access (K != 0:
     /// they rest on A-NOWRAP, the access address does not wrap)
     uint64_t strideANullPairs = 0, strideANoWrapPairs = 0;
+    /// the difference decider (setDecider; DiffDecider.hh), on the pairs
+    /// the tests above left: pairs it found never equal (no constraint), of
+    /// them by class (residue, interval, congruence, signed: the weakest
+    /// test a leaf pair needed), with the layout values (premise LAYOUT, a
+    /// conjunct of the query), leaf by leaf (the unsplit form did not
+    /// decide); pairs found always equal (kept); undecided pairs on which a
+    /// leaf budget was hit
+    bool decider = false;
+    uint64_t deciderPairs = 0, deciderResidue = 0, deciderInterval = 0,
+             deciderCongruence = 0, deciderSigned = 0, deciderLayout = 0,
+             deciderSplit = 0, deciderAlways = 0, deciderBudget = 0;
     uint64_t constraints = 0; ///< constraints added (the other pairs)
     /// --narrow-offsets (setNarrow): reads narrowed (their index is
     /// base + zext(low_k(offset))), objects they are in, the largest k;
@@ -570,6 +409,17 @@ public:
       line("offset-pairs").value(offsetPairs);
       line("residue-pairs").value(residuePairs);
       line("leaf-pairs").value(leafPairs);
+      if (decider) {
+        line("decider-pairs").value(deciderPairs);
+        line("decider-residue").value(deciderResidue);
+        line("decider-interval").value(deciderInterval);
+        line("decider-congruence").value(deciderCongruence);
+        line("decider-signed").value(deciderSigned);
+        line("decider-layout").value(deciderLayout);
+        line("decider-split").value(deciderSplit);
+        line("decider-always").value(deciderAlways);
+        line("decider-budget").value(deciderBudget);
+      }
       if (stride == Stride::On) {
         line("stride-pairs").value(stridePairs);
         line("stride-a-null-pairs").value(strideANullPairs);
@@ -753,6 +603,10 @@ public:
     // linear forms and leaf tests of the narrowed offsets, per width k
     std::map<unsigned, LinearForms> lowForms;
     std::map<unsigned, LeafDecider> lowLeaves;
+    // the difference deciders per width (w-bit indices with the layout
+    // values; k-bit offsets without)
+    std::map<unsigned, std::unique_ptr<DiffDecider>> deciders, lowDeciders;
+    m_stats.decider = m_deciderOn;
     for (const Array &arr : m_arrays) {
       unsigned w =
           op::bv::width(sort::arrayIndexTy(op::bind::declaredSort(arr.array)));
@@ -766,7 +620,7 @@ public:
           // k-bit constraint
           if (rs[k].low && rs[l].low && rs[k].nbase == rs[l].nbase &&
               m_low.width(rs[k].low) == m_low.width(rs[l].low)) {
-            if (narrowPair(rs[k], rs[l], lowForms, lowLeaves))
+            if (narrowPair(rs[k], rs[l], lowForms, lowLeaves, lowDeciders))
               continue;
             ++m_stats.constraints;
             ++m_stats.narrowPairs;
@@ -800,6 +654,10 @@ public:
             ++m_stats.leafPairs;
             continue;
           }
+          // the difference decider on the compared indices (w bits; a
+          // narrowed read's index is base + zext(low))
+          if (decided(deciders, w, &m_values, rs[k].index, rs[l].index))
+            continue;
           // the stride rule (trusted GEP promises), after the exact tests
           if (StridePrem sp; strideApart(rs[k], rs[l], sp)) {
             ++m_stats.stridePairs;
@@ -946,6 +804,13 @@ public:
   /// Off: no stride firing that rests on a named premise (A-NOWRAP: K != 0;
   /// A-NULL: size-0 bases).
   void setAssumePremises(bool b) { m_premises = b; }
+  /// The difference decider (DiffDecider.hh) on the pairs the other exact
+  /// tests leave, before the stride rule; on by default. Exact (premise
+  /// LAYOUT at most, a conjunct of the query).
+  void setDecider(bool on, DiffDecider::Options opt = DiffDecider::Options()) {
+    m_deciderOn = on;
+    m_deciderOpt = opt;
+  }
   /// The lowered arrays with their reads (the table of model reconstruction).
   const std::vector<Array> &arrays() const { return m_arrays; }
   /// The position of \p a in arrays(), or -1 if it is not lowered.
@@ -1072,7 +937,8 @@ private:
   /// different numerals, residues, leaves): counted with those drops.
   bool narrowPair(const Read &a, const Read &b,
                   std::map<unsigned, ackermann_detail::LinearForms> &forms,
-                  std::map<unsigned, LeafDecider> &leaves) {
+                  std::map<unsigned, LeafDecider> &leaves,
+                  std::map<unsigned, std::unique_ptr<DiffDecider>> &deciders) {
     using namespace ackermann_detail;
     unsigned k = m_low.width(a.low);
     LinearForms &lf = forms.try_emplace(k, k).first->second;
@@ -1096,7 +962,51 @@ private:
       ++m_stats.leafPairs;
       return true;
     }
-    return false;
+    // the difference decider at k bits, on the offsets compared (no layout
+    // values: the base cancels)
+    return decided(deciders, k, nullptr, a.low, b.low);
+  }
+
+  /// The difference decider on \p a, \p b at width \p w (one decider per
+  /// width in \p deciders): true if they are never equal (counted).
+  bool decided(std::map<unsigned, std::unique_ptr<DiffDecider>> &deciders,
+               unsigned w, const std::unordered_map<ENode *, mpz_class> *values,
+               const Expr &a, const Expr &b) {
+    if (!m_deciderOn)
+      return false;
+    auto &d = deciders[w];
+    if (!d)
+      d = std::make_unique<DiffDecider>(
+          w, values && !values->empty() ? values : nullptr, m_deciderOpt);
+    DiffDecider::Result r = d->decide(a.get(), b.get());
+    if (r.verdict == DiffDecider::Verdict::Always)
+      ++m_stats.deciderAlways;
+    if (r.verdict != DiffDecider::Verdict::Never) {
+      if (r.budget)
+        ++m_stats.deciderBudget;
+      return false;
+    }
+    ++m_stats.deciderPairs;
+    switch (r.cls) {
+    case DiffDecider::Class::None:
+    case DiffDecider::Class::Residue:
+      ++m_stats.deciderResidue;
+      break;
+    case DiffDecider::Class::Interval:
+      ++m_stats.deciderInterval;
+      break;
+    case DiffDecider::Class::Congruence:
+      ++m_stats.deciderCongruence;
+      break;
+    case DiffDecider::Class::Signed:
+      ++m_stats.deciderSigned;
+      break;
+    }
+    if (r.premise == DiffDecider::Premise::Layout)
+      ++m_stats.deciderLayout;
+    if (r.split)
+      ++m_stats.deciderSplit;
+    return true;
   }
 
   /// Trailing zeros of x modulo 2^w (w for 0).
@@ -1159,6 +1069,8 @@ private:
   LowBits m_low;
   std::unordered_set<ENode *> m_size0;
   bool m_premises = true;
+  bool m_deciderOn = true;
+  DiffDecider::Options m_deciderOpt;
   Stats m_stats;
   std::vector<Expr> m_candidates;
   std::vector<Array> m_arrays;

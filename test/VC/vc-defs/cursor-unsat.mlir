@@ -1,11 +1,13 @@
 // Named address sums (sea-vc --vc-defs, docs/design/SumNames.md) keep an
 // unsat query unsat: the cursor of cursor-sat.mlir never passes 5 * 257, in
 // every definition form and with every backend.
-// RUN: sea-vc %s --lower --seam --vc-defs=hidden 2>&1 | FileCheck %s
-// RUN: sea-vc %s --lower --seam --vc-defs=eq 2>&1 | FileCheck %s
-// RUN: sea-vc %s --lower --seam --vc-defs=nest 2>&1 | FileCheck %s
-// RUN: %if yices %{ sea-vc %s --lower --seam --vc-defs=hidden --solver=yices 2>&1 | FileCheck %s %}
-// RUN: %if bitwuzla %{ sea-vc %s --lower --seam --vc-defs=hidden --ackermannize=on --solver=bitwuzla 2>&1 | FileCheck %s %}
+// --ack-decider=false: the difference decider drops these pairs (their
+// offsets are bounded); the test needs them constrained.
+// RUN: sea-vc %s --lower --seam --ack-decider=false --vc-defs=hidden 2>&1 | FileCheck %s
+// RUN: sea-vc %s --lower --seam --ack-decider=false --vc-defs=eq 2>&1 | FileCheck %s
+// RUN: sea-vc %s --lower --seam --ack-decider=false --vc-defs=nest 2>&1 | FileCheck %s
+// RUN: %if yices %{ sea-vc %s --lower --seam --ack-decider=false --vc-defs=hidden --solver=yices 2>&1 | FileCheck %s %}
+// RUN: %if bitwuzla %{ sea-vc %s --lower --seam --ack-decider=false --vc-defs=hidden --ackermannize=on --solver=bitwuzla 2>&1 | FileCheck %s %}
 // CHECK-DAG: vc.defs-names: {{[1-9][0-9]*}}
 // CHECK-DAG: result: unsat
 !m = !sea.mem<!sea.ptr<64>, i8>
