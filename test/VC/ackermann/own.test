@@ -44,10 +44,11 @@
 // RUN: sea-vc %t/broken.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=BROKEN-OFF
 // BROKEN-OFF: vc.ackermann-constraints: 1
 // BROKEN-OFF: result: unsat
-// RUN: not sea-vc %t/broken.mlir --lower --seam --ack-own 2>&1 | FileCheck %s --check-prefix=BROKEN
+// RUN: not sea-vc %t/broken.mlir --lower --seam --ack-own --brunch-stats 2>&1 | FileCheck %s --check-prefix=BROKEN
 // BROKEN-DAG: vc.ackermann-own-pairs: 1
 // BROKEN-DAG: vc.ackermann-model: {{.*}} inconsistent=1 {{.*}}own-broken=1
 // BROKEN-DAG: --ack-own dropped {{.*}}[vc.ackermann-inconsistent]
+// BROKEN-DAG: BRUNCH_STAT status 4
 // The same program placed first (no abstract program to rerun): the replay
 // reads the one cell and does not fail the assertion, so nothing confirms
 // the model: status 2.
@@ -59,12 +60,14 @@
 //
 // guard: the load of a + i runs only for i < 16; the failing path needs
 // a + i = c + j (so i >= 16, the load does not run) and a nonzero cell at
-// c + j. The model puts the two reads at one index with different cells
-// (the read of a + i is free), but the replayed run fails the assertion
-// and validates: sat, status 0, with the warning.
+// c + j. The path forces the index collision; the differing cell value
+// comes from the value the solver picks for the read that does not execute
+// (the pinned solvers set it to 0 while y != 0 is forced; nothing in the
+// query forces it). The replayed run fails the assertion and validates:
+// sat, status 0, with the warning.
 // RUN: sea-vc %t/guard.mlir --lower --seam --ack-own --brunch-stats 2>&1 | FileCheck %s --check-prefix=GUARD
 // GUARD-DAG: [vc.ack-own-collision-excused]
-// GUARD-DAG: vc.ackermann-model: {{.*}} own-broken=1 own-excused=1
+// GUARD-DAG: vc.ackermann-model: {{.*}} own-broken=[[N:[1-9][0-9]*]] own-excused=[[N]]
 // GUARD-DAG: replay: assert-failed
 // GUARD-DAG: validate: checked={{[0-9]+}} mismatches=0
 // GUARD-DAG: BRUNCH_STAT status 0
