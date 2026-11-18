@@ -664,6 +664,9 @@ public:
               m_pairs.push_back({size_t(&arr - m_arrays.data()), k, l});
             conj.push_back(mk<OR>(mk<NEG>(mk<EQ>(rs[k].low, rs[l].low)),
                                   mk<EQ>(rs[k].value, rs[l].value)));
+            if (m_recordConstraints)
+              m_constraints.push_back({size_t(&arr - m_arrays.data()), k, l,
+                                       rs[k].low, rs[l].low, conj.back()});
             continue;
           }
           if (rs[k].group == rs[l].group) {
@@ -725,8 +728,13 @@ public:
             m_pairs.push_back({size_t(&arr - m_arrays.data()), k, l});
           conj.push_back(mk<OR>(mk<NEG>(mk<EQ>(rs[k].index, rs[l].index)),
                                 mk<EQ>(rs[k].value, rs[l].value)));
+          if (m_recordConstraints)
+            m_constraints.push_back({size_t(&arr - m_arrays.data()), k, l,
+                                     rs[k].index, rs[l].index, conj.back()});
         }
     }
+    if (m_recordConstraints)
+      m_body = body;
     return conj.size() == 1 ? body : mknary<AND>(conj.begin(), conj.end());
   }
 
@@ -736,6 +744,24 @@ public:
   struct Pair {
     size_t array, k, l;
   };
+  /// A constraint lower() conjoined (recordConstraints): reads k < l of
+  /// lowered array \p array, the compared terms (the indices, or the k-bit
+  /// offsets of two narrowed reads of one object) and the conjunct itself,
+  /// `lhs = rhs -> r_k = r_l`.
+  struct Constraint {
+    size_t array, k, l;
+    Expr lhs, rhs;
+    Expr fact;
+  };
+  /// Record, in lower(), every constraint it conjoins and the lowered body
+  /// without them (sea-vc --ack-relax, docs/design/Ackermann.md "Lazy
+  /// constraints"). The query lower() returns is the same either way:
+  /// body() and constraints()' facts in order, one conjunction.
+  void recordConstraints(bool b) { m_recordConstraints = b; }
+  const std::vector<Constraint> &constraints() const { return m_constraints; }
+  /// The lowered query without the constraints (recordConstraints; null if
+  /// lower() lowered nothing).
+  const Expr &body() const { return m_body; }
   /// Record the constrained pairs in lower() (for the equality audit,
   /// sea-vc --eq-audit); off by default (a pair per constraint).
   void recordPairs(bool b) { m_recordPairs = b; }
@@ -1135,6 +1161,9 @@ private:
 
   bool m_analyzed = false;
   bool m_recordPairs = false;
+  bool m_recordConstraints = false;
+  std::vector<Constraint> m_constraints;
+  Expr m_body;
   bool m_keepImages = false;
   bool m_identity = false;
   std::unordered_map<ENode *, Expr> m_images;

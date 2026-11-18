@@ -12,6 +12,7 @@
 #include "EqAudit.h"
 #include "sea/Dialect/Sea/SeaDialect.h"
 #include "sea/Dialect/Sea/SeaOps.h"
+#include "sea/Expr/AckRelax.hh"
 #include "sea/Expr/Ackermann.hh"
 #include "sea/Expr/ExprAPInt.hh"
 #include "sea/Expr/InitialWords.hh"
@@ -556,6 +557,34 @@ static cl::opt<bool> ackOwn(
              "excused). Off by default "
              "(docs/design/Ackermann.md, \"The ownership drop\")"),
     cl::init(false));
+
+static cl::opt<std::string> ackRelax(
+    "ack-relax",
+    cl::desc("Lazy Ackermann constraints, a diagnosis mode (off by default; "
+             "the eager lowering stays the default): the constraints the "
+             "lowering keeps after its drops are candidates; the selector "
+             "picks those of the first solve (all: none of them). Each round "
+             "solves on a fresh solver; a sat model that breaks omitted "
+             "constraints adds them and solves again; unsat, unknown or a "
+             "model that breaks none is the answer. After "
+             "--ack-relax-rounds the whole query is solved (vc.ack-relax-"
+             "stop: rounds). Needs the lowering; not with --smt2, "
+             "--vcgen-only, --reach or a split (docs/design/Ackermann.md, "
+             "\"Lazy constraints\")"),
+    cl::value_desc("selector"), cl::init(""));
+
+static cl::opt<unsigned> ackRelaxRounds(
+    "ack-relax-rounds",
+    cl::desc("--ack-relax: at most this many relaxed solves, then the whole "
+             "query; default 50 (untuned)"),
+    cl::init(50));
+
+static cl::opt<std::string> ackRelaxSmt2(
+    "ack-relax-smt2",
+    cl::desc("--ack-relax: write the query of the last solve (the round that "
+             "answered, or the whole query after a fallback) as SMT-LIB to "
+             "this file"),
+    cl::value_desc("file"), cl::init(""));
 
 /// vc.ackermann-inconsistent when the pairs at fault are --ack-own drops
 static constexpr const char *ownBrokenMessage =
@@ -2430,6 +2459,23 @@ TYPICAL:
                                  #   untuned until a corpus sweep sets one;
                                  #   `words.check: unknown ... reason=rlimit`).
                                  #   docs/design/SeaM-initial-words.md
+  sea-vc p.mlir --seam --ack-relax=all [--ack-relax-rounds=<n>]
+      [--ack-relax-smt2=<f>]     # (off; a diagnosis mode, the eager
+                                 #   lowering stays the default) lazy
+                                 #   Ackermann constraints: the constraints
+                                 #   left after every drop are candidates;
+                                 #   the first round omits them; a sat
+                                 #   model that breaks some adds them all
+                                 #   and solves again on a fresh solver.
+                                 #   Unsat, unknown, or a model that breaks
+                                 #   none (a model of the whole query: the
+                                 #   usual replay) is the answer; after
+                                 #   <n> rounds (50, untuned) the whole
+                                 #   query (warning vc.ack-relax-fallback).
+                                 #   vc.ack-relax-stop / -rounds / -kept /
+                                 #   -round; <f>: the last solve's query.
+                                 #   Not with --smt2, --vcgen-only, --reach,
+                                 #   splits. docs/design/Ackermann.md
   sea-vc p.mlir --seam --ack-decider=false  # (default on) the difference decider in
                                  #   the Ackermann lowering: a pair whose
                                  #   indices are never equal by ranges of
@@ -2759,6 +2805,26 @@ OUTPUT (stdout, `key: value` lines):
                                   bits and the sum of their k, constraints
                                   with one narrowed read and another (64
                                   bits); with vc-time, stderr with --smt2)
+  vc.ack-relax: all|off-no-ackermann   (--ack-relax: the selector, or
+                                  not run (no lowering); with a selector:
+                                  vc.ack-relax-candidates: the constraints
+                                  the lowering keeps; with vc-time)
+  vc.ack-relax-stop: unsat|consistent|unknown|rounds   (--ack-relax, after
+                                  the rounds: the last round's answer
+                                  (consistent: sat, its model breaks no
+                                  candidate), or rounds: the bound was hit
+                                  and the whole query was solved)
+  vc.ack-relax-rounds: <n>        (relaxed solves)
+  vc.ack-relax-kept: <n>          (candidates given to the last relaxed
+                                  solve)
+  vc.ack-relax-round: <i>|fallback kept=<n> result=sat|unsat|unknown
+      broken=<n> [unevaluated=<n>] [conflicts=<n> rlimit=<n>] time=<s>
+                                  (one per solve: candidates given, answer,
+                                  omitted candidates the model breaks (all
+                                  added to the next round; unevaluated: a
+                                  term without a value, counted broken),
+                                  z3's search conflicts and resource count)
+  vc.ack-relax-conflicts: <n>     (z3: conflicts of every solve, summed)
   vc.defs: inline|nest|eq|hidden  (--vc-defs; not inline: vc.defs-sums /
                                   -index-sums / -names / -atoms / -rewritten:
                                   distinct sums of the query, those at an
@@ -3770,7 +3836,8 @@ verdict), seam.premises (assumed|off) with seam.premises-accesses /
 seam.premises-conditions, the assume.* lines split the same way
 (assume.a-sep-seam, assume.a-sep-drop-fresh-memhavoc,
 assume.memset-bound-count / -bound, assume.addr0-is-null vc with
-assume.addr0-is-null-null-uses),
+assume.addr0-is-null-null-uses), with --ack-relax vc.ack-relax-stop /
+-rounds / -kept / -conflicts,
 and with --seam-stats every seam.* counter and time (also vc.*-time). With
 --smt2 they go to stderr with the other statistics. Existing output unchanged.
 
@@ -4321,6 +4388,19 @@ int main(int argc, char **argv) {
   if (ackOwn && !seam)
     return fail("--ack-own needs --seam (it rests on A-INB and A-OWN of the "
                 "accesses SeaM records)");
+  std::optional<expr::AckRelaxSelector> relaxSel;
+  if (ackRelax.getNumOccurrences()) {
+    std::string err;
+    relaxSel = expr::AckRelaxSelector::parse(ackRelax, err);
+    if (!relaxSel)
+      return fail(err);
+    if (smt2 || vcgenOnly || reach)
+      return fail("--ack-relax solves the query in rounds: not with --smt2, "
+                  "--vcgen-only or --reach (--ack-relax-smt2 writes the last "
+                  "round's query)");
+  } else if (ackRelaxRounds.getNumOccurrences() || !ackRelaxSmt2.empty()) {
+    return fail("--ack-relax-rounds and --ack-relax-smt2 need --ack-relax");
+  }
   if (narrowOffsets && !seam)
     return fail("--narrow-offsets needs --seam (it rests on A-INB of the "
                 "accesses SeaM records)");
@@ -4390,6 +4470,9 @@ int main(int argc, char **argv) {
                 "--split-leaves or --split-auto (each part is an encoding)");
   if (!iteStats && iteStatsMax.getNumOccurrences())
     return fail("--ite-stats-max needs --ite-stats");
+  if ((splitOn || splitCandidatesOpt) && relaxSel)
+    return fail("--ack-relax: not with --split, --split-leaves, --split-auto "
+                "or --split-candidates");
   if (splitOn && (smt2 || reach || lambdaMem))
     return fail("--split, --split-leaves and --split-auto: not with --smt2 "
                 "(use --split-smt2), --reach or --mem=lambda");
@@ -6077,6 +6160,11 @@ int main(int argc, char **argv) {
       ack.recordPairs(true);
     if (ackOn && originsOn)
       ack.keepImages(true);
+    // --ack-relax: the constraints are candidates, the rounds rebuild the
+    // query from the body and the kept ones
+    const bool relaxOn = relaxSel && ackOn;
+    if (relaxOn)
+      ack.recordConstraints(true);
     // the origins of the lowering's input (the reads' selects)
     sea::ExprOrigins preAckOrigins;
     if (ackOn)
@@ -6126,6 +6214,14 @@ int main(int argc, char **argv) {
         .kv("arrays", ack.stats().lowered)
         .kv("pairs", ack.stats().pairs)
         .kv("nodes-made", efac.nodesMade());
+    // --ack-relax: the parts of the solver's query (after --vc-defs) a
+    // round's query is made of: the lowered body, each candidate's conjunct,
+    // the definitions of named sums (all of them: the names are made once,
+    // on the whole query)
+    expr::AckRelaxQuery relaxQ;
+    if (relaxOn)
+      relaxQ = expr::AckRelaxQuery::of(ack, query);
+    const expr::Expr relaxLowered = query;
     // named address sums (an encoding step of the query, after Ackermann,
     // which decides its pairs on the flat sums; docs/design/SumNames.md)
     std::optional<expr::SumNamer::Stats> defStats;
@@ -6155,6 +6251,11 @@ int main(int argc, char **argv) {
       }
       query = namer.name(query);
       defStats = namer.stats();
+      if (relaxOn &&
+          !relaxQ.rename([&](const expr::Expr &n) { return namer.image(n); },
+                         relaxLowered, query))
+        return fail("--ack-relax: the query after --vc-defs is not the "
+                    "named lowered query and its definitions (a bug)");
       if (originsOn)
         origins = origins.through(
             [&](const expr::Expr &n) { return namer.image(n); });
@@ -6163,6 +6264,12 @@ int main(int argc, char **argv) {
                     clash + "'");
       lap("vc-defs");
     }
+    // --ack-relax: with every candidate kept, a round's query is the whole
+    // query (one node)
+    if (relaxOn &&
+        relaxQ.build(std::vector<bool>(relaxQ.facts.size(), true)) != query)
+      return fail("--ack-relax: the query of all candidates is not the "
+                  "whole query (a bug)");
     // the size of what the solver gets: distinct nodes (shared subterms
     // once), per operator
     if (dagStats) {
@@ -6432,6 +6539,14 @@ int main(int argc, char **argv) {
           r.line("vc.ack-own-indices").value(ownTable.byIndex.size());
           r.line("vc.ack-own-boundary-indices").value(ownBoundaryIndices);
         }
+      }
+      // --ack-relax: whether it runs, over how many candidates (the rounds
+      // are reported after the solve)
+      if (relaxSel) {
+        r.line("vc.ack-relax")
+            .value(ackOn ? relaxSel->str() : "off-no-ackermann");
+        if (relaxOn)
+          r.line("vc.ack-relax-candidates").value(relaxQ.facts.size());
       }
       // --narrow-offsets: whether it ran (and why not), what it narrowed
       if (narrowOffsets) {
@@ -7272,7 +7387,118 @@ int main(int argc, char **argv) {
     }
     Phase solvePhase("solve");
     sea::Stopwatch solveClock;
-    sea::solver::SolverResult res = solver->check();
+    sea::solver::SolverResult res = sea::solver::SolverResult::UNKNOWN;
+    // --ack-relax: the rounds (a fresh solver each); the solver of the
+    // answer becomes `solver`, or the whole query's after the last round
+    std::optional<expr::AckRelaxOutcome> relaxOut;
+    if (relaxOn) {
+      std::unique_ptr<sea::solver::Solver> last;
+      bool addFailed = false;
+      relaxOut = expr::runAckRelax(
+          relaxQ.facts.size(), *relaxSel, ackRelaxRounds,
+          [&](const std::vector<bool> &keep, std::vector<size_t> &broken) {
+            expr::AckRelaxRound rd;
+            auto s = makeSolver(/*limits=*/true);
+            if (!s || !s->add(relaxQ.build(keep))) {
+              addFailed = true;
+              return rd; // unknown: ends the loop
+            }
+            sea::Stopwatch w;
+            rd.result = s->check();
+            rd.seconds = w.seconds();
+            rd.conflicts = s->conflicts();
+            rd.rlimit = s->rlimit_count();
+            if (rd.result == sea::solver::SolverResult::SAT) {
+              auto m = s->get_model();
+              broken = expr::ackRelaxBroken(ack, ack.constraints(), keep, *m,
+                                            rd.unevaluated);
+            }
+            last = std::move(s);
+            return rd;
+          });
+      if (addFailed)
+        return 1;
+      using Stop = expr::AckRelaxOutcome::Stop;
+      // after the last round: the whole query, on the solver that has it
+      std::optional<expr::AckRelaxRound> fallback;
+      if (relaxOut->stop != Stop::Rounds) {
+        solver = std::move(last);
+        res = relaxOut->rounds.back().result;
+      } else {
+        sea::diag::warn("vc.ack-relax-fallback",
+                        Twine(relaxOut->rounds.size()) +
+                            " relaxed round(s) (--ack-relax-rounds) without "
+                            "an answer: solving the whole query");
+        last.reset();
+        fallback.emplace();
+        fallback->kept = relaxQ.facts.size();
+        sea::Stopwatch w;
+        res = solver->check();
+        fallback->seconds = w.seconds();
+        fallback->result = res;
+        fallback->conflicts = solver->conflicts();
+        fallback->rlimit = solver->rlimit_count();
+      }
+      {
+        // the outcome first, then each round (broken: the omitted
+        // constraints its model breaks, all added to the next round)
+        sea::stats::Report r;
+        r.line("vc.ack-relax-stop")
+            .value(expr::AckRelaxOutcome::stopName(relaxOut->stop))
+            .brunch(sea::stats::Brunch::Value);
+        r.line("vc.ack-relax-rounds")
+            .value(relaxOut->rounds.size())
+            .brunch(sea::stats::Brunch::Value);
+        r.line("vc.ack-relax-kept")
+            .value(relaxOut->kept())
+            .brunch(sea::stats::Brunch::Value);
+        uint64_t conflictSum = 0;
+        bool haveConflicts = false;
+        std::vector<expr::AckRelaxRound> all = relaxOut->rounds;
+        if (fallback)
+          all.push_back(*fallback);
+        for (size_t i = 0; i < all.size(); ++i) {
+          const expr::AckRelaxRound &rd = all[i];
+          auto &l = r.line("vc.ack-relax-round");
+          if (fallback && i + 1 == all.size())
+            l.value("fallback");
+          else
+            l.value(i + 1);
+          l.kv("kept", rd.kept);
+          l.kv("result", rd.result == sea::solver::SolverResult::SAT ? "sat"
+                         : rd.result == sea::solver::SolverResult::UNSAT
+                             ? "unsat"
+                             : "unknown");
+          l.kv("broken", rd.broken);
+          if (rd.unevaluated)
+            l.kv("unevaluated", rd.unevaluated);
+          if (rd.conflicts) {
+            l.kv("conflicts", *rd.conflicts);
+            conflictSum += *rd.conflicts;
+            haveConflicts = true;
+          }
+          if (rd.rlimit)
+            l.kv("rlimit", *rd.rlimit);
+          l.kv("time", llvm::formatv("{0:f3}", rd.seconds).str());
+        }
+        if (haveConflicts)
+          r.line("vc.ack-relax-conflicts")
+              .value(conflictSum)
+              .brunch(sea::stats::Brunch::Value);
+        r.print(vout(), brunchStats);
+      }
+      if (!ackRelaxSmt2.empty() &&
+          failed(sea::writeFileAtomic(
+              ackRelaxSmt2,
+              [&](llvm::raw_ostream &os) {
+                solver->to_smt_lib(os);
+                return success();
+              },
+              "vc.ack-relax-smt2", "--ack-relax-smt2")))
+        return 1;
+    } else {
+      res = solver->check();
+    }
     // read once: the log, solve-time and the split line show one value
     const double solveSec = solveClock.seconds();
     SEA_LOG(logSolve, sea::log::Flow)

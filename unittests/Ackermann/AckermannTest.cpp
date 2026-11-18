@@ -30,14 +30,21 @@
 //    A-OWN for disjoint objects), original and lowered formulas agree and
 //    sat models are consistent; without it, a model that puts two dropped
 //    reads at one index is counted (ownBroken, inconsistent).
+//  - lazy constraints (AckRelax.hh, sea-vc --ack-relax): the loop over a
+//    fake solve (rounds, kept sets, the bound, unknown); a round's query
+//    with every candidate kept is the lowered query (also after SumNamer);
+//    with z3, an unsat that needs one constraint keeps it, a sat ends with
+//    a model of the original formula.
 //
 //===----------------------------------------------------------------------===//
 
 #include "sea/Expr/Ackermann.hh"
+#include "sea/Expr/AckRelax.hh"
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/LowBits.hh"
 #include "sea/Expr/Smt/Yices2SolverImpl.hh"
 #include "sea/Expr/Smt/Z3SolverImpl.hh"
+#include "sea/Expr/SumNames.hh"
 #include <boost/functional/hash.hpp>
 
 #include "llvm/Support/raw_ostream.h"
@@ -940,6 +947,146 @@ void testOwn() {
   llvm::outs() << "test: own ok\n";
 }
 
+void testRelax() {
+  using SR = sea::solver::SolverResult;
+  using Stop = AckRelaxOutcome::Stop;
+  std::string err;
+  CHECK(AckRelaxSelector::parse("all", err), "selector all");
+  CHECK(!AckRelaxSelector::parse("top=3", err) && !err.empty(),
+        "unknown selector refused");
+  // the loop over a fake solve: the broken sets per round, then an answer
+  {
+    auto fake = [](std::vector<std::vector<size_t>> broken, SR last) {
+      return [broken, last, r = size_t(0)](const std::vector<bool> &keep,
+                                           std::vector<size_t> &out) mutable {
+        AckRelaxRound rd;
+        if (r < broken.size()) {
+          rd.result = SR::SAT;
+          for (size_t i : broken[r])
+            if (!keep[i])
+              out.push_back(i);
+        } else {
+          rd.result = last;
+        }
+        ++r;
+        return rd;
+      };
+    };
+    AckRelaxSelector all;
+    AckRelaxOutcome o = runAckRelax(5, all, 50, fake({{1, 3}, {4}}, SR::UNSAT));
+    CHECK(o.stop == Stop::Unsat, "fake unsat");
+    CHECK(o.rounds.size() == 3, "fake rounds " << o.rounds.size());
+    CHECK(o.kept() == 3 && o.keep[1] && o.keep[3] && o.keep[4], "fake kept");
+    CHECK(o.rounds[0].kept == 0 && o.rounds[1].kept == 2 &&
+              o.rounds[2].kept == 3 && o.rounds[0].broken == 2,
+          "fake per round");
+    o = runAckRelax(5, all, 50, fake({{2}}, SR::SAT));
+    CHECK(o.stop == Stop::Consistent && o.kept() == 1, "fake consistent");
+    o = runAckRelax(5, all, 50, fake({{0}}, SR::UNKNOWN));
+    CHECK(o.stop == Stop::Unknown && o.rounds.size() == 2, "fake unknown");
+    // the bound: the last round's kept set is the one it solved
+    o = runAckRelax(5, all, 2, fake({{1}, {2}, {3}}, SR::UNSAT));
+    CHECK(o.stop == Stop::Rounds && o.rounds.size() == 2 && o.kept() == 1,
+          "fake bound");
+    o = runAckRelax(5, all, 0, fake({}, SR::UNSAT));
+    CHECK(o.stop == Stop::Rounds && o.rounds.empty(), "fake zero rounds");
+  }
+  Env env;
+  using op::array::select;
+  Expr A = env.arr("A");
+  Expr x = env.idx("x"), y = env.idx("y"), z = env.idx("z");
+  // the real loop with z3 on \p f; \p model: the last round's (its solver
+  // in \p held: a model must not outlive its solver)
+  auto run = [&](Expr f, Ackermannizer &ack, Expr &g,
+                 std::unique_ptr<sea::solver::Solver> &held,
+                 sea::solver::Solver::model_ref &model) {
+    ack.recordConstraints(true);
+    g = ack.lower(f);
+    AckRelaxQuery q = AckRelaxQuery::of(ack, g);
+    CHECK(q.build(std::vector<bool>(q.facts.size(), true)) == g,
+          "all kept is the lowered query");
+    CHECK(q.build(std::vector<bool>(q.facts.size(), false)) == ack.body(),
+          "none kept is the body");
+    return runAckRelax(
+        q.facts.size(), AckRelaxSelector(), 50,
+        [&](const std::vector<bool> &keep, std::vector<size_t> &broken) {
+          AckRelaxRound rd;
+          model.reset();
+          held = std::make_unique<sea::solver::z3_solver_impl>(env.efac);
+          held->add(q.build(keep));
+          rd.result = held->check();
+          if (rd.result == SR::SAT) {
+            model = held->get_model();
+            broken = ackRelaxBroken(ack, ack.constraints(), keep, *model,
+                                    rd.unevaluated);
+          }
+          return rd;
+        });
+  };
+  // unsat that needs the pair (x, y) only: x = y, A[x] != A[y], A[z] = 3
+  {
+    Expr f = mk<AND>(mk<EQ>(x, y), mk<NEQ>(select(A, x), select(A, y)),
+                     mk<EQ>(select(A, z), env.vn(3)));
+    Ackermannizer ack;
+    Expr g;
+    std::unique_ptr<sea::solver::Solver> held;
+    sea::solver::Solver::model_ref m;
+    AckRelaxOutcome o = run(f, ack, g, held, m);
+    CHECK(ack.constraints().size() == 3,
+          "candidates " << ack.constraints().size());
+    CHECK(o.stop == Stop::Unsat, "relax unsat");
+    CHECK(o.rounds.size() >= 2 && o.rounds[0].broken >= 1, "relax rounds");
+    bool xy = false;
+    for (size_t i = 0; i < ack.constraints().size(); ++i) {
+      const auto &c = ack.constraints()[i];
+      if ((c.lhs == x && c.rhs == y) || (c.lhs == y && c.rhs == x))
+        xy = o.keep[i];
+    }
+    CHECK(xy, "the (x, y) constraint is kept");
+  }
+  // sat: A[x] = 1, A[y] = 2, A[z] = 1; the answer is a model of f
+  {
+    Expr f = mk<AND>(mk<EQ>(select(A, x), env.vn(1)),
+                     mk<EQ>(select(A, y), env.vn(2)),
+                     mk<EQ>(select(A, z), env.vn(1)));
+    Ackermannizer ack;
+    Expr g;
+    std::unique_ptr<sea::solver::Solver> held;
+    sea::solver::Solver::model_ref m;
+    AckRelaxOutcome o = run(f, ack, g, held, m);
+    CHECK(o.stop == Stop::Consistent, "relax sat consistent");
+    if (m) {
+      AckermannModel am(*m, ack);
+      CHECK(isTrue(am.eval(f, true)), "relax sat: original true");
+      for (size_t a = 0; a < ack.arrays().size(); ++a)
+        (void)am.function(a);
+      CHECK(am.inconsistent() == 0, "relax sat: consistent");
+    }
+  }
+  // after SumNamer (hidden): all kept is the named query
+  {
+    Expr s1 = mknary<BADD>(std::vector<Expr>{x, y, env.in(1)});
+    Expr s2 = mknary<BADD>(std::vector<Expr>{x, y, z});
+    Expr f = mk<AND>(mk<EQ>(select(A, s1), env.vn(1)),
+                     mk<EQ>(select(A, s2), env.vn(2)));
+    Ackermannizer ack;
+    ack.recordConstraints(true);
+    Expr g = ack.lower(f);
+    SumNamer namer(SumNamer::DefForm::Hidden);
+    for (const auto &rd : ack.arrays()[0].reads)
+      namer.addIndex(rd.index);
+    Expr named = namer.name(g);
+    CHECK(namer.stats().names > 0, "names " << namer.stats().names);
+    AckRelaxQuery q = AckRelaxQuery::of(ack, g);
+    CHECK(q.rename([&](const Expr &n) { return namer.image(n); }, g, named),
+          "rename");
+    CHECK(!q.tail.empty(), "definitions");
+    CHECK(q.build(std::vector<bool>(q.facts.size(), true)) == named,
+          "all kept is the named query");
+  }
+  llvm::outs() << "test: relax ok\n";
+}
+
 int main() {
   testSharing();
   testLeaf();
@@ -951,6 +1098,7 @@ int main() {
   testNarrow();
   testDecider();
   testOwn();
+  testRelax();
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

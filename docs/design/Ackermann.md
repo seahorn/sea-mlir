@@ -583,6 +583,76 @@ without and with `--narrow-offsets`; z3 5.3.3 on the `--smt2` dumps
   every read is narrowed once ites of addresses in one object are taken.
 - Yices and Bitwuzla: not measured yet.
 
+## Lazy constraints (`--ack-relax`)
+
+Status: implemented, off by default; a diagnosis mode. The eager lowering
+above stays the default. The mode asks which constraints an answer needs;
+it is not a replacement for the eager constraints.
+
+`--ack-relax=<selector>`; `include/sea/Expr/AckRelax.hh`; tests
+`test/VC/ackermann/relax.test`, `unittests/Ackermann` (`relax`).
+
+The candidates R are the constraints the lowering keeps after every drop
+above (exact, decider, stride, and the ownership drop when on). A pair a
+drop removed is never a candidate, and the loop never adds it.
+
+The selector picks the kept set K of the first round. Implemented: `all`
+(K empty, every candidate omitted). The selector is a parsed value so that
+others can be added (by cost of the index difference, by drop class, by
+location, top-N, a seeded fraction); an unknown selector is an error.
+
+Each round solves the query with K on a fresh solver: the lowered body, the
+constraints in K, and with `--vc-defs` every definition of a named sum (the
+names are made once, on the whole query; a definition only fixes its name,
+so the ones only omitted constraints use change no answer). A fresh solver
+per round, not push / pop: z3's incremental solver skips its tactic
+pipeline, so the rounds would not measure the query the eager run solves.
+
+- unsat: the answer. Omitting constraints only adds models, so an unsat of
+  the relaxed query is an unsat of the whole one. No premise.
+- sat: every omitted candidate `lhs = rhs -> r_k = r_l` is evaluated in the
+  model (each term once; `lhs`, `rhs` are the compared indices, or the k-bit
+  offsets of two narrowed reads). If none is broken, the model satisfies the
+  whole lowered query: the answer, with the usual model reconstruction,
+  replay and validation. Otherwise every broken candidate joins K and the
+  next round runs. A term without a numeral value counts as broken
+  (`unevaluated=`), which only adds a constraint.
+- unknown: the answer (each round has the `--timeout` of the run).
+
+Per-round policy: all broken candidates are added. Each round is a whole
+solve, so fewer rounds is the cheaper direction, and the measured broken
+sets are small. The kept set may then be larger than a minimal one.
+Not tuned; a bounded number per round is an alternative.
+
+Bound: `--ack-relax-rounds=<n>`, default 50 (untuned). After n relaxed
+solves without an answer the whole query is solved on the run's solver
+(warning `vc.ack-relax-fallback`, `vc.ack-relax-stop: rounds`, a
+`vc.ack-relax-round: fallback` line), as the stride rule's retry solves
+without the rule.
+
+Model check. After a `consistent` stop every candidate holds in the model,
+so `AckermannModel` finds what it finds under the eager lowering:
+`inconsistent` can come only from pairs the stride rule or the ownership
+drop removed, and those are handled as above (the stride retry, which
+starts the rounds again; `own-broken`, `own-excused`).
+
+Backends: z3, Yices and Bitwuzla (Bitwuzla with `--ackermannize=on`, as
+for the lowering itself). Conflicts and the resource count per round are
+z3's (`conflicts` of the SMT core plus `sat conflicts`); the other backends
+report time only. Not with `--smt2`, `--vcgen-only`, `--reach` or a split
+(refused). Without the lowering (`--ackermannize=off`, or `auto` that does
+not lower) the switch does nothing: `vc.ack-relax: off-no-ackermann`.
+
+Output: `vc.ack-relax: <selector>`, `vc.ack-relax-candidates` (|R|) with the
+other counters; after the rounds `vc.ack-relax-stop`, `-rounds`, `-kept`
+(|K| of the last relaxed solve), one `vc.ack-relax-round: <i> kept= result=
+broken= [unevaluated=] [conflicts= rlimit=] time=` per solve, and
+`vc.ack-relax-conflicts` (z3, summed over the solves). `solve-time` is the
+time of every solve. `--ack-relax-smt2=<file>` writes the query of the last
+solve (to measure a kept set with the solver binary over seeds).
+
+Not measured yet on the benchmark jobs.
+
 ## Model reconstruction
 
 A model of the lowered query has values for every i_k and r_k, none for A
@@ -626,4 +696,5 @@ an address, validation sees the address values differ.
   the lowered query slower there for every solver. Fewer constraints need
   more pairs decided different: by ARM / A-INB (stated premise, as for the
   rewriter), or by a different reduction (z3-style lazy lemmas, a
-  sorting-based encoding). Not implemented.
+  sorting-based encoding). Not implemented, except the diagnosis mode
+  `--ack-relax` above (lazy constraints by whole solves).
