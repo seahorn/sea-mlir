@@ -552,7 +552,9 @@ static cl::opt<bool> ackOwn(
              "through one object touches another object's cells, reads "
              "included): assume.a-inb own-pairs, assume.a-own ack-pairs. A "
              "sat model that puts two such reads at one index is "
-             "vc.ackermann-inconsistent (status 2). Off by default "
+             "vc.ackermann-inconsistent (status 2), unless the replayed run "
+             "fails the assertion and validates (vc.ack-own-collision-"
+             "excused). Off by default "
              "(docs/design/Ackermann.md, \"The ownership drop\")"),
     cl::init(false));
 
@@ -2456,7 +2458,10 @@ TYPICAL:
                                  #   drop weakens the query); a sat model
                                  #   that puts two such reads at one index
                                  #   is vc.ackermann-inconsistent (status
-                                 #   2), not an answer. assume.a-inb
+                                 #   2), unless the replayed run fails the
+                                 #   assertion and validates (sat on that
+                                 #   run, warning vc.ack-own-collision-
+                                 #   excused). assume.a-inb
                                  #   own-pairs, assume.a-own ack-pairs;
                                  #   vc.ackermann-own-*; needs the premises
                                  #   (else vc.ack-own: off-...).
@@ -2763,7 +2768,7 @@ OUTPUT (stdout, `key: value` lines):
                                   asserted, bvadd nodes replaced; with
                                   vc-time, stderr with --smt2)
   vc.ackermann-model: defaulted=<n> inconsistent=<n> [stride-broken=<n>]
-      [own-broken=<n>]            (sat, lowering on: reads at indices the
+      [own-broken=<n> own-excused=<n>]   (sat, lowering on: reads at indices the
                                   query does not read (cell 0; any value
                                   satisfies the query), and read pairs the
                                   model gives equal indices but different
@@ -2772,7 +2777,11 @@ OUTPUT (stdout, `key: value` lines):
                                   own-broken, of them: pairs --ack-own
                                   dropped, the model breaks A-INB / A-OWN
                                   or a read that does not execute lands on
-                                  another object, same error)
+                                  another object, same error; own-excused:
+                                  all of them, when inconsistent =
+                                  own-broken and the replay fails the
+                                  assertion with mismatches=0: sat, status
+                                  0, warning vc.ack-own-collision-excused)
   words.<counter>: <n>            (--seam-words: candidates, eligible,
                                   chosen, translated, word-reads,
                                   aligned-proved, aligned-by-annotation,
@@ -3783,7 +3792,11 @@ unsupported op, replay impossible); 2 sat but replay disagrees with the
 model (a value differs, or the run shows no failure of the property:
 vc.replay-no-failure): a bug in the VC or the interpreter, or a load of an earlier memory
 version whose cell was clobbered (the in-place interpreter sees the new
-value, the VC the old one); 3 unknown; 4 (--seam) sat that does not replay
+value, the VC the old one); also 2 when the model of the Ackermann lowering
+is not a function on an array (vc.ackermann-inconsistent), except (--ack-own)
+when every such pair is one the ownership drop dropped and the replay fails
+the assertion with mismatches=0: then 0, warning
+vc.ack-own-collision-excused; 3 unknown; 4 (--seam) sat that does not replay
 because the program leaves an object with the model's inputs: A-INB does not
 hold (A-SEP or A-NULL may: the check is of bounds, not of separation, so a
 run that only leaves into a gap is reported here as well, though it keeps
@@ -7448,19 +7461,39 @@ int main(int argc, char **argv) {
     if (wordsModel)
       vout() << "words.model: decoded=" << wordsModel->decoded()
              << " defaulted=" << wordsModel->defaulted() << "\n";
+    // --ack-own: a model whose only inconsistencies are pairs the ownership
+    // drop dropped is excused when the replayed run confirms the answer (it
+    // fails the assertion, every value validated): the sat rests on that run,
+    // not on the model's arrays. Anything else keeps status 2 (or 4).
+    uint64_t ownExcused = 0;
+    if (ackModel && ackModel->ownBroken() &&
+        ackModel->inconsistent() == ackModel->ownBroken() &&
+        !(sem.ptrIntChecking() && sem.companionChecked()) &&
+        replay.run.status == sea::RunStatus::AssertFailed &&
+        replay.mismatches.empty())
+      ownExcused = ackModel->ownBroken();
     if (ackModel) {
       vout() << "vc.ackermann-model: defaulted=" << ackModel->defaulted()
              << " inconsistent=" << ackModel->inconsistent();
       if (strideOn)
         vout() << " stride-broken=" << ackModel->strideBroken();
       if (ownOn)
-        vout() << " own-broken=" << ackModel->ownBroken();
+        vout() << " own-broken=" << ackModel->ownBroken()
+               << " own-excused=" << ownExcused;
       vout() << "\n";
       // decided before the result (above); here a bug
       if (ackModel->strideBroken())
         sea::diag::error("vc.ackermann-inconsistent",
                          "a stride-rule collision found after the result");
-      if (ackModel->inconsistent())
+      if (ownExcused)
+        sea::diag::warn("vc.ack-own-collision-excused",
+                        Twine(ownExcused) +
+                            " read pair(s) whose constraint --ack-own dropped "
+                            "are at one index with different cells in the "
+                            "model (reads that do not execute, or whose guard "
+                            "is false); the replayed run fails the assertion "
+                            "and validates, so the counterexample is that run");
+      else if (ackModel->inconsistent())
         sea::diag::error("vc.ackermann-inconsistent",
                          ackModel->ownBroken()
                              ? ownBrokenMessage
@@ -7844,7 +7877,7 @@ int main(int argc, char **argv) {
                            "): a VC or interpreter bug");
       return 2;
     }
-    if (ackModel && ackModel->inconsistent())
+    if (ackModel && ackModel->inconsistent() && !ownExcused)
       return 2;
     if (originalModule)
       return replayOnOriginal(replayModel, sem, ctx, replay.run, ptrIntCheck);

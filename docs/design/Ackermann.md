@@ -244,12 +244,30 @@ read with the first read at its index value (Model reconstruction, below).
 A model that puts two reads whose constraint this rule dropped at one index
 with different cells breaks the A-INB of an access or A-OWN, or puts a read
 whose access does not execute (or whose guard is false) at another object's
-cell; it is counted `own-broken=` on
-the `vc.ackermann-model:` line and in `inconsistent=`, and sea-vc reports
-`vc.ackermann-inconsistent` (status 2) instead of an answer. A replay that
-leaves an object takes precedence (status 4, `vc.seam-inb-spurious`). A
-model in which no dropped pair collides is a model of the original query.
-The run is not repeated without the rule (unlike the stride rule).
+cell; it is counted `own-broken=` on the `vc.ackermann-model:` line and in
+`inconsistent=`. A model in which no dropped pair collides is a model of the
+original query. A colliding one is not, but its counterexample may still be
+a run of the program (counterexamples are runs):
+
+- if every inconsistency of the model is such a pair (`inconsistent =
+  own-broken`) and the replayed run fails the assertion with every value
+  validated (`replay: assert-failed`, `mismatches=0`), the answer is that
+  run: sat, status 0, `own-excused=<n>` on the `vc.ackermann-model:` line
+  and the warning `vc.ack-own-collision-excused`. The colliding reads are
+  ones the run does not make (a load that does not execute, a memory
+  operation's source read whose guard is false), or validation would have
+  seen the cell differ;
+- otherwise `own-excused=0`, error `vc.ackermann-inconsistent`, status 2:
+  the replay does not fail the assertion, a value mismatches, the model has
+  another inconsistency (a lowering bug), or under `--ptr-companion=check`
+  (its claim is not an assertion failure). A replay that leaves an object
+  takes precedence (status 4, `vc.seam-inb-spurious`), as do the other
+  replay errors.
+
+Every sat of `sea-vc` replays (no switch turns the replay off). Under
+`--reach` the model hook does not see the replay's verdict: a collision
+there stays status 2. The run is not repeated without the rule (unlike the
+stride rule).
 
 Accounting:
 - `assume.a-inb: own-pairs=<n>` and `assume.a-own: ack-pairs=<n>`: the n
@@ -268,8 +286,7 @@ siblings `-mut-src-k0`, `-mut-drop-existing`, `-nopre-range`,
 `-nopre-unique` replay and validate with `own-broken=0`; `-mut-store-d0`
 replays and validates too, but its model puts 6 dropped pairs at one index
 (memmove source reads whose guard is false, indices far outside every
-object), so the run ends in `vc.ackermann-inconsistent` (status 2) although
-the counterexample is a run of the program.
+object): excused, sat with `own-excused=6`.
 
 Reported (`vc.ackermann-*`, with `--brunch-stats` as BRUNCH_STAT):
 arrays lowered / kept, distinct reads, pairs = sum of n(n-1)/2, numeral,
@@ -575,7 +592,8 @@ the solver's) rebuilds A as the finite function
 consistent by the constraints (two reads with equal index values have
 equal cell values; a pair that is not, `inconsistent`, is a lowering bug,
 or under `--ack-own` a model that breaks its premises (`own-broken`, above):
-sea-vc reports error `vc.ackermann-inconsistent`, status 2). Its `eval(e)`
+sea-vc reports error `vc.ackermann-inconsistent`, status 2, unless the
+replay confirms an `own-broken`-only model, above). Its `eval(e)`
 rewrites e bottom-up: `select(A, j)` becomes `F_A(value(j))` (j rewritten
 and evaluated first), any other occurrence of A becomes the store chain of
 F_A over a constant-0 array, then the inner model evaluates the result.

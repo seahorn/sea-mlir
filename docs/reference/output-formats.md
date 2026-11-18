@@ -508,7 +508,7 @@ other output is unchanged. The benchmark harness runs with it.
 |---|---|
 | 0 | `unsat`, or `sat` confirmed by replay: the replayed run fails an assertion; with `--ptr-companion=check`, a split pointer load fails its A-PTRINT guard (`seam.ptrint-violated` or `seam.ptrint-unstored`) |
 | 1 | error: bad input, not in BMC form, unsupported operation, replay impossible |
-| 2 | `sat`, but the replay disagrees with the model (a value differs, or the run shows no failure of the property: `vc.replay-no-failure`): a bug, or a load of an earlier memory version whose cell was overwritten (counted as `interp.earlier-version-loads`) |
+| 2 | `sat`, but the replay disagrees with the model (a value differs, or the run shows no failure of the property: `vc.replay-no-failure`): a bug, or a load of an earlier memory version whose cell was overwritten (counted as `interp.earlier-version-loads`). Also the model of the Ackermann lowering not a function on an array (`vc.ackermann-inconsistent`), except under `--ack-own` when every such pair is one the ownership drop dropped and the replay fails the assertion with no mismatch: then 0 with the warning `vc.ack-own-collision-excused` |
 | 3 | `unknown`, including a timeout or a memory limit |
 | 4 | with `--seam`: a `sat` whose replay leaves an object; the in-bounds assumption does not hold, the answer is inconclusive, and the program has a memory-safety error. With `--replay-original`: the original program's run makes a memory-safety violation and does not fail the same assertion |
 | 5 | with `--seam-check`: an invalid rewrite; a bug, and the verdict is not to be trusted. It takes precedence over 0, 2, 3 and 4, not over 1 |

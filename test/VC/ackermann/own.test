@@ -48,6 +48,26 @@
 // BROKEN-DAG: vc.ackermann-own-pairs: 1
 // BROKEN-DAG: vc.ackermann-model: {{.*}} inconsistent=1 {{.*}}own-broken=1
 // BROKEN-DAG: --ack-own dropped {{.*}}[vc.ackermann-inconsistent]
+// The same program placed first (no abstract program to rerun): the replay
+// reads the one cell and does not fail the assertion, so nothing confirms
+// the model: status 2.
+// RUN: sea-opt %t/broken.mlir --sea-place-static -o %t/placed.mlir
+// RUN: not sea-vc %t/placed.mlir --lower --seam --ack-own --brunch-stats 2>&1 | FileCheck %s --check-prefix=PLACED
+// PLACED-DAG: vc.ackermann-model: {{.*}} own-broken=1 own-excused=0
+// PLACED-DAG: [vc.ackermann-inconsistent]
+// PLACED-DAG: BRUNCH_STAT status 2
+//
+// guard: the load of a + i runs only for i < 16; the failing path needs
+// a + i = c + j (so i >= 16, the load does not run) and a nonzero cell at
+// c + j. The model puts the two reads at one index with different cells
+// (the read of a + i is free), but the replayed run fails the assertion
+// and validates: sat, status 0, with the warning.
+// RUN: sea-vc %t/guard.mlir --lower --seam --ack-own --brunch-stats 2>&1 | FileCheck %s --check-prefix=GUARD
+// GUARD-DAG: [vc.ack-own-collision-excused]
+// GUARD-DAG: vc.ackermann-model: {{.*}} own-broken=1 own-excused=1
+// GUARD-DAG: replay: assert-failed
+// GUARD-DAG: validate: checked={{[0-9]+}} mismatches=0
+// GUARD-DAG: BRUNCH_STAT status 0
 //
 // mcopy: the load of b + i reads a + i through a memmove: a select the
 // boundary made (not a load's own read), in a by the A-INB of the memmove's
@@ -163,6 +183,40 @@ sea.program @broken {
   %t = sea.const 1 : i1
   %ns = sea.xor %same, %t : i1
   %ok = sea.or %ns, %e : i1
+  sea.assert %ok
+  sea.halt
+}
+//--- guard.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @guard {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %z8 = sea.const 0 : i8
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %c = sea.malloc %c16 align 8 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64
+  %j = sea.nondet "j" [4] : i64
+  %jlt = sea.icmp ult, %j, %c16 : i64
+  sea.assume %jlt
+  %pa = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %pc = sea.ptr.add %c, %j : !sea.ptr<64>, i64
+  %y = sea.load %m[%pc] : !m -> i8
+  %lt = sea.icmp ult, %i, %c16 : i64
+  sea.cond_br %lt, ^t, ^e
+^t:
+  %x = sea.load %m[%pa] : !m -> i8
+  %o1 = sea.const 1 : i8
+  %xo = sea.or %x, %o1 : i8
+  %okt = sea.icmp ne, %xo, %z8 : i8
+  sea.br ^j(%okt : i1)
+^e:
+  %same = sea.ptr.cmp eq, %pa, %pc : !sea.ptr<64>
+  %yz = sea.icmp eq, %y, %z8 : i8
+  %t1 = sea.const 1 : i1
+  %ns = sea.xor %same, %t1 : i1
+  %oke = sea.or %ns, %yz : i1
+  sea.br ^j(%oke : i1)
+^j(%ok : i1):
   sea.assert %ok
   sea.halt
 }
