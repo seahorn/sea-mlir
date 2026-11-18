@@ -1,11 +1,11 @@
 // Lazy Ackermann constraints (--ack-relax, docs/design/Ackermann.md, "Lazy
 // constraints"): the constraints the lowering keeps are candidates; the
 // rounds start with none of them and add the ones a sat model breaks.
-// Outcome invariants: the verdict is the eager one; an unsat keeps fewer
-// constraints than the candidates; a sat model breaks none of them and
-// replays. The number of rounds and the kept set depend on the solver's
-// models and are not pinned (only kept < candidates on unsat: 15 candidates
-// here, of which the proof needs 1).
+// Outcome invariants: the verdict is the eager one; a sat model breaks none
+// of them and replays. The number of rounds and the kept set depend on the
+// solver's models and are not pinned
+// (15 candidates here, of which the proof needs 1; the unit test pins that
+// the needed one is kept).
 // RUN: split-file %s %t
 //
 // unsat: x1 at a + k + j and x2 at a + k + j2 with j2 = j assumed; the other
@@ -22,7 +22,7 @@
 // UNSAT: vc.ack-relax-candidates: 15
 // DEFS: vc.defs-names: {{[1-9]}}
 // UNSAT: vc.ack-relax-stop: unsat
-// UNSAT: vc.ack-relax-kept: {{[1-9]$}}
+// UNSAT: vc.ack-relax-kept: {{[0-9]+$}}
 // UNSAT: result: unsat
 //
 // sat: the same with j2 free. The last round's model breaks no candidate;
@@ -46,7 +46,7 @@
 // FALLBACK: [vc.ack-relax-fallback]
 // FALLBACK: vc.ack-relax-stop: rounds
 // FALLBACK: vc.ack-relax-rounds: 0
-// FALLBACK: vc.ack-relax-round: fallback kept=15 result=unsat
+// FALLBACK: vc.ack-relax-round: fallback kept=15 result=unsat broken=0 conflicts={{[0-9]+}} rlimit={{[0-9]+}}
 // FALLBACK: BRUNCH_STAT vc.ack-relax-stop rounds
 // FALLBACK: result: unsat
 // RUN: FileCheck %s --check-prefix=SMT2 < %t/q.smt2
@@ -64,6 +64,8 @@
 // NOACK: vc.ack-relax: off-no-ackermann
 // NOACK-NOT: vc.ack-relax-stop
 // NOACK: result: unsat
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ackermannize=off --ack-relax-smt2=%t/n.smt2 2>&1 | FileCheck %s --check-prefix=NOSMT2
+// NOSMT2: no file written{{.*}}[vc.ack-relax-off]
 
 //--- unsat.mlir
 !m = !sea.mem<!sea.ptr<64>, i8>

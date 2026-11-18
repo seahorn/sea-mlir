@@ -115,8 +115,8 @@ the solver.
 
 `--ack-relax=all` (a diagnosis mode) solves without those constraints
 first and adds only the ones a model breaks, in rounds on fresh solvers.
-`vc.ack-relax-stop` says how it ended; the verdict is the one the eager
-lowering would give (a `consistent` sat is a model of the whole query and
+`vc.ack-relax-stop` says how it ended; a sat or unsat verdict is the one the
+eager lowering would give (a `consistent` sat is a model of the whole query and
 replays as usual). `vc.ack-relax-kept` against `vc.ack-relax-candidates`
 shows how many constraints the answer needed, and the
 `vc.ack-relax-round:` lines show the solver's effort per round

@@ -6163,6 +6163,10 @@ int main(int argc, char **argv) {
     // --ack-relax: the constraints are candidates, the rounds rebuild the
     // query from the body and the kept ones
     const bool relaxOn = relaxSel && ackOn;
+    if (relaxSel && !relaxOn && !ackRelaxSmt2.empty())
+      sea::diag::warn("vc.ack-relax-off",
+                      "--ack-relax-smt2: no file written (the query is not "
+                      "Ackermann-lowered)");
     if (relaxOn)
       ack.recordConstraints(true);
     // the origins of the lowering's input (the reads' selects)
@@ -7391,6 +7395,9 @@ int main(int argc, char **argv) {
     // --ack-relax: the rounds (a fresh solver each); the solver of the
     // answer becomes `solver`, or the whole query's after the last round
     std::optional<expr::AckRelaxOutcome> relaxOut;
+    // the time of the solve that decided (--timeout is per solve); the
+    // whole time is solveSec
+    std::optional<double> decidingSec;
     if (relaxOn) {
       std::unique_ptr<sea::solver::Solver> last;
       bool addFailed = false;
@@ -7424,6 +7431,7 @@ int main(int argc, char **argv) {
       if (relaxOut->stop != Stop::Rounds) {
         solver = std::move(last);
         res = relaxOut->rounds.back().result;
+        decidingSec = relaxOut->rounds.back().seconds;
       } else {
         sea::diag::warn("vc.ack-relax-fallback",
                         Twine(relaxOut->rounds.size()) +
@@ -7435,6 +7443,7 @@ int main(int argc, char **argv) {
         sea::Stopwatch w;
         res = solver->check();
         fallback->seconds = w.seconds();
+        decidingSec = fallback->seconds;
         fallback->result = res;
         fallback->conflicts = solver->conflicts();
         fallback->rlimit = solver->rlimit_count();
@@ -7546,7 +7555,8 @@ int main(int argc, char **argv) {
       // --mem-limit within the time is the memory limit
       std::string why = solver->reason_unknown();
       const bool timedOut =
-          solveTimeout && (why == "timeout" || solveSec >= solveTimeout);
+          solveTimeout &&
+          (why == "timeout" || decidingSec.value_or(solveSec) >= solveTimeout);
       const bool memHit = memLimit && !timedOut &&
                           (why == "memout" || backend == Backend::Bitwuzla);
       {
