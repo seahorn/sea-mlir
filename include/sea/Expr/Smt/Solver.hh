@@ -84,6 +84,11 @@ public:
   /// Limits::rlimit (z3's `rlimit count` statistic; deterministic for a
   /// given z3); nullopt for a backend without one (Yices, Bitwuzla)
   virtual std::optional<uint64_t> rlimit_count() { return std::nullopt; }
+
+  /// The search conflicts of the last check (z3: `conflicts` of the SMT
+  /// core plus `sat conflicts` of the SAT core, 0 when neither ran);
+  /// nullopt for a backend without the count (Yices, Bitwuzla)
+  virtual std::optional<uint64_t> conflicts() { return std::nullopt; }
 };
 } // namespace solver
 } // namespace sea

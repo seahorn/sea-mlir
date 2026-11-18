@@ -107,6 +107,16 @@ public:
     return std::nullopt;
   }
 
+  std::optional<uint64_t> conflicts() override {
+    z3::stats st = m_solver->stats();
+    uint64_t n = 0;
+    for (unsigned i = 0, e = st.size(); i < e; ++i)
+      if (st.key(i) == "conflicts" || st.key(i) == "sat conflicts")
+        n += st.is_uint(i) ? uint64_t(st.uint_value(i))
+                           : uint64_t(st.double_value(i));
+    return n;
+  }
+
   /** Write asserted formulas to SMT-LIB format **/
   virtual void to_smt_lib(llvm::raw_ostream &o) override {
     m_solver->toSmtLib(o);
