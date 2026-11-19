@@ -68,8 +68,9 @@ public:
 
   StringRef getArgument() const final { return "sea-widen-memory"; }
   StringRef getDescription() const final {
-    return "Give byte memories whose accesses are all k-aligned whole words "
-           "k-byte cells (aligned word layout)";
+    return "Give each byte memory cells of the largest word size <= k for "
+           "which all its accesses are aligned whole words (aligned word "
+           "layout)";
   }
 
   void runOnOperation() override;
@@ -245,7 +246,7 @@ void WidenMemoryPass::analyze(
     } else if (isa<PrintMemOp>(op)) {
       // a strong print reads bytes out of whatever cells the memory has (no
       // alignment needed): never a reason to keep bytes
-    } else if (!isa<BranchOpInterface, MemNondetOp, MemConstOp>(op)) {
+    } else if (!isa<BranchOpInterface, MemNondetOp>(op)) {
       for (Value o : op->getOperands())
         if (isMem(o))
           refuse(o, "a use by " + op->getName().getStringRef(), op);

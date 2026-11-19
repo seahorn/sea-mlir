@@ -511,6 +511,7 @@ LOWER_FLAGS = (
     "--lower-disable",
     "--widen-memory",
     "--widen-memory-report",
+    "--widen-memory-per-class",
     "--check-align",
     "--check-ptr-index",
     "--print-refs",

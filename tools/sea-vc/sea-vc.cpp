@@ -2783,7 +2783,7 @@ OUTPUT (stdout, `key: value` lines):
       widened-4=<n> widened-8=<n>  (--widen-memory=K: memory classes,
                                   widened to each word size, byte memories
                                   kept as bytes, classes that are not byte
-                                  memories; widened-<k> per size <= K)
+                                  memories; widened-<k> per size from max(K, 8) down to 2)
   vc.box-all: dead=<n> empty=<n> expand-max=<K> expanded=<n> guarded=<n>
       lowered=<n> nondets=<n>     (--lower, a program with sea.box.all:
                                   ops erased unused, constant empty boxes

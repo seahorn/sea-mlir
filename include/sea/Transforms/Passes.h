@@ -249,9 +249,8 @@ enum class RangeFoldMode { Off, Fold, Check };
 /// solver encodes it: \p nativeMulOverflow). \p widenMemory k > 0 runs
 /// sea-widen-memory{k} (k the largest word size) after sccp. \p expandMemSet
 /// false leaves sea-expand-memset out: the encoding with memory-operation terms
-/// (sea-vc
-/// --seam, docs/design/SeaM-memops.md) takes symbolic lengths exactly, with
-/// no bound. The pipeline depends on the selected memory encoding.
+/// (sea-vc --seam, docs/design/SeaM-memops.md) takes symbolic lengths exactly,
+/// with no bound. The pipeline depends on the selected memory encoding.
 /// \p widenReport: sea-widen-memory remarks, per memory, widened or why not.
 /// \p keepByteWide: sea-split-wide-access leaves wide accesses of byte
 /// memories whole (width terms, sea-vc --seam --seam-wide).
