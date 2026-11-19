@@ -100,8 +100,8 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   `sea-vc-lower{reach=true}` / `{prune-edges=false}`;
   docs/design/PruneEdges.md),
   `sea-widen-memory` (byte
-  memory -> aligned k-byte words when every access provably fits; in the
-  lowering with `sea-vc --widen-memory=k`), `sea-apply-tracking`
+  memory -> aligned words when every access provably fits, per memory the
+  largest size <= k; in the lowering with `sea-vc --widen-memory=k`), `sea-apply-tracking`
   (tracking_on/off markers -> `tracked` updates; first in the lowering),
   `sea-lower-tracking` (tracking -> a shadow memory chain per tracked
   memory, keyed by sea.ptr.base, starting as sea.mem.const 0 shadow:

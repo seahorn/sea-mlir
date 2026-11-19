@@ -11,8 +11,8 @@
 //
 // A memory is a class of memory values connected by def-use: a version and
 // the update that consumes it, a branch operand and its block argument, a
-// memmove's source and destination (whose types must match). A class is
-// widened only if every access in it is provably k-aligned:
+// memmove's source and destination (whose types must match). A class
+// qualifies for k if every access in it is provably k-aligned:
 //   - load / store: the value is a multiple of k bytes wide;
 //   - every address is k-aligned: the op's `align` >= k (LLVM's promise),
 //     or structurally (an allocation / global aligned to >= k, plus
@@ -20,17 +20,28 @@
 //     whose inputs all are; a sea.segment (placed object) whose base is);
 //   - memset / memmove / memhavoc: the length is a constant multiple of k
 //     (run sccp first: sea-vc-lower does).
-// Otherwise the class stays bytes; `report` says why, per class.
+// Each class gets the largest k that it qualifies for among k = K, K/2,
+// ..., 2 (K: the option `k`, the maximum); with `per-class=false` only
+// K is tried (one word size for the program). A class that qualifies for
+// none stays bytes; `report` says why, per class (the reason at the
+// smallest size tried, and for a class widened below K, why not K).
+// Classes are independent memories: programs with several word sizes are
+// in the language of the memory type (each memory names its cells).
 //
 // Contract.
 //   Accepts: any program; only exact byte memories (i8 cells, byte
 //     addresses) are candidates. A strong sea.print.mem does not stop a
 //     memory from widening (the interpreter reads bytes out of words).
-//   Produces: every member of a widened class has type
+//   Produces: every member of a class widened to k has type
 //     !sea.mem<I, i(8k), aligned> (checked); a sea.mem.const at the root
 //     of a widened class gets the word of k copies of its byte (exact: every
 //     cell of the memory holds the byte); no other op changes (memset's
 //     value is still one byte, repeated per word).
+//   Reports: the counters (kWidenMemoryStatsAttr on the program): k (the
+//     maximum), classes (memory classes), widened-8 / widened-4 /
+//     widened-2 (classes widened to each size; other sizes as
+//     widened-<k>), bytes (byte memories kept as bytes), other (classes
+//     that are not byte memories).
 //
 //===----------------------------------------------------------------------===//
 
@@ -63,9 +74,17 @@ public:
 
   void runOnOperation() override;
 
-  Option<unsigned> wordBytes{*this, "k",
-                             llvm::cl::desc("Word size in bytes (2, 4, 8)"),
-                             llvm::cl::init(8)};
+  Option<unsigned> maxWordBytes{
+      *this, "k",
+      llvm::cl::desc("Largest word size in bytes (a power of two >= 2); "
+                     "each memory gets the largest size <= k it qualifies "
+                     "for"),
+      llvm::cl::init(8)};
+  Option<bool> perClass{
+      *this, "per-class",
+      llvm::cl::desc("Try every word size k, k/2, ..., 2 per memory "
+                     "(false: k only, one word size for the program)"),
+      llvm::cl::init(true)};
   Option<bool> report{*this, "report",
                       llvm::cl::desc("Remark, per memory, whether it was "
                                      "widened and if not why"),
@@ -84,9 +103,16 @@ private:
   bool aligned(Value addr, std::optional<uint64_t> align);
   bool provenAligned(Value v, unsigned depth);
   bool constMultiple(Value len);
+  /// Why each class (by its representative) does not qualify for word
+  /// size `wordBytes` (the first reason found), and where.
+  void
+  analyze(ArrayRef<Value> members,
+          llvm::DenseMap<Value, std::pair<std::string, Operation *>> &refused);
 
   llvm::DenseMap<Value, Value> parent;
   llvm::DenseMap<Value, bool> alignedCache;
+  /// the word size analyze() checks
+  uint64_t wordBytes = 0;
 };
 
 bool WidenMemoryPass::constMultiple(Value len) {
@@ -152,67 +178,28 @@ bool WidenMemoryPass::provenAligned(Value v, unsigned depth) {
   return r;
 }
 
-void WidenMemoryPass::runOnOperation() {
-  uint64_t k = wordBytes;
-  if (k < 2 || !llvm::isPowerOf2_64(k)) {
-    getOperation().emitError("sea-widen-memory: k must be a power of two "
-                             ">= 2, got ")
-        << k;
-    return signalPassFailure();
-  }
-  parent.clear();
+/// An exact byte memory (i8 cells, byte addresses): a candidate.
+static bool isByteMemory(Value v) {
+  auto t = cast<MemType>(v.getType());
+  bool byteAddr =
+      isa<PtrType>(t.getIndex()) || cast<AddrType>(t.getIndex()).getUnit() == 8;
+  return !t.isWordLayout() && t.getCell().getWidth() == 8 && byteAddr;
+}
+
+void WidenMemoryPass::analyze(
+    ArrayRef<Value> members,
+    llvm::DenseMap<Value, std::pair<std::string, Operation *>> &refused) {
   alignedCache.clear();
-
-  // Classes: every memory value, joined along def-use.
-  SmallVector<Value> members;
   auto isMem = [](Value v) { return isa<MemType>(v.getType()); };
-  getOperation().walk([&](Operation *op) {
-    for (Value r : op->getResults())
-      if (isMem(r)) {
-        members.push_back(r);
-        find(r);
-      }
-    for (Region &region : op->getRegions())
-      for (Block &b : region)
-        for (BlockArgument a : b.getArguments())
-          if (isMem(a)) {
-            members.push_back(a);
-            find(a);
-          }
-  });
-  getOperation().walk([&](Operation *op) {
-    if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(op))
-      unite(op->getOperand(0), op->getResult(0));
-    if (auto mv = dyn_cast<MemMoveOp>(op))
-      unite(mv.getSrc(), mv.getMem());
-    if (auto br = dyn_cast<BranchOpInterface>(op))
-      for (unsigned i = 0, n = op->getNumSuccessors(); i < n; ++i) {
-        Block *dest = op->getSuccessor(i);
-        SuccessorOperands ops = br.getSuccessorOperands(i);
-        for (unsigned j = 0, m = ops.size(); j < m; ++j)
-          if (Value in = ops[j]; in && isMem(in))
-            unite(in, dest->getArgument(j));
-      }
-  });
-
-  // Why each class cannot be widened (first reason found), and its ops.
-  llvm::DenseMap<Value, std::string> refused;
-  llvm::DenseMap<Value, Operation *> where;
   auto refuse = [&](Value member, const Twine &why, Operation *at) {
     Value c = find(member);
-    if (!refused.count(c)) {
-      refused[c] = why.str();
-      where[c] = at;
-    }
+    if (!refused.count(c))
+      refused[c] = {why.str(), at};
   };
-  for (Value v : members) {
-    auto t = cast<MemType>(v.getType());
-    bool byteAddr = isa<PtrType>(t.getIndex()) ||
-                    cast<AddrType>(t.getIndex()).getUnit() == 8;
-    if (t.isWordLayout() || t.getCell().getWidth() != 8 || !byteAddr)
+  for (Value v : members)
+    if (!isByteMemory(v))
       refuse(v, "not a byte memory", v.getDefiningOp());
-  }
-  uint64_t bits = 8 * k;
+  uint64_t bits = 8 * wordBytes;
   getOperation().walk([&](Operation *op) {
     if (auto ld = dyn_cast<LoadOp>(op)) {
       if (bitWidthOf(ld.getType()) % bits != 0)
@@ -258,36 +245,120 @@ void WidenMemoryPass::runOnOperation() {
     } else if (isa<PrintMemOp>(op)) {
       // a strong print reads bytes out of whatever cells the memory has (no
       // alignment needed): never a reason to keep bytes
-    } else if (!isa<BranchOpInterface, MemNondetOp>(op)) {
+    } else if (!isa<BranchOpInterface, MemNondetOp, MemConstOp>(op)) {
       for (Value o : op->getOperands())
         if (isMem(o))
           refuse(o, "a use by " + op->getName().getStringRef(), op);
     }
   });
+}
 
-  // Rewrite the widened classes, and report.
+void WidenMemoryPass::runOnOperation() {
+  const uint64_t maxK = maxWordBytes;
+  if (maxK < 2 || !llvm::isPowerOf2_64(maxK)) {
+    getOperation().emitError("sea-widen-memory: k must be a power of two "
+                             ">= 2, got ")
+        << maxK;
+    return signalPassFailure();
+  }
+  parent.clear();
+  alignedCache.clear();
+
+  // Classes: every memory value, joined along def-use.
+  SmallVector<Value> members;
+  auto isMem = [](Value v) { return isa<MemType>(v.getType()); };
+  getOperation().walk([&](Operation *op) {
+    for (Value r : op->getResults())
+      if (isMem(r)) {
+        members.push_back(r);
+        find(r);
+      }
+    for (Region &region : op->getRegions())
+      for (Block &b : region)
+        for (BlockArgument a : b.getArguments())
+          if (isMem(a)) {
+            members.push_back(a);
+            find(a);
+          }
+  });
+  getOperation().walk([&](Operation *op) {
+    if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(op))
+      unite(op->getOperand(0), op->getResult(0));
+    if (auto mv = dyn_cast<MemMoveOp>(op))
+      unite(mv.getSrc(), mv.getMem());
+    if (auto br = dyn_cast<BranchOpInterface>(op))
+      for (unsigned i = 0, n = op->getNumSuccessors(); i < n; ++i) {
+        Block *dest = op->getSuccessor(i);
+        SuccessorOperands ops = br.getSuccessorOperands(i);
+        for (unsigned j = 0, m = ops.size(); j < m; ++j)
+          if (Value in = ops[j]; in && isMem(in))
+            unite(in, dest->getArgument(j));
+      }
+  });
+
+  llvm::DenseSet<Value> notByte; // classes with a member not a byte memory
+  for (Value v : members)
+    if (!isByteMemory(v))
+      notByte.insert(find(v));
+
+  // The word size of each class: the largest one tried that it qualifies
+  // for (0: bytes). Why the largest size was refused (a class widened
+  // below it), and why the smallest one was (a class kept as bytes).
+  using Refusals = llvm::DenseMap<Value, std::pair<std::string, Operation *>>;
+  llvm::DenseMap<Value, uint64_t> size;
+  Refusals atMax, atMin;
+  for (uint64_t k = maxK; k >= 2; k /= 2) {
+    wordBytes = k;
+    Refusals refused;
+    analyze(members, refused);
+    for (Value v : members) {
+      Value c = find(v);
+      if (size.count(c))
+        continue; // decided at a larger size
+      if (!refused.count(c))
+        size[c] = k;
+    }
+    if (k == maxK)
+      atMax = refused;
+    atMin = std::move(refused);
+    if (!perClass)
+      break;
+  }
+
+  // Rewrite the widened classes, count, and report.
   MLIRContext *ctx = &getContext();
-  llvm::DenseSet<Value> reported;
+  llvm::DenseSet<Value> seen;
+  llvm::DenseMap<uint64_t, int64_t> widened;
+  int64_t classes = 0, bytes = 0, other = 0;
   for (Value v : members) {
     Value c = find(v);
-    if (refused.count(c)) {
-      if (report && reported.insert(c).second)
-        emitRemark(where[c] ? where[c]->getLoc() : v.getLoc())
-            << "sea-widen-memory: memory kept as bytes: " << refused[c];
+    bool first = seen.insert(c).second;
+    classes += first;
+    auto it = size.find(c);
+    if (it == size.end()) {
+      const auto &[why, at] = atMin.lookup(c);
+      if (first) {
+        bytes += !notByte.count(c);
+        other += notByte.count(c);
+      }
+      if (report && first)
+        emitRemark(at ? at->getLoc() : v.getLoc())
+            << "sea-widen-memory: memory kept as bytes: " << why;
       continue;
     }
+    uint64_t k = it->second;
     auto t = cast<MemType>(v.getType());
-    v.setType(MemType::get(ctx, t.getIndex(), IntegerType::get(ctx, bits),
+    v.setType(MemType::get(ctx, t.getIndex(), IntegerType::get(ctx, 8 * k),
                            MemLayout::aligned));
     // a constant memory: every word is k copies of its byte
     if (auto mc = v.getDefiningOp<MemConstOp>()) {
       OpBuilder b(mc);
       Value byte = mc.getValue();
       Value word;
-      auto wordTy = IntegerType::get(ctx, bits);
+      auto wordTy = IntegerType::get(ctx, 8 * k);
       if (auto cst = byte.getDefiningOp<ConstOp>()) {
         llvm::APInt splat = llvm::APInt::getSplat(
-            bits, cast<IntegerAttr>(cst.getValue()).getValue());
+            8 * k, cast<IntegerAttr>(cst.getValue()).getValue());
         word = ConstOp::create(b, mc.getLoc(), wordTy,
                                IntegerAttr::get(wordTy, splat));
       } else {
@@ -299,22 +370,47 @@ void WidenMemoryPass::runOnOperation() {
       }
       mc.getValueMutable().assign(word);
     }
-    if (report && reported.insert(c).second)
-      emitRemark(v.getLoc())
-          << "sea-widen-memory: memory widened to " << k << "-byte words";
+    if (first) {
+      ++widened[k];
+      if (report) {
+        InFlightDiagnostic d = emitRemark(v.getLoc());
+        d << "sea-widen-memory: memory widened to " << k << "-byte words";
+        if (k < maxK)
+          d << " (not " << maxK << ": " << atMax.lookup(c).first << ")";
+      }
+    }
   }
   for (Value v : members) {
     Value c = find(v);
     auto t = cast<MemType>(v.getType());
-    auto mc = v.getDefiningOp<MemConstOp>();
-    if (!refused.count(c) && (t.getCellUnits() != k || !t.isWordLayout() ||
-                              (mc && mc.getValue().getType() != t.getCell()))) {
+    auto it = size.find(c);
+    if (it == size.end())
+      continue;
+    bool bad = t.getCellUnits() != it->second || !t.isWordLayout();
+    if (auto mc = v.getDefiningOp<MemConstOp>())
+      bad |= mc.getValue().getType() != t.getCell();
+    if (bad) {
       (void)postconditionFailed("sea-widen-memory",
                                 "a member of a widened memory not widened",
                                 getOperation());
       return signalPassFailure();
     }
   }
+
+  SmallVector<NamedAttribute> stats;
+  auto add = [&](StringRef key, int64_t n) {
+    stats.push_back(
+        NamedAttribute(StringAttr::get(ctx, key),
+                       IntegerAttr::get(IntegerType::get(ctx, 64), n)));
+  };
+  add("k", maxK);
+  add("classes", classes);
+  for (uint64_t k = std::max<uint64_t>(maxK, 8); k >= 2; k /= 2)
+    add(("widened-" + Twine(k)).str(), widened.lookup(k));
+  add("bytes", bytes);
+  add("other", other);
+  getOperation()->setAttr(kWidenMemoryStatsAttr,
+                          DictionaryAttr::get(ctx, stats));
 }
 
 } // namespace

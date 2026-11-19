@@ -1,9 +1,13 @@
 ORACLE: sea-widen-memory vs byte memory, by replaying a byte run's reads
-into the widened program (see test/README.md, utils/check-widen.py).
+into the widened program (see test/README.md, utils/check-widen.py). The
+Inputs/widen-sizes programs have memories of several word sizes, read at
+offsets that are not multiples of the largest.
 RUN: %python %sea_src_root/utils/check-widen.py %sea_src_root/test/SeaHorn/opsem --sea-opt sea-opt --sea-run sea-run --sea-vc sea-vc -k 2 --runs 5 | FileCheck %s --check-prefix=K2
 RUN: %python %sea_src_root/utils/check-widen.py %sea_src_root/test/SeaHorn/opsem --sea-opt sea-opt --sea-run sea-run --sea-vc sea-vc -k 4 --runs 5 | FileCheck %s --check-prefix=K4
+RUN: %python %sea_src_root/utils/check-widen.py %S/Inputs/widen-sizes --sea-opt sea-opt --sea-run sea-run --sea-vc sea-vc -k 8 --runs 5 | FileCheck %s --check-prefix=SIZES
 K2: programs: {{[0-9]+}} widened-and-checked: {{[1-9][0-9]*}} skipped: {{[0-9]+}} failures: 0
 K4: programs: {{[0-9]+}} widened-and-checked: {{[1-9][0-9]*}} skipped: {{[0-9]+}} failures: 0
+SIZES: programs: 1 widened-and-checked: 1 skipped: 0 failures: 0
 
 # SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

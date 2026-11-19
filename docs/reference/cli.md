@@ -35,7 +35,8 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--seam` | the SeaM memory rewriter ([Background: SeaM](seam.md)) |
 | `--seam-premises=0` | SeaM without the pointer premises (A-SEP, A-NULL, A-NOWRAP) |
 | `--seam-out-of-object=fallback` | a static out-of-object access reruns without the premises (default `report`: warn, report, keep them) |
-| `--widen-memory=<k>` | with `--lower`: byte memories whose accesses are all aligned $k$-byte words become word memories |
+| `--widen-memory=<k>` | with `--lower`: each byte memory becomes a word memory of the largest size among $k$, $k/2$, ..., 2 bytes for which all its accesses are aligned whole words; counters in `vc.widen-memory` |
+| `--widen-memory-per-class=false` | with `--widen-memory=<k>`: $k$-byte words only, one word size for the program |
 | `--ptr-mode=auto|opaque|address` | the pointer model; `auto` (default) chooses `address` if the program converts an integer to a pointer |
 | `--simplify` | the bit-vector and Boolean normalization of SeaM, without SeaM |
 | `--ackermannize=auto|on|off` | replace reads of read-only arrays by fresh constants with consistency constraints |

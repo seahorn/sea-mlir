@@ -43,11 +43,13 @@ An oracle checks meaning against an independent reference. Today:
   values op by op (addresses excluded); sea-vc --lower confirms every sat by
   replay; every unsat survives the abstract runs.
 - `Transforms/widen-memory-diff.test` + `utils/check-widen.py`:
-  sea-widen-memory (byte memory -> aligned k-byte words) vs byte memory,
-  on the generated opsem programs: a byte run's nondet values and memory
-  bytes are replayed (bytes combined into words) into the widened program,
-  which must reach the same status and trace with no other input; at
-  least one program must widen (k = 2, 4).
+  sea-widen-memory (byte memory -> aligned words, at most k bytes, the
+  size chosen per memory) vs byte memory, on the generated opsem programs
+  and `Transforms/Inputs/widen-sizes` (several word sizes in one program):
+  a byte run's nondet values and memory bytes are replayed (bytes combined
+  into words of each memory's size, read from the widened program's types)
+  into the widened program, which must reach the same status and trace
+  with no other input; at least one program must widen (k = 2, 4, 8).
 
 - `Transforms/int-ranges.test` + `unittests/IntRanges`: the integer ranges
   of the sea value ops (InferIntRangeInterface, upstream transfer functions

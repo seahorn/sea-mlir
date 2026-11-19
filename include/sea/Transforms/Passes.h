@@ -206,8 +206,14 @@ inline constexpr unsigned kMaxBoxAllExpand = 1024;
 inline constexpr llvm::StringLiteral kBoxAllStatsAttr = "sea.box_all";
 
 /// sea-widen-memory: byte memories whose accesses are all k-aligned whole
-/// words get k-byte cells (aligned word layout).
+/// words get k-byte cells (aligned word layout); per memory, the largest
+/// k <= the option's k (a power of two >= 2) that qualifies, or only the
+/// option's k with per-class=false.
 std::unique_ptr<mlir::Pass> createWidenMemoryPass();
+/// On the sea.program after sea-widen-memory: its counters (i64 attributes:
+/// k, classes, widened-<k> per word size, bytes, other;
+/// `vc.widen-memory`).
+inline constexpr llvm::StringLiteral kWidenMemoryStatsAttr = "sea.widen_memory";
 
 /// The passes of the VC lowering that sea-vc --lower-disable can leave
 /// out: optimizations, the program stays in the form sea-vc encodes
@@ -241,8 +247,9 @@ enum class RangeFoldMode { Off, Fold, Check };
 /// abstract), expanding symbolic memsets, splitting critical edges,
 /// splitting wide accesses, expanding intrinsics (except mul overflow if the
 /// solver encodes it: \p nativeMulOverflow). \p widenMemory k > 0 runs
-/// sea-widen-memory{k} after sccp. \p expandMemSet false leaves
-/// sea-expand-memset out: the encoding with memory-operation terms (sea-vc
+/// sea-widen-memory{k} (k the largest word size) after sccp. \p expandMemSet
+/// false leaves sea-expand-memset out: the encoding with memory-operation terms
+/// (sea-vc
 /// --seam, docs/design/SeaM-memops.md) takes symbolic lengths exactly, with
 /// no bound. The pipeline depends on the selected memory encoding.
 /// \p widenReport: sea-widen-memory remarks, per memory, widened or why not.
@@ -272,6 +279,8 @@ enum class RangeFoldMode { Off, Fold, Check };
 /// default 0: not run); \p ptrCompanion: its option ptr-companion (sea-vc
 /// --ptr-companion is not off: every memmove kept). \p boxAllExpand:
 /// sea-lower-box-all{expand-max=K} (sea-vc --box-all-expand).
+/// \p widenPerClass: sea-widen-memory's per-class (false: one word size,
+/// k; sea-vc --widen-memory-per-class).
 void buildVCLoweringPipeline(
     mlir::OpPassManager &pm, bool abstract, bool nativeMulOverflow = false,
     bool fold = true, unsigned widenMemory = 0, bool expandMemSet = true,
@@ -280,7 +289,7 @@ void buildVCLoweringPipeline(
     bool memhavocNullNoop = true, unsigned disable = 0,
     const PlaceFiles &place = {}, RangeFoldMode rangeFold = RangeFoldMode::Off,
     unsigned expandMemMove = 0, bool ptrCompanion = false,
-    unsigned boxAllExpand = kBoxAllExpandDefault);
+    unsigned boxAllExpand = kBoxAllExpandDefault, bool widenPerClass = true);
 
 /// Attaches the `lower.pass` log (one level-1 event per pass run: ops
 /// before and after, time; lib/Transforms/PassLog.cpp) to \p pm. Costs a

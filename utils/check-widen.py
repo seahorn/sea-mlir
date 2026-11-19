@@ -5,13 +5,14 @@
 """Differential check of sea-widen-memory (byte memory -> aligned k-byte
 words).
 
-For each program: O = sccp only, W = sccp + sea-widen-memory{k}. Programs
-in which nothing was widened are skipped. O runs with random inputs
-(--missing=random, several seeds); every nondet value and memory byte it
-reads is replayed into W as an explicit input (the bytes of each k-byte
-word combined, little-endian), and W runs with --missing=error. W reads
-exactly the words whose bytes O read: the pass widens only memories whose
-accesses are all whole, aligned words. O and W must agree on the status
+For each program: O = sccp only, W = sccp + sea-widen-memory{k} (k the
+largest word size; each memory gets its own, read from W's types).
+Programs in which nothing was widened are skipped. O runs with random
+inputs (--missing=random, several seeds); every nondet value and memory
+byte it reads is replayed into W as an explicit input (the bytes of each
+word of the memory's size combined, little-endian), and W runs with
+--missing=error. W reads exactly the words whose bytes O read: the pass
+widens only memories whose accesses are all whole, aligned words. O and W must agree on the status
 and on every traced value (the pass changes no op, only memory types).
 With --sea-vc, the VC must also give the same verdict (and exit status)
 with and without --widen-memory=k.
@@ -53,8 +54,25 @@ def traces(out):
     ]
 
 
-def inputs_from(out, k):
-    """--input entries replaying a byte run's reads into the word program."""
+def site_words(path):
+    """Word size in bytes per memory site (its sea.mem.nondet / sea.memhavoc
+    type) of the widened program; a site not listed stays bytes."""
+    ks = {}
+    with open(path) as f:
+        for line in f:
+            m = re.search(
+                r"sea\.(?:mem\.nondet|memhavoc)\b.*\[(\d+)\].*"
+                r"!sea\.mem<.*, i(\d+), aligned>",
+                line,
+            )
+            if m:
+                ks[m.group(1)] = int(m.group(2)) // 8
+    return ks
+
+
+def inputs_from(out, ks):
+    """--input entries replaying a byte run's reads into the word program
+    (ks: word size per memory site, site_words)."""
     entries = []
     words = collections.defaultdict(dict)  # (site, object) -> {word: {i: v}}
     for line in out.splitlines():
@@ -74,6 +92,7 @@ def inputs_from(out, k):
             return None  # not a byte memory read: nothing to replay
         obj, _, off = addr.rpartition("+")
         off = int(off)
+        k = ks.get(site, 1)
         words[(site, obj)].setdefault(off - off % k, {})[off % k] = int(value)
     for (site, obj), ws in words.items():
         for start, parts in ws.items():
@@ -113,11 +132,12 @@ def check(args, path, work):
         return "FAIL", f"widening failed: {err.strip()[:200]}"
     if "widened to" not in err:
         return "skip", "nothing widened"
+    ks = site_words(w)
     for seed in range(args.runs):
         rc, oo, oe = run(
             [args.sea_run, o, "--missing=random", f"--seed={seed}", "--trace"]
         )
-        inputs = inputs_from(oo, args.k)
+        inputs = inputs_from(oo, ks)
         if inputs is None:
             return "skip", "reads cells wider than a byte"
         cmd = [args.sea_run, w, "--missing=error", "--trace"]
@@ -162,7 +182,7 @@ def main():
         "--sea-vc",
         help="also compare sea-vc --lower verdicts with and without --widen-memory=k",
     )
-    ap.add_argument("-k", type=int, default=8, help="word size in bytes")
+    ap.add_argument("-k", type=int, default=8, help="largest word size in bytes")
     ap.add_argument("--runs", type=int, default=5, help="random seeds")
     ap.add_argument("-j", type=int, default=os.cpu_count() or 4)
     args = ap.parse_args()

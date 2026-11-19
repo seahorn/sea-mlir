@@ -331,7 +331,7 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
                              bool memhavocNullNoop, unsigned disable,
                              const PlaceFiles &place, RangeFoldMode rangeFold,
                              unsigned expandMemMove, bool ptrCompanion,
-                             unsigned boxAllExpand) {
+                             unsigned boxAllExpand, bool widenPerClass) {
   const bool cse = opt && !(disable & LowerDisableCse);
   const bool canonicalize = opt && !(disable & LowerDisableCanonicalize);
   OpPassManager &prog = pm.nest<ProgramOp>();
@@ -371,7 +371,8 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
     auto widen = createWidenMemoryPass();
     if (failed(
             widen->initializeOptions(("k=" + llvm::Twine(widenMemory) +
-                                      (widenReport ? " report=true" : ""))
+                                      (widenReport ? " report=true" : "") +
+                                      (widenPerClass ? "" : " per-class=false"))
                                          .str(),
                                      [](const Twine &) { return failure(); })))
       llvm::report_fatal_error("sea-widen-memory: bad k");

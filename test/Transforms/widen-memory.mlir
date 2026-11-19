@@ -1,5 +1,8 @@
 // RUN: sea-opt %s --sea-widen-memory="k=8 report=true" 2>/dev/null | FileCheck %s
 // RUN: sea-opt %s --sea-widen-memory="k=8 report=true" -o /dev/null 2>&1 | FileCheck %s --check-prefix=REM
+// RUN: sea-opt %s --sea-widen-memory="k=8 per-class=false" 2>/dev/null | FileCheck %s --check-prefix=FIXED
+// RUN: sea-opt %s --sea-widen-memory="k=8" 2>/dev/null | FileCheck %s --check-prefix=STATS
+// STATS: sea.widen_memory = {bytes = {{[0-9]+}} : i64, classes = 1 : i64, k = 8 : i64, other = 0 : i64, "widened-2" = 0 : i64, "widened-4" = 0 : i64, "widened-8" = 1 : i64}
 
 !m = !sea.mem<!sea.ptr<64>, i8>
 
@@ -38,9 +41,13 @@ sea.program @by_align {
   sea.halt
 }
 
-// REM-DAG: remark: {{.*}}memory kept as bytes: a load narrower than (or not a multiple of) a word
+// A memory too narrow for 8-byte words gets the largest size that fits
+// (per-class=false: the one size, k, or bytes).
+// REM-DAG: remark: {{.*}}memory widened to 4-byte words (not 8: a load narrower than (or not a multiple of) a word)
 // CHECK-LABEL: sea.program @narrow
-// CHECK: sea.mem.nondet "m" [0] : !sea.mem<!sea.ptr<64>, i8>
+// CHECK: sea.mem.nondet "m" [0] : !sea.mem<!sea.ptr<64>, i32, aligned>
+// FIXED-LABEL: sea.program @narrow
+// FIXED: sea.mem.nondet "m" [0] : !sea.mem<!sea.ptr<64>, i8>
 sea.program @narrow {
   %m0 = sea.mem.nondet "m" [0] : !m
   %n = sea.const 16 : i64
@@ -49,9 +56,12 @@ sea.program @narrow {
   sea.halt
 }
 
-// REM-DAG: remark: {{.*}}memory kept as bytes: a store not provably word-aligned
+// An 8-byte store at 4 mod 8: 4-byte words.
+// REM-DAG: remark: {{.*}}memory widened to 4-byte words (not 8: a store not provably word-aligned)
 // CHECK-LABEL: sea.program @misaligned
-// CHECK: !sea.mem<!sea.ptr<64>, i8>
+// CHECK: !sea.mem<!sea.ptr<64>, i32, aligned>
+// FIXED-LABEL: sea.program @misaligned
+// FIXED: !sea.mem<!sea.ptr<64>, i8>
 sea.program @misaligned {
   %m0 = sea.mem.nondet "m" [0] : !m
   %n = sea.const 16 : i64
@@ -104,10 +114,13 @@ sea.program @placed_segment {
   sea.halt
 }
 
-// A base that is not a multiple of k does not prove it (the memory stays
-// bytes, whatever the object's declared align).
+// A base that is not a multiple of k does not prove it, whatever the
+// object's declared align: at 4 mod 8, 4-byte words (8-byte words only
+// with per-class=false: the memory stays bytes).
 // CHECK-LABEL: sea.program @placed_segment_odd
-// CHECK: sea.mem.nondet "m" [0] : !sea.mem<!sea.addr<64>, i8>
+// CHECK: sea.mem.nondet "m" [0] : !sea.mem<!sea.addr<64>, i32, aligned>
+// FIXED-LABEL: sea.program @placed_segment_odd
+// FIXED: sea.mem.nondet "m" [0] : !sea.mem<!sea.addr<64>, i8>
 sea.program @placed_segment_odd {
   %b = sea.segment "stack.1" base 3221225460 : i64 size 16 : i64 align 8 kind "stack" : !sea.addr<64>
   %m0 = sea.mem.nondet "m" [0] : !sea.mem<!sea.addr<64>, i8>

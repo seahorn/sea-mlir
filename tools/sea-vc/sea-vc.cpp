@@ -233,9 +233,17 @@ static cl::opt<bool> replayOriginalOpt(
 
 static cl::opt<unsigned> widenMemory(
     "widen-memory",
-    cl::desc("With --lower: give byte memories whose accesses are all "
-             "aligned whole k-byte words k-byte cells (sea-widen-memory)"),
+    cl::desc("With --lower: give each byte memory whose accesses are all "
+             "aligned whole words the largest word size <= k (k, k/2, ..., "
+             "2) it qualifies for (sea-widen-memory; k a power of two)"),
     cl::init(0));
+
+static cl::opt<bool> widenMemoryPerClass(
+    "widen-memory-per-class",
+    cl::desc("With --widen-memory=k: choose the word size per memory among "
+             "k, k/2, ..., 2 (default); false: k only, one word size for the "
+             "program"),
+    cl::init(true));
 
 static cl::opt<sea::JoinEncoding> joinEncoding(
     "vc-join", cl::desc("How joins define block arguments"),
@@ -2168,12 +2176,21 @@ TYPICAL:
                                  #   sea-opt --sea-vc-lower='reach=true
                                  #   reach-fold-facts=true' is its lowering
   sea-vc p.mlir --lower --widen-memory=8 --widen-memory-report  # a remark
-                                 #   per memory: widened, or kept as bytes
-                                 #   and the first reason (remark: <loc>:
+                                 #   per memory: widened (and, below k, why
+                                 #   not k), or kept as bytes and the first
+                                 #   reason (remark: <loc>:
                                  #   sea-widen-memory: ...)
-  sea-vc p.mlir --lower --widen-memory=4  # also widen byte memories whose
-                                 #   accesses are all aligned 4-byte words
-                                 #   (fewer, wider array cells)
+  sea-vc p.mlir --lower --widen-memory=8  # each byte memory whose accesses
+                                 #   are all aligned whole words gets the
+                                 #   largest word size of 8, 4, 2 it
+                                 #   qualifies for (fewer, wider array
+                                 #   cells; exact). Prints vc.widen-memory:
+                                 #   k= classes= widened-8= widened-4=
+                                 #   widened-2= bytes= other=
+  sea-vc p.mlir --lower --widen-memory=8 --widen-memory-per-class=false
+                                 #   8-byte words only, one word size for
+                                 #   the program (the rule before per-class
+                                 #   sizes)
   sea-vc p.mlir --lower --seam   # SeaM: a placed object's base is the
                                  #   constant obj.<name> with a side equality
                                  #   obj.<name> = <address>, not the numeral,
@@ -2762,6 +2779,11 @@ OUTPUT (stdout, `key: value` lines):
                                   the fold is off; only when there is one;
                                   each value is a split.assumed-candidate
                                   of --split-candidates)
+  vc.widen-memory: bytes=<n> classes=<n> k=<K> other=<n> widened-2=<n>
+      widened-4=<n> widened-8=<n>  (--widen-memory=K: memory classes,
+                                  widened to each word size, byte memories
+                                  kept as bytes, classes that are not byte
+                                  memories; widened-<k> per size <= K)
   vc.box-all: dead=<n> empty=<n> expand-max=<K> expanded=<n> guarded=<n>
       lowered=<n> nondets=<n>     (--lower, a program with sea.box.all:
                                   ops erased unused, constant empty boxes
@@ -4758,7 +4780,8 @@ int main(int argc, char **argv) {
         checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt,
         memhavocNull == MemhavocNull::Noop, lowerDisableMask,
         sea::PlaceFiles{placeIn, placeOut}, rangeFoldOpt, expandMemMoveOpt,
-        ptrCompanion != CompanionMode::Off, boxAllExpandOpt);
+        ptrCompanion != CompanionMode::Off, boxAllExpandOpt,
+        widenMemoryPerClass);
     // pm keeps a reference to the phase's scope; SEA_PHASE_END resets it after
     // pm.run, and the reference is not used after that
     if (failed(configurePM(pm, lowerPhase.timing())) || failed(pm.run(*module)))
@@ -4894,6 +4917,14 @@ int main(int argc, char **argv) {
           "kept-companion-mirror", "kept-ptr-companion"})
       if (auto i = d.getAs<IntegerAttr>(key))
         l.kv(key, i.getInt());
+  }
+  // sea-widen-memory's counters (--widen-memory)
+  if (auto d =
+          program->getAttrOfType<DictionaryAttr>(sea::kWidenMemoryStatsAttr)) {
+    sea::stats::Line &l = lowerStats.line("vc.widen-memory");
+    for (NamedAttribute a : d)
+      if (auto i = dyn_cast<IntegerAttr>(a.getValue()))
+        l.kv(a.getName().getValue(), i.getInt());
   }
   // sea-lower-box-all's counters (a program with sea.box.all ops)
   if (auto d = program->getAttrOfType<DictionaryAttr>(sea::kBoxAllStatsAttr)) {
