@@ -180,7 +180,12 @@ term_t marshal_yices::encode_term(Expr e, ycache_t &cache) {
   }
   /** function declaration */
   else if (bind::isFdecl(e)) {
-    uint32_t arity = e->arity();
+    // the fdecl's kids are its name, the domain sorts, the range sort
+    uint32_t arity = bind::domainSz(e);
+    if (arity == 0) {
+      encode_term_fail(e, "fdecl of a constant of an unsupported sort");
+      return NULL_TERM;
+    }
     std::vector<type_t> domain(arity);
     for (size_t i = 0; i < bind::domainSz(e); ++i) {
       type_t yt_i = encode_type(bind::domainTy(e, i));
@@ -197,8 +202,7 @@ term_t marshal_yices::encode_term(Expr e, ycache_t &cache) {
       return NULL_TERM;
     }
 
-    type_t declaration_type =
-        yices_function_type(e->arity(), &domain[0], range);
+    type_t declaration_type = yices_function_type(arity, &domain[0], range);
     assert(declaration_type != NULL_TYPE);
 
     res = yices_new_uninterpreted_term(declaration_type);

@@ -658,6 +658,20 @@ static cl::opt<AckMode> ackermannize(
                clEnumValN(AckMode::Off, "off", "never")),
     cl::init(AckMode::Auto));
 
+enum class RoArrays { Array, Uf };
+static cl::opt<RoArrays> roArrays(
+    "ro-arrays",
+    cl::desc("How the query states the read-only array constants the "
+             "Ackermann lowering would lower (used only under select) when "
+             "it does not lower them (--ackermannize=off, or auto that does "
+             "not lower): as arrays, or as uninterpreted functions of their "
+             "own index and cell sorts, uf.<A>(i) for select(A, i), "
+             "consistency left to the solver (docs/design/Ackermann.md, "
+             "\"Read-only arrays as functions\")"),
+    cl::values(clEnumValN(RoArrays::Array, "array", "arrays (default)"),
+               clEnumValN(RoArrays::Uf, "uf", "uninterpreted functions")),
+    cl::init(RoArrays::Array));
+
 enum class VcDefs { Inline, Nest, Eq, Hidden };
 static cl::opt<VcDefs> vcDefs(
     "vc-defs",
@@ -2410,6 +2424,16 @@ TYPICAL:
                                  #   The model's arrays are rebuilt from the
                                  #   reads (0 at unread cells) for replay.
                                  #   docs/design/Ackermann.md
+  sea-vc p.mlir --ackermannize=off --ro-arrays=uf  # the same arrays as
+                                 #   uninterpreted functions uf.<array> of
+                                 #   the array's own index and cell sorts,
+                                 #   select(A, i) -> uf.<A>(i), no
+                                 #   constraint (the solver's own handling
+                                 #   of UF); arrays used otherwise stay
+                                 #   arrays. Every backend, --smt2, --vc-defs;
+                                 #   the model's arrays are rebuilt as for
+                                 #   the lowering. A no-op when the lowering
+                                 #   runs. Default array.
   sea-vc p.mlir --seam --vc-defs=hidden  # named address sums, after
                                  #   Ackermann: index sums that share a
                                  #   prefix (a parser cursor) become fresh
@@ -2758,6 +2782,11 @@ OUTPUT (stdout, `key: value` lines):
                                   rewriting every load and store, and
                                   building the query; with --smt2 on stderr)
   solve-time: <seconds>           (the solver's check, not with --smt2)
+  vc.ro-arrays: uf=<n> kept-array=<n> reads=<n> | off-ackermann
+                                  (--ro-arrays=uf only: arrays stated as
+                                  functions, arrays kept (used other than
+                                  by select), distinct reads; off-ackermann:
+                                  the eager lowering ran)
   vc.ackermann: on|off            (with on: vc.ackermann-arrays / -kept /
                                   -reads / -pairs / -numeral-pairs /
                                   -offset-pairs / -residue-pairs /
@@ -6181,11 +6210,21 @@ int main(int argc, char **argv) {
                       "Ackermann-lowered)");
     if (relaxOn)
       ack.recordConstraints(true);
+    // --ro-arrays=uf: the arrays the eager lowering would take, as
+    // functions, when it does not run (with it on there are none left)
+    const bool ufOn = roArrays == RoArrays::Uf && !ackOn;
+    if (ufOn) {
+      ack.setUf(true);
+      if (originsOn)
+        ack.keepImages(true);
+    }
+    // the lowering ran (eager or UF): the model rebuilds its arrays
+    const bool lowered = ackOn || ufOn;
     // the origins of the lowering's input (the reads' selects)
     sea::ExprOrigins preAckOrigins;
-    if (ackOn)
+    if (lowered)
       query = ack.lower(query);
-    if (ackOn && originsOn) {
+    if (lowered && originsOn) {
       preAckOrigins = origins;
       origins =
           origins.through([&](const expr::Expr &n) { return ack.image(n); });
@@ -6248,7 +6287,7 @@ int main(int argc, char **argv) {
                                                   : Form::Hidden);
       // a narrowed read's index sum is its k-bit offset (the query
       // compares those); the names then form a k-bit prefix chain
-      if (ackOn)
+      if (lowered)
         for (const auto &arr : ack.arrays())
           for (const auto &rd : arr.reads)
             namer.addIndex(rd.low ? rd.low : rd.index);
@@ -6542,6 +6581,17 @@ int main(int argc, char **argv) {
                              strideOn    ? Stride::On
                              : ackStride ? Stride::Fallback
                                          : Stride::Off);
+      }
+      // --ro-arrays=uf: the arrays stated as functions, the arrays kept
+      // (used otherwise), or none because the eager lowering ran
+      if (roArrays == RoArrays::Uf) {
+        auto &l = r.line("vc.ro-arrays");
+        if (ufOn)
+          l.kv("uf", ack.stats().lowered)
+              .kv("kept-array", ack.stats().kept)
+              .kv("reads", ack.stats().reads);
+        else
+          l.value("off-ackermann");
       }
       // --ack-own: whether it ran (and why not); its counters are
       // vc.ackermann-own-*
@@ -7335,7 +7385,7 @@ int main(int argc, char **argv) {
         }
         expr::ReadCellsModel cells(*inner, query);
         std::unique_ptr<expr::AckermannModel> am;
-        if (ackOn)
+        if (lowered)
           am = std::make_unique<expr::AckermannModel>(cells, ack);
         sea::solver::Model &solved =
             am ? static_cast<sea::solver::Model &>(*am) : cells;
@@ -7714,7 +7764,7 @@ int main(int argc, char **argv) {
     // with the lowering, the arrays are rebuilt from the model of the lowered
     // query: every evaluation (replay, validation) reads them through it
     std::unique_ptr<expr::AckermannModel> ackModel;
-    if (ackOn)
+    if (lowered)
       ackModel = std::make_unique<expr::AckermannModel>(model, ack);
     sea::solver::Model &solvedModel =
         ackModel ? static_cast<sea::solver::Model &>(*ackModel) : model;

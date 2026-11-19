@@ -1,0 +1,45 @@
+// --ro-arrays=uf (docs/design/Ackermann.md, "Read-only arrays as functions"):
+// with the eager lowering off, every array constant used only under select
+// becomes an uninterpreted function of its own sorts. Same verdicts as the
+// eager lowering on each backend; a sat model replays and validates through
+// the rebuilt arrays; the solver's query declares functions, no arrays.
+RUN: sea-vc %S/sat.mlir --lower --seam --ackermannize=off --ro-arrays=uf 2>&1 | FileCheck %s --check-prefix=SAT
+RUN: sea-vc %S/unsat.mlir --lower --seam --ackermannize=off --ro-arrays=uf 2>&1 | FileCheck %s --check-prefix=UNSAT
+RUN: %if yices %{ sea-vc %S/sat.mlir --lower --seam --ackermannize=off --ro-arrays=uf --solver=yices 2>&1 | FileCheck %s --check-prefix=SAT %}
+RUN: %if yices %{ sea-vc %S/unsat.mlir --lower --seam --ackermannize=off --ro-arrays=uf --solver=yices 2>&1 | FileCheck %s --check-prefix=UNSAT %}
+RUN: %if bitwuzla %{ sea-vc %S/sat.mlir --lower --seam --ackermannize=off --ro-arrays=uf --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=SAT %}
+RUN: %if bitwuzla %{ sea-vc %S/unsat.mlir --lower --seam --ackermannize=off --ro-arrays=uf --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=UNSAT %}
+// with named sums (the reads' indices are named as under the eager lowering)
+RUN: sea-vc %S/sat.mlir --lower --seam --ackermannize=off --ro-arrays=uf --vc-defs=hidden 2>&1 | FileCheck %s --check-prefix=SAT
+RUN: %if yices %{ sea-vc %S/sat.mlir --lower --seam --ackermannize=off --ro-arrays=uf --vc-defs=eq --solver=yices 2>&1 | FileCheck %s --check-prefix=SAT %}
+RUN: %if bitwuzla %{ sea-vc %S/sat.mlir --lower --seam --ackermannize=off --ro-arrays=uf --vc-defs=nest --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=SAT %}
+RUN: %if bitwuzla %{ sea-vc %S/unsat.mlir --lower --seam --ackermannize=off --ro-arrays=uf --vc-defs=hidden --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=UNSAT %}
+SAT: vc.ackermann: off
+SAT: vc.ro-arrays: uf=2 kept-array=0
+SAT: result: sat
+SAT: vc.ackermann-model: defaulted={{[0-9]+}} inconsistent=0
+SAT: replay: assert-failed
+SAT: validate: checked={{[0-9]+}} mismatches=0
+UNSAT: vc.ro-arrays: uf={{[1-9]}} kept-array=0
+UNSAT: result: unsat
+
+// the query: functions, no array sort
+RUN: sea-vc %S/sat.mlir --lower --seam --ackermannize=off --ro-arrays=uf --smt2 2>/dev/null | FileCheck %s --check-prefix=SMT
+RUN: %if bitwuzla %{ sea-vc %S/sat.mlir --lower --seam --ackermannize=off --ro-arrays=uf --smt2 --solver=bitwuzla 2>/dev/null | FileCheck %s --check-prefix=SMT %}
+SMT-NOT: Array
+SMT: (declare-fun uf.nd.{{[^ ]+}} ((_ BitVec 64)) (_ BitVec 8))
+SMT-NOT: Array
+
+// the eager lowering on: nothing left to state as a function
+RUN: sea-vc %S/sat.mlir --lower --seam --ackermannize=on --ro-arrays=uf 2>&1 | FileCheck %s --check-prefix=ON
+ON: vc.ackermann: on
+ON: vc.ro-arrays: off-ackermann
+ON: mismatches=0
+
+// the default (array) prints no line
+RUN: sea-vc %S/sat.mlir --lower --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=DEF
+DEF-NOT: vc.ro-arrays
+DEF: result: sat
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

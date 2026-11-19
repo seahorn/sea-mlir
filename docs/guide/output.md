@@ -122,6 +122,11 @@ shows how many constraints the answer needed, and the
 `vc.ack-relax-round:` lines show the solver's effort per round
 ([Ackermann.md](../design/Ackermann.md#lazy-constraints-ack-relax)).
 
+`--ro-arrays=uf` (with the lowering off) gives the same arrays to the solver
+as uninterpreted functions with no constraint, to compare with the solver's
+own handling; `vc.ro-arrays` counts them
+([Ackermann.md](../design/Ackermann.md#read-only-arrays-as-functions-ro-arraysuf)).
+
 With `--seam-stats`, each SeaM rule reports how often it fired. On a small
 NKI gather proof:
 

@@ -62,6 +62,13 @@
 // select(A, j) through that function (j evaluated first) and replaces any
 // other occurrence of A by the store chain over a constant 0 array, so every
 // consumer of the model (replay, validation) sees the same array.
+//
+// The UF form (setUf, sea-vc --ro-arrays=uf with the lowering off): the same
+// arrays (only read, bv -> bv) become an uninterpreted function uf.<A> with
+// A's own index and cell sorts, and each select(A, i) the application
+// uf.<A>(i); no constraint is added (functional consistency is the solver's).
+// The reads (one per distinct index term) are recorded as for the eager
+// lowering, with value uf.<A>(i_k), so AckermannModel rebuilds A the same way.
 #include "sea/Expr/DiffDecider.hh"
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/LinearForms.hh"
@@ -534,7 +541,8 @@ public:
   bool hasStore() const { return m_stats.stores != 0; }
 
   /// \p root with every read of a lowered array replaced by its constant, and
-  /// the constraints conjoined.
+  /// the constraints conjoined (setUf: by the application of the array's
+  /// function, no constraint).
   Expr lower(const Expr &root) {
     using namespace ackermann_detail;
     if (!m_analyzed)
@@ -543,6 +551,8 @@ public:
       m_identity = true; // image(): every node is its own
       return root;
     }
+    if (m_uf)
+      return lowerUf(root);
     // symbolic parts -> group number; 0 is the empty one (numerals)
     std::map<LinearForms::Key, size_t> groups{{LinearForms::Key(), 0}};
     // per group: its symbolic part (atoms with coefficients, ordered)
@@ -900,6 +910,13 @@ public:
     m_deciderOn = on;
     m_deciderOpt = opt;
   }
+  /// The UF form (sea-vc --ro-arrays=uf): lower() replaces each read
+  /// select(A, i) of a lowered array by uf.<A>(i), an uninterpreted function
+  /// with A's index and cell sorts, and adds no constraint. The pair rules
+  /// (and setNarrow, setOwn, setAccessOrigins) do not apply: there are no
+  /// pairs. Off by default.
+  void setUf(bool b) { m_uf = b; }
+  bool uf() const { return m_uf; }
   /// The lowered arrays with their reads (the table of model reconstruction).
   const std::vector<Array> &arrays() const { return m_arrays; }
   /// The position of \p a in arrays(), or -1 if it is not lowered.
@@ -1148,6 +1165,56 @@ private:
     return t;
   }
 
+  /// lower() in the UF form: one read per distinct index term (after the
+  /// reads inside it are rewritten), its value the application.
+  Expr lowerUf(const Expr &root) {
+    using namespace ackermann_detail;
+    std::vector<Expr> decls(m_arrays.size());
+    std::vector<std::unordered_map<ENode *, size_t>> byIndex(m_arrays.size());
+    std::unordered_map<ENode *, Expr> memo;
+    std::vector<Expr> keep;
+    Expr body = rewriteDag(
+        root, memo, keep, [](ENode *n) { return Expr(n); },
+        [&](ENode *n, llvm::SmallVectorImpl<Expr> &kids) -> Expr {
+          if (!isOpX<SELECT>(n))
+            return withKids(n, kids);
+          auto it = m_index.find(n->arg(0));
+          if (it == m_index.end())
+            return withKids(n, kids);
+          size_t a = it->second;
+          Array &arr = m_arrays[a];
+          Expr idx = kids[1];
+          auto [p, fresh] = byIndex[a].emplace(idx.get(), arr.reads.size());
+          if (!fresh) {
+            if (m_keepImages)
+              arr.reads[p->second].selects.push_back(Expr(n));
+            return arr.reads[p->second].value;
+          }
+          if (!decls[a]) {
+            std::string name;
+            llvm::raw_string_ostream os(name);
+            os << "uf." << *op::bind::fname(arr.array->first());
+            Expr sort = op::bind::declaredSort(arr.array);
+            Expr sig[] = {sort::arrayIndexTy(sort), sort::arrayValTy(sort)};
+            decls[a] = op::bind::fdecl(
+                mkTerm<std::string>(os.str(), arr.array->efac()), sig);
+          }
+          Expr r = op::bind::fapp(decls[a], idx);
+          arr.reads.push_back(Read{idx, r, 0, mpz_class(0UL), {}, true, {}});
+          if (m_keepImages)
+            arr.reads.back().selects.push_back(Expr(n));
+          ++m_stats.reads;
+          return r;
+        });
+    if (m_keepImages) {
+      m_images = std::move(memo);
+      m_imageKeep = std::move(keep);
+    }
+    if (m_recordConstraints)
+      m_body = body;
+    return body;
+  }
+
   Expr freshConstant(size_t a) {
     const Array &arr = m_arrays[a];
     std::string name;
@@ -1160,6 +1227,7 @@ private:
   }
 
   bool m_analyzed = false;
+  bool m_uf = false;
   bool m_recordPairs = false;
   bool m_recordConstraints = false;
   std::vector<Constraint> m_constraints;

@@ -660,6 +660,42 @@ kept set with the solver binary over seeds).
 
 Not measured yet on the benchmark jobs.
 
+## Read-only arrays as functions (`--ro-arrays=uf`)
+
+Status: implemented, off by default (`--ro-arrays=array`). A measurement
+mode: it states the arrays the lowering would take as uninterpreted
+functions and leaves their consistency to the solver, so the eager lowering
+and `--ack-relax` can be compared with each solver's own handling of UF, and
+of arrays (the default). A read of an array that is never written is a
+function application, but a solver has to find that out from the array
+term; not every solver does, and an array solver may also reason about the
+array as a finite map.
+
+What. With the lowering off (`--ackermannize=off`, or `auto` that does not
+lower): every array constant the lowering would lower (only the array
+operand of selects, index and cell bit-vectors, no binder in the query)
+becomes a function `uf.<A>` of A's own sorts, `(declare-fun uf.<A> ((_
+BitVec m)) (_ BitVec n))` (with `--widen-memory` or `--seam-wide` the cell
+is the word), and each `select(A, i)` becomes `uf.<A>(i)`, the reads inside
+i first. No constraint is added. Arrays used otherwise stay arrays (counted
+`kept-array`). With the lowering on the arrays are lowered already and the
+arrays left are not read-only: the option does nothing
+(`vc.ro-arrays: off-ackermann`).
+
+Where. The same step as the lowering (`Ackermannizer::setUf`), at the Expr
+level after the solver boundary, so every consumer of the query sees it:
+`--smt2`, each in-process backend (z3, Yices, Bitwuzla), `--vc-defs` (the
+reads' indices are named as under the lowering). No backend has its own
+code for it. Model reconstruction is the lowering's: the reads are recorded
+with the value `uf.<A>(i_k)`, and `AckermannModel` rebuilds A from the
+values of the indices and applications in the solver's model (0 at an index
+the query does not read). `inconsistent` is 0 unless a backend's model
+evaluation is wrong. The pair rules, `--narrow-offsets`, `--ack-own` and
+`--ack-relax` need the lowering and are off here (`off-no-ackermann`).
+
+Output: `vc.ro-arrays: uf=<n> kept-array=<n> reads=<n>` (only with
+`--ro-arrays=uf`); with the default no line, and the query is unchanged.
+
 ## Model reconstruction
 
 A model of the lowered query has values for every i_k and r_k, none for A
