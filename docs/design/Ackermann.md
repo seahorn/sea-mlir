@@ -654,8 +654,9 @@ other counters; after the rounds `vc.ack-relax-stop`, `-rounds`, `-kept`
 (|K| of the last relaxed solve), one `vc.ack-relax-round: <i> kept= result=
 broken= [unevaluated=] [conflicts= rlimit=] time=` per solve, and
 `vc.ack-relax-conflicts` (z3, summed over the solves). `solve-time` is the
-time of every solve (with `--timeout`, at most about the timeout). `--ack-relax-smt2=<file>` writes the query of the last
-solve (to measure a kept set with the solver binary over seeds).
+time of every solve (with `--timeout`, at most about the timeout).
+`--ack-relax-smt2=<file>` writes the query of the last solve (to measure a
+kept set with the solver binary over seeds).
 
 Not measured yet on the benchmark jobs.
 

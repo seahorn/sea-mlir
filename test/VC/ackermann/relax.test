@@ -67,6 +67,11 @@
 // TIMEOUT: BRUNCH_STAT vc.ack-relax-stop timeout
 // TIMEOUT: result: unknown
 // TIMEOUT: solve-timeout: true
+// --ack-relax-smt2 on a timeout stop writes the last solve's query (the first,
+// the relaxed one), not the whole query a fallback would solve.
+// RUN: not sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-test-expire=1 --timeout=600 --ack-relax-smt2=%t/to.smt2 >/dev/null 2>&1
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-rounds=0 --ack-relax-smt2=%t/whole.smt2 >/dev/null 2>&1
+// RUN: %python -c "import sys; a, b = (len(open(f).read()) for f in sys.argv[1:]); sys.exit(0 if a < b else 1)" %t/to.smt2 %t/whole.smt2
 // Without the budget gone the same job needs more than one round.
 // RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --timeout=600 2>&1 | FileCheck %s --check-prefix=NOTIMEOUT
 // NOTIMEOUT: vc.ack-relax-round: 2

@@ -7421,7 +7421,12 @@ int main(int argc, char **argv) {
         const double left = solveTimeout * 1000.0 - solveClock.seconds() * 1000;
         return left < 1 ? 1 : unsigned(left);
       };
+      // an unknown round that ran to its own deadline (z3 can stop just
+      // before the loop's budget is gone) is a timeout
+      bool roundTimedOut = false;
       auto expired = [&]() {
+        if (roundTimedOut)
+          return true;
         if (ackRelaxTestExpire && solvesDone >= ackRelaxTestExpire)
           return true;
         return solveTimeout && solveClock.seconds() >= solveTimeout;
@@ -7431,6 +7436,8 @@ int main(int argc, char **argv) {
           [&](const std::vector<bool> &keep, std::vector<size_t> &broken) {
             expr::AckRelaxRound rd;
             ++solvesDone;
+            const double roundEnd =
+                solveClock.seconds() + (solveTimeout ? leftMs() / 1000.0 : 0);
             auto s = makeSolver(/*limits=*/true, solveTimeout ? leftMs() : 0);
             if (!s || !s->add(relaxQ.build(keep))) {
               addFailed = true;
@@ -7439,6 +7446,10 @@ int main(int argc, char **argv) {
             sea::Stopwatch w;
             rd.result = s->check();
             rd.seconds = w.seconds();
+            if (solveTimeout &&
+                rd.result == sea::solver::SolverResult::UNKNOWN &&
+                solveClock.seconds() >= roundEnd - 0.05)
+              roundTimedOut = true;
             rd.conflicts = s->conflicts();
             rd.rlimit = s->rlimit_count();
             if (rd.result == sea::solver::SolverResult::SAT) {
@@ -7456,9 +7467,12 @@ int main(int argc, char **argv) {
       // after the last round: the whole query, on the solver that has it
       std::optional<expr::AckRelaxRound> fallback;
       if (relaxOut->stop == Stop::Timeout) {
-        // the budget is gone: unknown, no further solve; the solver stays
-        // the run's (the stats below are still printed)
+        // the budget is gone: unknown, no further solve; the solver is
+        // the last solve's (--ack-relax-smt2 writes its query; the stats
+        // below are still printed)
         relaxTimedOut = true;
+        if (last)
+          solver = std::move(last);
         if (!relaxOut->rounds.empty())
           decidingSec = relaxOut->rounds.back().seconds;
       } else if (relaxOut->stop != Stop::Rounds) {
