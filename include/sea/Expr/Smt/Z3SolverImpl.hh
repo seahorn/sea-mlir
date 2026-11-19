@@ -20,9 +20,13 @@ class z3_solver_impl : public Solver {
 public:
   using model_ref = typename Solver::model_ref;
 
-  z3_solver_impl(expr::ExprFactory &efac)
+  /// \p logic: z3's solver for that logic (Z3_mk_solver_for_logic); null:
+  /// z3's default solver (Z3_mk_solver: the logic is probed at the first
+  /// check)
+  z3_solver_impl(expr::ExprFactory &efac, const char *logic = nullptr)
       : Solver(), m_efac(efac), m_zctx(new EZ3(m_efac)),
-        m_solver(new ZSolver<EZ3>(*m_zctx)),
+        m_solver(logic ? new ZSolver<EZ3>(*m_zctx, logic)
+                       : new ZSolver<EZ3>(*m_zctx)),
         m_last_result(SolverResult::UNKNOWN) {}
 
   ~z3_solver_impl() = default;
@@ -114,6 +118,16 @@ public:
       if (st.key(i) == "conflicts" || st.key(i) == "sat conflicts")
         n += st.is_uint(i) ? uint64_t(st.uint_value(i))
                            : uint64_t(st.double_value(i));
+    return n;
+  }
+
+  std::optional<uint64_t> statistic(const std::string &key) override {
+    z3::stats st = m_solver->stats();
+    std::optional<uint64_t> n;
+    for (unsigned i = 0, e = st.size(); i < e; ++i)
+      if (st.key(i) == key)
+        n = n.value_or(0) + (st.is_uint(i) ? uint64_t(st.uint_value(i))
+                                           : uint64_t(st.double_value(i)));
     return n;
   }
 

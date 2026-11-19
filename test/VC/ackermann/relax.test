@@ -76,6 +76,52 @@
 // RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --timeout=600 2>&1 | FileCheck %s --check-prefix=NOTIMEOUT
 // NOTIMEOUT: vc.ack-relax-round: 2
 // NOTIMEOUT: result: unsat
+// --ack-relax-mode=incremental: one solver for every round, given the
+// broken candidates of each sat round. The same outcome invariants on each
+// backend; z3 names the engine of each check (its first check runs the
+// tactic, the later ones z3's incremental solver: --z3-logic=QF_BV its
+// incremental SAT solver).
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental 2>&1 | FileCheck %s --check-prefix=INCU
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --vc-defs=hidden 2>&1 | FileCheck %s --check-prefix=INCU
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --z3-logic=QF_BV 2>&1 | FileCheck %s --check-prefix=INCU
+// RUN: %if yices %{ sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --solver=yices 2>&1 | FileCheck %s --check-prefix=INCU %}
+// RUN: %if bitwuzla %{ sea-vc %t/unsat.mlir --lower --seam --ackermannize=on --ack-relax=all --ack-relax-mode=incremental --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=INCU %}
+// RUN: sea-vc %t/sat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental 2>&1 | FileCheck %s --check-prefixes=INCS,INCZ3
+// RUN: sea-vc %t/sat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --vc-defs=hidden 2>&1 | FileCheck %s --check-prefix=INCS
+// RUN: sea-vc %t/sat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --z3-logic=QF_BV 2>&1 | FileCheck %s --check-prefixes=INCS,INCZ3
+// RUN: %if yices %{ sea-vc %t/sat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --solver=yices 2>&1 | FileCheck %s --check-prefix=INCS %}
+// RUN: %if bitwuzla %{ sea-vc %t/sat.mlir --lower --seam --ackermannize=on --ack-relax=all --ack-relax-mode=incremental --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=INCS %}
+// INCU: vc.ack-relax-candidates: 15
+// INCU: vc.ack-relax-mode: incremental
+// INCU: vc.ack-relax-stop: unsat
+// INCU: vc.ack-relax-time:
+// INCU: result: unsat
+// INCS: vc.ack-relax-mode: incremental
+// INCS: vc.ack-relax-stop: consistent
+// INCZ3: vc.ack-relax-round: 1 kept=0 result=sat {{.*}} engine=tactic
+// INCS: vc.ack-relax-time:
+// INCS: result: sat
+// INCS: vc.ackermann-model: defaulted={{[0-9]+}} inconsistent=0
+// INCS: replay: assert-failed
+// INCS: validate: checked={{[0-9]+}} mismatches=0
+// The bound in incremental mode: the candidates left join the rounds'
+// solver (0 rounds: the run's solver, one check).
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --ack-relax-rounds=1 --ack-relax-smt2=%t/qi.smt2 2>&1 | FileCheck %s --check-prefixes=INCFB,INCFB1
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --ack-relax-rounds=0 2>&1 | FileCheck %s --check-prefixes=INCFB,INCFB0
+// RUN: %if yices %{ sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --ack-relax-rounds=1 --solver=yices 2>&1 | FileCheck %s --check-prefix=INCFB %}
+// RUN: %if bitwuzla %{ sea-vc %t/unsat.mlir --lower --seam --ackermannize=on --ack-relax=all --ack-relax-mode=incremental --ack-relax-rounds=1 --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=INCFB %}
+// INCFB: [vc.ack-relax-fallback]
+// INCFB: vc.ack-relax-stop: rounds
+// INCFB1: vc.ack-relax-rounds: 1
+// INCFB0: vc.ack-relax-rounds: 0
+// INCFB: vc.ack-relax-round: fallback kept=15 result=unsat
+// INCFB: result: unsat
+// RUN: FileCheck %s --check-prefix=SMT2 < %t/qi.smt2
+// The default mode prints no mode line.
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=fresh 2>&1 | FileCheck %s --check-prefix=FRESH
+// FRESH-NOT: vc.ack-relax-mode
+// FRESH-NOT: engine=
+// FRESH: result: unsat
 //
 // Usage: an unknown selector, a run that does not solve, the bound without
 // the switch are refused; without the lowering the switch does nothing.
@@ -85,6 +131,13 @@
 // NOSOLVE: not with --smt2
 // RUN: not sea-vc %t/unsat.mlir --lower --seam --ack-relax-rounds=3 2>&1 | FileCheck %s --check-prefix=NORELAX
 // NORELAX: need --ack-relax
+// RUN: not sea-vc %t/unsat.mlir --lower --seam --ack-relax-mode=incremental 2>&1 | FileCheck %s --check-prefix=NORELAX
+// RUN: %if yices %{ not sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --solver=yices --yices-config=mode=one-shot 2>&1 | FileCheck %s --check-prefix=ONESHOT %}
+// ONESHOT: not with --yices-config mode=one-shot
+// RUN: not sea-vc %t/unsat.mlir --lower --seam --z3-logic=QF_LIA 2>&1 | FileCheck %s --check-prefix=BADLOGIC
+// BADLOGIC: --z3-logic: unknown logic 'QF_LIA'
+// RUN: %if yices %{ not sea-vc %t/unsat.mlir --lower --seam --z3-logic=QF_BV --solver=yices 2>&1 | FileCheck %s --check-prefix=LOGICZ3 %}
+// LOGICZ3: --z3-logic needs --solver=z3
 // RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ackermannize=off 2>&1 | FileCheck %s --check-prefix=NOACK
 // NOACK: vc.ack-relax: off-no-ackermann
 // NOACK-NOT: vc.ack-relax-stop

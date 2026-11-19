@@ -601,12 +601,27 @@ The selector picks the kept set K of the first round. Implemented: `all`
 others can be added (by cost of the index difference, by drop class, by
 location, top-N, a seeded fraction); an unknown selector is an error.
 
-Each round solves the query with K on a fresh solver: the lowered body, the
-constraints in K, and with `--vc-defs` every definition of a named sum (the
-names are made once, on the whole query; a definition only fixes its name,
-so the ones only omitted constraints use change no answer). A fresh solver
-per round, not push / pop: z3's incremental solver skips its tactic
-pipeline, so the rounds would not measure the query the eager run solves.
+Each round solves the query with K: the lowered body, the constraints in
+K, and with `--vc-defs` every definition of a named sum (the names are made
+once, on the whole query; a definition only fixes its name, so the ones
+only omitted constraints use change no answer). `--ack-relax-mode` says how:
+
+- `fresh` (default): a new solver per round, given the round's whole query.
+  Every round runs z3's tactic pipeline, so each round measures the query
+  the eager run solves with K.
+- `incremental`: one solver for every round. The first round asserts the
+  query with the K of the selector; after a sat round the broken
+  candidates are asserted into the same solver and it checks again (K only
+  grows, so no push / pop). Yices and Bitwuzla keep their state (Bitwuzla:
+  the SAT solver and its learned clauses). z3's default solver is a
+  combined one: the first check runs the tactic of the probed logic (the
+  full preamble, then the SAT solver); a check after more assertions runs
+  z3's incremental solver instead, which internalizes the whole query at
+  its first use and keeps it after. Which incremental solver depends on
+  the logic: without one (the default) z3's SMT core; with `--z3-logic=QF_BV`
+  its incremental SAT solver (light preprocessing, learned clauses kept);
+  z3's `smt_strategic_solver.cpp`, `combined_solver.cpp`. A query that is
+  not QF_BV (arrays left) needs another logic or none.
 
 - unsat: the answer. Omitting constraints only adds models, so an unsat of
   the relaxed query is an unsat of the whole one. No premise.
@@ -634,7 +649,8 @@ Bound: `--ack-relax-rounds=<n>`, default 50 (untuned). After n relaxed
 solves without an answer the whole query is solved on the run's solver
 (warning `vc.ack-relax-fallback`, `vc.ack-relax-stop: rounds`, a
 `vc.ack-relax-round: fallback` line), as the stride rule's retry solves
-without the rule.
+without the rule. Incremental: the candidates not yet asserted are
+asserted into the rounds' solver, which checks again.
 
 Model check. After a `consistent` stop every candidate holds in the model,
 so `AckermannModel` finds what it finds under the eager lowering:
@@ -645,18 +661,29 @@ starts the rounds again; `own-broken`, `own-excused`).
 Backends: z3, Yices and Bitwuzla (Bitwuzla with `--ackermannize=on`, as
 for the lowering itself). Conflicts and the resource count per round are
 z3's (`conflicts` of the SMT core plus `sat conflicts`); the other backends
-report time only. Not with `--smt2`, `--vcgen-only`, `--reach` or a split
+report time only. Incremental on z3: z3's counts run on over the checks
+(the resource count over every check, the incremental solver's conflicts
+over its checks), and a round reports its share; `engine=` says which z3
+solver ran the check: `tactic` (the first check), `smt` (the SMT core:
+`conflicts` in its statistics), `sat` (the incremental SAT solver: `sat
+conflicts`), `incremental` (the incremental solver, its statistics name
+neither). Yices `mode=one-shot` takes no assertion after a check: refused. Not with `--smt2`, `--vcgen-only`, `--reach` or a split
 (refused). Without the lowering (`--ackermannize=off`, or `auto` that does
 not lower) the switch does nothing: `vc.ack-relax: off-no-ackermann`.
 
 Output: `vc.ack-relax: <selector>`, `vc.ack-relax-candidates` (|R|) with the
 other counters; after the rounds `vc.ack-relax-stop`, `-rounds`, `-kept`
 (|K| of the last relaxed solve), one `vc.ack-relax-round: <i> kept= result=
-broken= [unevaluated=] [conflicts= rlimit=] time=` per solve, and
-`vc.ack-relax-conflicts` (z3, summed over the solves). `solve-time` is the
-time of every solve (with `--timeout`, at most about the timeout).
+broken= [unevaluated=] [conflicts= rlimit=] [engine=] time=` per solve, and
+`vc.ack-relax-conflicts` (z3, summed over the solves). Incremental adds
+`vc.ack-relax-mode: incremental` and `vc.ack-relax-time` (the rounds and
+the fallback, with the assertions between the checks); fresh prints
+neither (its output is what it was). `solve-time` is the time of every
+solve, in both modes (with `--timeout`, at most about the timeout).
 `--ack-relax-smt2=<file>` writes the query of the last solve (to measure a
-kept set with the solver binary over seeds).
+kept set with the solver binary over seeds); incremental: the assertions of
+the rounds' solver, the same constraints as the fresh query of the last K,
+in the order they were asserted.
 
 Not measured yet on the benchmark jobs.
 

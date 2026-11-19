@@ -143,7 +143,8 @@ std::unique_ptr<Solver> makeSolver(expr::ExprFactory &efac, Backend backend,
                                    const SolverConfig &config) {
   switch (backend) {
   case Backend::Z3: {
-    auto z = std::make_unique<z3_solver_impl>(efac);
+    auto z = std::make_unique<z3_solver_impl>(
+        efac, config.z3Logic.empty() ? nullptr : config.z3Logic.c_str());
     if (config.z3PlantError)
       plantZ3Error(z->get_context().raw_context());
     z3Limits(*z, limits, config, config.z3Relevancy0Push);

@@ -1037,6 +1037,24 @@ void testRelax() {
       CHECK(std::string(AckRelaxOutcome::stopName(o.stop)) == "timeout",
             "stop name");
     }
+    // K only grows from one solve to the next, by the broken candidates of
+    // the last one (--ack-relax-mode=incremental asserts exactly those)
+    std::vector<bool> prev(5, false);
+    std::vector<size_t> lastBroken;
+    bool grows = true;
+    auto inner = fake({{1, 3}, {4}, {0}}, SR::UNSAT);
+    runAckRelax(5, all, 50,
+                [&](const std::vector<bool> &keep, std::vector<size_t> &out) {
+                  std::vector<bool> want = prev;
+                  for (size_t i : lastBroken)
+                    want[i] = true;
+                  grows &= keep == want;
+                  AckRelaxRound rd = inner(keep, out);
+                  prev = keep;
+                  lastBroken = out;
+                  return rd;
+                });
+    CHECK(grows, "fake: K grows by the last round's broken candidates");
   }
   Env env;
   using op::array::select;

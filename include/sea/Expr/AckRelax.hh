@@ -8,7 +8,8 @@
 // The candidates R are the constraints the eager lowering keeps
 // (Ackermannizer::constraints(), after every drop). A selector picks the
 // constraints given to the first solve (all: none of R). Each round solves
-// the query with the kept set K on a fresh solver:
+// the query with the kept set K (sea-vc --ack-relax-mode: on a fresh solver,
+// or on one solver that is given the constraints as they join K):
 //  - unsat: the answer (omitting constraints only adds models);
 //  - sat: every omitted constraint `lhs = rhs -> r_k = r_l` is evaluated in
 //    the model; none broken: the model satisfies the whole lowered query,
@@ -132,6 +133,9 @@ struct AckRelaxRound {
   size_t unevaluated = 0; ///< of them: a term without a numeral value
   std::optional<uint64_t> conflicts, rlimit; ///< the backend's, if it has them
   double seconds = 0;
+  /// the backend's engine of this check, if it says (z3, incremental
+  /// rounds: tactic, smt, sat); empty otherwise
+  std::string engine;
 };
 
 struct AckRelaxOutcome {
@@ -167,7 +171,8 @@ struct AckRelaxOutcome {
 };
 
 /// The loop over \p n candidates, at most \p maxRounds solves. \p solve
-/// solves with the kept set it is given (a fresh solver), fills the round
+/// solves with the kept set it is given (K only grows from one call to the
+/// next: an incremental \p solve asserts what joined it), fills the round
 /// (result, effort) and, on sat, the omitted candidates its model breaks
 /// (\p broken: indices into the n; each one not kept). A sat that names no
 /// candidate ends the loop (Consistent). Every broken candidate joins K (all

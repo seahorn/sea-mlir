@@ -389,6 +389,18 @@ static cl::opt<std::string> z3Tactic(
              "only, not to the auxiliary checks. default: z3's own"),
     cl::init("default"));
 
+static cl::opt<std::string> z3Logic(
+    "z3-logic",
+    cl::desc("z3's solver for this logic (QF_BV, QF_ABV, QF_UFBV, "
+             "QF_AUFBV) for the solver of the verdict only. z3 solves the "
+             "first check with the logic's tactic and a check after more "
+             "assertions (--ack-relax-mode=incremental) with its incremental "
+             "solver: QF_BV its incremental SAT solver, the others and the "
+             "default its SMT core. A query outside the logic may be unknown. "
+             "default: z3's default solver (the logic probed at the first "
+             "check)"),
+    cl::value_desc("logic"), cl::init(""));
+
 static cl::opt<bool> z3PlantError(
     "z3-plant-error",
     cl::desc("Testing only: make an invalid z3 API call when every z3 "
@@ -584,6 +596,23 @@ static cl::opt<unsigned> ackRelaxTestExpire(
     cl::desc("Testing only: --ack-relax: the time budget of the loop counts "
              "as gone after this many solves (a deterministic --timeout)"),
     cl::init(0), cl::Hidden);
+
+enum class AckRelaxMode { Fresh, Incremental };
+static cl::opt<AckRelaxMode> ackRelaxMode(
+    "ack-relax-mode",
+    cl::desc("--ack-relax: how the rounds solve. fresh (default): a new "
+             "solver per round, with the round's whole query. incremental: "
+             "one solver for every round; the first round asserts the query "
+             "without the omitted candidates, each later round asserts the "
+             "candidates the last model broke and checks again (z3: the "
+             "second check on runs on z3's incremental solver, which "
+             "--z3-logic picks; vc.ack-relax-round engine=)"),
+    cl::values(clEnumValN(AckRelaxMode::Fresh, "fresh",
+                          "a new solver per round"),
+               clEnumValN(AckRelaxMode::Incremental, "incremental",
+                          "one solver; broken candidates are asserted into "
+                          "it")),
+    cl::init(AckRelaxMode::Fresh));
 
 static cl::opt<std::string> ackRelaxSmt2(
     "ack-relax-smt2",
@@ -2510,6 +2539,17 @@ TYPICAL:
                                  #   -round; <f>: the last solve's query.
                                  #   Not with --smt2, --vcgen-only, --reach,
                                  #   splits. docs/design/Ackermann.md
+      [--ack-relax-mode=incremental]  # one solver for every round: the
+                                 #   broken candidates are asserted into
+                                 #   it (default fresh: a new solver per
+                                 #   round). z3: rounds 2+ run on z3's
+                                 #   incremental solver, the SMT core, or
+                                 #   with --z3-logic=QF_BV its incremental
+                                 #   SAT solver (engine= per round)
+  sea-vc p.mlir --z3-logic=QF_BV  # z3's solver for that logic (QF_BV,
+                                 #   QF_ABV, QF_UFBV, QF_AUFBV), the solver
+                                 #   of the verdict only; default: z3's
+                                 #   default solver (logic probed)
   sea-vc p.mlir --seam --ack-decider=false  # (default on) the difference decider in
                                  #   the Ackermann lowering: a pair whose
                                  #   indices are never equal by ranges of
@@ -2859,13 +2899,20 @@ OUTPUT (stdout, `key: value` lines):
   vc.ack-relax-kept: <n>          (candidates given to the last relaxed
                                   solve)
   vc.ack-relax-round: <i>|fallback kept=<n> result=sat|unsat|unknown
-      broken=<n> [unevaluated=<n>] [conflicts=<n> rlimit=<n>] time=<s>
+      broken=<n> [unevaluated=<n>] [conflicts=<n> rlimit=<n>]
+      [engine=tactic|smt|sat|incremental] time=<s>
                                   (one per solve: candidates given, answer,
                                   omitted candidates the model breaks (all
                                   added to the next round; unevaluated: a
                                   term without a value, counted broken),
-                                  z3's search conflicts and resource count)
+                                  z3's search conflicts and resource count
+                                  (incremental: this check's share); engine:
+                                  z3, incremental mode only, the z3 solver
+                                  of the check)
   vc.ack-relax-conflicts: <n>     (z3: conflicts of every solve, summed)
+  vc.ack-relax-mode: incremental  (--ack-relax-mode=incremental only)
+  vc.ack-relax-time: <s>          (--ack-relax-mode=incremental only: the
+                                  rounds, the fallback and the assertions)
   vc.defs: inline|nest|eq|hidden  (--vc-defs; not inline: vc.defs-sums /
                                   -index-sums / -names / -atoms / -rewritten:
                                   distinct sums of the query, those at an
@@ -4439,8 +4486,28 @@ int main(int argc, char **argv) {
       return fail("--ack-relax solves the query in rounds: not with --smt2, "
                   "--vcgen-only or --reach (--ack-relax-smt2 writes the last "
                   "round's query)");
-  } else if (ackRelaxRounds.getNumOccurrences() || !ackRelaxSmt2.empty()) {
-    return fail("--ack-relax-rounds and --ack-relax-smt2 need --ack-relax");
+    // a context in one-shot mode takes no assertion after a check
+    if (ackRelaxMode == AckRelaxMode::Incremental &&
+        backend == Backend::Yices &&
+        llvm::any_of(yicesConfig, [](const std::string &kv) {
+          return kv == "mode=one-shot";
+        }))
+      return fail("--ack-relax-mode=incremental asserts after a check: not "
+                  "with --yices-config mode=one-shot");
+  } else if (ackRelaxRounds.getNumOccurrences() || !ackRelaxSmt2.empty() ||
+             ackRelaxMode.getNumOccurrences()) {
+    return fail("--ack-relax-rounds, --ack-relax-mode and --ack-relax-smt2 "
+                "need --ack-relax");
+  }
+  if (!z3Logic.empty()) {
+    if (backend != Backend::Z3)
+      return fail("--z3-logic needs --solver=z3");
+    if (!llvm::is_contained(llvm::ArrayRef<llvm::StringRef>{"QF_BV", "QF_ABV",
+                                                            "QF_UFBV",
+                                                            "QF_AUFBV"},
+                            llvm::StringRef(z3Logic)))
+      return fail("--z3-logic: unknown logic '" + z3Logic +
+                  "' (QF_BV, QF_ABV, QF_UFBV, QF_AUFBV)");
   }
   if (narrowOffsets && !seam)
     return fail("--narrow-offsets needs --seam (it rests on A-INB of the "
@@ -6379,6 +6446,7 @@ int main(int argc, char **argv) {
       if (limits) {
         // --z3-tactic: the solver of the verdict only (SeaHorn's BmcEngine,
         // Bmc.cc:38-43, set it globally)
+        config.z3Logic = z3Logic;
         if (z3Tactic != "default") {
           config.z3Tactic = z3Tactic;
           config.z3SatEuf =
@@ -7463,6 +7531,8 @@ int main(int argc, char **argv) {
     std::optional<double> decidingSec;
     bool relaxTimedOut = false; // --ack-relax: --timeout of the loop expired
     if (relaxOn) {
+      sea::Stopwatch relaxClock;
+      const bool incremental = ackRelaxMode == AckRelaxMode::Incremental;
       std::unique_ptr<sea::solver::Solver> last;
       bool addFailed = false;
       // --timeout bounds the whole loop: each solve gets what is left
@@ -7481,6 +7551,43 @@ int main(int argc, char **argv) {
           return true;
         return solveTimeout && solveClock.seconds() >= solveTimeout;
       };
+      // incremental: the candidates asserted into `last` so far; z3's counts
+      // before this check (rlimit: of the context, over every check;
+      // conflicts: of z3's incremental solver, over its checks)
+      std::vector<bool> asserted;
+      unsigned incChecks = 0;
+      uint64_t incRlimit = 0, incConflicts = 0;
+      // the effort of the check `s` just ran (fresh: the solver's own;
+      // incremental: this check's share of z3's running counts)
+      auto effort = [&](sea::solver::Solver &s, expr::AckRelaxRound &rd) {
+        rd.conflicts = s.conflicts();
+        rd.rlimit = s.rlimit_count();
+        if (!incremental || backend != Backend::Z3)
+          return;
+        // z3's combined solver: the first check runs the logic's tactic
+        // (its statistics are that check's); a check after more
+        // assertions runs z3's incremental solver, whose statistics
+        // accumulate over its checks: `conflicts` of the SMT core, or `sat
+        // conflicts` of the incremental SAT solver (z3's
+        // combined_solver.cpp, smt_strategic_solver.cpp)
+        if (rd.rlimit) {
+          uint64_t now = *rd.rlimit;
+          rd.rlimit = now >= incRlimit ? now - incRlimit : now;
+          incRlimit = now;
+        }
+        if (incChecks++ == 0) {
+          rd.engine = "tactic";
+          return;
+        }
+        rd.engine = s.statistic("conflicts")       ? "smt"
+                    : s.statistic("sat conflicts") ? "sat"
+                                                   : "incremental";
+        if (rd.conflicts) {
+          uint64_t now = *rd.conflicts;
+          rd.conflicts = now >= incConflicts ? now - incConflicts : now;
+          incConflicts = now;
+        }
+      };
       relaxOut = expr::runAckRelax(
           relaxQ.facts.size(), *relaxSel, ackRelaxRounds,
           [&](const std::vector<bool> &keep, std::vector<size_t> &broken) {
@@ -7488,26 +7595,39 @@ int main(int argc, char **argv) {
             ++solvesDone;
             const double roundEnd =
                 solveClock.seconds() + (solveTimeout ? leftMs() / 1000.0 : 0);
-            auto s = makeSolver(/*limits=*/true, solveTimeout ? leftMs() : 0);
-            if (!s || !s->add(relaxQ.build(keep))) {
-              addFailed = true;
-              return rd; // unknown: ends the loop
+            if (!incremental || !last) {
+              auto s = makeSolver(/*limits=*/true,
+                                  solveTimeout ? leftMs() : 0);
+              if (!s || !s->add(relaxQ.build(keep))) {
+                addFailed = true;
+                return rd; // unknown: ends the loop
+              }
+              last = std::move(s);
+              asserted = keep;
+            } else {
+              // the candidates that joined K since the last check
+              for (size_t i = 0; i < keep.size(); ++i)
+                if (keep[i] && !asserted[i]) {
+                  if (!last->add(relaxQ.facts[i])) {
+                    addFailed = true;
+                    return rd;
+                  }
+                  asserted[i] = true;
+                }
             }
             sea::Stopwatch w;
-            rd.result = s->check();
+            rd.result = last->check();
             rd.seconds = w.seconds();
             if (solveTimeout &&
                 rd.result == sea::solver::SolverResult::UNKNOWN &&
                 solveClock.seconds() >= roundEnd - 0.05)
               roundTimedOut = true;
-            rd.conflicts = s->conflicts();
-            rd.rlimit = s->rlimit_count();
+            effort(*last, rd);
             if (rd.result == sea::solver::SolverResult::SAT) {
-              auto m = s->get_model();
+              auto m = last->get_model();
               broken = expr::ackRelaxBroken(ack, ack.constraints(), keep, *m,
                                             rd.unevaluated);
             }
-            last = std::move(s);
             return rd;
           },
           expired);
@@ -7515,6 +7635,7 @@ int main(int argc, char **argv) {
         return 1;
       using Stop = expr::AckRelaxOutcome::Stop;
       // after the last round: the whole query, on the solver that has it
+      // (incremental: the rounds' solver, given the candidates left)
       std::optional<expr::AckRelaxRound> fallback;
       if (relaxOut->stop == Stop::Timeout) {
         // the budget is gone: unknown, no further solve; the solver is
@@ -7534,8 +7655,14 @@ int main(int argc, char **argv) {
                         Twine(relaxOut->rounds.size()) +
                             " relaxed round(s) (--ack-relax-rounds) without "
                             "an answer: solving the whole query");
+        if (incremental && last) {
+          for (size_t i = 0; i < asserted.size(); ++i)
+            if (!asserted[i] && !last->add(relaxQ.facts[i]))
+              return 1;
+          solver = std::move(last);
+        }
         last.reset();
-        if (solveTimeout) {
+        if (!incremental && solveTimeout) {
           // the whole query, with what is left of the budget
           solver = makeSolver(/*limits=*/true, leftMs());
           if (!solver || !solver->add(query))
@@ -7548,13 +7675,15 @@ int main(int argc, char **argv) {
         fallback->seconds = w.seconds();
         decidingSec = fallback->seconds;
         fallback->result = res;
-        fallback->conflicts = solver->conflicts();
-        fallback->rlimit = solver->rlimit_count();
+        effort(*solver, *fallback);
       }
+      const double relaxSec = relaxClock.seconds();
       {
         // the outcome first, then each round (broken: the omitted
         // constraints its model breaks, all added to the next round)
         sea::stats::Report r;
+        if (incremental)
+          r.line("vc.ack-relax-mode").value("incremental");
         r.line("vc.ack-relax-stop")
             .value(expr::AckRelaxOutcome::stopName(relaxOut->stop))
             .brunch(sea::stats::Brunch::Value);
@@ -7591,11 +7720,19 @@ int main(int argc, char **argv) {
           }
           if (rd.rlimit)
             l.kv("rlimit", *rd.rlimit);
+          if (!rd.engine.empty())
+            l.kv("engine", rd.engine);
           l.kv("time", llvm::formatv("{0:f3}", rd.seconds).str());
         }
         if (haveConflicts)
           r.line("vc.ack-relax-conflicts")
               .value(conflictSum)
+              .brunch(sea::stats::Brunch::Value);
+        // fresh: no line (its output stays what it was); solve-time is the
+        // time of the rounds in both modes
+        if (incremental)
+          r.line("vc.ack-relax-time")
+              .seconds(relaxSec)
               .brunch(sea::stats::Brunch::Value);
         r.print(vout(), brunchStats);
       }

@@ -114,7 +114,8 @@ by fresh constants, and the consistency constraints that this added.
 the solver.
 
 `--ack-relax=all` (a diagnosis mode) solves without those constraints
-first and adds only the ones a model breaks, in rounds on fresh solvers.
+first and adds only the ones a model breaks, in rounds on fresh solvers
+(`--ack-relax-mode=incremental`: on one solver).
 `vc.ack-relax-stop` says how it ended; a sat or unsat verdict is the one the
 eager lowering would give (a `consistent` sat is a model of the whole query and
 replays as usual). `vc.ack-relax-kept` against `vc.ack-relax-candidates`
