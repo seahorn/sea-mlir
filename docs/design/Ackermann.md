@@ -640,6 +640,11 @@ only omitted constraints use change no answer). `--ack-relax-mode` says how:
   unknown, the loop stops with `vc.ack-relax-stop: timeout`: no further
   solve, no fallback, `result: unknown`, `solve-timeout: true`. The
   `vc.ack-relax-*` lines are printed as for any other stop.
+  Incremental mode: the solver's own limit is set when it is made, so a
+  check after the first can still run up to the whole `--timeout` itself;
+  the loop stops between rounds when the budget is gone. Open: a limit
+  that can be changed per check (z3 and Yices can; Bitwuzla takes its
+  options at construction).
 
 Per-round policy: all broken candidates are added. Each round is a whole
 solve, so fewer rounds is the cheaper direction, and the measured broken

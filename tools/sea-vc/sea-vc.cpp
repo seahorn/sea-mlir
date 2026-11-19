@@ -7599,8 +7599,7 @@ int main(int argc, char **argv) {
             const double roundEnd =
                 solveClock.seconds() + (solveTimeout ? leftMs() / 1000.0 : 0);
             if (!incremental || !last) {
-              auto s = makeSolver(/*limits=*/true,
-                                  solveTimeout ? leftMs() : 0);
+              auto s = makeSolver(/*limits=*/true, solveTimeout ? leftMs() : 0);
               if (!s || !s->add(relaxQ.build(keep))) {
                 addFailed = true;
                 return rd; // unknown: ends the loop

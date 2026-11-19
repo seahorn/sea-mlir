@@ -72,6 +72,12 @@
 // RUN: not sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-test-expire=1 --timeout=600 --ack-relax-smt2=%t/to.smt2 >/dev/null 2>&1
 // RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-rounds=0 --ack-relax-smt2=%t/whole.smt2 >/dev/null 2>&1
 // RUN: %python -c "import sys; a, b = (len(open(f).read()) for f in sys.argv[1:]); sys.exit(0 if a < b else 1)" %t/to.smt2 %t/whole.smt2
+// incremental: the same stop (the budget is checked between rounds)
+// RUN: not sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --ack-relax-test-expire=1 --timeout=600 2>&1 | FileCheck %s --check-prefix=TIMEOUTI
+// TIMEOUTI: vc.ack-relax-mode: incremental
+// TIMEOUTI: vc.ack-relax-stop: timeout
+// TIMEOUTI: vc.ack-relax-round: 1 kept=0 result=sat
+// TIMEOUTI: result: unknown
 // Without the budget gone the same job needs more than one round.
 // RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --timeout=600 2>&1 | FileCheck %s --check-prefix=NOTIMEOUT
 // NOTIMEOUT: vc.ack-relax-round: 2
