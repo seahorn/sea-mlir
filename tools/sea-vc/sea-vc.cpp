@@ -2549,7 +2549,8 @@ TYPICAL:
   sea-vc p.mlir --z3-logic=QF_BV  # z3's solver for that logic (QF_BV,
                                  #   QF_ABV, QF_UFBV, QF_AUFBV), the solver
                                  #   of the verdict only; default: z3's
-                                 #   default solver (logic probed)
+                                 #   default solver (logic probed). Prints
+                                 #   solver.z3-logic: <logic>
   sea-vc p.mlir --seam --ack-decider=false  # (default on) the difference decider in
                                  #   the Ackermann lowering: a pair whose
                                  #   indices are never equal by ranges of
@@ -2908,7 +2909,9 @@ OUTPUT (stdout, `key: value` lines):
                                   z3's search conflicts and resource count
                                   (incremental: this check's share); engine:
                                   z3, incremental mode only, the z3 solver
-                                  of the check)
+                                  of the check, inferred from z3's
+                                  statistics keys (incremental: no
+                                  conflicts yet))
   vc.ack-relax-conflicts: <n>     (z3: conflicts of every solve, summed)
   vc.ack-relax-mode: incremental  (--ack-relax-mode=incremental only)
   vc.ack-relax-time: <s>          (--ack-relax-mode=incremental only: the
@@ -7767,6 +7770,8 @@ int main(int argc, char **argv) {
       r.line("solve-time").seconds(solveSec).brunch(sea::stats::Brunch::Value);
       if (backend == Backend::Z3 && z3Tactic != "default")
         r.line("solver.z3-tactic").value(z3Tactic);
+      if (backend == Backend::Z3 && !z3Logic.empty())
+        r.line("solver.z3-logic").value(z3Logic);
       if (backend == Backend::Yices) {
         if (!yicesLogic.empty())
           r.line("solver.yices-logic").value(yicesLogic);

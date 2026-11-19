@@ -614,14 +614,15 @@ only omitted constraints use change no answer). `--ack-relax-mode` says how:
   candidates are asserted into the same solver and it checks again (K only
   grows, so no push / pop). Yices and Bitwuzla keep their state (Bitwuzla:
   the SAT solver and its learned clauses). z3's default solver is a
-  combined one: the first check runs the tactic of the probed logic (the
-  full preamble, then the SAT solver); a check after more assertions runs
-  z3's incremental solver instead, which internalizes the whole query at
-  its first use and keeps it after. Which incremental solver depends on
-  the logic: without one (the default) z3's SMT core; with `--z3-logic=QF_BV`
-  its incremental SAT solver (light preprocessing, learned clauses kept);
-  z3's `smt_strategic_solver.cpp`, `combined_solver.cpp`. A query that is
-  not QF_BV (arrays left) needs another logic or none.
+  combined one: the first check runs the tactic of the probed logic (for
+  QF_BV: the full preamble, then the SAT solver); a check after more
+  assertions runs z3's incremental solver instead, which internalizes the
+  whole query at its first use and keeps it after. Which incremental
+  solver depends on the logic: without one (the default) z3's SMT core;
+  with `--z3-logic=QF_BV` its incremental SAT solver (light
+  preprocessing, learned clauses kept); z3's `smt_strategic_solver.cpp`,
+  `combined_solver.cpp`. A query that is not QF_BV (arrays left) needs
+  another logic or none.
 
 - unsat: the answer. Omitting constraints only adds models, so an unsat of
   the relaxed query is an unsat of the whole one. No premise.
@@ -667,9 +668,15 @@ over its checks), and a round reports its share; `engine=` says which z3
 solver ran the check: `tactic` (the first check), `smt` (the SMT core:
 `conflicts` in its statistics), `sat` (the incremental SAT solver: `sat
 conflicts`), `incremental` (the incremental solver, its statistics name
-neither). Yices `mode=one-shot` takes no assertion after a check: refused. Not with `--smt2`, `--vcgen-only`, `--reach` or a split
-(refused). Without the lowering (`--ackermannize=off`, or `auto` that does
-not lower) the switch does nothing: `vc.ack-relax: off-no-ackermann`.
+neither). `engine=` is inferred from z3's statistics keys; z3 omits a
+counter at 0, so `incremental` means the incremental solver had no conflict
+yet. When the incremental solver answers unknown without hitting a limit,
+z3 reruns the tactic solver (combined_solver `solver2_unknown=1`) and adds
+its statistics: that round's engine and conflicts are then not exact.
+Yices `mode=one-shot` takes no assertion after a check: refused. Not with
+`--smt2`, `--vcgen-only`, `--reach` or a split (refused). Without the
+lowering (`--ackermannize=off`, or `auto` that does not lower) the switch
+does nothing: `vc.ack-relax: off-no-ackermann`.
 
 Output: `vc.ack-relax: <selector>`, `vc.ack-relax-candidates` (|R|) with the
 other counters; after the rounds `vc.ack-relax-stop`, `-rounds`, `-kept`

@@ -86,11 +86,16 @@
 // RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --z3-logic=QF_BV 2>&1 | FileCheck %s --check-prefix=INCU
 // RUN: %if yices %{ sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --solver=yices 2>&1 | FileCheck %s --check-prefix=INCU %}
 // RUN: %if bitwuzla %{ sea-vc %t/unsat.mlir --lower --seam --ackermannize=on --ack-relax=all --ack-relax-mode=incremental --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=INCU %}
-// RUN: sea-vc %t/sat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental 2>&1 | FileCheck %s --check-prefixes=INCS,INCZ3
+// RUN: sea-vc %t/sat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental 2>&1 | FileCheck %s --check-prefixes=INCS,INCZ3,INCSMT
 // RUN: sea-vc %t/sat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --vc-defs=hidden 2>&1 | FileCheck %s --check-prefix=INCS
-// RUN: sea-vc %t/sat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --z3-logic=QF_BV 2>&1 | FileCheck %s --check-prefixes=INCS,INCZ3
+// RUN: sea-vc %t/sat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --z3-logic=QF_BV 2>&1 | FileCheck %s --check-prefixes=INCS,INCZ3,INCQFBV
 // RUN: %if yices %{ sea-vc %t/sat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --solver=yices 2>&1 | FileCheck %s --check-prefix=INCS %}
 // RUN: %if bitwuzla %{ sea-vc %t/sat.mlir --lower --seam --ackermannize=on --ack-relax=all --ack-relax-mode=incremental --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=INCS %}
+// The logic is reported (and only when given).
+// RUN: sea-vc %t/sat.mlir --lower --seam --z3-logic=QF_BV 2>&1 | FileCheck %s --check-prefix=LOGIC
+// RUN: sea-vc %t/sat.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=NOLOGIC
+// LOGIC: solver.z3-logic: QF_BV
+// NOLOGIC-NOT: solver.z3-logic
 // INCU: vc.ack-relax-candidates: 15
 // INCU: vc.ack-relax-mode: incremental
 // INCU: vc.ack-relax-stop: unsat
@@ -99,6 +104,8 @@
 // INCS: vc.ack-relax-mode: incremental
 // INCS: vc.ack-relax-stop: consistent
 // INCZ3: vc.ack-relax-round: 1 kept=0 result=sat {{.*}} engine=tactic
+// INCSMT: vc.ack-relax-round: 2 {{.*}} engine=smt
+// INCQFBV: vc.ack-relax-round: 2 {{.*}} engine=sat
 // INCS: vc.ack-relax-time:
 // INCS: result: sat
 // INCS: vc.ackermann-model: defaulted={{[0-9]+}} inconsistent=0

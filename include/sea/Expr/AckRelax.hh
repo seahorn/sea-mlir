@@ -133,8 +133,8 @@ struct AckRelaxRound {
   size_t unevaluated = 0; ///< of them: a term without a numeral value
   std::optional<uint64_t> conflicts, rlimit; ///< the backend's, if it has them
   double seconds = 0;
-  /// the backend's engine of this check, if it says (z3, incremental
-  /// rounds: tactic, smt, sat); empty otherwise
+  /// the backend's engine of this check, inferred from its statistics (z3,
+  /// incremental rounds); empty otherwise
   std::string engine;
 };
 
