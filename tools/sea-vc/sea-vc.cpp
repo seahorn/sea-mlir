@@ -2546,6 +2546,10 @@ TYPICAL:
                                  #   incremental solver, the SMT core, or
                                  #   with --z3-logic=QF_BV its incremental
                                  #   SAT solver (engine= per round)
+                                 #   --timeout: checked between rounds;
+                                 #   the solver's per-check limit is set
+                                 #   when it is made (first round), so one
+                                 #   check may run the whole timeout
   sea-vc p.mlir --z3-logic=QF_BV  # z3's solver for that logic (QF_BV,
                                  #   QF_ABV, QF_UFBV, QF_AUFBV), the solver
                                  #   of the verdict only; default: z3's

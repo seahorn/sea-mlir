@@ -691,11 +691,12 @@ broken= [unevaluated=] [conflicts= rlimit=] [engine=] time=` per solve, and
 `vc.ack-relax-mode: incremental` and `vc.ack-relax-time` (the rounds and
 the fallback, with the assertions between the checks); fresh prints
 neither (its output is what it was). `solve-time` is the time of every
-solve, in both modes (with `--timeout`, at most about the timeout).
-`--ack-relax-smt2=<file>` writes the query of the last solve (to measure a
-kept set with the solver binary over seeds); incremental: the assertions of
-the rounds' solver, the same constraints as the fresh query of the last K,
-in the order they were asserted.
+solve, in both modes (with `--timeout`: fresh at most about the timeout;
+incremental up to about twice it, see above). `--ack-relax-smt2=<file>`
+writes the query of the last solve (to measure a kept set with the solver
+binary over seeds); incremental: the assertions of the rounds' solver, the
+same constraints as the fresh query of the last K, in the order they were
+asserted.
 
 Not measured yet on the benchmark jobs.
 
