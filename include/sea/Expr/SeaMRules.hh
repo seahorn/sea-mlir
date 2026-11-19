@@ -6094,6 +6094,11 @@ public:
         m_rw(m_config, m_cache, m_stats, ropts) {
     for (WideExpander *w : {&m_wide, &m_wideKeep, &m_wideRest})
       w->maxOffsetLeaves(opts.maxOffsetLeaves);
+    // the initial-words boundary expands width terms over the erased query
+    for (WideExpander *w : {&m_wideKeep, &m_wideRest})
+      w->flattenWith([this](const Expr &e) {
+        return m_config.rules().eraser().expand(e);
+      });
   }
   SeaMRewriter(const SeaMRewriter &) = delete;
   SeaMRewriter &operator=(const SeaMRewriter &) = delete;
