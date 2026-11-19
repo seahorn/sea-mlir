@@ -27,8 +27,10 @@
 //     addresses) are candidates. A strong sea.print.mem does not stop a
 //     memory from widening (the interpreter reads bytes out of words).
 //   Produces: every member of a widened class has type
-//     !sea.mem<I, i(8k), aligned> (checked); no op changes (memset's value
-//     is still one byte, repeated per word).
+//     !sea.mem<I, i(8k), aligned> (checked); a sea.mem.const at the root
+//     of a widened class gets the word of k copies of its byte (exact: every
+//     cell of the memory holds the byte); no other op changes (memset's
+//     value is still one byte, repeated per word).
 //
 //===----------------------------------------------------------------------===//
 
@@ -277,6 +279,26 @@ void WidenMemoryPass::runOnOperation() {
     auto t = cast<MemType>(v.getType());
     v.setType(MemType::get(ctx, t.getIndex(), IntegerType::get(ctx, bits),
                            MemLayout::aligned));
+    // a constant memory: every word is k copies of its byte
+    if (auto mc = v.getDefiningOp<MemConstOp>()) {
+      OpBuilder b(mc);
+      Value byte = mc.getValue();
+      Value word;
+      auto wordTy = IntegerType::get(ctx, bits);
+      if (auto cst = byte.getDefiningOp<ConstOp>()) {
+        llvm::APInt splat = llvm::APInt::getSplat(
+            bits, cast<IntegerAttr>(cst.getValue()).getValue());
+        word = ConstOp::create(b, mc.getLoc(), wordTy,
+                               IntegerAttr::get(wordTy, splat));
+      } else {
+        word = byte;
+        for (uint64_t n = 1; n < k; n *= 2) {
+          auto twice = IntegerType::get(ctx, 16 * n);
+          word = ConcatOp::create(b, mc.getLoc(), twice, word, word);
+        }
+      }
+      mc.getValueMutable().assign(word);
+    }
     if (report && reported.insert(c).second)
       emitRemark(v.getLoc())
           << "sea-widen-memory: memory widened to " << k << "-byte words";
@@ -284,7 +306,9 @@ void WidenMemoryPass::runOnOperation() {
   for (Value v : members) {
     Value c = find(v);
     auto t = cast<MemType>(v.getType());
-    if (!refused.count(c) && (t.getCellUnits() != k || !t.isWordLayout())) {
+    auto mc = v.getDefiningOp<MemConstOp>();
+    if (!refused.count(c) && (t.getCellUnits() != k || !t.isWordLayout() ||
+                              (mc && mc.getValue().getType() != t.getCell()))) {
       (void)postconditionFailed("sea-widen-memory",
                                 "a member of a widened memory not widened",
                                 getOperation());
