@@ -579,6 +579,12 @@ static cl::opt<unsigned> ackRelaxRounds(
              "query; default 50 (untuned)"),
     cl::init(50));
 
+static cl::opt<unsigned> ackRelaxTestExpire(
+    "ack-relax-test-expire",
+    cl::desc("Testing only: --ack-relax: the time budget of the loop counts "
+             "as gone after this many solves (a deterministic --timeout)"),
+    cl::init(0), cl::Hidden);
+
 static cl::opt<std::string> ackRelaxSmt2(
     "ack-relax-smt2",
     cl::desc("--ack-relax: write the query of the last solve (the round that "
@@ -1064,7 +1070,8 @@ static void resultLine(sea::stats::Report &r, StringRef v) {
 
 static cl::opt<unsigned> solveTimeout(
     "timeout",
-    cl::desc("Wall-clock limit of the solver's check in seconds (0: none); "
+    cl::desc("Wall-clock limit of the solver's check in seconds (0: none; "
+             "with --ack-relax, of the whole loop of rounds); "
              "VC generation (lowering, encoding, the SeaM rewrite) is not "
              "covered; on expiry `result: unknown` and `solve-timeout: true`"),
     cl::init(0), cl::value_desc("seconds"));
@@ -2472,6 +2479,9 @@ TYPICAL:
                                  #   usual replay) is the answer; after
                                  #   <n> rounds (50, untuned) the whole
                                  #   query (warning vc.ack-relax-fallback).
+                                 #   --timeout bounds the whole loop (each
+                                 #   solve gets what is left; stop: timeout,
+                                 #   result unknown, the stats still print).
                                  #   vc.ack-relax-stop / -rounds / -kept /
                                  #   -round; <f>: the last solve's query.
                                  #   Not with --smt2, --vcgen-only, --reach,
@@ -2809,11 +2819,13 @@ OUTPUT (stdout, `key: value` lines):
                                   not run (no lowering); with a selector:
                                   vc.ack-relax-candidates: the constraints
                                   the lowering keeps; with vc-time)
-  vc.ack-relax-stop: unsat|consistent|unknown|rounds   (--ack-relax, after
-                                  the rounds: the last round's answer
+  vc.ack-relax-stop: unsat|consistent|unknown|rounds|timeout   (--ack-relax,
+                                  after the rounds: the last round's answer
                                   (consistent: sat, its model breaks no
                                   candidate), or rounds: the bound was hit
-                                  and the whole query was solved)
+                                  and the whole query was solved, or
+                                  timeout: --timeout, which bounds the whole
+                                  loop, is gone; result unknown)
   vc.ack-relax-rounds: <n>        (relaxed solves)
   vc.ack-relax-kept: <n>          (candidates given to the last relaxed
                                   solve)
@@ -6319,8 +6331,10 @@ int main(int argc, char **argv) {
     solverConfig.z3PlantError = z3PlantError;
     // Backend::Bitwuzla without the library is an error (null solver)
     // \p limits: --timeout / --mem-limit (the solver of the verdict only)
-    auto makeSolver = [&](bool limits =
-                              false) -> std::unique_ptr<sea::solver::Solver> {
+    // \p timeoutMs: instead of --timeout (--ack-relax: what is left of it)
+    auto makeSolver = [&](bool limits = false,
+                          unsigned timeoutMs =
+                              0) -> std::unique_ptr<sea::solver::Solver> {
       sea::solver::Limits l;
       sea::solver::SolverConfig config = solverConfig;
       if (limits) {
@@ -6331,7 +6345,7 @@ int main(int argc, char **argv) {
           config.z3SatEuf =
               z3Tactic == "sat" || StringRef(z3Tactic).ends_with("sat)");
         }
-        l.timeoutMs = solveTimeout * 1000;
+        l.timeoutMs = timeoutMs ? timeoutMs : solveTimeout * 1000;
         // z3 and Yices: the process limit only (RLIMIT_AS; z3's global
         // memory_max_size, set at start-up)
         if (backend == Backend::Bitwuzla)
@@ -7395,17 +7409,29 @@ int main(int argc, char **argv) {
     // --ack-relax: the rounds (a fresh solver each); the solver of the
     // answer becomes `solver`, or the whole query's after the last round
     std::optional<expr::AckRelaxOutcome> relaxOut;
-    // the time of the solve that decided (--timeout is per solve); the
-    // whole time is solveSec
+    // the time of the solve that decided; the whole time is solveSec
     std::optional<double> decidingSec;
+    bool relaxTimedOut = false; // --ack-relax: --timeout of the loop expired
     if (relaxOn) {
       std::unique_ptr<sea::solver::Solver> last;
       bool addFailed = false;
+      // --timeout bounds the whole loop: each solve gets what is left
+      unsigned solvesDone = 0;
+      auto leftMs = [&]() -> unsigned {
+        const double left = solveTimeout * 1000.0 - solveClock.seconds() * 1000;
+        return left < 1 ? 1 : unsigned(left);
+      };
+      auto expired = [&]() {
+        if (ackRelaxTestExpire && solvesDone >= ackRelaxTestExpire)
+          return true;
+        return solveTimeout && solveClock.seconds() >= solveTimeout;
+      };
       relaxOut = expr::runAckRelax(
           relaxQ.facts.size(), *relaxSel, ackRelaxRounds,
           [&](const std::vector<bool> &keep, std::vector<size_t> &broken) {
             expr::AckRelaxRound rd;
-            auto s = makeSolver(/*limits=*/true);
+            ++solvesDone;
+            auto s = makeSolver(/*limits=*/true, solveTimeout ? leftMs() : 0);
             if (!s || !s->add(relaxQ.build(keep))) {
               addFailed = true;
               return rd; // unknown: ends the loop
@@ -7422,13 +7448,20 @@ int main(int argc, char **argv) {
             }
             last = std::move(s);
             return rd;
-          });
+          },
+          expired);
       if (addFailed)
         return 1;
       using Stop = expr::AckRelaxOutcome::Stop;
       // after the last round: the whole query, on the solver that has it
       std::optional<expr::AckRelaxRound> fallback;
-      if (relaxOut->stop != Stop::Rounds) {
+      if (relaxOut->stop == Stop::Timeout) {
+        // the budget is gone: unknown, no further solve; the solver stays
+        // the run's (the stats below are still printed)
+        relaxTimedOut = true;
+        if (!relaxOut->rounds.empty())
+          decidingSec = relaxOut->rounds.back().seconds;
+      } else if (relaxOut->stop != Stop::Rounds) {
         solver = std::move(last);
         res = relaxOut->rounds.back().result;
         decidingSec = relaxOut->rounds.back().seconds;
@@ -7438,6 +7471,12 @@ int main(int argc, char **argv) {
                             " relaxed round(s) (--ack-relax-rounds) without "
                             "an answer: solving the whole query");
         last.reset();
+        if (solveTimeout) {
+          // the whole query, with what is left of the budget
+          solver = makeSolver(/*limits=*/true, leftMs());
+          if (!solver || !solver->add(query))
+            return 1;
+        }
         fallback.emplace();
         fallback->kept = relaxQ.facts.size();
         sea::Stopwatch w;
@@ -7555,8 +7594,9 @@ int main(int argc, char **argv) {
       // --mem-limit within the time is the memory limit
       std::string why = solver->reason_unknown();
       const bool timedOut =
-          solveTimeout &&
-          (why == "timeout" || decidingSec.value_or(solveSec) >= solveTimeout);
+          relaxTimedOut ||
+          (solveTimeout && (why == "timeout" ||
+                            decidingSec.value_or(solveSec) >= solveTimeout));
       const bool memHit = memLimit && !timedOut &&
                           (why == "memout" || backend == Backend::Bitwuzla);
       {

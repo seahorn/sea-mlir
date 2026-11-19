@@ -617,7 +617,13 @@ pipeline, so the rounds would not measure the query the eager run solves.
   replay and validation. Otherwise every broken candidate joins K and the
   next round runs. A term without a numeral value counts as broken
   (`unevaluated=`), which only adds a constraint.
-- unknown: the answer (each round has the `--timeout` of the run).
+- unknown: the answer.
+- time: `--timeout` bounds the whole loop, not each round. Each round (and
+  the final whole-query solve of a fallback) gets what is left of the
+  budget. When it is gone, before a round or in a round that came back
+  unknown, the loop stops with `vc.ack-relax-stop: timeout`: no further
+  solve, no fallback, `result: unknown`, `solve-timeout: true`. The
+  `vc.ack-relax-*` lines are printed as for any other stop.
 
 Per-round policy: all broken candidates are added. Each round is a whole
 solve, so fewer rounds is the cheaper direction, and the measured broken
@@ -648,7 +654,7 @@ other counters; after the rounds `vc.ack-relax-stop`, `-rounds`, `-kept`
 (|K| of the last relaxed solve), one `vc.ack-relax-round: <i> kept= result=
 broken= [unevaluated=] [conflicts= rlimit=] time=` per solve, and
 `vc.ack-relax-conflicts` (z3, summed over the solves). `solve-time` is the
-time of every solve. `--ack-relax-smt2=<file>` writes the query of the last
+time of every solve (with `--timeout`, at most about the timeout). `--ack-relax-smt2=<file>` writes the query of the last
 solve (to measure a kept set with the solver binary over seeds).
 
 Not measured yet on the benchmark jobs.

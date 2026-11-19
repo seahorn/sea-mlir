@@ -990,6 +990,53 @@ void testRelax() {
           "fake bound");
     o = runAckRelax(5, all, 0, fake({}, SR::UNSAT));
     CHECK(o.stop == Stop::Rounds && o.rounds.empty(), "fake zero rounds");
+    // the time budget of the whole loop: expired after two solves, no
+    // solve after it
+    {
+      auto f = fake({{1}, {2}, {3}}, SR::UNSAT);
+      size_t done = 0;
+      o = runAckRelax(
+          5, all, 50,
+          [&](const std::vector<bool> &k, std::vector<size_t> &br) {
+            ++done;
+            return f(k, br);
+          },
+          [&] { return done >= 2; });
+      CHECK(o.stop == Stop::Timeout && o.rounds.size() == 2 && done == 2 &&
+                o.kept() == 1,
+            "fake timeout between rounds");
+      // an unknown round with the budget gone is a timeout; with budget
+      // left it is the answer
+      o = runAckRelax(5, all, 50, fake({{1}}, SR::UNKNOWN),
+                      [] { return true; });
+      CHECK(o.stop == Stop::Timeout && o.rounds.empty(),
+            "fake expired at start");
+      done = 0;
+      auto g = fake({}, SR::UNKNOWN);
+      o = runAckRelax(
+          5, all, 50,
+          [&](const std::vector<bool> &k, std::vector<size_t> &br) {
+            ++done;
+            return g(k, br);
+          },
+          [&] { return done >= 1; });
+      CHECK(o.stop == Stop::Timeout && o.rounds.size() == 1,
+            "fake unknown at expiry");
+      // the bound reached with the budget gone: timeout, not a fallback
+      done = 0;
+      auto h = fake({{1}, {2}, {3}}, SR::UNSAT);
+      o = runAckRelax(
+          5, all, 2,
+          [&](const std::vector<bool> &k, std::vector<size_t> &br) {
+            ++done;
+            return h(k, br);
+          },
+          [&] { return done >= 2; });
+      CHECK(o.stop == Stop::Timeout && o.rounds.size() == 2,
+            "fake bound and expired");
+      CHECK(std::string(AckRelaxOutcome::stopName(o.stop)) == "timeout",
+            "stop name");
+    }
   }
   Env env;
   using op::array::select;

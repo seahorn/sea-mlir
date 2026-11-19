@@ -52,6 +52,26 @@
 // RUN: FileCheck %s --check-prefix=SMT2 < %t/q.smt2
 // SMT2: (check-sat)
 //
+// The time budget: --timeout bounds the whole loop, not each round. The
+// budget of a lit test cannot be real time (--timeout is whole seconds); the
+// hidden --ack-relax-test-expire=<n> counts it as gone after n solves. The
+// stop is timeout, the result unknown, and the stats are still printed
+// (round lines for the solves done; no fallback solve).
+// RUN: not sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-test-expire=1 --timeout=600 --brunch-stats 2>&1 | FileCheck %s --check-prefix=TIMEOUT
+// TIMEOUT: vc.ack-relax-stop: timeout
+// TIMEOUT: vc.ack-relax-rounds: 1
+// TIMEOUT: vc.ack-relax-kept: 0
+// TIMEOUT: vc.ack-relax-round: 1 kept=0 result=sat broken={{[1-9][0-9]*}}
+// TIMEOUT-NOT: vc.ack-relax-round: 2
+// TIMEOUT-NOT: fallback
+// TIMEOUT: BRUNCH_STAT vc.ack-relax-stop timeout
+// TIMEOUT: result: unknown
+// TIMEOUT: solve-timeout: true
+// Without the budget gone the same job needs more than one round.
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --timeout=600 2>&1 | FileCheck %s --check-prefix=NOTIMEOUT
+// NOTIMEOUT: vc.ack-relax-round: 2
+// NOTIMEOUT: result: unsat
+//
 // Usage: an unknown selector, a run that does not solve, the bound without
 // the switch are refused; without the lowering the switch does nothing.
 // RUN: not sea-vc %t/unsat.mlir --lower --seam --ack-relax=top 2>&1 | FileCheck %s --check-prefix=BADSEL

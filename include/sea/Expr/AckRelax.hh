@@ -16,6 +16,9 @@
 //  - unknown: the answer.
 // After the last allowed round without an answer the caller solves the
 // whole query (Stop::Rounds: a fallback, reported).
+// The caller's time budget (sea-vc --timeout) bounds the whole loop: the
+// loop asks `expired` before each round and after an unknown one; once it
+// is true the loop stops (Stop::Timeout, no further solve, no fallback).
 //
 // runAckRelax is the loop over an abstract solve (unit-tested with a fake);
 // ackRelaxBroken evaluates the omitted constraints in a model.
@@ -134,8 +137,9 @@ struct AckRelaxRound {
 struct AckRelaxOutcome {
   /// Unsat / Unknown: the last round's answer. Consistent: a sat whose
   /// model breaks no omitted constraint. Rounds: the bound was reached
-  /// without one of those (the caller solves the whole query).
-  enum class Stop { Unsat, Consistent, Unknown, Rounds };
+  /// without one of those (the caller solves the whole query). Timeout: the
+  /// time budget of the whole loop is gone (no answer).
+  enum class Stop { Unsat, Consistent, Unknown, Rounds, Timeout };
   Stop stop = Stop::Rounds;
   std::vector<AckRelaxRound> rounds;
   std::vector<bool> keep; ///< K after the last round (the one it solved)
@@ -155,6 +159,8 @@ struct AckRelaxOutcome {
       return "unknown";
     case Stop::Rounds:
       return "rounds";
+    case Stop::Timeout:
+      return "timeout";
     }
     return "?";
   }
@@ -166,18 +172,30 @@ struct AckRelaxOutcome {
 /// (\p broken: indices into the n; each one not kept). A sat that names no
 /// candidate ends the loop (Consistent). Every broken candidate joins K (all
 /// of them per round: the rounds are full solves, and the measured broken
-/// sets are small).
-inline AckRelaxOutcome
-runAckRelax(size_t n, const AckRelaxSelector &sel, unsigned maxRounds,
-            llvm::function_ref<AckRelaxRound(const std::vector<bool> &keep,
-                                             std::vector<size_t> &broken)>
-                solve) {
+/// sets are small). \p expired: whether the time budget of the whole loop
+/// is gone (checked before each round, and after an unknown one: that
+/// round is then a timeout, not an answer, and the stop is Timeout).
+inline AckRelaxOutcome runAckRelax(
+    size_t n, const AckRelaxSelector &sel, unsigned maxRounds,
+    llvm::function_ref<AckRelaxRound(const std::vector<bool> &keep,
+                                     std::vector<size_t> &broken)>
+        solve,
+    llvm::function_ref<bool()> expired = [] { return false; }) {
   using SR = sea::solver::SolverResult;
   AckRelaxOutcome out;
   out.keep = sel.initial(n);
+  std::vector<bool> solved = out.keep;
   for (unsigned r = 0; r < maxRounds; ++r) {
+    if (expired()) {
+      // K stays what the last solve had, not what it would have grown to
+      if (!out.rounds.empty())
+        out.keep = solved;
+      out.stop = AckRelaxOutcome::Stop::Timeout;
+      return out;
+    }
     std::vector<size_t> broken;
     AckRelaxRound rd = solve(out.keep, broken);
+    solved = out.keep;
     rd.kept = out.kept();
     rd.broken = broken.size();
     out.rounds.push_back(rd);
@@ -186,7 +204,8 @@ runAckRelax(size_t n, const AckRelaxSelector &sel, unsigned maxRounds,
       return out;
     }
     if (rd.result != SR::SAT) {
-      out.stop = AckRelaxOutcome::Stop::Unknown;
+      out.stop = expired() ? AckRelaxOutcome::Stop::Timeout
+                           : AckRelaxOutcome::Stop::Unknown;
       return out;
     }
     if (broken.empty()) {
@@ -199,7 +218,9 @@ runAckRelax(size_t n, const AckRelaxSelector &sel, unsigned maxRounds,
     for (size_t i : broken)
       out.keep[i] = true;
   }
-  out.stop = AckRelaxOutcome::Stop::Rounds;
+  // (after the last round K is not grown: the bound's break)
+  out.stop = expired() ? AckRelaxOutcome::Stop::Timeout
+                       : AckRelaxOutcome::Stop::Rounds;
   return out;
 }
 
