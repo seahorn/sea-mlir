@@ -48,6 +48,8 @@ claim your harness is intended to establish.
    accesses; for 9 of them the in-bounds condition, which a bounds check
    would check, was not constant. The other assumption lines are
    `assume.memset-bound` (a memset of symbolic length was bounded),
+   `assume.a-inb` (opt-in premise: every access stays
+   in its object; only with `--narrow-offsets`),
    `seam.premises: off (fallback: ...)` (the premises were dropped),
    `seam.out-of-object:` (accesses that leave their object on every path
    alternative: the `unsat` holds only if they do not execute) and
@@ -55,7 +57,12 @@ claim your harness is intended to establish.
    its assumption lines is incomplete.
 3. **Warnings on stderr.** `Warning: ... [kind]` names handling that is
    incomplete or approximate. The verdict is then about the program as the
-   tool understood it.
+   tool understood it. One is about the answer itself:
+   `vc.ack-own-collision-excused` (`--ack-own`) says the solver's model
+   was not a consistent memory (`vc.ackermann-model: ... own-broken=<n>
+   own-excused=<n>`), and the `sat` rests on the replayed run alone, which
+   failed the assertion and validated. Without such a run the same model
+   ends in `vc.ackermann-inconsistent` (status 2).
 4. **`tool.version:`** and every `vc.config:` line. Record them with the
    verdict. The defaults are not tuned and can change between versions.
 
@@ -105,6 +112,21 @@ The `vc.ackermann-*` lines count the read-only arrays that were replaced
 by fresh constants, and the consistency constraints that this added.
 `vc.ackermann-constraints` is a direct measure of the memory work left to
 the solver.
+
+`--ack-relax=all` (a diagnosis mode) solves without those constraints
+first and adds only the ones a model breaks, in rounds on fresh solvers
+(`--ack-relax-mode=incremental`: on one solver).
+`vc.ack-relax-stop` says how it ended; a sat or unsat verdict is the one the
+eager lowering would give (a `consistent` sat is a model of the whole query and
+replays as usual). `vc.ack-relax-kept` against `vc.ack-relax-candidates`
+shows how many constraints the answer needed, and the
+`vc.ack-relax-round:` lines show the solver's effort per round
+([Ackermann.md](../design/Ackermann.md#lazy-constraints-ack-relax)).
+
+`--ro-arrays=uf` (with the lowering off) gives the same arrays to the solver
+as uninterpreted functions with no constraint, to compare with the solver's
+own handling; `vc.ro-arrays` counts them
+([Ackermann.md](../design/Ackermann.md#read-only-arrays-as-functions-ro-arraysuf)).
 
 With `--seam-stats`, each SeaM rule reports how often it fired. On a small
 NKI gather proof:

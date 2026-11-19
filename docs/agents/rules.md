@@ -20,8 +20,11 @@ Verify under named assumptions; never drop one silently.
   memhavocs the lowering dropped under A-SEP, also without `--seam` and
   with `--seam-premises=0`) and `seam.premises: assumed ...` next to
   `result: unsat`, any `seam.out-of-object:` line (the `unsat` holds only
-  if those accesses do not execute), and also `assume.memset-bound`,
-  `assume.addr0-is-null`
+  if those accesses do not execute), `assume.a-inb`
+  (opt-in, off unless `--narrow-offsets` is given: reads narrowed under
+  A-INB; `--ack-own` is no premise for unsat, a completeness-only
+  assumption shown by the `vc.ackermann-own-*` counters), and also
+  `assume.memset-bound`, `assume.addr0-is-null`
   (`vc`: placement makes null address 0; `uses=<n>`: a replay relied on
   it), `seam.ptrint`, and any `seam.premises: off (fallback ...)` or
   `seam.premises: off (lowering: ...)`.

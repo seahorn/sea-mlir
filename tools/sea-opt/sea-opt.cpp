@@ -42,9 +42,11 @@ TYPICAL:
   sea-opt p.mlir --pass-pipeline='builtin.module(sea.program(sea-wrap-flags{mode=assume}))'
                                           # nsw/nuw promises -> assume|assert|drop
   sea-opt p.mlir --sea-widen-memory="k=8 report=true"
-                                          # byte memories whose accesses are
-                                          #   all aligned whole k-byte words
-                                          #   -> !sea.mem<I, i64, aligned>;
+                                          # byte memories: per memory, the
+                                          #   largest word size <= k (k, k/2,
+                                          #   ..., 2) its accesses allow;
+                                          #   per-class=false gives k only;
+                                          #   counters in sea.widen_memory;
                                           #   report: why each memory widened
                                           #   or not (run sccp first)
   sea-opt p.mlir --sea-apply-tracking     # sea.tracking_on/off markers (at

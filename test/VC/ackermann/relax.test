@@ -1,0 +1,248 @@
+// Lazy Ackermann constraints (--ack-relax, docs/design/Ackermann.md, "Lazy
+// constraints"): the constraints the lowering keeps are candidates; the
+// rounds start with none of them and add the ones a sat model breaks.
+// Outcome invariants: the verdict is the eager one; a sat model breaks none
+// of them and replays. The number of rounds and the kept set depend on the
+// solver's models and are not pinned
+// (15 candidates here, of which the proof needs 1; the unit test pins that
+// the needed one is kept).
+// RUN: split-file %s %t
+//
+// unsat: x1 at a + k + j and x2 at a + k + j2 with j2 = j assumed; the other
+// reads are used in an assume. Eager and relaxed: unsat.
+// RUN: sea-vc %t/unsat.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=EAGER
+// EAGER-NOT: vc.ack-relax
+// EAGER: result: unsat
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all 2>&1 | FileCheck %s --check-prefix=UNSAT
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --vc-defs=hidden 2>&1 | FileCheck %s --check-prefixes=UNSAT,DEFS
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --narrow-offsets --vc-defs=hidden 2>&1 | FileCheck %s --check-prefix=UNSAT
+// RUN: %if yices %{ sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --solver=yices 2>&1 | FileCheck %s --check-prefix=UNSAT %}
+// RUN: %if bitwuzla %{ sea-vc %t/unsat.mlir --lower --seam --ackermannize=on --ack-relax=all --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=UNSAT %}
+// UNSAT: vc.ack-relax: all
+// UNSAT: vc.ack-relax-candidates: 15
+// DEFS: vc.defs-names: {{[1-9]}}
+// UNSAT: vc.ack-relax-stop: unsat
+// UNSAT: vc.ack-relax-kept: {{[0-9]+$}}
+// UNSAT: result: unsat
+//
+// sat: the same with j2 free. The last round's model breaks no candidate;
+// the Ackermann model is consistent and the run replays.
+// RUN: sea-vc %t/sat.mlir --lower --seam --ack-relax=all 2>&1 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/sat.mlir --lower --seam --ack-relax=all --vc-defs=hidden 2>&1 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/sat.mlir --lower --seam --ack-relax=all --narrow-offsets --vc-defs=hidden 2>&1 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/sat.mlir --lower --seam --ack-relax=all --ack-own 2>&1 | FileCheck %s --check-prefix=SAT
+// RUN: %if yices %{ sea-vc %t/sat.mlir --lower --seam --ack-relax=all --solver=yices 2>&1 | FileCheck %s --check-prefix=SAT %}
+// RUN: %if bitwuzla %{ sea-vc %t/sat.mlir --lower --seam --ackermannize=on --ack-relax=all --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=SAT %}
+// SAT: vc.ack-relax-stop: consistent
+// SAT: result: sat
+// SAT: vc.ackermann-model: defaulted={{[0-9]+}} inconsistent=0
+// SAT: replay: assert-failed
+// SAT: validate: checked={{[0-9]+}} mismatches=0
+//
+// The bound: after --ack-relax-rounds relaxed solves without an answer the
+// whole query is solved (a warning, stop: rounds, a fallback round line).
+// With 0 rounds that is the only solve; --ack-relax-smt2 writes its query.
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-rounds=0 --ack-relax-smt2=%t/q.smt2 --brunch-stats 2>&1 | FileCheck %s --check-prefix=FALLBACK
+// FALLBACK: [vc.ack-relax-fallback]
+// FALLBACK: vc.ack-relax-stop: rounds
+// FALLBACK: vc.ack-relax-rounds: 0
+// FALLBACK: vc.ack-relax-round: fallback kept=15 result=unsat broken=0 conflicts={{[0-9]+}} rlimit={{[0-9]+}}
+// FALLBACK: BRUNCH_STAT vc.ack-relax-stop rounds
+// FALLBACK: result: unsat
+// RUN: FileCheck %s --check-prefix=SMT2 < %t/q.smt2
+// SMT2: (check-sat)
+//
+// The time budget: --timeout bounds the whole loop, not each round. The
+// budget of a lit test cannot be real time (--timeout is whole seconds); the
+// hidden --ack-relax-test-expire=<n> counts it as gone after n solves. The
+// stop is timeout, the result unknown, and the stats are still printed
+// (round lines for the solves done; no fallback solve).
+// RUN: not sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-test-expire=1 --timeout=600 --brunch-stats 2>&1 | FileCheck %s --check-prefix=TIMEOUT
+// TIMEOUT: vc.ack-relax-stop: timeout
+// TIMEOUT: vc.ack-relax-rounds: 1
+// TIMEOUT: vc.ack-relax-kept: 0
+// TIMEOUT: vc.ack-relax-round: 1 kept=0 result=sat broken={{[1-9][0-9]*}}
+// TIMEOUT-NOT: vc.ack-relax-round: 2
+// TIMEOUT-NOT: fallback
+// TIMEOUT: BRUNCH_STAT vc.ack-relax-stop timeout
+// TIMEOUT: result: unknown
+// TIMEOUT: solve-timeout: true
+// --ack-relax-smt2 on a timeout stop writes the last solve's query (the first,
+// the relaxed one), not the whole query a fallback would solve.
+// RUN: not sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-test-expire=1 --timeout=600 --ack-relax-smt2=%t/to.smt2 >/dev/null 2>&1
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-rounds=0 --ack-relax-smt2=%t/whole.smt2 >/dev/null 2>&1
+// RUN: %python -c "import sys; a, b = (len(open(f).read()) for f in sys.argv[1:]); sys.exit(0 if a < b else 1)" %t/to.smt2 %t/whole.smt2
+// incremental: the same stop (the budget is checked between rounds)
+// RUN: not sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --ack-relax-test-expire=1 --timeout=600 2>&1 | FileCheck %s --check-prefix=TIMEOUTI
+// TIMEOUTI: vc.ack-relax-mode: incremental
+// TIMEOUTI: vc.ack-relax-stop: timeout
+// TIMEOUTI: vc.ack-relax-round: 1 kept=0 result=sat
+// TIMEOUTI: result: unknown
+// Without the budget gone the same job needs more than one round.
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --timeout=600 2>&1 | FileCheck %s --check-prefix=NOTIMEOUT
+// NOTIMEOUT: vc.ack-relax-round: 2
+// NOTIMEOUT: result: unsat
+// --ack-relax-mode=incremental: one solver for every round, given the
+// broken candidates of each sat round. The same outcome invariants on each
+// backend; z3 names the engine of each check (its first check runs the
+// tactic, the later ones z3's incremental solver: --z3-logic=QF_BV its
+// incremental SAT solver).
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental 2>&1 | FileCheck %s --check-prefix=INCU
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --vc-defs=hidden 2>&1 | FileCheck %s --check-prefix=INCU
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --z3-logic=QF_BV 2>&1 | FileCheck %s --check-prefix=INCU
+// RUN: %if yices %{ sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --solver=yices 2>&1 | FileCheck %s --check-prefix=INCU %}
+// RUN: %if bitwuzla %{ sea-vc %t/unsat.mlir --lower --seam --ackermannize=on --ack-relax=all --ack-relax-mode=incremental --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=INCU %}
+// RUN: sea-vc %t/sat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental 2>&1 | FileCheck %s --check-prefixes=INCS,INCZ3,INCSMT
+// RUN: sea-vc %t/sat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --vc-defs=hidden 2>&1 | FileCheck %s --check-prefix=INCS
+// RUN: sea-vc %t/sat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --z3-logic=QF_BV 2>&1 | FileCheck %s --check-prefixes=INCS,INCZ3,INCQFBV
+// RUN: %if yices %{ sea-vc %t/sat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --solver=yices 2>&1 | FileCheck %s --check-prefix=INCS %}
+// RUN: %if bitwuzla %{ sea-vc %t/sat.mlir --lower --seam --ackermannize=on --ack-relax=all --ack-relax-mode=incremental --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=INCS %}
+// The logic is reported (and only when given).
+// RUN: sea-vc %t/sat.mlir --lower --seam --z3-logic=QF_BV 2>&1 | FileCheck %s --check-prefix=LOGIC
+// RUN: sea-vc %t/sat.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=NOLOGIC
+// LOGIC: solver.z3-logic: QF_BV
+// NOLOGIC-NOT: solver.z3-logic
+// INCU: vc.ack-relax-candidates: 15
+// INCU: vc.ack-relax-mode: incremental
+// INCU: vc.ack-relax-stop: unsat
+// INCU: vc.ack-relax-time:
+// INCU: result: unsat
+// INCS: vc.ack-relax-mode: incremental
+// INCS: vc.ack-relax-stop: consistent
+// INCZ3: vc.ack-relax-round: 1 kept=0 result=sat {{.*}} engine=tactic
+// INCSMT: vc.ack-relax-round: 2 {{.*}} engine=smt
+// INCQFBV: vc.ack-relax-round: 2 {{.*}} engine=sat
+// INCS: vc.ack-relax-time:
+// INCS: result: sat
+// INCS: vc.ackermann-model: defaulted={{[0-9]+}} inconsistent=0
+// INCS: replay: assert-failed
+// INCS: validate: checked={{[0-9]+}} mismatches=0
+// The bound in incremental mode: the candidates left join the rounds'
+// solver (0 rounds: the run's solver, one check).
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --ack-relax-rounds=1 --ack-relax-smt2=%t/qi.smt2 2>&1 | FileCheck %s --check-prefixes=INCFB,INCFB1
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --ack-relax-rounds=0 2>&1 | FileCheck %s --check-prefixes=INCFB,INCFB0
+// RUN: %if yices %{ sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --ack-relax-rounds=1 --solver=yices 2>&1 | FileCheck %s --check-prefix=INCFB %}
+// RUN: %if bitwuzla %{ sea-vc %t/unsat.mlir --lower --seam --ackermannize=on --ack-relax=all --ack-relax-mode=incremental --ack-relax-rounds=1 --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=INCFB %}
+// INCFB: [vc.ack-relax-fallback]
+// INCFB: vc.ack-relax-stop: rounds
+// INCFB1: vc.ack-relax-rounds: 1
+// INCFB0: vc.ack-relax-rounds: 0
+// INCFB: vc.ack-relax-round: fallback kept=15 result=unsat
+// INCFB: result: unsat
+// RUN: FileCheck %s --check-prefix=SMT2 < %t/qi.smt2
+// The default mode prints no mode line.
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=fresh 2>&1 | FileCheck %s --check-prefix=FRESH
+// FRESH-NOT: vc.ack-relax-mode
+// FRESH-NOT: engine=
+// FRESH: result: unsat
+//
+// Usage: an unknown selector, a run that does not solve, the bound without
+// the switch are refused; without the lowering the switch does nothing.
+// RUN: not sea-vc %t/unsat.mlir --lower --seam --ack-relax=top 2>&1 | FileCheck %s --check-prefix=BADSEL
+// BADSEL: --ack-relax: unknown selector 'top'
+// RUN: not sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --smt2 2>&1 | FileCheck %s --check-prefix=NOSOLVE
+// NOSOLVE: not with --smt2
+// RUN: not sea-vc %t/unsat.mlir --lower --seam --ack-relax-rounds=3 2>&1 | FileCheck %s --check-prefix=NORELAX
+// NORELAX: need --ack-relax
+// RUN: not sea-vc %t/unsat.mlir --lower --seam --ack-relax-mode=incremental 2>&1 | FileCheck %s --check-prefix=NORELAX
+// RUN: %if yices %{ not sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --solver=yices --yices-config=mode=one-shot 2>&1 | FileCheck %s --check-prefix=ONESHOT %}
+// ONESHOT: not with --yices-config mode=one-shot
+// RUN: not sea-vc %t/unsat.mlir --lower --seam --z3-logic=QF_LIA 2>&1 | FileCheck %s --check-prefix=BADLOGIC
+// BADLOGIC: --z3-logic: unknown logic 'QF_LIA'
+// RUN: %if yices %{ not sea-vc %t/unsat.mlir --lower --seam --z3-logic=QF_BV --solver=yices 2>&1 | FileCheck %s --check-prefix=LOGICZ3 %}
+// LOGICZ3: --z3-logic needs --solver=z3
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ackermannize=off 2>&1 | FileCheck %s --check-prefix=NOACK
+// NOACK: vc.ack-relax: off-no-ackermann
+// NOACK-NOT: vc.ack-relax-stop
+// NOACK: result: unsat
+// RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ackermannize=off --ack-relax-smt2=%t/n.smt2 2>&1 | FileCheck %s --check-prefix=NOSMT2
+// NOSMT2: no file written{{.*}}[vc.ack-relax-off]
+
+//--- unsat.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @relaxunsat {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c64 = sea.const 64 : i64
+  %a = sea.malloc %c64 align 8 [1] : i64 -> !sea.ptr<64>
+  %c16 = sea.const 16 : i64
+  %k = sea.nondet "k" [2] : i64
+  %kle = sea.icmp ult, %k, %c16 : i64
+  sea.assume %kle
+  %j = sea.nondet "j" [3] : i64
+  %jle = sea.icmp ult, %j, %c16 : i64
+  sea.assume %jle
+  %j2 = sea.nondet "j2" [4] : i64
+  %jj = sea.icmp eq, %j2, %j : i64
+  sea.assume %jj
+  %i = sea.nondet "i" [5] : i64
+  %ile = sea.icmp ult, %i, %c16 : i64
+  sea.assume %ile
+  %pk = sea.ptr.add %a, %k : !sea.ptr<64>, i64
+  %pkj = sea.ptr.add %pk, %j : !sea.ptr<64>, i64
+  %pkj2 = sea.ptr.add %pk, %j2 : !sea.ptr<64>, i64
+  %pki = sea.ptr.add %pk, %i : !sea.ptr<64>, i64
+  %pi = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %a, %j : !sea.ptr<64>, i64
+  %x1 = sea.load %m0[%pkj] : !m -> i8
+  %x2 = sea.load %m0[%pkj2] : !m -> i8
+  %x3 = sea.load %m0[%pki] : !m -> i8
+  %x4 = sea.load %m0[%pi] : !m -> i8
+  %x5 = sea.load %m0[%pj] : !m -> i8
+  %x6 = sea.load %m0[%pk] : !m -> i8
+  %e1 = sea.icmp eq, %x1, %x2 : i8
+  %s1 = sea.add %x3, %x4 : i8
+  %s2 = sea.add %s1, %x5 : i8
+  %s3 = sea.add %s2, %x6 : i8
+  %c0 = sea.const 0 : i8
+  %c9 = sea.const 9 : i8
+  %e2 = sea.icmp eq, %s3, %c9 : i8
+  sea.assume %e2
+  sea.assert %e1
+  sea.halt
+}
+
+//--- sat.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @relaxsat {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c64 = sea.const 64 : i64
+  %a = sea.malloc %c64 align 8 [1] : i64 -> !sea.ptr<64>
+  %c16 = sea.const 16 : i64
+  %k = sea.nondet "k" [2] : i64
+  %kle = sea.icmp ult, %k, %c16 : i64
+  sea.assume %kle
+  %j = sea.nondet "j" [3] : i64
+  %jle = sea.icmp ult, %j, %c16 : i64
+  sea.assume %jle
+  %j2 = sea.nondet "j2" [4] : i64
+  %jj = sea.icmp ult, %j2, %c16 : i64
+  sea.assume %jj
+  %i = sea.nondet "i" [5] : i64
+  %ile = sea.icmp ult, %i, %c16 : i64
+  sea.assume %ile
+  %pk = sea.ptr.add %a, %k : !sea.ptr<64>, i64
+  %pkj = sea.ptr.add %pk, %j : !sea.ptr<64>, i64
+  %pkj2 = sea.ptr.add %pk, %j2 : !sea.ptr<64>, i64
+  %pki = sea.ptr.add %pk, %i : !sea.ptr<64>, i64
+  %pi = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %a, %j : !sea.ptr<64>, i64
+  %x1 = sea.load %m0[%pkj] : !m -> i8
+  %x2 = sea.load %m0[%pkj2] : !m -> i8
+  %x3 = sea.load %m0[%pki] : !m -> i8
+  %x4 = sea.load %m0[%pi] : !m -> i8
+  %x5 = sea.load %m0[%pj] : !m -> i8
+  %x6 = sea.load %m0[%pk] : !m -> i8
+  %e1 = sea.icmp eq, %x1, %x2 : i8
+  %s1 = sea.add %x3, %x4 : i8
+  %s2 = sea.add %s1, %x5 : i8
+  %s3 = sea.add %s2, %x6 : i8
+  %c0 = sea.const 0 : i8
+  %c9 = sea.const 9 : i8
+  %e2 = sea.icmp eq, %s3, %c9 : i8
+  sea.assume %e2
+  sea.assert %e1
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

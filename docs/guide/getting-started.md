@@ -163,8 +163,9 @@ this site run with
 sea-vc <job>.mlir --lower --seam --widen-memory=4
 ```
 
-`--widen-memory=4` turns byte memories into 4-byte words where every
-access is an aligned word. These options are not the defaults; see
+`--widen-memory=4` turns each byte memory into words of 4 or 2 bytes,
+the largest size for which every access to the memory is an aligned
+whole word. These options are not the defaults; see
 [Profiles](../agents/profiles.md) for why. The Firedancer and Stellar
 [applications](../tutorials/index.md) use this configuration. The NKI harness
 traces Python directly into Sea-MLIR, and its jobs use `--lower --seam`

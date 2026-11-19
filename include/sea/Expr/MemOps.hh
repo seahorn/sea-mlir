@@ -53,6 +53,7 @@
 
 #include "llvm/ADT/SmallVector.h"
 
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -150,10 +151,10 @@ public:
       }
       Expr res = changed ? e->efac().mkNary(e->op(), kids) : e;
       if (isOpX<W_STORE>(res))
-        res = store(res->arg(0), res->arg(1), res->arg(2));
+        res = flat(store(res->arg(0), res->arg(1), res->arg(2)));
       else if (isOpX<W_SELECT>(res) &&
                !(m_keepOverArrayConstants && isArrayConstant(res->arg(0))))
-        res = select(res->arg(0), res->arg(1), res->arg(2));
+        res = flat(select(res->arg(0), res->arg(1), res->arg(2)));
       m_keep.push_back(res);
       m_memo.emplace(e.get(), res);
       m_keep.push_back(e);
@@ -197,6 +198,16 @@ public:
   }
 
   uint64_t expanded() const { return m_expanded; }
+
+  /// Over an erased query (bit-vector addresses: the initial-words
+  /// boundary, SeaMRewriter::solverTermWords), each expansion is passed
+  /// through \p f, the PTR_INDEX expander: the byte addresses are nodes
+  /// (op::ptr::addressPlus), and a node over a bit-vector base has no sort,
+  /// so an enclosing width term whose address holds this expansion could
+  /// not take its address width. Set before the first expand().
+  void flattenWith(std::function<Expr(const Expr &)> f) {
+    m_flatten = std::move(f);
+  }
 
   /// Leave a wselect directly over an array constant (an initial memory or a
   /// memhavoc array) for the initial-words step (InitialWords.hh; its byte
@@ -248,6 +259,7 @@ private:
       res = op::bv::concat(logRead(op::array::select(m, at(a, k))), res);
     return res;
   }
+  Expr flat(const Expr &e) { return m_flatten ? m_flatten(e) : e; }
   Expr logRead(const Expr &sel) {
     m_made.push_back(sel);
     return sel;
@@ -263,6 +275,7 @@ private:
   uint64_t m_offsetPushed = 0, m_offsetRefused = 0;
   unsigned m_maxOffsetLeaves = 0;
   bool m_keepOverArrayConstants = false;
+  std::function<Expr(const Expr &)> m_flatten;
 };
 
 /// The boundary translation (see the header). One instance keeps its memo for

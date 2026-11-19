@@ -80,6 +80,11 @@ struct SolverConfig {
   /// z3: sat.euf=true for this solver only (the same way; SeaHorn sets it
   /// with the `sat` tactic)
   bool z3SatEuf = false;
+  /// z3: the solver for this logic (sea-vc --z3-logic; empty: z3's default
+  /// solver, which probes the logic at the first check). The logic also
+  /// picks the incremental solver z3 uses for a check after more
+  /// assertions: QF_BV its incremental SAT solver, other logics its SMT core
+  std::string z3Logic;
   /// z3: test hook (sea-vc --z3-plant-error): make an invalid z3 API call
   /// on the new solver's context, as an internal error would
   bool z3PlantError = false;

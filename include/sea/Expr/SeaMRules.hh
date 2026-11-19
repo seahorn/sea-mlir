@@ -163,8 +163,8 @@ struct SeaMOptions {
   /// mirror, other normal forms of one address), to be refined.
   bool checkInbPremise = false;
   /// Record own reads and boundary-made reads (noteOwnReads,
-  /// noteBoundaryRead) for sea-vc --narrow-offsets. Off by default: no
-  /// effect on the rewriting either way.
+  /// noteBoundaryRead) for sea-vc --narrow-offsets and --ack-own. Off by
+  /// default: no effect on the rewriting either way.
   bool trackOwnReads = false;
   /// without the premises, decide the access pairs / memop ranges of two placed
   /// objects at numeral offsets by their placed numerals (cmp.layout,
@@ -6094,6 +6094,11 @@ public:
         m_rw(m_config, m_cache, m_stats, ropts) {
     for (WideExpander *w : {&m_wide, &m_wideKeep, &m_wideRest})
       w->maxOffsetLeaves(opts.maxOffsetLeaves);
+    // the initial-words boundary expands width terms over the erased query
+    for (WideExpander *w : {&m_wideKeep, &m_wideRest})
+      w->flattenWith([this](const Expr &e) {
+        return m_config.rules().eraser().expand(e);
+      });
   }
   SeaMRewriter(const SeaMRewriter &) = delete;
   SeaMRewriter &operator=(const SeaMRewriter &) = delete;

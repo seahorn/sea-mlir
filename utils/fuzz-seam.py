@@ -151,23 +151,130 @@ import sys
 import tempfile
 
 
-def as_ptr_index(text, rng, strides=(1,)):
-    """Each `p = sea.ptr.add b, o : T, i32` as `p = sea.ptr.index b [o]
-    strides [s] offset 0 <flag> : T, i32`, s drawn from `strides`: with
-    s = 1 the same address (the VC encodes a PTR_INDEX node under --seam);
-    another s is another program (b + o * s), on which every variant runs
-    alike. A promise the program breaks is a warning of the interpreter
-    (interp.ptr-index-promise), no value changes."""
+def as_ptr_index(text, rng, strides=(1,), in_bounds=True):
+    """Each `p = sea.ptr.add b, o : T, i32` as `p = sea.ptr.index b [i]
+    strides [s] offset 0 <flag> : T, i32` at the address the program meant
+    (s * i = o), s drawn from `strides`:
+    - o a numeral k: s one of the strides that divide k (any for k = 0),
+      i = k / s, a new constant;
+    - o a value with an assumed bound o <=u H (an assume of the icmp, or
+      of an and of it, in the same block before the ptr.add; H < 2^31):
+      s one of the positive strides with H / s >= max(1, L), L an assumed
+      lower bound o >=u L; i = o, and for s > 1 the bound is tightened to
+      o <=u H / s (s * o <=u H: the addresses are a subset of the
+      program's, each one a multiple of s); every ptr.add of o takes the
+      same s;
+      (the bound and the choice are per block);
+    - otherwise (no candidate: no stride divides k, no bound, s > H, or a
+      stride list without 1) s = 1.
+    So the in-bounds modes stay in bounds. The flag (none, inbounds or nuw)
+    is drawn, in the in-bounds modes (in_bounds), only when the promise
+    holds: s > 0, b an alloca or a select of allocas (the smallest size
+    taken), and every offset s * i in [0, size]; otherwise no flag. In the
+    violating modes the flag is drawn at random, so a broken promise
+    (interp.ptr-index-promise) is still reached. Values of other widths and other ops are kept."""
+    consts = {}  # i32 constant -> its signed value
+    sizes = {}  # pointer at offset 0 of objects -> the smallest size
+    icmps = {}  # icmp ule / uge result -> (value, pred, const, line index)
+    ands = {}  # i1 and -> its operands
+    hi, lo = {}, {}  # value -> (H, line index of the icmp) / L
+    chosen = {}  # bounded value -> its stride
+    out = []
+    fresh = [0]
 
-    def one(m):
-        flag = rng.choice(["", " inbounds", " nuw"])
-        s = rng.choice(strides) if len(strides) > 1 else strides[0]
-        return (
-            f"{m.group(1)} = sea.ptr.index {m.group(2)} [{m.group(3)}] "
-            f"strides [{s}] offset 0{flag} : {m.group(4)}, i32"
-        )
+    def new_const(v, indent):
+        fresh[0] += 1
+        x = f"%pidx{fresh[0]}"
+        return x, f"{indent}{x} = sea.const {v} : i32"
 
-    return re.sub(r"(%\w+) = sea\.ptr\.add (%\w+), (%\w+) : ([^,]+), i32", one, text)
+    def assumed(c):
+        if c in ands:
+            for a in ands[c]:
+                assumed(a)
+        elif c in icmps:
+            v, pred, k, idx = icmps[c]
+            if pred == "ule":
+                hi[v] = None if v in hi else (k, idx)
+            else:
+                lo[v] = max(lo.get(v, 0), k)
+
+    for line in text.split("\n"):
+        indent = line[: len(line) - len(line.lstrip())]
+        s_ = line.strip()
+        if s_.startswith("^"):  # a new block: no bound is known in it
+            icmps.clear()
+            ands.clear()
+            hi.clear()
+            lo.clear()
+            chosen.clear()
+        if m := re.fullmatch(r"(%\w+) = sea\.const (-?\w+) : i32", s_):
+            v = int(m.group(2), 0) & 0xFFFFFFFF
+            consts[m.group(1)] = v - (1 << 32) if v >> 31 else v
+        elif m := re.fullmatch(
+            r"(%\w+) = sea\.alloca (%\w+) align \d+ \[\d+\] : i32 -> .*", s_
+        ):
+            if m.group(2) in consts and consts[m.group(2)] >= 0:
+                sizes[m.group(1)] = consts[m.group(2)]
+        elif m := re.fullmatch(r"(%\w+) = sea\.select %\w+, (%\w+), (%\w+) : .*", s_):
+            if m.group(2) in sizes and m.group(3) in sizes:
+                sizes[m.group(1)] = min(sizes[m.group(2)], sizes[m.group(3)])
+        elif m := re.fullmatch(
+            r"(%\w+) = sea\.icmp (ule|uge), (%\w+), (%\w+) : i32", s_
+        ):
+            k = consts.get(m.group(4))
+            if k is not None and 0 <= k < (1 << 31):
+                icmps[m.group(1)] = (m.group(3), m.group(2), k, len(out))
+        elif m := re.fullmatch(r"(%\w+) = sea\.and (%\w+), (%\w+) : i1", s_):
+            ands[m.group(1)] = (m.group(2), m.group(3))
+        elif m := re.fullmatch(r"sea\.assume (%\w+)", s_):
+            assumed(m.group(1))
+        elif m := re.fullmatch(
+            r"(%\w+) = sea\.ptr\.add (%\w+), (%\w+) : ([^,]+), i32", s_
+        ):
+            p, b, o, ty = m.groups()
+            idx, span = o, None  # the index and the range of s * idx
+            if o in consts:
+                k = consts[o]
+                s = rng.choice([x for x in strides if k % x == 0] or [1])
+                if s != 1:
+                    idx, cl = new_const(k // s, indent)
+                    out.append(cl)
+                span = (k, k)
+            elif hi.get(o):
+                if o in chosen:
+                    s = chosen[o]
+                else:
+                    h, at = hi[o]
+                    least = max(1, lo.get(o, 0))
+                    s = rng.choice(
+                        [x for x in strides if x == 1 or (x > 0 and h // x >= least)]
+                        or [1]
+                    )
+                    chosen[o] = s
+                    if s != 1:  # tighten the bound: o <=u H / s
+                        hx, cl = new_const(h // s, indent)
+                        icmp = out[at]
+                        out[at] = (
+                            f"{indent}{cl.strip()}\n"
+                            + icmp[: icmp.rindex(", ")]
+                            + f", {hx} : i32"
+                        )
+                        hi[o] = (h // s, at)
+                span = (s * lo.get(o, 0), s * hi[o][0])
+            else:
+                s = 1
+            holds = s > 0 and span is not None and b in sizes
+            holds = holds and 0 <= span[0] and span[1] <= sizes[b]
+            flag = (
+                rng.choice(["", " inbounds", " nuw"]) if holds or not in_bounds else ""
+            )
+            out.append(
+                f"{indent}{p} = sea.ptr.index {b} [{idx}] "
+                f"strides [{s}] offset 0{flag} : {ty}, i32"
+            )
+            continue
+        out.append(line)
+    return "\n".join(out)
 
 
 def gen(rng, any_access, wide=False, cells=False, violate=False):
@@ -1450,16 +1557,18 @@ def main():
         "--ptr-index",
         action="store_true",
         help="write each ptr.add as the same address by "
-        "sea.ptr.index (stride 1, a random promise: none, "
-        "inbounds or nuw; docs/design/PtrIndex.md)",
+        "sea.ptr.index (a random promise, none, inbounds or nuw: "
+        "only where it holds in the in-bounds modes, any in the "
+        "violating ones; docs/design/PtrIndex.md)",
     )
     ap.add_argument(
         "--ptr-index-strides",
         default="1",
-        help="with --ptr-index: the strides to draw from, "
-        "comma-separated (default 1: the same address; "
-        "others change the program, e.g. to exercise "
-        "--seam-stride)",
+        help="with --ptr-index: the nonzero strides to draw "
+        "from, comma-separated (default 1); an index is "
+        "scaled to keep the address (a numeral by a stride "
+        "that divides it, an assumed bound tightened), "
+        "else stride 1; e.g. to exercise --seam-stride",
     )
     ap.add_argument(
         "--extra-args",
@@ -1468,6 +1577,15 @@ def main():
         "(whitespace-separated, e.g. --seam-stride)",
     )
     args = ap.parse_args()
+    try:
+        ptr_index_strides = tuple(int(x) for x in args.ptr_index_strides.split(","))
+    except ValueError:
+        ptr_index_strides = ()
+    if not ptr_index_strides or 0 in ptr_index_strides:
+        ap.error(
+            f"--ptr-index-strides: not a list of nonzero integers: "
+            f"{args.ptr_index_strides}"
+        )
     if args.accesses == "addr-forms":
         return forms_main(args)
     if not args.sea_run:
@@ -1548,7 +1666,8 @@ def main():
             text = as_ptr_index(
                 text,
                 random.Random(args.seed * 7919 + i),
-                tuple(int(x) for x in args.ptr_index_strides.split(",")),
+                ptr_index_strides,
+                in_bounds,
             )
         path = os.path.join(workdir, f"fuzz-seam-{args.seed}-{i}.mlir")
         with open(path, "w") as f:

@@ -51,6 +51,7 @@ llvm_config.add_tool_substitutions(
         "sea-small-arith-test",
         "sea-join-cases-test",
         "sea-int-ranges-test",
+        "sea-diff-decider-test",
     ],
     [sea_tools_dir],
 )

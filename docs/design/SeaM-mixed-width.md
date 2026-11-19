@@ -19,8 +19,8 @@ possible, while allowing narrow and wide operations to share one memory.
 Two ways to avoid byte-granular memory today:
 
 1. Per memory: `sea-widen-memory` (`sea-vc --widen-memory=8`) gives a byte
-   memory 8-byte cells when every access to it is a whole aligned word
-   (lib/Transforms/WidenMemory.cpp). SeaHorn has one word size per job,
+   memory the largest cells of 8, 4 or 2 bytes for which every access to
+   it is a whole aligned word (lib/Transforms/WidenMemory.cpp). SeaHorn has one word size per job,
    chosen by hand (`--horn-bv2-word-size`, per-job yaml in
    verify-c-common); ours is chosen per memory, by use. It changes the
    array's cell sort, so it also saves at the solver.

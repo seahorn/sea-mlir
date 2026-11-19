@@ -101,6 +101,59 @@ the form equals the index for every assignment. Then:
   string_eq_ignore_case 1169 -> 617 constraints, linked_list_swap_contents
   1015 -> 108.
 
+### The difference decider
+
+`include/sea/Expr/DiffDecider.hh` (ranges: `include/sea/Expr/BvRange.hh`;
+tests `unittests/DiffDecider`, `test/Expr/diff-decider.test`); on by
+default, `--ack-decider=false` off. It runs on the pairs the tests above
+leave, before the stride rule, on the index the lowering compares and at
+its width: the w-bit indices (a narrowed read's index is `base +
+zext(low)`), and the k-bit offsets of two narrowed reads of one object. A
+NEVER at 64 bits is not one at k bits: offsets 0 and 2048 differ at 64
+bits and are equal at k = 11.
+
+For two terms a, b it answers NEVER (never equal: no constraint), ALWAYS
+(always equal: counted, the constraint is kept) or UNKNOWN, with the
+premise used: none, or LAYOUT (the object constants replaced by their
+numerals, the conjuncts `obj.k = <numeral>` of the query, so the drop is
+exact for the query as given). The difference `D = a - b` is a linear form
+`sum s_i x_i + c` over w bits; each atom x_i has an interval of integer
+representatives (BvRanges, exact: numerals, zext, sext, concat, extract,
+bvand, bvor, bvurem, bvudiv, shifts by a numeral, bvadd / bvsub / bvneg /
+bvmul by a numeral without reduction, ite as the hull; everything else the
+full range at its width). As an integer D lies in `[lo, hi]` and is
+congruent to `c` modulo `g = gcd(s_i)`; `a = b` iff `D = 0 (mod 2^w)`.
+Classes (counted by the weakest a pair needed):
+
+- residue: `c` is not a multiple of `gcd(g, 2^w)` (also: no atom, c != 0);
+- interval: no multiple of `2^w` in `[lo, hi]`;
+- congruence: no multiple `m` of `2^w` in `[lo, hi]` with `m = c (mod g)`;
+- signed: the two above with the signed representatives of the atoms
+  (`sext(x)` read as the signed x, negative numerals) instead of their
+  unsigned values: an nki tensor index `o + c sext(x) + K`, where the
+  unsigned reading of the sext spans 2^w.
+
+Leaves. The unsplit forms are tested first (an ite is an atom; an ite common
+to both indices cancels), then leaf by leaf: each index as the set of
+linear forms of its leaves through ite, bvadd and bvsub, each leaf with the
+ite conditions it was taken under; a combination that takes one condition
+(the same node) both ways is infeasible and dropped. NEVER if every
+feasible leaf pair is NEVER. Splitting is not monotone, so both are tried.
+Budgets (`--ack-decider-leaves`, default 256 leaves per node, else that
+node is one leaf; `--ack-decider-leaf-pairs`, default 16384 leaf pairs per
+read pair, else no split): a first guess (untuned). Each test runs
+first without the layout values, then with them.
+
+A wrong NEVER is not a wrong unsat: dropping a constraint only weakens the
+lowered query, and a sat model that puts two dropped reads at one index
+with different cells is caught by the model check below
+(`vc.ackermann-inconsistent`, status 2).
+
+Counted `vc.ackermann-decider-pairs` (dropped), by class `-residue`,
+`-interval`, `-congruence`, `-signed`; of them `-layout` (premise LAYOUT)
+and `-split` (decided leaf by leaf); `-always` (kept); `-budget`
+(undecided pairs on which a budget was hit).
+
 One more drop, on by default (`--ack-stride=false` turns it off): the stride rule (--ack-stride, docs/design/PtrIndex.md section 5): a pair
 of reads whose every address was a promised GEP node (inbounds / nusw /
 nuw) over one base, whose integer offsets can never be equal (the gcd of
@@ -116,16 +169,131 @@ why the rest were not (`-stride-not-eligible`, `-other-base`, `-divides`).
 On vcc hash_table_eq (seam-wide, yices): 95104 -> 43712 constraints, solve
 54 -> 26 s.
 
-No other pair is dropped. In particular pointers into different objects
-(`obj.a + 8` vs `obj.b + 8`) keep their constraint (a possible extension,
-with the same argument: a drop never makes unsat unsound).
+One more, off by default: the ownership drop (`--ack-own`, below), on the
+pairs every rule above leaves. No other pair is dropped. Without
+`--ack-own`, pointers into different objects (`obj.a + i` vs `obj.b + j`)
+whose offsets nothing bounds keep their constraint.
 (Possible extension, not done: drop pairs SeaM decided different, with the
 premise stated and reported as for the rewriter.)
 
+### The ownership drop (`--ack-own`)
+
+Status: implemented, off by default. It rests on A-INB and on A-OWN, neither
+of which `--seam` assumes by itself (its premises are A-SEP, A-NULL and
+A-NOWRAP); they are used only when this switch is on, and counted.
+
+**A-OWN (ownership):** no access through one object touches another
+object's cells, reads included. A-SEP is stated for write / write and write
+/ read pairs (SeaM.md, "Soundness stance"); an Ackermann pair is two reads,
+which A-SEP does not separate: two reads through a and b past their ends can
+meet in a gap cell. A-SEP does not imply A-OWN; A-INB of every access does
+(placement's objects are disjoint), so the bounds check of the program that
+discharges A-INB discharges A-OWN too.
+
+The rule. A read index is in object a when every address the selects at it
+had before the boundary (`AccessOrigins`, or every leaf of an ite of
+addresses, a pointer phi) is a pointer into a, a registered object of
+nonzero size. Not in an object: an index with a select of a shadow memory
+(keyed by object identity, not an access), more than 8 addresses, an
+address with no view or a view of no registered object (a loaded pointer),
+leaves in two objects, size 0. A read the lowering merged from several index
+terms is in a only if every one of them is. Two reads in different objects a
+and b get no constraint: under the A-INB of the access the read in a stands
+for, its index is a cell of a, and under A-OWN the read through b does not
+touch a cell of a, so the indices differ. Two reads of one object, or with a
+read in no known object, keep their constraint.
+
+Unlike `--narrow-offsets`, which takes only a load's own reads (its rewrite
+of the index needs the use lemma's one case), the drop also takes the selects
+the boundary made (`vc.narrow-skip-not-own`, `-shared-boundary` there): it
+does not change an index, it only needs the index to be a cell of its object
+whenever the read's value matters. Which A-INB each kind of select rests on:
+
+- a load's own read (a byte of `[q, q + units)` for a load at q): the A-INB
+  of that load;
+- store-map expansion (`ite(q = s, v, select(M, q))`, a load reading through
+  stores the boundary expands) and the reads of a memhavoc array or of a
+  memory operation's destination outside its range: the select is at the
+  load's own address q; the A-INB of the load;
+- wide expansion (`--seam-wide`, the bytes `q + k`, k < units, of a wide
+  load): the A-INB of the wide load, whose access covers them;
+- a memory operation's source read (`memmove` / `mcopy`: `select(M, s + (p -
+  d))`, chosen when the read address p is in the destination range `[d, d +
+  len)`): the A-INB of the operation's source access, `[s, s + len)` in the
+  source object; when the guard holds, `s + (p - d)` is a byte of it. The
+  view of the index (base s's object) is that access's provenance.
+
+In each case the value of the select matters only where the access that made
+it executes and its guard holds (the same argument SeaM's rewrites of a load
+use); then its index is a cell of the object. Where it does not, the index is
+unconstrained and may meet another object's read: the model check below
+catches that (no answer). `vc.ack-own-indices` counts the indices in one
+object, `vc.ack-own-boundary-indices` those of them with a select the
+boundary made.
+
+Where: after every other rule (the exact drops, the decider and the stride
+rule), on the index the lowering compares (with `--narrow-offsets` too: two
+narrowed reads of different objects are compared at w bits, and the drop
+applies to them). It needs the premises on (`vc.ack-own: off-no-premises`
+under `--seam-premises=0` or the out-of-object fallback) and the lowering
+(`off-no-ackermann`).
+
+Soundness. Unsat: dropping a constraint only weakens the lowered query, so
+an unsat holds with no premise at all. Sat: `AckermannModel` compares every
+read with the first read at its index value (Model reconstruction, below).
+A model that puts two reads whose constraint this rule dropped at one index
+with different cells breaks the A-INB of an access or A-OWN, or puts a read
+whose access does not execute (or whose guard is false) at another object's
+cell; it is counted `own-broken=` on the `vc.ackermann-model:` line and in
+`inconsistent=`. A model in which no dropped pair collides is a model of the
+original query. A colliding one is not, but its counterexample may still be
+a run of the program (counterexamples are runs):
+
+- if every inconsistency of the model is such a pair (`inconsistent =
+  own-broken`) and the replayed run fails the assertion with every value
+  validated (`replay: assert-failed`, `mismatches=0`), the answer is that
+  run: sat, status 0, `own-excused=<n>` on the `vc.ackermann-model:` line
+  and the warning `vc.ack-own-collision-excused`. The colliding reads are
+  ones the run does not make (a load that does not execute, a memory
+  operation's source read whose guard is false), or validation would have
+  seen the cell differ;
+- otherwise `own-excused=0`, error `vc.ackermann-inconsistent`, status 2:
+  the replay does not fail the assertion, a value mismatches, the model has
+  another inconsistency (a lowering bug), or under `--ptr-companion=check`
+  (its claim is not an assertion failure). A replay that leaves an object
+  takes precedence (status 4, `vc.seam-inb-spurious`), as do the other
+  replay errors.
+
+Every sat of `sea-vc` replays (no switch turns the replay off). Under
+`--reach` the model hook does not see the replay's verdict: a collision
+there stays status 2. The run is not repeated without the rule (unlike the
+stride rule).
+
+Accounting:
+- No `assume.*` line: an unsat answer needs no premise (dropping constraints
+  only adds models). A-INB of one read and A-OWN matter for the sat
+  answers, which the replay check and the `own-broken` / excused handling
+  cover; the dropped pairs are counted by `vc.ackermann-own-pairs`.
+- `vc.ackermann-own-reads` (reads in one known object), `-own-pairs`
+  (dropped), `-own-same-object` (two reads of one object, kept),
+  `-own-not-eligible` (a read in no known object, kept); the last two count
+  the pairs that reach the rule.
+
+Measured (`--lower --seam --ack-own`, z3, one run each): nki
+`sweep-scatter-N2-D5-K3-pmax2-fmax1-good` 2442 pairs dropped, 406
+constraints left (2848 without the switch), unsat as without it.
+Of its 262 read indices 242 are selects the boundary made (the job has 21
+memmoves); with a load's own reads only the rule dropped nothing. Its sat
+siblings `-mut-src-k0`, `-mut-drop-existing`, `-nopre-range`,
+`-nopre-unique` replay and validate with `own-broken=0`; `-mut-store-d0`
+replays and validates too, but its model puts 6 dropped pairs at one index
+(memmove source reads whose guard is false, indices far outside every
+object): excused, sat with `own-excused=6`.
+
 Reported (`vc.ackermann-*`, with `--brunch-stats` as BRUNCH_STAT):
 arrays lowered / kept, distinct reads, pairs = sum of n(n-1)/2, numeral,
-offset, residue and leaf pairs, constraints added (= pairs - numeral -
-offset - residue - leaf pairs).
+offset, residue, leaf, decider and stride pairs, constraints added (= pairs
+minus the dropped ones).
 
 The point of the lowering is that no solver has to Ackermannize (z3 does it
 only below its lemma limit, else falls back to its SMT engine); its size is
@@ -231,8 +399,8 @@ drops), with one addition: two narrowed reads of one object compare
 `base + zext(t_k) = base + zext(t_l)`, which holds iff `t_k = t_l`; the
 pair gets the k-bit constraint `t_k = t_l -> r_k = r_l`, after the exact
 drops are tried on the k-bit forms (same symbolic part with different
-numerals modulo 2^k, residues, leaves). A pair with one narrowed read and
-another (a read of another object, or one not eligible) keeps a w-bit
+numerals modulo 2^k, residues, leaves, the difference decider at k bits). A
+pair with one narrowed read and another (a read of another object, or one not eligible) keeps a w-bit
 equality, over i'. The stride rule is not applied to a narrowed read.
 
 With `--vc-defs`, a narrowed read's index sum is its k-bit offset
@@ -415,6 +583,159 @@ without and with `--narrow-offsets`; z3 5.3.3 on the `--smt2` dumps
   every read is narrowed once ites of addresses in one object are taken.
 - Yices and Bitwuzla: not measured yet.
 
+## Lazy constraints (`--ack-relax`)
+
+Status: implemented, off by default; a diagnosis mode. The eager lowering
+above stays the default. The mode asks which constraints an answer needs;
+it is not a replacement for the eager constraints.
+
+`--ack-relax=<selector>`; `include/sea/Expr/AckRelax.hh`; tests
+`test/VC/ackermann/relax.test`, `unittests/Ackermann` (`relax`).
+
+The candidates R are the constraints the lowering keeps after every drop
+above (exact, decider, stride, and the ownership drop when on). A pair a
+drop removed is never a candidate, and the loop never adds it.
+
+The selector picks the kept set K of the first round. Implemented: `all`
+(K empty, every candidate omitted). The selector is a parsed value so that
+others can be added (by cost of the index difference, by drop class, by
+location, top-N, a seeded fraction); an unknown selector is an error.
+
+Each round solves the query with K: the lowered body, the constraints in
+K, and with `--vc-defs` every definition of a named sum (the names are made
+once, on the whole query; a definition only fixes its name, so the ones
+only omitted constraints use change no answer). `--ack-relax-mode` says how:
+
+- `fresh` (default): a new solver per round, given the round's whole query.
+  Every round runs z3's tactic pipeline, so each round measures the query
+  the eager run solves with K.
+- `incremental`: one solver for every round. The first round asserts the
+  query with the K of the selector; after a sat round the broken
+  candidates are asserted into the same solver and it checks again (K only
+  grows, so no push / pop). Yices and Bitwuzla keep their state (Bitwuzla:
+  the SAT solver and its learned clauses). z3's default solver is a
+  combined one: the first check runs the tactic of the probed logic (for
+  QF_BV: the full preamble, then the SAT solver); a check after more
+  assertions runs z3's incremental solver instead, which internalizes the
+  whole query at its first use and keeps it after. Which incremental
+  solver depends on the logic: without one (the default) z3's SMT core;
+  with `--z3-logic=QF_BV` its incremental SAT solver (light
+  preprocessing, learned clauses kept); z3's `smt_strategic_solver.cpp`,
+  `combined_solver.cpp`. A query that is not QF_BV (arrays left) needs
+  another logic or none.
+
+- unsat: the answer. Omitting constraints only adds models, so an unsat of
+  the relaxed query is an unsat of the whole one. No premise.
+- sat: every omitted candidate `lhs = rhs -> r_k = r_l` is evaluated in the
+  model (each term once; `lhs`, `rhs` are the compared indices, or the k-bit
+  offsets of two narrowed reads). If none is broken, the model satisfies the
+  whole lowered query: the answer, with the usual model reconstruction,
+  replay and validation. Otherwise every broken candidate joins K and the
+  next round runs. A term without a numeral value counts as broken
+  (`unevaluated=`), which only adds a constraint.
+- unknown: the answer.
+- time: `--timeout` bounds the whole loop, not each round. Each round (and
+  the final whole-query solve of a fallback) gets what is left of the
+  budget. When it is gone, before a round or in a round that came back
+  unknown, the loop stops with `vc.ack-relax-stop: timeout`: no further
+  solve, no fallback, `result: unknown`, `solve-timeout: true`. The
+  `vc.ack-relax-*` lines are printed as for any other stop.
+  Incremental mode: the solver's own limit is set when it is made, so a
+  check after the first can still run up to the whole `--timeout` itself;
+  the loop stops between rounds when the budget is gone. Open: a limit
+  that can be changed per check (z3 and Yices can; Bitwuzla takes its
+  options at construction).
+
+Per-round policy: all broken candidates are added. Each round is a whole
+solve, so fewer rounds is the cheaper direction, and the measured broken
+sets are small. The kept set may then be larger than a minimal one.
+Not tuned; a bounded number per round is an alternative.
+
+Bound: `--ack-relax-rounds=<n>`, default 50 (untuned). After n relaxed
+solves without an answer the whole query is solved on the run's solver
+(warning `vc.ack-relax-fallback`, `vc.ack-relax-stop: rounds`, a
+`vc.ack-relax-round: fallback` line), as the stride rule's retry solves
+without the rule. Incremental: the candidates not yet asserted are
+asserted into the rounds' solver, which checks again.
+
+Model check. After a `consistent` stop every candidate holds in the model,
+so `AckermannModel` finds what it finds under the eager lowering:
+`inconsistent` can come only from pairs the stride rule or the ownership
+drop removed, and those are handled as above (the stride retry, which
+starts the rounds again; `own-broken`, `own-excused`).
+
+Backends: z3, Yices and Bitwuzla (Bitwuzla with `--ackermannize=on`, as
+for the lowering itself). Conflicts and the resource count per round are
+z3's (`conflicts` of the SMT core plus `sat conflicts`); the other backends
+report time only. Incremental on z3: z3's counts run on over the checks
+(the resource count over every check, the incremental solver's conflicts
+over its checks), and a round reports its share; `engine=` says which z3
+solver ran the check: `tactic` (the first check), `smt` (the SMT core:
+`conflicts` in its statistics), `sat` (the incremental SAT solver: `sat
+conflicts`), `incremental` (the incremental solver, its statistics name
+neither). `engine=` is inferred from z3's statistics keys; z3 omits a
+counter at 0, so `incremental` means the incremental solver had no conflict
+yet. When the incremental solver answers unknown without hitting a limit,
+z3 reruns the tactic solver (combined_solver `solver2_unknown=1`) and adds
+its statistics: that round's engine and conflicts are then not exact.
+Yices `mode=one-shot` takes no assertion after a check: refused. Not with
+`--smt2`, `--vcgen-only`, `--reach` or a split (refused). Without the
+lowering (`--ackermannize=off`, or `auto` that does not lower) the switch
+does nothing: `vc.ack-relax: off-no-ackermann`.
+
+Output: `vc.ack-relax: <selector>`, `vc.ack-relax-candidates` (|R|) with the
+other counters; after the rounds `vc.ack-relax-stop`, `-rounds`, `-kept`
+(|K| of the last relaxed solve), one `vc.ack-relax-round: <i> kept= result=
+broken= [unevaluated=] [conflicts= rlimit=] [engine=] time=` per solve, and
+`vc.ack-relax-conflicts` (z3, summed over the solves). Incremental adds
+`vc.ack-relax-mode: incremental` and `vc.ack-relax-time` (the rounds and
+the fallback, with the assertions between the checks); fresh prints
+neither (its output is what it was). `solve-time` is the time of every
+solve, in both modes (with `--timeout`: fresh at most about the timeout;
+incremental up to about twice it, see above). `--ack-relax-smt2=<file>`
+writes the query of the last solve (to measure a kept set with the solver
+binary over seeds); incremental: the assertions of the rounds' solver, the
+same constraints as the fresh query of the last K, in the order they were
+asserted.
+
+Not measured yet on the benchmark jobs.
+
+## Read-only arrays as functions (`--ro-arrays=uf`)
+
+Status: implemented, off by default (`--ro-arrays=array`). A measurement
+mode: it states the arrays the lowering would take as uninterpreted
+functions and leaves their consistency to the solver, so the eager lowering
+and `--ack-relax` can be compared with each solver's own handling of UF, and
+of arrays (the default). A read of an array that is never written is a
+function application, but a solver has to find that out from the array
+term; not every solver does, and an array solver may also reason about the
+array as a finite map.
+
+What. With the lowering off (`--ackermannize=off`, or `auto` that does not
+lower): every array constant the lowering would lower (only the array
+operand of selects, index and cell bit-vectors, no binder in the query)
+becomes a function `uf.<A>` of A's own sorts, `(declare-fun uf.<A> ((_
+BitVec m)) (_ BitVec n))` (with `--widen-memory` or `--seam-wide` the cell
+is the word), and each `select(A, i)` becomes `uf.<A>(i)`, the reads inside
+i first. No constraint is added. Arrays used otherwise stay arrays (counted
+`kept-array`). With the lowering on the arrays are lowered already and the
+arrays left are not read-only: the option does nothing
+(`vc.ro-arrays: off-ackermann`).
+
+Where. The same step as the lowering (`Ackermannizer::setUf`), at the Expr
+level after the solver boundary, so every consumer of the query sees it:
+`--smt2`, each in-process backend (z3, Yices, Bitwuzla), `--vc-defs` (the
+reads' indices are named as under the lowering). No backend has its own
+code for it. Model reconstruction is the lowering's: the reads are recorded
+with the value `uf.<A>(i_k)`, and `AckermannModel` rebuilds A from the
+values of the indices and applications in the solver's model (0 at an index
+the query does not read). `inconsistent` is 0 unless a backend's model
+evaluation is wrong. The pair rules, `--narrow-offsets`, `--ack-own` and
+`--ack-relax` need the lowering and are off here (`off-no-ackermann`).
+
+Output: `vc.ro-arrays: uf=<n> kept-array=<n> reads=<n>` (only with
+`--ro-arrays=uf`); with the default no line, and the query is unchanged.
+
 ## Model reconstruction
 
 A model of the lowered query has values for every i_k and r_k, none for A
@@ -424,8 +745,10 @@ the solver's) rebuilds A as the finite function
     F_A = { value(i_k) -> value(r_k) }   with default 0
 
 consistent by the constraints (two reads with equal index values have
-equal cell values; a pair that is not, `inconsistent`, is a lowering bug:
-sea-vc reports error `vc.ackermann-inconsistent`, status 2). Its `eval(e)`
+equal cell values; a pair that is not, `inconsistent`, is a lowering bug,
+or under `--ack-own` a model that breaks its premises (`own-broken`, above):
+sea-vc reports error `vc.ackermann-inconsistent`, status 2, unless the
+replay confirms an `own-broken`-only model, above). Its `eval(e)`
 rewrites e bottom-up: `select(A, j)` becomes `F_A(value(j))` (j rewritten
 and evaluated first), any other occurrence of A becomes the store chain of
 F_A over a constant-0 array, then the inner model evaluates the result.
@@ -447,11 +770,14 @@ an address, validation sees the address values differ.
   `--ackermannize=auto` lowers only queries with no store, so the plain
   (non-SeaM) VC and widened memories with store chains are left to the
   solver.
-- Pair reductions beyond linear forms (no ARM, no A-INB, no case split on
-  ite conditions).
+- Pair reductions beyond linear forms and the difference decider's
+  structural ranges (no ARM, no ranges from assumes, no reasoning on ite
+  conditions beyond the identity of the condition node; A-INB only under
+  `--narrow-offsets` and `--ack-own`).
 - The number of constraints is quadratic in the reads of one array with
   different symbolic parts (array_list_swap: 4753), and it is what makes
   the lowered query slower there for every solver. Fewer constraints need
   more pairs decided different: by ARM / A-INB (stated premise, as for the
   rewriter), or by a different reduction (z3-style lazy lemmas, a
-  sorting-based encoding). Not implemented.
+  sorting-based encoding). Not implemented, except the diagnosis mode
+  `--ack-relax` above (lazy constraints by whole solves).

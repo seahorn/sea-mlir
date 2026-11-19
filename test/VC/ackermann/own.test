@@ -1,0 +1,311 @@
+// The ownership drop of the Ackermann lowering (--ack-own,
+// docs/design/Ackermann.md, "The ownership drop"): two program loads' own
+// reads of two different objects get no constraint, resting on A-INB of one
+// read and A-OWN. Off by default.
+// RUN: split-file %s %t
+//
+// cross: reads of a + i, a + j and b + j, i, j < 64 (in bounds). The pair
+// (a + i, b + j) is dropped; (a + i, a + j) is one object and keeps its
+// constraint; (a + j, b + j) is decided by the layout. The sat replays and
+// the model check finds no collision.
+// RUN: sea-vc %t/cross.mlir --lower --seam --ack-own 2>&1 | FileCheck %s --check-prefix=CROSS
+// CROSS: vc.ackermann-own-reads: 3
+// CROSS: vc.ackermann-own-pairs: 1
+// CROSS: vc.ackermann-own-same-object: 1
+// CROSS: vc.ackermann-own-not-eligible: 0
+// CROSS: vc.ackermann-constraints: 1
+// CROSS: vc.ack-own: on
+// CROSS: result: sat
+// CROSS: vc.ackermann-model: {{.*}} own-broken=0
+// CROSS: replay: assert-failed
+// CROSS: validate: checked={{[0-9]+}} mismatches=0
+// Without the switch: no drop, no premise.
+// RUN: sea-vc %t/cross.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=OFF
+// OFF-NOT: vc.ackermann-own
+// OFF: vc.ackermann-constraints: 2
+// OFF-NOT: vc.ack-own
+// OFF: result: sat
+//
+// inb: assert that a + i and b + j, both in bounds, are different addresses
+// or read the same value. The dropped pair cannot meet: unsat either way.
+// RUN: sea-vc %t/inb.mlir --lower --seam --ack-own 2>&1 | FileCheck %s --check-prefix=INB
+// INB: vc.ackermann-own-pairs: 1
+// INB: vc.ackermann-constraints: 0
+// INB: result: unsat
+//
+// broken: the same without the bounds. The program reads one cell through
+// two objects (a memory-safety error): unsat without the switch. With it,
+// the dropped constraint lets the model put both reads at one index with
+// different cells; the model check reports it and the run does not end in
+// an answer (here status 4: the replay leaves an object).
+// RUN: sea-vc %t/broken.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=BROKEN-OFF
+// BROKEN-OFF: vc.ackermann-constraints: 1
+// BROKEN-OFF: result: unsat
+// RUN: not sea-vc %t/broken.mlir --lower --seam --ack-own --brunch-stats 2>&1 | FileCheck %s --check-prefix=BROKEN
+// BROKEN-DAG: vc.ackermann-own-pairs: 1
+// BROKEN-DAG: vc.ackermann-model: {{.*}} inconsistent=1 {{.*}}own-broken=1
+// BROKEN-DAG: --ack-own dropped {{.*}}[vc.ackermann-inconsistent]
+// BROKEN-DAG: BRUNCH_STAT status 4
+// The same program placed first (no abstract program to rerun): the replay
+// reads the one cell and does not fail the assertion, so nothing confirms
+// the model: status 2.
+// RUN: sea-opt %t/broken.mlir --sea-place-static -o %t/placed.mlir
+// RUN: not sea-vc %t/placed.mlir --lower --seam --ack-own --brunch-stats 2>&1 | FileCheck %s --check-prefix=PLACED
+// PLACED-DAG: vc.ackermann-model: {{.*}} own-broken=1 own-excused=0
+// PLACED-DAG: [vc.ackermann-inconsistent]
+// PLACED-DAG: BRUNCH_STAT status 2
+//
+// guard: the load of a + i runs only for i < 16; the failing path needs
+// a + i = c + j (so i >= 16, the load does not run) and a nonzero cell at
+// c + j. The path forces the index collision; the differing cell value
+// comes from the value the solver picks for the read that does not execute
+// (the pinned solvers set it to 0 while y != 0 is forced; nothing in the
+// query forces it). The replayed run fails the assertion and validates:
+// sat, status 0, with the warning.
+// RUN: sea-vc %t/guard.mlir --lower --seam --ack-own --brunch-stats 2>&1 | FileCheck %s --check-prefix=GUARD
+// GUARD-DAG: [vc.ack-own-collision-excused]
+// GUARD-DAG: vc.ackermann-model: {{.*}} own-broken=[[N:[1-9][0-9]*]] own-excused=[[N]]
+// GUARD-DAG: replay: assert-failed
+// GUARD-DAG: validate: checked={{[0-9]+}} mismatches=0
+// GUARD-DAG: BRUNCH_STAT status 0
+//
+// mcopy: the load of b + i reads a + i through a memmove: a select the
+// boundary made (not a load's own read), in a by the A-INB of the memmove's
+// source access. Its pair with the load of c + j is dropped, as is the
+// load's own read at b + i (the memmove's guard false) against c + j.
+// RUN: sea-vc %t/mcopy.mlir --lower --seam --ack-own 2>&1 | FileCheck %s --check-prefix=MCOPY
+// MCOPY: vc.ackermann-own-reads: 3
+// MCOPY: vc.ackermann-own-pairs: 2
+// MCOPY: vc.ackermann-own-not-eligible: 0
+// MCOPY: vc.ack-own-indices: 3
+// MCOPY: vc.ack-own-boundary-indices: 1
+// MCOPY: result: sat
+// MCOPY: vc.ackermann-model: {{.*}} own-broken=0
+// MCOPY: validate: checked={{[0-9]+}} mismatches=0
+//
+// Reads not in one known object keep their constraints. loaded: a load
+// through a loaded pointer (no known base) against c + j; the bytes of the
+// pointer (in a) against c + j are dropped.
+// RUN: sea-vc %t/loaded.mlir --lower --seam --ack-own 2>&1 | FileCheck %s --check-prefix=LOADED
+// LOADED: vc.ackermann-own-pairs: 8
+// LOADED: vc.ackermann-own-not-eligible: 9
+// LOADED: result: sat
+// LOADED: validate: checked={{[0-9]+}} mismatches=0
+// shadow: the load at a and is_modified(a) share the index a; the latter
+// reads the shadow memory (keyed by object identity, not an access), so the
+// index is in no object and its pair with c + j is kept. noshadow: the same
+// without is_modified: dropped.
+// RUN: sea-vc %t/shadow.mlir --lower --seam --ack-own --ackermannize=on 2>&1 | FileCheck %s --check-prefix=SHADOW
+// SHADOW: vc.ackermann-own-pairs: 0
+// SHADOW: vc.ackermann-own-not-eligible: 1
+// SHADOW: result: sat
+// SHADOW: validate: checked={{[0-9]+}} mismatches=0
+// RUN: sea-vc %t/noshadow.mlir --lower --seam --ack-own --ackermannize=on 2>&1 | FileCheck %s --check-prefix=NOSHADOW
+// NOSHADOW: vc.ackermann-own-pairs: 1
+// NOSHADOW: vc.ackermann-own-not-eligible: 0
+// NOSHADOW: result: sat
+// NOSHADOW: validate: checked={{[0-9]+}} mismatches=0
+//
+// Without the premises nothing is dropped; without --seam the flag is refused.
+// RUN: sea-vc %t/broken.mlir --lower --seam --seam-premises=0 --ack-own 2>&1 | FileCheck %s --check-prefix=NOPREM
+// NOPREM-NOT: vc.ackermann-own
+// NOPREM: vc.ack-own: off-no-premises
+// NOPREM: result: unsat
+// RUN: not sea-vc %t/broken.mlir --lower --ack-own 2>&1 | FileCheck %s --check-prefix=NOSEAM
+// NOSEAM: --ack-own needs --seam
+
+//--- cross.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @cross {
+  %m = sea.mem.nondet "m" [0] : !m
+  %n = sea.const 64 : i64
+  %a = sea.malloc %n align 8 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %n align 8 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64
+  %j = sea.nondet "j" [4] : i64
+  %ilt = sea.icmp ult, %i, %n : i64
+  sea.assume %ilt
+  %jlt = sea.icmp ult, %j, %n : i64
+  sea.assume %jlt
+  %pi = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %b, %j : !sea.ptr<64>, i64
+  %pk = sea.ptr.add %a, %j : !sea.ptr<64>, i64
+  %x = sea.load %m[%pi] : !m -> i8
+  %y = sea.load %m[%pj] : !m -> i8
+  %z = sea.load %m[%pk] : !m -> i8
+  %e1 = sea.icmp eq, %x, %y : i8
+  %e2 = sea.icmp eq, %x, %z : i8
+  %ok = sea.or %e1, %e2 : i1
+  sea.assert %ok
+  sea.halt
+}
+//--- inb.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @inb {
+  %m = sea.mem.nondet "m" [0] : !m
+  %n = sea.const 64 : i64
+  %a = sea.malloc %n align 8 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %n align 8 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64
+  %j = sea.nondet "j" [4] : i64
+  %ilt = sea.icmp ult, %i, %n : i64
+  sea.assume %ilt
+  %jlt = sea.icmp ult, %j, %n : i64
+  sea.assume %jlt
+  %pi = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %b, %j : !sea.ptr<64>, i64
+  %x = sea.load %m[%pi] : !m -> i8
+  %y = sea.load %m[%pj] : !m -> i8
+  %same = sea.ptr.cmp eq, %pi, %pj : !sea.ptr<64>
+  %e = sea.icmp eq, %x, %y : i8
+  %t = sea.const 1 : i1
+  %ns = sea.xor %same, %t : i1
+  %ok = sea.or %ns, %e : i1
+  sea.assert %ok
+  sea.halt
+}
+//--- broken.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @broken {
+  %m = sea.mem.nondet "m" [0] : !m
+  %n = sea.const 64 : i64
+  %a = sea.malloc %n align 8 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %n align 8 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64
+  %j = sea.nondet "j" [4] : i64
+  %pi = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %b, %j : !sea.ptr<64>, i64
+  %x = sea.load %m[%pi] : !m -> i8
+  %y = sea.load %m[%pj] : !m -> i8
+  %same = sea.ptr.cmp eq, %pi, %pj : !sea.ptr<64>
+  %e = sea.icmp eq, %x, %y : i8
+  %t = sea.const 1 : i1
+  %ns = sea.xor %same, %t : i1
+  %ok = sea.or %ns, %e : i1
+  sea.assert %ok
+  sea.halt
+}
+//--- guard.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @guard {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %z8 = sea.const 0 : i8
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %c = sea.malloc %c16 align 8 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64
+  %j = sea.nondet "j" [4] : i64
+  %jlt = sea.icmp ult, %j, %c16 : i64
+  sea.assume %jlt
+  %pa = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %pc = sea.ptr.add %c, %j : !sea.ptr<64>, i64
+  %y = sea.load %m[%pc] : !m -> i8
+  %lt = sea.icmp ult, %i, %c16 : i64
+  sea.cond_br %lt, ^t, ^e
+^t:
+  %x = sea.load %m[%pa] : !m -> i8
+  %o1 = sea.const 1 : i8
+  %xo = sea.or %x, %o1 : i8
+  %okt = sea.icmp ne, %xo, %z8 : i8
+  sea.br ^j(%okt : i1)
+^e:
+  %same = sea.ptr.cmp eq, %pa, %pc : !sea.ptr<64>
+  %yz = sea.icmp eq, %y, %z8 : i8
+  %t1 = sea.const 1 : i1
+  %ns = sea.xor %same, %t1 : i1
+  %oke = sea.or %ns, %yz : i1
+  sea.br ^j(%oke : i1)
+^j(%ok : i1):
+  sea.assert %ok
+  sea.halt
+}
+//--- mcopy.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @mcopy {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c16 align 8 [2] : i64 -> !sea.ptr<64>
+  %c = sea.malloc %c16 align 8 [3] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [4] : i64
+  %j = sea.nondet "j" [5] : i64
+  %c16b = sea.const 16 : i64
+  %ilt = sea.icmp ult, %i, %c16b : i64
+  sea.assume %ilt
+  %jlt = sea.icmp ult, %j, %c16b : i64
+  sea.assume %jlt
+  %m1 = sea.memmove %m[%b], %m[%a], %c16 inplace : !m
+  %pb = sea.ptr.add %b, %i : !sea.ptr<64>, i64
+  %x = sea.load %m1[%pb] : !m -> i8
+  %pc = sea.ptr.add %c, %j : !sea.ptr<64>, i64
+  %y = sea.load %m[%pc] : !m -> i8
+  %ok = sea.icmp eq, %x, %y : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- loaded.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @loaded {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %c = sea.malloc %c16 align 8 [2] : i64 -> !sea.ptr<64>
+  %j = sea.nondet "j" [3] : i64
+  %jlt = sea.icmp ult, %j, %c16 : i64
+  sea.assume %jlt
+  %p = sea.load %m[%a] : !m -> !sea.ptr<64>
+  %x = sea.load %m[%p] : !m -> i8
+  %pc = sea.ptr.add %c, %j : !sea.ptr<64>, i64
+  %y = sea.load %m[%pc] : !m -> i8
+  %ok = sea.icmp eq, %x, %y : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- shadow.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @shadow {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %c = sea.malloc %c16 align 8 [2] : i64 -> !sea.ptr<64>
+  %j = sea.nondet "j" [3] : i64
+  %jlt = sea.icmp ult, %j, %c16 : i64
+  sea.assume %jlt
+  %k = sea.nondet "k" [4] : i64
+  %v = sea.const 1 : i8
+  %pk = sea.ptr.add %c, %k : !sea.ptr<64>, i64
+  %m1 = sea.store %m[%pk], %v inplace tracked : !m, i8
+  %mod = sea.mem.is_modified %m1[%a] : !m
+  %x = sea.load %m1[%a] : !m -> i8
+  %pc = sea.ptr.add %c, %j : !sea.ptr<64>, i64
+  %y = sea.load %m1[%pc] : !m -> i8
+  %e = sea.icmp eq, %x, %y : i8
+  %ok = sea.or %e, %mod : i1
+  sea.assert %ok
+  sea.halt
+}
+//--- noshadow.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @noshadow {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %c = sea.malloc %c16 align 8 [2] : i64 -> !sea.ptr<64>
+  %j = sea.nondet "j" [3] : i64
+  %jlt = sea.icmp ult, %j, %c16 : i64
+  sea.assume %jlt
+  %k = sea.nondet "k" [4] : i64
+  %v = sea.const 1 : i8
+  %pk = sea.ptr.add %c, %k : !sea.ptr<64>, i64
+  %m1 = sea.store %m[%pk], %v inplace tracked : !m, i8
+  %x = sea.load %m1[%a] : !m -> i8
+  %pc = sea.ptr.add %c, %j : !sea.ptr<64>, i64
+  %y = sea.load %m1[%pc] : !m -> i8
+  %e = sea.icmp eq, %x, %y : i8
+  %ok = sea.or %e, %e : i1
+  sea.assert %ok
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
