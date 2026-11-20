@@ -12,8 +12,9 @@
 //
 // Fresh: the memhavoc's pointer comes only from allocations (sea.alloca /
 // sea.malloc, through ptr.add, select and block arguments) or null (a
-// havoc of null touches nothing), and for each such allocation A the
-// memory chain back from the memhavoc's memory operand starts at a
+// havoc of null touches nothing under --memhavoc-null=noop, the default;
+// under =error a maybe-null memhavoc is kept), and for each such allocation A
+// the memory chain back from the memhavoc's memory operand starts at a
 // sea.mem.nondet (a sea.mem.const fixes the object's contents: its
 // memhavoc is not a no-op) and no update on it may write A: an update
 // that happens before A on every path (it properly dominates A, or A is
@@ -54,6 +55,9 @@
 //     reports them (assume.a-sep), also with
 //     --seam-premises=0. A separate memory-safety (bounds) check of the
 //     program discharges A-INB, which implies A-SEP.
+//   Once: a memhavoc whose block can reach itself in the CFG (a loop) may
+//     run more than once; the soundness argument assumes one run per
+//     execution, so such a memhavoc is kept.
 //   Null: a pointer that may be null itself (through select and block
 //     arguments; null + k is not null, and a memhavoc of it is kept) follows
 //     --memhavoc-null. Under noop (the default) a memhavoc of null touches
@@ -485,6 +489,10 @@ void DropFreshMemHavocPass::runOnOperation() {
     // --memhavoc-null=error: a memhavoc of null is an error, not a no-op;
     // it stays so the run on null keeps it
     if (mayBeNull && !memhavocNullNoop)
+      continue;
+    // a memhavoc that may run more than once (its block reaches itself)
+    // stays: the values two runs see can differ, the drop makes them equal
+    if (before.reaches(op->getBlock(), op->getBlock()))
       continue;
     bool allFresh = true;
     for (Operation *alloc : allocs) {
