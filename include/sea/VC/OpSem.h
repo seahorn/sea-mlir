@@ -352,8 +352,9 @@ private:
   mlir::LogicalResult execRangeOp(mlir::Operation &op, OpSemContext &ctx);
   /// With SeaM, a range op of a byte memory as one term (MemOps.hh).
   void execRangeTerm(mlir::Operation &op, mlir::Value len, OpSemContext &ctx);
-  /// A-INB bookkeeping of the range [d, d + n) of a memory operation.
-  void accessRange(expr::Expr d, expr::Expr n, OpSemContext &ctx);
+  /// A-INB bookkeeping of the range [d, d + n) of a memory operation;
+  /// \p write: the range is written (not a memmove's source).
+  void accessRange(expr::Expr d, expr::Expr n, bool write, OpSemContext &ctx);
 
   /// select / store as the VC encodes them: with SeaM, rewritten.
   /// \p units is the size of the access in address units.
@@ -365,8 +366,9 @@ private:
   /// A-INB condition of the access, unless it is an access of a shadow
   /// memory (\p mem; SeaM-null.md, "Shadow memories": keyed by object
   /// identity, not a program access, so A-INB says nothing about it).
+  /// \p write: a store (the mirror check matches kinds).
   expr::Expr accessAddr(expr::Expr mem, expr::Expr ptr, uint64_t units,
-                        OpSemContext &ctx);
+                        bool write, OpSemContext &ctx);
 
   /// the trail context of a memory access of the op being executed
   void trailAccess(const char *kind, uint64_t units);
@@ -397,7 +399,7 @@ private:
   struct OutOfObject {
     std::string loc, kind;
     std::string reason; ///< the first kInbViolationNotes only
-    bool write;         ///< not a load (a memmove's source counts as one)
+    bool write;         ///< a store or a written range (not a memmove's source)
     expr::seam::OutOfObjectSpans spans;
     expr::seam::Landing landing = expr::seam::Landing::Gap;
     std::string with; ///< Shared: the location of the other access
@@ -405,9 +407,10 @@ private:
   std::vector<OutOfObject> oob;
   bool oobClassified = false;
   /// records a static out-of-object access (a definite A-INB violation)
-  /// with its placement facts \p spans (\p loc, the access \p kind, the
-  /// reason for the first ones)
-  void noteInbViolation(mlir::Location loc, llvm::StringRef kind,
+  /// with its placement facts \p spans (\p loc, the access \p kind,
+  /// \p write: it writes (a read and a read never break A-SEP), the reason
+  /// for the first ones)
+  void noteInbViolation(mlir::Location loc, llvm::StringRef kind, bool write,
                         expr::seam::OutOfObjectSpans spans,
                         llvm::function_ref<std::string()> reason);
   /// the pairwise step: each access's Landing (seam::Landing)

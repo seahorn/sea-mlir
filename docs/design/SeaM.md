@@ -212,8 +212,8 @@ classifies each one by where it lands in the placement
   executes);
 - `shared`: a span lands in a gap cell that an out-of-object access through
   another provenance also reaches, one of the two a write (A-SEP fails if
-  both execute; a load and a load do not break it). A-SEP is pairwise, so
-  "lands in no object" is not enough;
+  both execute; a read and a read do not break it, and a memmove's source
+  is a read). A-SEP is pairwise, so "lands in no object" is not enough;
 - `unknown`: a symbolic offset or length, an ARM-only leaf, or a gap span
   while some access of unknown landing exists (it may reach that cell);
 - `null`: through an object of size 0 (A-NULL fails if it executes);

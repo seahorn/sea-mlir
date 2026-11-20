@@ -176,13 +176,13 @@ static std::string locText(Location loc) {
   return s;
 }
 
-void SeaOpSem::noteInbViolation(Location loc, llvm::StringRef kind,
+void SeaOpSem::noteInbViolation(Location loc, llvm::StringRef kind, bool write,
                                 seam::OutOfObjectSpans spans,
                                 llvm::function_ref<std::string()> reason) {
   OutOfObject r;
   r.loc = locText(loc);
   r.kind = kind.str();
-  r.write = kind != "load";
+  r.write = write;
   // the reason (a walk of the address) only for the notes printed
   if (++inbStaticViolations <= kInbViolationNotes)
     r.reason = reason();
@@ -196,8 +196,9 @@ void SeaOpSem::noteInbViolation(Location loc, llvm::StringRef kind,
 /// into the same gap cell break it, though each lands "in no object". So:
 ///  - Object: some span meets another object;
 ///  - Shared: a gap span meets a gap span of another access through another
-///    provenance, one of the two a write (a load and a load do not break
-///    A-SEP); both accesses are Shared, each names the other (with=);
+///    provenance, one of the two a write (a read and a read, a memmove's
+///    source included, do not break A-SEP); both accesses are Shared, each
+///    names the other (with=);
 ///  - Unknown: some leaf's span is unknown; or a gap span while some access
 ///    has an unknown leaf (it may reach that cell through any provenance);
 ///  - Null: some leaf through an object of size 0;
@@ -420,7 +421,7 @@ Expr SeaOpSem::accessPremise(const RewriteTrail &trail,
 /// (seam::Rules::outOfObjectSpans, then pairwise: classifyOutOfObject),
 /// and keeps the premises (they fail
 /// only if the access executes).
-Expr SeaOpSem::accessAddr(Expr mem, Expr ptr, uint64_t units,
+Expr SeaOpSem::accessAddr(Expr mem, Expr ptr, uint64_t units, bool write,
                           OpSemContext &ctx) {
   if (!seamMode)
     return ptr;
@@ -446,7 +447,7 @@ Expr SeaOpSem::accessAddr(Expr mem, Expr ptr, uint64_t units,
   Expr inb = seamRw->rules().inBounds(ptr, units, violated);
   if (violated)
     noteInbViolation(
-        curOp->getLoc(), curOp->getName().stripDialect(),
+        curOp->getLoc(), curOp->getName().stripDialect(), write,
         seamRw->rules().outOfObjectSpans(ptr, units),
         [&] { return seamRw->rules().explainViolation(ptr, units, false); });
   if (!isOpX<TRUE>(inb))
@@ -534,7 +535,7 @@ static Expr curIndexSort(Operation *op, ExprFactory &ef) {
 Expr SeaOpSem::memLoad(Expr mem, Expr ptr, uint64_t units, OpSemContext &ctx) {
   if (lambdaMode)
     return bind::fapp(mem, ptr);
-  ptr = accessAddr(mem, ptr, units, ctx);
+  ptr = accessAddr(mem, ptr, units, /*write=*/false, ctx);
   trailAccess("load", units);
   Expr sel = op::array::select(mem, ptr);
   if (!seamMode)
@@ -554,7 +555,7 @@ Expr SeaOpSem::memStore(Expr mem, Expr ptr, Expr val, uint64_t units,
     return mkLambda(curIndexSort(curOp, ef), [&](Expr i) {
       return mk<ITE>(mk<EQ>(i, ptr), val, bind::fapp(mem, i));
     });
-  ptr = accessAddr(mem, ptr, units, ctx);
+  ptr = accessAddr(mem, ptr, units, /*write=*/true, ctx);
   trailAccess("store", units);
   Expr st = op::array::store(mem, ptr, val);
   return seamMode ? seamRw->rewrite(st) : st;
@@ -577,7 +578,7 @@ uint64_t SeaOpSem::curAlign() const {
 Expr SeaOpSem::memLoadWide(Expr mem, Expr ptr, unsigned bits,
                            OpSemContext &ctx) {
   uint64_t bytes = bits / 8;
-  ptr = accessAddr(mem, ptr, bytes, ctx);
+  ptr = accessAddr(mem, ptr, bytes, /*write=*/false, ctx);
   trailAccess("load", bytes);
   seamRw->noteWide();
   return seamRw->rewrite(
@@ -587,7 +588,7 @@ Expr SeaOpSem::memLoadWide(Expr mem, Expr ptr, unsigned bits,
 Expr SeaOpSem::memStoreWide(Expr mem, Expr ptr, Expr val, unsigned bits,
                             OpSemContext &ctx) {
   uint64_t bytes = bits / 8;
-  ptr = accessAddr(mem, ptr, bytes, ctx);
+  ptr = accessAddr(mem, ptr, bytes, /*write=*/true, ctx);
   trailAccess("store", bytes);
   seamRw->noteWide();
   return seamRw->rewrite(op::array::wstore(mem, ptr, val, curAlign()));
@@ -1109,9 +1110,11 @@ void SeaOpSem::settleKeyed(OpSemContext &ctx) {
       bool violated = false;
       fallback(seamRw->rules().inBounds(p, 1, violated), loc);
       if (violated)
-        noteInbViolation(
-            loc, "companion", seamRw->rules().outOfObjectSpans(p, 1),
-            [&] { return seamRw->rules().explainViolation(p, 1, false); });
+        // a companion's kind is not recorded: counted as a write
+        noteInbViolation(loc, "companion", /*write=*/true,
+                         seamRw->rules().outOfObjectSpans(p, 1), [&] {
+                           return seamRw->rules().explainViolation(p, 1, false);
+                         });
     }
   for (const auto &[dv, nv, loc] : pendingKeyedRanges)
     if (!blockRanges.count({dv, nv})) {
@@ -1121,7 +1124,8 @@ void SeaOpSem::settleKeyed(OpSemContext &ctx) {
       fallback(seamRw->rules().rangeInBounds(d, n, violated), loc);
       if (violated)
         noteInbViolation(
-            loc, "companion", seamRw->rules().outOfObjectSpans(d, 0, n),
+            loc, "companion", /*write=*/true,
+            seamRw->rules().outOfObjectSpans(d, 0, n),
             [&] { return seamRw->rules().explainViolation(d, 0, true, n); });
     }
   pendingKeyed.clear();
@@ -1227,7 +1231,7 @@ bool SeaOpSem::keyedAccess() const {
          cast<MemType>(curOp->getOperand(0).getType()).isKeyed();
 }
 
-void SeaOpSem::accessRange(Expr d, Expr n, OpSemContext &ctx) {
+void SeaOpSem::accessRange(Expr d, Expr n, bool write, OpSemContext &ctx) {
   // a companion range (memset / memmove of a keyed memory) mirrors the data
   // range op, which states the condition
   if (keyedAccess()) {
@@ -1249,7 +1253,7 @@ void SeaOpSem::accessRange(Expr d, Expr n, OpSemContext &ctx) {
   bool violated = false;
   Expr inb = seamRw->rules().rangeInBounds(d, n, violated);
   if (violated)
-    noteInbViolation(curOp->getLoc(), curOp->getName().stripDialect(),
+    noteInbViolation(curOp->getLoc(), curOp->getName().stripDialect(), write,
                      seamRw->rules().outOfObjectSpans(d, 0, n), [&] {
                        return seamRw->rules().explainViolation(d, 0, true, n);
                      });
@@ -1269,7 +1273,7 @@ void SeaOpSem::execRangeTerm(Operation &op, Value lenV, OpSemContext &ctx) {
   Expr n = seamRw->rewrite(lookup(lenV, ctx));
   Expr mem = in(0);
   Expr dst = seamRw->rewrite(in(1));
-  accessRange(dst, n, ctx);
+  accessRange(dst, n, /*write=*/true, ctx);
   Expr res;
   if (isa<MemSetOp>(op)) {
     res = op::array::memSet(
@@ -1278,7 +1282,7 @@ void SeaOpSem::execRangeTerm(Operation &op, Value lenV, OpSemContext &ctx) {
   } else if (isa<MemMoveOp>(op)) {
     // the source as it was before the op: its own memory version
     Expr from = seamRw->rewrite(in(3));
-    accessRange(from, n, ctx);
+    accessRange(from, n, /*write=*/false, ctx);
     res = op::array::memCopy(mem, in(2), dst, from, n);
   } else {
     auto mh = cast<MemHavocOp>(op);
