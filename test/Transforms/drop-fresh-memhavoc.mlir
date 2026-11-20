@@ -295,5 +295,27 @@ sea.program @null_plus_k {
   sea.halt
 }
 
+// a memhavoc in a loop runs more than once: two runs may see different
+// values, so it stays
+// CHECK-LABEL: sea.program @in_loop
+// CHECK: sea.memhavoc
+sea.program @in_loop {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c1 = sea.const 1 : i64
+  %a = sea.malloc %c1 align 1 [1] : i64 -> !sea.ptr<64>
+  %z = sea.const 0 : i8
+  %t = sea.const 1 : i1
+  sea.br ^l(%z, %t : i8, i1)
+^l(%prev: i8, %first: i1):
+  %m1 = sea.memhavoc %m0[%a], %c1 [2] : !m
+  %x = sea.load %m1[%a] : !m -> i8
+  %f = sea.const 0 : i1
+  sea.cond_br %first, ^l(%x, %f : i8, i1), ^e
+^e:
+  %ok = sea.icmp eq, %prev, %x : i8
+  sea.assert %ok
+  sea.halt
+}
+
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
