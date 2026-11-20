@@ -405,6 +405,18 @@ private:
     std::string with; ///< Shared: the location of the other access
   };
   std::vector<OutOfObject> oob;
+  /// an access the static check did not flag whose address is an ite: the
+  /// pairwise step pairs the gap cells of the flagged accesses with its
+  /// leaves that are definitely outside their object (best effort,
+  /// Rules::definiteGapSpans; computed only if some flagged access has a
+  /// gap span). It is not reported itself.
+  struct MixedAccess {
+    expr::Expr addr, n; ///< n: the length of a range (units 0)
+    uint64_t units;
+    bool write;
+    mlir::Location loc;
+  };
+  std::vector<MixedAccess> mixed;
   bool oobClassified = false;
   /// records a static out-of-object access (a definite A-INB violation)
   /// with its placement facts \p spans (\p loc, the access \p kind,
@@ -413,6 +425,10 @@ private:
   void noteInbViolation(mlir::Location loc, llvm::StringRef kind, bool write,
                         expr::seam::OutOfObjectSpans spans,
                         llvm::function_ref<std::string()> reason);
+  /// records an access not flagged whose address \p addr is an ite
+  /// (MixedAccess)
+  void noteMixedAccess(expr::Expr addr, uint64_t units, expr::Expr n,
+                       bool write);
   /// the pairwise step: each access's Landing (seam::Landing)
   void classifyOutOfObject();
   expr::ExprSet inbSeen;

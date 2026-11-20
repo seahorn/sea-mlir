@@ -1569,6 +1569,49 @@ public:
     return res;
   }
 
+  /// The gap spans of the leaves of an access address that are definitely
+  /// outside their object, for an access that inBounds / rangeInBounds did
+  /// not flag (some leaf may stay in its object). A leaf counts only if its
+  /// span is known (a pointer view into an object of nonzero size, a numeral
+  /// offset, a numeral width) and does not fit in [0, size); its gap spans
+  /// are those of outOfObjectSpans for the leaf alone. Best effort, for the
+  /// pairwise step of the static report (a gap cell of a flagged access that
+  /// such a leaf also reaches through another provenance): a leaf this test
+  /// does not decide is left out.
+  std::vector<OutOfObjectSpans::Span>
+  definiteGapSpans(const Expr &addr, uint64_t units,
+                   const Expr &n = Expr()) const {
+    std::vector<OutOfObjectSpans::Span> res;
+    unsigned nw;
+    mpz_class span = mpz_class((unsigned long)units);
+    if (!units)
+      span = n && op::bv::isBvNum(n, nw) ? numVal(n) : mpz_class(0L);
+    if (span == 0)
+      return res;
+    llvm::SmallVector<Expr, 32> stack{addr};
+    std::unordered_set<Expr> seen;
+    while (!stack.empty()) {
+      Expr p = stack.pop_back_val();
+      if (!seen.insert(p).second)
+        continue;
+      if (isOpX<ITE>(p)) {
+        stack.push_back(p->arg(2));
+        stack.push_back(p->arg(1));
+        continue;
+      }
+      std::optional<PtrView> v = view(p);
+      const ObjectBase *o = v ? m_bases.lookup(v->base) : nullptr;
+      if (!o || o->size.isZero() || !op::bv::isBvNum(v->off, nw))
+        continue;
+      mpz_class size = toMpz(o->size.zext(o->size.getBitWidth() + 1));
+      if (numVal(v->off) + span <= size)
+        continue; // fits: [off, off + span) in [0, size)
+      OutOfObjectSpans s = outOfObjectSpans(p, units, n);
+      res.insert(res.end(), s.gaps.begin(), s.gaps.end());
+    }
+    return res;
+  }
+
   /// ite(c, t, e) for conditions, with ite(c, t, t) = t.
   static Expr iteCond(const Expr &c, const Expr &t, const Expr &e) {
     return t == e ? t : mk<ITE>(c, t, e);

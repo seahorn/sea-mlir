@@ -191,6 +191,11 @@ void SeaOpSem::noteInbViolation(Location loc, llvm::StringRef kind, bool write,
   oobClassified = false;
 }
 
+void SeaOpSem::noteMixedAccess(Expr addr, uint64_t units, Expr n, bool write) {
+  mixed.push_back({addr, n, units, write, curOp->getLoc()});
+  oobClassified = false;
+}
+
 /// The pairwise step of the static out-of-object report. A-SEP is pairwise:
 /// two accesses through different provenances that both leave their objects
 /// into the same gap cell break it, though each lands "in no object". So:
@@ -198,12 +203,18 @@ void SeaOpSem::noteInbViolation(Location loc, llvm::StringRef kind, bool write,
 ///  - Shared: a gap span meets a gap span of another access through another
 ///    provenance, one of the two a write (a read and a read, a memmove's
 ///    source included, do not break A-SEP); both accesses are Shared, each
-///    names the other (with=);
+///    names the other (with=). The other side of a pair may also be an
+///    access that was not flagged (its address an ite with a leaf in its
+///    object) through a leaf that is definitely outside its object
+///    (Rules::definiteGapSpans); that access is named in with=, not
+///    reported itself;
 ///  - Unknown: some leaf's span is unknown; or a gap span while some access
 ///    has an unknown leaf (it may reach that cell through any provenance);
 ///  - Null: some leaf through an object of size 0;
-///  - Gap: the rest. In-bounds accesses never reach a gap cell, so a gap
-///    access meets no other access.
+///  - Gap: the rest: no flagged access and no such leaf of another
+///    provenance reaches its cells. Best effort, not a proof that A-SEP
+///    holds: an access with a symbolic offset may reach them, and so may
+///    a leaf the test above leaves out.
 /// Only what the encoding saw: accesses that are not definite violations
 /// (a symbolic offset that may leave its object) are not in the pairs.
 void SeaOpSem::classifyOutOfObject() {
@@ -233,6 +244,36 @@ void SeaOpSem::classifyOutOfObject() {
         with[j] = oob[i].loc;
       shared[i] = shared[j] = true;
     }
+  // the definite out-of-object leaves of the accesses not flagged, only if
+  // some flagged access has a gap span (nothing to pair otherwise)
+  bool anyGap = false;
+  for (const OutOfObject &r : oob)
+    anyGap = anyGap || !r.spans.gaps.empty();
+  // the pointer views of the leaves are memoized, except in trail mode,
+  // where view() counts again (view.*): the report leaves the counters as
+  // the encoding left them
+  if (anyGap && seamRw) {
+    llvm::StringMap<uint64_t> savedRules = seamRw->stats().rules;
+    for (const MixedAccess &m : mixed) {
+      std::vector<Spans::Span> leaves =
+          seamRw->rules().definiteGapSpans(m.addr, m.units, m.n);
+      if (leaves.empty())
+        continue;
+      for (size_t i = 0; i < oob.size(); ++i) {
+        if (shared[i] || (!oob[i].write && !m.write))
+          continue;
+        bool meet = false;
+        for (const Spans::Span &a : oob[i].spans.gaps)
+          for (const Spans::Span &b : leaves)
+            meet = meet || (a.base != b.base && Spans::overlap(a, b));
+        if (meet) {
+          shared[i] = true;
+          with[i] = locText(m.loc);
+        }
+      }
+    }
+    seamRw->stats().rules = std::move(savedRules);
+  }
   for (size_t i = 0; i < oob.size(); ++i) {
     OutOfObject &r = oob[i];
     r.with.clear();
@@ -450,6 +491,8 @@ Expr SeaOpSem::accessAddr(Expr mem, Expr ptr, uint64_t units, bool write,
         curOp->getLoc(), curOp->getName().stripDialect(), write,
         seamRw->rules().outOfObjectSpans(ptr, units),
         [&] { return seamRw->rules().explainViolation(ptr, units, false); });
+  else if (isOpX<ITE>(ptr))
+    noteMixedAccess(ptr, units, Expr(), write);
   if (!isOpX<TRUE>(inb))
     inbSeen.insert(mk<AND>(ctx.getPathCond(), boolop::lneg(inb)));
   return ptr;
@@ -1257,6 +1300,8 @@ void SeaOpSem::accessRange(Expr d, Expr n, bool write, OpSemContext &ctx) {
                      seamRw->rules().outOfObjectSpans(d, 0, n), [&] {
                        return seamRw->rules().explainViolation(d, 0, true, n);
                      });
+  else if (isOpX<ITE>(d))
+    noteMixedAccess(d, 0, n, write);
   if (!isOpX<TRUE>(inb))
     inbSeen.insert(mk<AND>(ctx.getPathCond(), boolop::lneg(inb)));
 }

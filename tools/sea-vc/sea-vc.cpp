@@ -789,9 +789,12 @@ static cl::opt<OutOfObject> seamOutOfObject(
              "the seam.out-of-object lines (where each lands: another "
              "object, a gap cell another provenance also reaches (shared), "
              "unknown, null, a gap); the premises stay, so an unsat holds "
-             "for the executions that do not reach such an access (object, "
-             "shared and unknown ones break A-SEP if reached, null ones "
-             "A-NULL). "
+             "for the executions that do not reach such an access (an object "
+             "one may break A-SEP if it executes through that alternative "
+             "and the cell is also accessed through the other object, a "
+             "shared pair if both execute through the alternatives that "
+             "meet, an unknown one may; a null one breaks A-NULL if it "
+             "executes through that alternative). "
              "fallback: run again without the premises (as --seam-premises=0)"),
     cl::values(clEnumValN(OutOfObject::Report, "report",
                           "report and keep the premises (default)"),
@@ -3285,17 +3288,25 @@ OUTPUT (stdout, `key: value` lines):
                                   object on every address alternative
                                   (warning vc.seam-out-of-object), by where
                                   they land in the placement, classified
-                                  pairwise: another object (A-SEP fails if
-                                  one executes), shared (a gap cell an
-                                  out-of-object access through another
-                                  provenance also reaches, one of the two a
-                                  write: A-SEP fails if both execute),
+                                  pairwise: another object (A-SEP may break
+                                  if one executes through that alternative
+                                  and the cell is also accessed through
+                                  the other object), shared (a gap cell an
+                                  out-of-object access, or an address
+                                  alternative of another access that is
+                                  outside its object, also reaches through
+                                  another provenance, one of the two a
+                                  write: A-SEP may break if both execute
+                                  through the alternatives that meet),
                                   unknown (a symbolic offset or length, or
                                   a gap cell such an access may reach),
-                                  null (an object of size 0: A-NULL fails if
-                                  one executes), gap (a cell no other
-                                  provenance reaches: keeps A-NULL and
-                                  A-SEP, only A-INB fails). The premises
+                                  null (an object of size 0: A-NULL breaks
+                                  if one executes through that
+                                  alternative), gap (no other out-of-object
+                                  access or address alternative the check
+                                  sees reaches the cell through another
+                                  provenance; best effort, not a proof
+                                  that A-SEP holds). The premises
                                   stay: an unsat holds for the executions
                                   that reach none of the object / shared /
                                   unknown / null ones;
@@ -3309,7 +3320,10 @@ OUTPUT (stdout, `key: value` lines):
                                   or smaller than the access, ARM range
                                   outside; class object / shared / unknown /
                                   null / gap; with: for shared, the access
-                                  of another provenance in the same cell;
+                                  of another provenance in the same cell,
+                                  possibly one not listed here (an access
+                                  with one address alternative outside its
+                                  object);
                                   with --smt2 on stderr)
   seam.alias.open.<kind>: <n>     (--seam-stats: the alias questions the
                                   rewriter left to the solver, IS_OVERLAP
@@ -6529,18 +6543,22 @@ int main(int argc, char **argv) {
       else {
         what = "the premises stay";
         if (inObj + shr + unk)
-          what += "; A-SEP is broken if one that lands in another object, "
-                  "both of a shared pair, or (maybe) one of unknown landing "
-                  "executes: an unsat holds only for the executions that "
-                  "reach none of those";
+          what += "; A-SEP may break if one that lands in another object "
+                  "executes through that alternative and the cell is also "
+                  "accessed through the other object, if both of a shared "
+                  "pair execute through the address alternatives that meet, "
+                  "or if one of unknown landing executes: an unsat holds "
+                  "only for the executions that reach none of those";
         if (nul)
-          what += "; A-NULL is broken if one through null executes: an "
-                  "unsat holds only for the executions that reach none of "
-                  "those";
+          what += "; A-NULL breaks if one through null executes through "
+                  "that alternative: an unsat holds only for the executions "
+                  "that reach none of those";
         if (gap)
-          what += "; the gap ones keep A-SEP and A-NULL (no other access "
-                  "the encoding sees reaches their cells) and break A-INB "
-                  "only: the answer rests on the premises as reported";
+          what += "; no other out-of-object access or address alternative "
+                  "the check sees reaches the cells of the gap ones through "
+                  "another provenance (best effort: it does not show that "
+                  "A-SEP holds): the answer rests on the premises as "
+                  "reported";
       }
       sea::diag::warn("vc.seam-out-of-object",
                       Twine(sem.inbStaticViolationCount()) +

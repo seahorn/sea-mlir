@@ -208,27 +208,39 @@ classifies each one by where it lands in the placement
 (`Rules::outOfObjectSpans`, then pairwise over all of them,
 `SeaOpSem::classifyOutOfObject`), worst first:
 
-- `object`: a span meets another object (A-SEP fails if the access
-  executes);
-- `shared`: a span lands in a gap cell that an out-of-object access through
-  another provenance also reaches, one of the two a write (A-SEP fails if
-  both execute; a read and a read do not break it, and a memmove's source
-  is a read). A-SEP is pairwise, so "lands in no object" is not enough;
+- `object`: a span meets another object (A-SEP may break if the access
+  executes through that alternative and the cell is also accessed through
+  the other object);
+- `shared`: a span lands in a gap cell that an out-of-object access, or
+  a definite out-of-object leaf of another access, also reaches through
+  another provenance, one of the two a write (A-SEP may break if both
+  execute through the alternatives that meet; a read and a read do not
+  break it, and a memmove's source is a read). A-SEP is pairwise, so
+  "lands in no object" is not enough;
 - `unknown`: a symbolic offset or length, an ARM-only leaf, or a gap span
   while some access of unknown landing exists (it may reach that cell);
-- `null`: through an object of size 0 (A-NULL fails if it executes);
-- `gap`: cells no other out-of-object access reaches through another
-  provenance; in-bounds accesses never reach them, so A-SEP and A-NULL hold
-  and only A-INB fails.
+- `null`: through an object of size 0 (A-NULL breaks if it executes
+  through that alternative);
+- `gap`: cells that no other flagged access, and no definite
+  out-of-object leaf of another access (below), reaches through another
+  provenance. This is not a proof that A-SEP holds.
 
-The pairs cover the accesses the encoding flagged; an access with a symbolic
-offset that leaves its object is not flagged and not paired (it is covered by
-A-SEP as an assumption, like every access). Different memories are not told
-apart (conservative: a pair in two memories is reported shared). It warns
-`vc.seam-out-of-object` (saying, per class present, which premise breaks
-when what executes), names the first 8 as `seam.out-of-object-at: <loc>
-<op>: <reason> lands=<class> [with=<loc>]` (`with`: the other access of a
-shared pair) and prints
+The pairs cover the accesses the encoding flagged, and, on the other side of
+a pair only, the leaves of the accesses it did not flag (an ite address with
+some leaf in its object) whose span is known (a numeral offset and width)
+and lies outside their object (`Rules::definiteGapSpans`): a flagged access
+whose gap cell such a leaf reaches through another provenance is `shared`,
+with `with=` naming that access, which is not reported itself. An access
+with a symbolic offset that leaves its object is not flagged and not paired
+(it is covered by A-SEP as an assumption, like every access), and two
+unflagged accesses are never paired with each other: an execution where
+both leave their objects into one cell breaks A-SEP with no report.
+Different memories are not told apart (conservative: a pair in two
+memories is reported shared). It warns `vc.seam-out-of-object` (saying,
+per class present, which premise may break when what executes), names
+the first 8 as `seam.out-of-object-at: <loc> <op>: <reason>
+lands=<class> [with=<loc>]` (`with`: the other access of a shared pair)
+and prints
 
     seam.out-of-object: accesses=<n> object=<a> shared=<s> unknown=<u> null=<z> gap=<g>
 
@@ -239,10 +251,21 @@ only what is visible while encoding (`inb-ptrmem-static.mlir` is caught,
 `inb-ptrmem.mlir` with a symbolic `n` is not). So an unsat with `object`,
 `shared`, `unknown` or `null` above 0 holds only if those accesses do not
 execute; one with only `gap` accesses rests on its premises as any other
-(`out-of-object-shared.mlir` shows both).
+(`out-of-object-shared.mlir` shows both; `out-of-object-mixed-leaf.mlir`
+a gap cell shared with an ite leaf of an unflagged access).
 `--seam-out-of-object=fallback` restores the behaviour before v0.2.0: the
 run starts again without the premises (`seam.premises: off (fallback: an
 access leaves its object)`), the plain answer.
+
+What the report promises. The premise counts (`premise.a-sep` and the
+others) are the guarantee: they say which premises an answer rests on, and
+a separate check discharges them. The out-of-object report is best effort,
+a debugging aid, and true when it speaks: an access it lists leaves its
+object on every address alternative, and a class names a premise that may
+break if the access executes through the alternative it names (for A-SEP,
+only if the cell is also accessed through the other provenance). Its
+silence proves nothing: a `gap` access or an empty report does not show
+that A-SEP, A-NULL or A-NOWRAP hold.
 
 Discharging the premises is a separate memory-safety job: instrument the
 program with a bounds check before every access (the object its pointer came

@@ -4,21 +4,21 @@
 // store through a + 8 (the same cell), a load through b - 8: each access
 // lands in no object, yet two provenances write one cell, so A-SEP fails
 // when they execute: lands=shared, naming the other access, and the
-// warning says A-SEP is broken (plain: sat; --seam: unsat under a broken
+// warning says A-SEP may break (plain: sat; --seam: unsat under a broken
 // premise). @gap: the same cell through b only (--lower-opt=false keeps
 // the load): one provenance, lands=gap,
-// and the warning says the gap accesses keep A-SEP and A-NULL. @loads: two
+// and the warning claims no more than that. @loads: two
 // loads of the cell through a and b: no write, so no shared pair.
 // RUN: sea-vc %s --program=shared --lower | FileCheck %s --check-prefix=PLAIN
 // RUN: sea-vc %s --program=shared --lower --seam 2>&1 | FileCheck %s --check-prefix=SHARED
 // RUN: sea-vc %s --program=gap --lower --lower-opt=false --seam 2>&1 | FileCheck %s --check-prefix=GAP
 // RUN: sea-vc %s --program=loads --lower --seam 2>&1 | FileCheck %s --check-prefix=LOADS
 // PLAIN: result: sat
-// SHARED: Warning: 3 access(es) {{.*}}shared=3{{.*}}A-SEP is broken if {{.*}}both of a shared pair{{.*}}[vc.seam-out-of-object]
+// SHARED: Warning: 3 access(es) {{.*}}shared=3{{.*}}A-SEP may break if {{.*}}both of a shared pair{{.*}}[vc.seam-out-of-object]
 // SHARED: seam.out-of-object-at: {{.*}}out-of-object-shared.mlir:[[@LINE+19]]:{{[0-9]+}} store: {{.*}} lands=shared with={{.*}}out-of-object-shared.mlir:[[@LINE+20]]:{{[0-9]+}}
 // SHARED: seam.out-of-object: accesses=3 object=0 shared=3 unknown=0 null=0 gap=0
 // SHARED: result: unsat
-// GAP: Warning: {{.*}}gap=2); the premises stay; the gap ones keep A-SEP and A-NULL{{.*}}[vc.seam-out-of-object]
+// GAP: Warning: {{.*}}gap=2); the premises stay; no other out-of-object access{{.*}}does not show that A-SEP holds{{.*}}[vc.seam-out-of-object]
 // GAP-NOT: lands=shared
 // GAP: seam.out-of-object: accesses=2 object=0 shared=0 unknown=0 null=0 gap=2
 // LOADS: seam.out-of-object: accesses=2 object=0 shared=0 unknown=0 null=0 gap=2
