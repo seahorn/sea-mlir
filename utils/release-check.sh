@@ -134,9 +134,9 @@ echo "sat:   $(grep -E '^(result|replay|validate):' "$WORK/sat.out" | head -3 | 
 rc=$?
 [[ $rc -eq 0 ]] || { cat "$WORK/unsat.out"; fail "smoke: unsat run exit $rc"; }
 expect "$WORK/unsat.out" "^vc\.config: $PREFIX/share/sea-mlir/profiles/seam\.cfg$"
-expect "$WORK/unsat.out" '^seam\.inb: assumed '
+expect "$WORK/unsat.out" '^seam\.premises: assumed '
 expect "$WORK/unsat.out" '^result: unsat$'
-echo "unsat: $(grep -E '^(vc\.config|seam\.inb|result):' "$WORK/unsat.out" | tr '\n' ' ')"
+echo "unsat: $(grep -E '^(vc\.config|seam\.premises|result):' "$WORK/unsat.out" | tr '\n' ' ')"
 
 # the interpreter on the sat program's counterexample input
 "$BIN/sea-run" "$SRC/test/VC/print/replay.mlir" --input=4=100 > "$WORK/run.out" 2>&1 \
