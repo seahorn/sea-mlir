@@ -319,7 +319,7 @@ row lies inside the input. At the end, it compares every output element
 
 ```console
 $ sea-vc nki/gather-hw-N4D3K2-all-good.mlir --lower --seam
-tool.version: sea-mlir 0.2.0 (...)
+tool.version: sea-mlir 0.3.0 (...)
 ...
 program: @nki_gather
 ...

@@ -1,5 +1,170 @@
 # Changelog
 
+## 0.3.0
+
+A minor release: fixes to the lowering and to `--seam` change verdicts,
+and output lines and counters change (docs/Release.md, "Version numbers of
+the 0.x preview"). Triage verdict differences against v0.2.0.
+
+### Verdict changes
+- **Verdict change.** `sea-drop-fresh-memhavoc` (in `--lower`) dropped a
+  memhavoc of a fresh object that was read before it, for example the
+  second of two havocs with a read between them, and the VC answered unsat
+  for a failing program. Such a memhavoc is now kept. (#101)
+- **Verdict change.** Under `--memhavoc-null=error`, a memhavoc of a fresh
+  object whose pointer may be null is now kept, so the run on null keeps
+  its error; before, it was dropped in both modes. A memhavoc of null plus
+  an offset is also kept. (#102)
+- **Verdict change.** `--seam` separated an access whose address has an
+  absolute base (`ptr.index(from_int(16), ...)`) from other objects by
+  A-SEP with no A-INB condition behind it, a wrong unsat. The rule
+  `arm.skip` now refuses such a decision (counter `arm.skip-no-inb`). (#104)
+- **Verdict change.** With `--seam-stride`, the rule `ite.same` now keeps
+  one branch of an ite only when both branches carry the same promise;
+  before, the kept branch's `ptr.index` promise applied on the other path
+  too, a wrong unsat (counter `ite.same-promise-kept`). (#105)
+- **Verdict change.** For fat-pointer programs (`sea-lower-fat-pointers`),
+  `--seam` accepted a keyed store mirrored only by a data load and
+  separated it from another object's keyed access by A-SEP, a wrong unsat.
+  A keyed access now needs a data access of the same kind; an unmatched
+  one falls back with the warning `vc.seam-companion-unmirrored`. (#109)
+
+### Output and command-line changes
+- The `assume.*` counts move. `assume.a-sep: drop-fresh-memhavoc=` counts
+  a dropped memhavoc when any access of the memory before it may reach the
+  object, or when its range is not provably in the object; a drop of a
+  pointer that may be null counts in `assume.memhavoc-null-noop: vc sites=`
+  instead. On the vcc corpus the A-SEP count falls from 338 to 22 and 192
+  jobs now print the null line. (#101, #102)
+- New warnings: `drop-fresh-memhavoc.range` for a dropped memhavoc whose
+  range is not provably in its object (#102), `check-ptr-index.not-followed`
+  where `--check-ptr-index` stops following a pointer (#112), and
+  `vc.limit-clamped` for an rlimit above z3's 32-bit limit (#85).
+- `--seam-check-inb-premise` also checks the premises of reads decided
+  apart from an mset, mcopy or mhavoc range, and no longer reports an
+  in-bounds range destination as unrecorded. (#103)
+- The static out-of-object report (`vc.seam-out-of-object`,
+  `seam.out-of-object`) changes: a memmove source counts as a read, so a
+  read and a read in one gap cell are no longer `shared` (#106, #109); a
+  gap cell reached by an out-of-object leaf of an unflagged access lands
+  `shared`, and the `gap` text no longer claims that A-SEP holds (#107);
+  the warning names A-NULL for an access through null and A-NOWRAP for an
+  address that wraps, in any class (#108). `utils/fuzz-seam.py` reads only
+  whether the line is present.
+- Overflow predicates are printed under z3's names (`bvumul_noovfl`,
+  `bvsadd_noovfl`, ...) instead of names with a stray `b`. This changes
+  `--arith-stats`, the `vc.dag-op` stats and the `"op"` field of the
+  rewrite trail's JSONL; no reader in the repository matched the old names.
+  (#80)
+- An op the VC does not encode is the error `vc.unsupported-op` with the op
+  and its location, instead of a bare `unsupported op`. `sea-seam-export`
+  refuses an abstract program with `vc.abstract-program`, as `sea-vc`
+  does. (#82)
+- The rlimit flags (`--words-check-rlimit`, `--eq-audit-rlimit`,
+  `--seam-check-rlimit`, `--reach-rlimit`, `--split-check-rlimit`) take
+  64-bit values; before, a value above 4294967295 was refused, and through
+  the API it was truncated. (#85)
+- `--widen-memory=<k>` gives each memory the largest word size among k,
+  k/2, ..., 2 that it qualifies for, instead of k for every memory or none.
+  Queries change for `--widen-memory=8` (9 of 228 vcc jobs);
+  `--widen-memory-per-class=false` keeps one size, and `vc.widen-memory`
+  reports the classes per size. `utils/check-widen.py` follows. (#99)
+
+### New flags and features
+- The lowering folds facts, on by default and exact: uses of an i1 that a
+  dominating assume, assert or branch edge fixes (`sea-assume-fold`), and
+  integers that an equality fact fixes (#86, #87, #88). It also removes
+  edges on which no execution reaches a check (`sea-prune-edges`, #89).
+  Turn them off with `--lower-disable=assume-fold,prune-edges`; under
+  `--reach` both are off unless `--reach-fold-facts`. New lines:
+  `vc.assume-fold`, `vc.prune-edges`, `vc.assumed-branches`, and
+  `split.assumed-candidate` with `--split-candidates`.
+- Op folders fold by identities (`x & 0`, `icmp eq x, x`, `(x ^ k) ^ k`,
+  `addr.cmp` of one address, ...), and fold constants of ops with `nsw` or
+  `nuw` when the promise holds. `utils/check-semantics.py --fold` checks
+  them. (#90)
+- Ackermann: an exact decider settles read pairs whose indices are never
+  equal or always equal, so fewer constraints are emitted; on by default
+  (`--ack-decider=false` turns it off). (#95)
+- Ackermann: `--ack-own` (with `--seam`) drops the constraint of two reads
+  of different objects. It rests on A-INB and on a new premise A-OWN, both
+  counted in the `assume.*` lines. (#96)
+- Ackermann: `--ack-relax=all` solves without the constraints and adds, in
+  rounds, those a model breaks, for diagnosis; `--ack-relax-mode=incremental`
+  runs the rounds on one solver. The eager lowering stays the default.
+  (#97, #98)
+- Ackermann: `--ro-arrays=uf`, with the eager lowering off, gives the
+  solver each read-only array as an uninterpreted function. (#98)
+- Ackermann: `--narrow-offsets` compares reads of one object at the bits
+  of its size; it rests on A-INB (`assume.a-inb`). `--narrow-check` proves
+  the bound of each narrowed read. (#93)
+- `--vc-defs=inline|nest|eq|hidden` shares or names the address sums of
+  the query; the default `inline` leaves the query unchanged. `hidden`
+  helps z3 on queries with many Ackermann address equalities. (#92)
+- `--seam-check-cost` prints the rlimit count and time of each
+  `--seam-check` query, to choose `--seam-check-rlimit` from data. (#83)
+- `sea-seam-export` exports the lanes `seam-stride`, `seam-inb0-stride` and
+  `seam-wide-stride`, and nodes for every operator OpSem makes (signed
+  compares, extensions, division, bitwise ops, shifts, native multiply
+  overflow). (#84)
+- `utils/bench.py`: a job may declare `premise-class: B | C` when its
+  counterexamples may leave their object; the gate then accepts a replay
+  failure explained by a premise violation. The summary gains a
+  `premises:` line. (#78)
+- `sea-vc` prints `solver.z3-logic` when `--z3-logic` is given, next to
+  `solver.z3-tactic`. (#98)
+
+### Fixes
+- `sea-drop-fresh-memhavoc` keeps a memhavoc in a loop, which may run more
+  than once; `sea-vc` takes only loop-free programs, so no `sea-vc` query
+  changes. (#116)
+- `sea-drop-fresh-memhavoc` shows the range of the allocator's memhavoc in
+  its object through selects, block arguments and a symbolic size. (#102)
+- `sea-merge-asserts` and the replay name the failing assert after a held
+  constant assert; before, `--replay-original` could report a mismatch
+  (exit 6). (#86)
+- `--seam-words=auto` no longer asserts in the width-term expansion. A
+  constant memory widened by `--widen-memory` now passes the verifier.
+  (#99)
+- The Yices backend can apply uninterpreted functions; before, any
+  application aborted. (#98)
+- Expr: only a binary `bvsub` is a sum, and n-ary div/rem terms from z3
+  fold into binary ones. (#95)
+- `--check-align` with an alignment above 2^w no longer aborts in Debug
+  builds, and the ALIGN premise of OpSem takes its mask at the address
+  width. (#110, #115)
+- The overlap test of a range of 2^w units or more is true; before, the
+  width wrapped to 0 and the test was false. (#111)
+- The Yices backend keeps its error string alive until it is printed.
+  (#114)
+- OpSem's firing premise keeps one sort per symbol. (#81)
+- `utils/fuzz-seam.py` keeps the address when it writes a `ptr.add` as a
+  `ptr.index` with a stride other than 1. (#100)
+- Tests: the z3 memout limits of `test/VC/z3-errors.test` sit far from z3's
+  baseline allocation (#77), and `test/VC/seam/fuzz-check.test` bounds its
+  checks by rlimit instead of time (#79).
+- The build puts the unit-test drivers (`sea-*-test`) in `test-bin/`
+  instead of `bin/`, next to the tools; lit finds them there. An existing
+  build directory keeps its old copies in `bin/` until they are deleted.
+  (#117)
+- `just release-check` expects the `seam.premises:` line, renamed in
+  0.2.0, and passes each cmake argument through intact. (#118, #119)
+
+### Performance
+- `--seam` caches each node's view and does its modular arithmetic on
+  64-bit integers when the width allows; queries are unchanged. Encoding
+  of NKI gather N256 takes 25% less time. (#75)
+
+### Docs
+- Tutorials on the gate for z3's tableau pivot (`docs/tutorials/z3-pivot.md`,
+  `z3-pivot-gate.md`). (#76)
+- The rule table of the lowering's fact folds, with the argument that each
+  rule is exact (`docs/design/FactFolds.md`). (#91)
+- A playbook for a slow or timed-out VC (`docs/agents/slow-vc.md`) and a
+  SLOW OR TIMEOUT section in `sea-vc --agent`. (#94)
+- `--seam-stride` is documented as opt-in with three known wrong answers.
+  (#113)
+
 ## 0.2.0
 
 A minor release: what a verdict rests on changes (docs/Release.md, "What
