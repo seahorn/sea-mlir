@@ -101,7 +101,10 @@ replay, and `sea-vc` exits with status 4 instead of reporting it. When an
 access can be shown statically to leave its object, `sea-vc` reports it
 (`seam.out-of-object:`, with where it lands: another object, a gap cell
 another provenance also reaches (`shared`), unknown, null, a gap) and keeps the premises: the `unsat` then holds only if that access
-does not execute. `--seam-out-of-object=fallback` runs again without the
+does not execute. The report is best effort: what it says is true, but it
+does not find every access that leaves its object, so a `gap` class or no
+report at all does not show that a premise holds. The premise counts say
+what the answer rests on. `--seam-out-of-object=fallback` runs again without the
 premises instead. `--seam-check` checks each rewrite against its premises
 with the solver. It finds rewriting bugs; it does not discharge a premise.
 

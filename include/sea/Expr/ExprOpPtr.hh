@@ -619,6 +619,11 @@ private:
       return mk<EQ>(p, q);
     unsigned w = bv::width(m_tc.typeOf(p));
     ExprFactory &ef = e->efac();
+    // a range of 2^w or more units covers the whole circle (n, m >= 1); its
+    // numeral would be 0 at w bits, and k <u 0 is false
+    const mpz_class full = mpz_class(1UL) << w;
+    if (n >= full || m >= full)
+      return mk<TRUE>(ef);
     return mk<OR>(mk<BULT>(mk<BSUB>(q, p), bv::bvnum(n, w, ef)),
                   mk<BULT>(mk<BSUB>(p, q), bv::bvnum(m, w, ef)));
   }

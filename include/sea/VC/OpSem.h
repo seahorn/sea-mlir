@@ -333,6 +333,11 @@ public:
   /// classified pairwise over all of them (classifyOutOfObject): ask after
   /// the encoding.
   unsigned outOfObjectCount(expr::seam::Landing l);
+  /// The static out-of-object accesses, whatever their landing, with a leaf
+  /// through an object of size 0 (A-NULL breaks if it executes through it)
+  /// / with a leaf whose address wraps (A-NOWRAP).
+  unsigned outOfObjectNullCount() const;
+  unsigned outOfObjectWrapCount() const;
   /// The first kInbViolationNotes static out-of-object accesses, as
   /// `<file:line:col> <kind>: <reason> lands=<class>[ with=<file:line:col>]`
   /// (with: the access of another provenance a `shared` one meets; sea-vc
@@ -352,8 +357,9 @@ private:
   mlir::LogicalResult execRangeOp(mlir::Operation &op, OpSemContext &ctx);
   /// With SeaM, a range op of a byte memory as one term (MemOps.hh).
   void execRangeTerm(mlir::Operation &op, mlir::Value len, OpSemContext &ctx);
-  /// A-INB bookkeeping of the range [d, d + n) of a memory operation.
-  void accessRange(expr::Expr d, expr::Expr n, OpSemContext &ctx);
+  /// A-INB bookkeeping of the range [d, d + n) of a memory operation;
+  /// \p write: the range is written (not a memmove's source).
+  void accessRange(expr::Expr d, expr::Expr n, bool write, OpSemContext &ctx);
 
   /// select / store as the VC encodes them: with SeaM, rewritten.
   /// \p units is the size of the access in address units.
@@ -365,8 +371,9 @@ private:
   /// A-INB condition of the access, unless it is an access of a shadow
   /// memory (\p mem; SeaM-null.md, "Shadow memories": keyed by object
   /// identity, not a program access, so A-INB says nothing about it).
+  /// \p write: a store (the mirror check matches kinds).
   expr::Expr accessAddr(expr::Expr mem, expr::Expr ptr, uint64_t units,
-                        OpSemContext &ctx);
+                        bool write, OpSemContext &ctx);
 
   /// the trail context of a memory access of the op being executed
   void trailAccess(const char *kind, uint64_t units);
@@ -397,19 +404,36 @@ private:
   struct OutOfObject {
     std::string loc, kind;
     std::string reason; ///< the first kInbViolationNotes only
-    bool write;         ///< not a load (a memmove's source counts as one)
+    bool write;         ///< a store or a written range (not a memmove's source)
     expr::seam::OutOfObjectSpans spans;
     expr::seam::Landing landing = expr::seam::Landing::Gap;
     std::string with; ///< Shared: the location of the other access
   };
   std::vector<OutOfObject> oob;
+  /// an access the static check did not flag whose address is an ite: the
+  /// pairwise step pairs the gap cells of the flagged accesses with its
+  /// leaves that are definitely outside their object (best effort,
+  /// Rules::definiteGapSpans; computed only if some flagged access has a
+  /// gap span). It is not reported itself.
+  struct MixedAccess {
+    expr::Expr addr, n; ///< n: the length of a range (units 0)
+    uint64_t units;
+    bool write;
+    mlir::Location loc;
+  };
+  std::vector<MixedAccess> mixed;
   bool oobClassified = false;
   /// records a static out-of-object access (a definite A-INB violation)
-  /// with its placement facts \p spans (\p loc, the access \p kind, the
-  /// reason for the first ones)
-  void noteInbViolation(mlir::Location loc, llvm::StringRef kind,
+  /// with its placement facts \p spans (\p loc, the access \p kind,
+  /// \p write: it writes (a read and a read never break A-SEP), the reason
+  /// for the first ones)
+  void noteInbViolation(mlir::Location loc, llvm::StringRef kind, bool write,
                         expr::seam::OutOfObjectSpans spans,
                         llvm::function_ref<std::string()> reason);
+  /// records an access not flagged whose address \p addr is an ite
+  /// (MixedAccess)
+  void noteMixedAccess(expr::Expr addr, uint64_t units, expr::Expr n,
+                       bool write);
   /// the pairwise step: each access's Landing (seam::Landing)
   void classifyOutOfObject();
   expr::ExprSet inbSeen;
@@ -423,15 +447,18 @@ private:
   bool keyedAccess() const;
   /// the mirror check of a block's keyed accesses (see OpSem.cpp)
   void settleKeyed(OpSemContext &ctx);
-  /// this block's program access addresses / ranges, and its keyed
-  /// accesses waiting for a mirror
-  expr::ExprSet blockAddrs;
-  /// range ops: their (address, length) operands; a companion range op has
-  /// the data op's own Values (sea-lower-fat-pointers), whatever encoding
-  /// (term or store chain) each side gets
-  llvm::DenseSet<std::pair<mlir::Value, mlir::Value>> blockRanges;
-  std::vector<std::pair<expr::Expr, mlir::Location>> pendingKeyed;
-  std::vector<std::tuple<mlir::Value, mlir::Value, mlir::Location>>
+  /// this block's program access addresses / ranges by kind (load /
+  /// store), and its keyed accesses waiting for a mirror of their kind
+  expr::ExprSet blockLoadAddrs, blockStoreAddrs;
+  /// range ops: their (address, length) operands, written (a memset's, a
+  /// memhavoc's, a memmove's destination) / read (a memmove's source); a
+  /// companion range op has the data op's own Values
+  /// (sea-lower-fat-pointers), whatever encoding (term or store chain) each
+  /// side gets
+  llvm::DenseSet<std::pair<mlir::Value, mlir::Value>> blockReadRanges,
+      blockWriteRanges;
+  std::vector<std::tuple<expr::Expr, bool, mlir::Location>> pendingKeyed;
+  std::vector<std::tuple<mlir::Value, mlir::Value, bool, mlir::Location>>
       pendingKeyedRanges;
   /// addr.add (see OpSem.cpp)
   expr::Expr addrAdd(expr::Expr a, expr::Expr o);

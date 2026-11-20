@@ -27,10 +27,19 @@
 - Front-end annotations (`align`, and the no-wrap flags of pointer
   arithmetic) are trusted. `--check-align` and `--check-ptr-index` check
   them as separate jobs.
-- `--lower` of an abstract program removes memhavocs of fresh objects;
-  when one rests on A-SEP (an access of another object could land in the
-  object after placement), it reports `assume.a-sep:
-  drop-fresh-memhavoc=<n>`, also without `--seam`. A separate
+- `--lower` of an abstract program removes memhavocs of fresh objects
+  (nothing wrote or read the object since its allocation). A drop rests on
+  A-SEP when a run that executes the memhavoc may also access (read or
+  write, through any pointer, in any order) the memory as it was before
+  it, since after
+  placement an access of another object could reach the object's cells, or
+  when the memhavoc's range is not provably in its object; it is reported as `assume.a-sep:
+  drop-fresh-memhavoc=<n>`, also without `--seam`. The count is coarse:
+  an access that provably stays in its object counts too. The static
+  out-of-object report (`--seam`) does not see a dropped memhavoc; the
+  pass warns `drop-fresh-memhavoc.range` for one whose range it cannot
+  show in its object by a cheap syntactic check (best effort: no warning
+  is no proof; the count is what the answer rests on). A separate
   memory-safety check of the program would discharge it; sea-mlir has
   none yet.
 - Open semantics decision: `sea.memhavoc` of the null pointer is a no-op
@@ -41,9 +50,11 @@
   `interp.memhavoc-null-noop`. Only null itself: `null + k` and a non-null
   range outside its object stay errors. The VC follows the same rule: the
   lowering runs a memhavoc whose pointer may be null only when it is not
-  (`sea-guard-null-memhavoc`, `assume.memhavoc-null-noop: vc sites=<n>`).
-  With `=error` the VC havocs the cells from address 0 on, which may be
-  the first object's in the compact layout.
+  (`sea-guard-null-memhavoc`), or drops it when its object is fresh
+  (`sea-drop-fresh-memhavoc`); both count in `assume.memhavoc-null-noop:
+  vc sites=<n>`. With `=error` neither happens: the VC havocs the cells
+  from address 0 on, which may be the first object's in the compact
+  layout.
 - Address 0 is the null pointer (`addr0-is-null`). Placement puts the null
   object at address 0, so every VC of a lowered program rests on it
   (`assume.addr0-is-null: vc null-uses=<n>`), and the replays recover null
@@ -75,6 +86,15 @@
   separation.
 - `--seam-check` states every premise firing as the in-bounds conditions of
   its accesses; checks stated per premise are an open follow-up.
+- `--seam-stride` (R-STRIDE) is opt-in and has known wrong answers, an
+  `unsat` where the program can fail:
+  - It can skip a store-map entry that lies outside its object, justified
+    only by the signed reading of the no-wrap premise.
+  - It can fire after constant offsets are folded mod 2^n into a GEP's
+    byte offset, which no reading of the no-wrap premise covers.
+  - It uses a GEP promise where `--check-ptr-index` does not reach it
+    (through memory, a block argument or an integer round trip), so that check does not cover the
+    promise it relied on.
 - `--ptr-mode=address` can be much slower on code that aligns pointers by
   integer arithmetic.
 

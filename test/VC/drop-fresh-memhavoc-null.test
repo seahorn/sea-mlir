@@ -1,0 +1,66 @@
+// sea-drop-fresh-memhavoc and a pointer that may be null: the drop follows
+// --memhavoc-null. Under noop (the default) a memhavoc of null touches
+// nothing, so the drop rests on that decision and is counted with the
+// guards of sea-guard-null-memhavoc; under error the memhavoc stays.
+// RUN: split-file %s %t
+// The allocator's memhavoc (the allocation or null, the length its size):
+// dropped, counted as resting on the noop decision, not on A-SEP.
+// RUN: sea-vc %t/maybe-null.mlir --lower --print-lowered=%t/noop.low 2>&1 | FileCheck %s --check-prefix=NOOP
+// NOOP-NOT: assume.a-sep
+// NOOP: assume.memhavoc-null-noop: vc sites=1
+// RUN: FileCheck %s --check-prefix=DROPPED < %t/noop.low
+// DROPPED-NOT: = sea.memhavoc
+// Under error it stays, and nothing rests on the noop decision (--seam:
+// the array encoding refuses a symbolic length).
+// RUN: sea-vc %t/maybe-null.mlir --lower --seam --memhavoc-null=error --print-lowered=%t/error.low 2>&1 | FileCheck %s --check-prefix=ERROR
+// ERROR-NOT: assume.memhavoc-null-noop
+// RUN: FileCheck %s --check-prefix=KEPT < %t/error.low
+// KEPT: = sea.memhavoc
+// A pointer that is never null: dropped, with no count.
+// RUN: sea-vc %t/never-null.mlir --lower --print-lowered=%t/never.low 2>&1 | FileCheck %s --check-prefix=NEVER
+// NEVER-NOT: assume.a-sep
+// NEVER-NOT: assume.memhavoc-null-noop
+// NEVER: result:
+// RUN: FileCheck %s --check-prefix=DROPPED < %t/never.low
+// REQUIRES: z3
+
+//--- maybe-null.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %n = sea.nondet "n" [1] : i64
+  %c16 = sea.const 16 : i64
+  %small = sea.icmp ule, %n, %c16 : i64
+  sea.assume %small
+  %fail = sea.nondet "fail" [2] : i1
+  %null = sea.ptr.null : !sea.ptr<64>
+  sea.cond_br %fail, ^j(%null : !sea.ptr<64>), ^a
+^a:
+  %one = sea.const 1 : i64
+  %size = sea.mul %n, %one : i64
+  %p = sea.malloc %size align 16 [3] : i64 -> !sea.ptr<64>
+  sea.br ^j(%p : !sea.ptr<64>)
+^j(%q: !sea.ptr<64>):
+  %m1 = sea.memhavoc %m0[%q], %n [4] inplace : !m
+  %f = sea.nondet "f" [5] : i1
+  sea.assert %f
+  sea.halt
+}
+
+//--- never-null.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %n = sea.nondet "n" [1] : i64
+  %c16 = sea.const 16 : i64
+  %small = sea.icmp ule, %n, %c16 : i64
+  sea.assume %small
+  %p = sea.malloc %n align 16 [3] : i64 -> !sea.ptr<64>
+  %m1 = sea.memhavoc %m0[%p], %n [4] inplace : !m
+  %f = sea.nondet "f" [5] : i1
+  sea.assert %f
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

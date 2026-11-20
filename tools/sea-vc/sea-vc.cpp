@@ -212,7 +212,8 @@ enum class MemhavocNull { Noop, Error };
 static cl::opt<MemhavocNull> memhavocNull(
     "memhavoc-null",
     cl::desc("sea.memhavoc of the null pointer in an abstract program, in "
-             "the lowering (sea-guard-null-memhavoc) and the replays: "
+             "the lowering (sea-drop-fresh-memhavoc, "
+             "sea-guard-null-memhavoc) and the replays: "
              "noop (default; an open semantics decision, counted as "
              "`assume.memhavoc-null-noop: uses=<n>`, warning "
              "interp.memhavoc-null-noop) or error (a memory-safety error, "
@@ -677,7 +678,13 @@ static cl::opt<bool> seamStride(
              "with a byte offset K != 0, A-NOWRAP (only for b + size - 2^n <= "
              "K <= b, the window where in-bounds would give the same); "
              "--seam-check checks the "
-             "firings under them"),
+             "firings under them. Opt-in, with known wrong answers (an "
+             "unsat that should be sat): an entry outside its object "
+             "justified by the signed no-wrap reading; after "
+             "constant offsets are folded mod 2^n into a GEP's byte offset; a "
+             "promise used where --check-ptr-index does "
+             "not reach it (through memory, a block argument or an integer "
+             "round trip)"),
     cl::init(false));
 
 enum class AckMode { Auto, On, Off };
@@ -788,9 +795,13 @@ static cl::opt<OutOfObject> seamOutOfObject(
              "the seam.out-of-object lines (where each lands: another "
              "object, a gap cell another provenance also reaches (shared), "
              "unknown, null, a gap); the premises stay, so an unsat holds "
-             "for the executions that do not reach such an access (object, "
-             "shared and unknown ones break A-SEP if reached, null ones "
-             "A-NULL). "
+             "for the executions that do not reach such an access (an object "
+             "one may break A-SEP if it executes through that alternative "
+             "and the cell is also accessed through the other object, a "
+             "shared pair if both execute through the alternatives that "
+             "meet, an unknown one may; whatever its class, one through "
+             "null breaks A-NULL and one whose address wraps A-NOWRAP if "
+             "it executes through that alternative). "
              "fallback: run again without the premises (as --seam-premises=0)"),
     cl::values(clEnumValN(OutOfObject::Report, "report",
                           "report and keep the premises (default)"),
@@ -838,7 +849,9 @@ static cl::opt<bool> seamRowGroup(
 static cl::opt<bool> seamCheckInbPremise(
     "seam-check-inb-premise",
     cl::desc("With --seam: check that every cmp.diff-base decision's two "
-             "addresses lie in accesses whose in-bounds condition the run "
+             "addresses (and those of a read decided apart from a memset / "
+             "memmove / memhavoc range) lie in accesses whose in-bounds "
+             "condition the run "
              "recorded (counters premise.inb-checked / "
              "premise.inb-unrecorded; warning vc.inb-premise-unrecorded). "
              "Default off: the matcher is still too narrow (keyed companions, "
@@ -2683,8 +2696,10 @@ TYPICAL:
                                  #   skipped for reads at promised GEP
                                  #   nodes whose offsets never reach them
                                  #   (premise.ptr-index; --seam-check proves
-                                 #   each firing under P1-P3). Off: on vcc
-                                 #   it slows the solver (PtrIndex.md 0c)
+                                 #   each firing under P1-P3). Off: known
+                                 #   wrong unsat answers (see --help and
+                                 #   docs/reference/limitations.md), and on
+                                 #   vcc it slows the solver
   sea-vc p.mlir --ack-dump-pairs=<f>  # with the lowering on: every lowered
                                  #   read (`read <a> <k> <index> loc=<l>`)
                                  #   and every constrained pair (`pair <a>
@@ -3205,11 +3220,14 @@ OUTPUT (stdout, `key: value` lines):
   replay.original: skipped (<reason>)   (no lowering ran, a check job, or
                                   --ptr-companion=check)
   assume.memhavoc-null-noop: vc sites=<n>   (n > 0: --lower of an abstract
-                                  program guarded n memhavocs whose pointer
-                                  may be null (sea-guard-null-memhavoc): the
-                                  VC runs them only when it is not null, as
-                                  the interpreter; --memhavoc-null=error:
-                                  no guard, the VC havocs from address 0)
+                                  program guarded or dropped n memhavocs
+                                  whose pointer may be null: guarded
+                                  (sea-guard-null-memhavoc), the VC runs
+                                  them only when it is not null, as the
+                                  interpreter; dropped
+                                  (sea-drop-fresh-memhavoc), the object is
+                                  fresh; --memhavoc-null=error: neither,
+                                  the VC havocs from address 0)
   assume.memhavoc-null-noop: uses=<n>   (after replay.original or
                                   seam.inb-violation, n > 0: memhavocs of
                                   null its run executed as no-ops, an open
@@ -3244,9 +3262,13 @@ OUTPUT (stdout, `key: value` lines):
                                   discharges all three.
                                   drop-fresh-memhavoc=<m>, m > 0: --lower of
                                   an abstract program dropped m memhavocs of
-                                  fresh objects whose no-op rests on A-SEP;
-                                  also without --seam and with
-                                  --seam-premises=0, then the only field)
+                                  fresh objects whose no-op rests on A-SEP:
+                                  a run through the memhavoc may access the
+                                  memory as it was before it (any pointer,
+                                  any order), or its range is not provably
+                                  in its object; also without --seam and
+                                  with --seam-premises=0, then the only
+                                  field)
   assume.a-inb: narrow-reads=<n> narrow-pairs=<m>   (--narrow-offsets, on:
                                   n reads whose index was narrowed rest on
                                   the A-INB of their access (each stays in
@@ -3275,20 +3297,36 @@ OUTPUT (stdout, `key: value` lines):
                                   object on every address alternative
                                   (warning vc.seam-out-of-object), by where
                                   they land in the placement, classified
-                                  pairwise: another object (A-SEP fails if
-                                  one executes), shared (a gap cell an
-                                  out-of-object access through another
-                                  provenance also reaches, one of the two a
-                                  write: A-SEP fails if both execute),
+                                  pairwise: another object (A-SEP may break
+                                  if one executes through that alternative
+                                  and the cell is also accessed through
+                                  the other object), shared (a gap cell an
+                                  out-of-object access, or an address
+                                  alternative of another access that is
+                                  outside its object, also reaches through
+                                  another provenance, one of the two a
+                                  write: A-SEP may break if both execute
+                                  through the alternatives that meet),
                                   unknown (a symbolic offset or length, or
                                   a gap cell such an access may reach),
-                                  null (an object of size 0: A-NULL fails if
-                                  one executes), gap (a cell no other
-                                  provenance reaches: keeps A-NULL and
-                                  A-SEP, only A-INB fails). The premises
-                                  stay: an unsat holds for the executions
-                                  that reach none of the object / shared /
-                                  unknown / null ones;
+                                  null (an object of size 0: A-NULL breaks
+                                  if one executes through that
+                                  alternative), gap (no other out-of-object
+                                  access or address alternative the check
+                                  sees reaches the cell through another
+                                  provenance; best effort, not a proof
+                                  that A-SEP holds). The premises
+                                  stay. Whatever its class, an access with
+                                  an address alternative in an object of
+                                  size 0 also breaks A-NULL, and one whose
+                                  address wraps (base plus signed offset
+                                  outside the address space) A-NOWRAP, if
+                                  it executes through that alternative;
+                                  the warning names both. An unsat holds
+                                  for the executions that reach none of
+                                  the object / shared / unknown / null
+                                  ones and none the warning names for
+                                  A-NULL or A-NOWRAP;
                                   --seam-out-of-object=fallback runs again
                                   without the premises)
   seam.out-of-object-at: <file:line:col> <op>: <reason> lands=<class> [with=<file:line:col>]
@@ -3299,7 +3337,10 @@ OUTPUT (stdout, `key: value` lines):
                                   or smaller than the access, ARM range
                                   outside; class object / shared / unknown /
                                   null / gap; with: for shared, the access
-                                  of another provenance in the same cell;
+                                  of another provenance in the same cell,
+                                  possibly one not listed here (an access
+                                  with one address alternative outside its
+                                  object);
                                   with --smt2 on stderr)
   seam.alias.open.<kind>: <n>     (--seam-stats: the alias questions the
                                   rewriter left to the solver, IS_OVERLAP
@@ -4835,8 +4876,9 @@ int main(int argc, char **argv) {
     if (seg.getKind() == "null")
       nullUses += std::distance(seg->use_begin(), seg->use_end());
   });
-  // the memhavocs sea-guard-null-memhavoc guarded (memhavoc of null is a
-  // no-op in the VC too)
+  // the memhavocs whose pointer may be null that sea-guard-null-memhavoc
+  // guarded or sea-drop-fresh-memhavoc dropped (memhavoc of null is a no-op
+  // in the VC too)
   uint64_t nullGuards = 0;
   if (auto n =
           program->getAttrOfType<IntegerAttr>(sea::kMemhavocNullGuardsAttr))
@@ -6127,7 +6169,7 @@ int main(int argc, char **argv) {
     };
     if (ptrSortLeft(query))
       return 1;
-    // cmp.diff-base decisions whose A-INB premise names no recorded access
+    // cross-object decisions whose A-INB premise names no recorded access
     // (seam::Rules::checkInbPremise)
     if (sem.seamRewriter()) {
       const auto &rules = sem.seamRewriter()->rules();
@@ -6139,7 +6181,7 @@ int main(int argc, char **argv) {
           ex += "\n  " + e;
         sea::diag::warn("vc.inb-premise-unrecorded",
                         Twine(it->second) +
-                            " address(es) of cmp.diff-base decisions lie in no "
+                            " address(es) of cross-object decisions lie in no "
                             "access whose A-INB condition the run recorded "
                             "(the rule's premise is not stated); first:" +
                             ex);
@@ -6511,6 +6553,10 @@ int main(int argc, char **argv) {
       const unsigned unk = sem.outOfObjectCount(Landing::Unknown);
       const unsigned nul = sem.outOfObjectCount(Landing::Null);
       const unsigned gap = sem.outOfObjectCount(Landing::Gap);
+      // the premises named whatever the landing: a leaf through an object
+      // of size 0 (A-NULL), an address that wraps (A-NOWRAP)
+      const unsigned nullLeaf = sem.outOfObjectNullCount();
+      const unsigned wrap = sem.outOfObjectWrapCount();
       // what the verdict rests on, by class
       std::string what;
       if (mayRetry)
@@ -6518,18 +6564,28 @@ int main(int argc, char **argv) {
       else {
         what = "the premises stay";
         if (inObj + shr + unk)
-          what += "; A-SEP is broken if one that lands in another object, "
-                  "both of a shared pair, or (maybe) one of unknown landing "
-                  "executes: an unsat holds only for the executions that "
+          what += "; A-SEP may break if one that lands in another object "
+                  "executes through that alternative and the cell is also "
+                  "accessed through the other object, if both of a shared "
+                  "pair execute through the address alternatives that meet, "
+                  "or if one of unknown landing executes: an unsat holds "
+                  "only for the executions that reach none of those";
+        if (nullLeaf)
+          what += "; A-NULL breaks if one executes through an address "
+                  "alternative in null (an object of size 0), whatever its "
+                  "landing: an unsat holds only for the executions that "
                   "reach none of those";
-        if (nul)
-          what += "; A-NULL is broken if one through null executes: an "
-                  "unsat holds only for the executions that reach none of "
-                  "those";
+        if (wrap)
+          what += "; A-NOWRAP breaks if one executes through an address "
+                  "that wraps (base plus signed offset outside the address "
+                  "space), whatever its landing: an unsat holds only for "
+                  "the executions that reach none of those";
         if (gap)
-          what += "; the gap ones keep A-SEP and A-NULL (no other access "
-                  "the encoding sees reaches their cells) and break A-INB "
-                  "only: the answer rests on the premises as reported";
+          what += "; no other out-of-object access or address alternative "
+                  "the check sees reaches the cells of the gap ones through "
+                  "another provenance (best effort: it does not show that "
+                  "A-SEP holds): the answer rests on the premises as "
+                  "reported";
       }
       sea::diag::warn("vc.seam-out-of-object",
                       Twine(sem.inbStaticViolationCount()) +

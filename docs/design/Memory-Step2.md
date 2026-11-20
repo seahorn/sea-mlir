@@ -94,10 +94,12 @@ semantics yet and is kept visible: each use counts
 `sea-drop-fresh-memhavoc`) puts a memhavoc whose pointer may be null in a
 block of its own, entered only when the pointer is not null, so every
 encoding (store chains, lambdas, SeaM's range terms) leaves memory alone
-for null; sea-vc reports `assume.memhavoc-null-noop: vc sites=<n>`.
-Without the guard (`=error`) the VC would havoc the cells from address 0
-on, which in the compact layout (objects from address 1) are the first
-object's: a spurious `sat`.
+for null. `sea-drop-fresh-memhavoc` drops the memhavoc of a fresh object
+whose pointer may be null under the same rule (null touches nothing);
+sea-vc reports both, `assume.memhavoc-null-noop: vc sites=<n>`. Under
+`=error` neither happens: the memhavoc stays, and without the guard the
+VC would havoc the cells from address 0 on, which in the compact layout
+(objects from address 1) are the first object's: a spurious `sat`.
 
 **Decided: the named assumption `addr0-is-null`.** Address 0
 is the null pointer. This is almost always true, and false in some

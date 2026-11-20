@@ -156,8 +156,9 @@ struct SeaMOptions {
   /// afterwards (bv.ite-merge) rebuilt a growing disjunction per level,
   /// quadratic. Exact. sea-vc --seam-row-group.
   bool groupSameValueRow = true;
-  /// checkInbPremise (cmp.diff-base's A-INB premise names recorded
-  /// accesses); sea-vc --seam-check-inb-premise. Off by default: on
+  /// checkInbPremise (the A-INB premise of cmp.diff-base and of the
+  /// cross-object decisions of a read against a memory-operation range names
+  /// recorded accesses); sea-vc --seam-check-inb-premise. Off by default: on
   /// vcc-pi2: 9,475 of 11,117 checked addresses are not matched,
   /// mostly the matcher's gaps (keyed companions recorded through their
   /// mirror, other normal forms of one address), to be refined.
@@ -515,12 +516,11 @@ public:
   // PTR_INDEX nodes (docs/design/PtrIndex.md)
   //===------------------------------------------------------------------===//
   //
-  // The VC builds a node for sea.ptr.index only. A node stays where
-  // an address is used as one: the index of select / store / wselect /
-  // wstore, the address arguments of a memory-operation term, a branch of an
-  // ite, the base of a node. Everywhere else (compares, arithmetic, stored
-  // values) the rewriter replaces it by its flat form (doRewrite), and the
-  // deciders read an address through it (view, decidePair, decideEq,
+  // The VC builds a node for sea.ptr.index only. A node stays where OpSem
+  // put it (an address, a compare, arithmetic, a stored value): the node
+  // rule (ptrIndex) folds numeral indices and pulls ites, and turns only an
+  // unflagged node with no index left into its flat form. The deciders read
+  // an address through its summands (view, decidePair, decideEq,
   // wideRelation, offsetDiff, congruentStarts, ARM). The flat form is the
   // normalized term produced by sea-lower-ptr-index: the sum of the base's
   // summands, one x_k * s_k per index (normalized as bv.ac does) and the
@@ -661,10 +661,12 @@ public:
   /// does not change the value), a chain of nodes merged into one over the
   /// innermost base, numeral indices folded into c (mod 2^n), stride-0
   /// pairs dropped, K added into c, the pairs sorted by (index id, stride);
-  /// a node with no pair left and c = 0 is its base. Equal canonical forms
-  /// are equal values (not a provenance claim: markers are kept). This
-  /// comparison is restricted to nodes; a plain bvadd and a node at
-  /// the same address are not equated.
+  /// a node with no pair left and c = 0 is its base. A bvadd of one pointer
+  /// (a base or a node) and integers is the node it equals (canonSum), so a
+  /// plain sum and a node at the same address are equated. Equal canonical
+  /// forms are equal values (not a provenance claim: markers are kept), not
+  /// equal promises: ite.same keeps a branch only when the promises agree
+  /// (samePromise).
   /// Memoized over the rewriter's life; iterative (memory chains are deep).
   Expr canon(const Expr &e) const {
     if (e->arity() == 0)
@@ -1544,6 +1546,14 @@ public:
       }
       const unsigned w = o->base.getBitWidth();
       mpz_class mod = pow2(w), lo = toMpz(o->base.zext(w + 1));
+      {
+        // A-NOWRAP: base + off as integers, off signed
+        mpz_class off = numVal(v->off);
+        if (off >= pow2(nw - 1))
+          off = off - pow2(nw);
+        mpz_class at = lo + off;
+        res.wrap = res.wrap || at < mpz_class(0L) || at >= mod;
+      }
       lo = modPow2(lo + numVal(v->off), w);
       mpz_class hi = lo; // exclusive, may pass 2^w
       hi = hi + span;
@@ -1563,6 +1573,49 @@ public:
         res.object = true;
       else
         res.gaps.push_back({o, lo, hi, lo2, hi2});
+    }
+    return res;
+  }
+
+  /// The gap spans of the leaves of an access address that are definitely
+  /// outside their object, for an access that inBounds / rangeInBounds did
+  /// not flag (some leaf may stay in its object). A leaf counts only if its
+  /// span is known (a pointer view into an object of nonzero size, a numeral
+  /// offset, a numeral width) and does not fit in [0, size); its gap spans
+  /// are those of outOfObjectSpans for the leaf alone. Best effort, for the
+  /// pairwise step of the static report (a gap cell of a flagged access that
+  /// such a leaf also reaches through another provenance): a leaf this test
+  /// does not decide is left out.
+  std::vector<OutOfObjectSpans::Span>
+  definiteGapSpans(const Expr &addr, uint64_t units,
+                   const Expr &n = Expr()) const {
+    std::vector<OutOfObjectSpans::Span> res;
+    unsigned nw;
+    mpz_class span = mpz_class((unsigned long)units);
+    if (!units)
+      span = n && op::bv::isBvNum(n, nw) ? numVal(n) : mpz_class(0L);
+    if (span == 0)
+      return res;
+    llvm::SmallVector<Expr, 32> stack{addr};
+    std::unordered_set<Expr> seen;
+    while (!stack.empty()) {
+      Expr p = stack.pop_back_val();
+      if (!seen.insert(p).second)
+        continue;
+      if (isOpX<ITE>(p)) {
+        stack.push_back(p->arg(2));
+        stack.push_back(p->arg(1));
+        continue;
+      }
+      std::optional<PtrView> v = view(p);
+      const ObjectBase *o = v ? m_bases.lookup(v->base) : nullptr;
+      if (!o || o->size.isZero() || !op::bv::isBvNum(v->off, nw))
+        continue;
+      mpz_class size = toMpz(o->size.zext(o->size.getBitWidth() + 1));
+      if (numVal(v->off) + span <= size)
+        continue; // fits: [off, off + span) in [0, size)
+      OutOfObjectSpans s = outOfObjectSpans(p, units, n);
+      res.insert(res.end(), s.gaps.begin(), s.gaps.end());
     }
     return res;
   }
@@ -1897,6 +1950,52 @@ public:
       memo.emplace(p, res);
     }
     return memo.find(addr)->second;
+  }
+
+  /// Does armInBounds leave a provenance of \p addr without a condition? A
+  /// part of the term that ARM reads as a pointer (its map has a base entry,
+  /// not top) but that armInBounds cannot follow to its base: a node whose
+  /// base ARM reads as absolute and whose stride-1 index holds the base
+  /// (`ptr.index(from_int(16), [to_bits(ite(c, obj.a, obj.b))])`:
+  /// armNodeBase is null), so its condition is true while ARM still names
+  /// obj.a and obj.b as its provenances. A decision that separates such a
+  /// provenance from another base by A-SEP, or drops it as size 0 by
+  /// A-SEP / A-NULL (arm.skip, cmp.size0-vacuous), rests on an A-INB
+  /// condition the run never states: it is refused (armDisjoint,
+  /// decideInPair; counted arm.skip-no-inb). False when every base entry of the
+  /// map is inside its object (armAllIn: nothing to condition). Same walk as
+  /// armInBounds.
+  bool armInbGap(const Expr &addr, uint64_t units) const {
+    if (!m_opts.arm || armAllIn(addr, units))
+      return false;
+    auto pointerPart = [&](const Expr &p) {
+      const AddrRangeMap &m = m_arm.alpha(p);
+      return !m.isTop() && m.hasBases();
+    };
+    std::unordered_set<Expr> seen;
+    llvm::SmallVector<Expr, 32> stack{addr};
+    while (!stack.empty()) {
+      Expr p = stack.pop_back_val();
+      if (!seen.insert(p).second || m_bases.lookup(p))
+        continue;
+      Expr kid;
+      if (isOpX<ITE>(p)) {
+        stack.push_back(p->arg(1));
+        stack.push_back(p->arg(2));
+        continue;
+      }
+      if (isOpX<BADD>(p))
+        kid = armPtrArg(p);
+      else if (op::ptr::isObservation(p))
+        kid = p->arg(0);
+      else if (op::ptr::isPtrIndex(p))
+        kid = armNodeBase(p);
+      if (kid)
+        stack.push_back(kid);
+      else if (pointerPart(p))
+        return true;
+    }
+    return false;
   }
 
   /// `value - obj.k <= size_k - units` (unsigned), false if the object is
@@ -3312,7 +3411,11 @@ public:
   /// because of A-SEP (the maps are disjoint only across different bases),
   /// and `cmp.size0-vacuous` if it dropped the provenance of an object of
   /// size 0 (AddrRangeMap::disjoint): A-SEP if the maps are disjoint without
-  /// the drop, every base its own provenance; else A-NULL.
+  /// the drop, every base its own provenance; else A-NULL. An answer that
+  /// needs a premise (across bases, or a dropped size-0 provenance) is
+  /// refused (counted arm.skip-no-inb) when the A-INB condition of a or b
+  /// leaves one of its ARM provenances out (armInbGap); otherwise its premise
+  /// is checked (checkInbPremise).
   bool armDisjoint(const Expr &a, const Expr &b, bool rowCompare,
                    Decision &d) const {
     if (!rowCompare || !m_opts.arm)
@@ -3320,7 +3423,15 @@ public:
     bool cross = false, zero = false;
     if (!m_arm.disjoint(a, b, m_opts.assumePremises, &cross, &zero))
       return false;
+    // a premise (A-SEP across bases, A-SEP / A-NULL for a dropped size-0
+    // provenance) needs every provenance's A-INB condition stated
+    if ((cross || zero) && (armInbGap(a, 1) || armInbGap(b, 1))) {
+      ++m_stats.rules["arm.skip-no-inb"]; // bookkeeping: not in the trail
+      return false;
+    }
     d.add("arm.skip", cross ? PremASep : PremNone);
+    if (cross || zero)
+      checkInbPremise(a, 1, b, 1);
     // the dropped size-0 provenances: A-SEP when the maps are disjoint with
     // every base its own provenance (no drop: each dropped entry meets only
     // entries of other bases), else A-NULL
@@ -3442,9 +3553,12 @@ public:
   /// cancels: a - b is the numeral \p d (mod 2^w). Valid over bit-vectors
   /// (addition mod 2^w is cancellative). Replaces cancel() on the flat forms.
   /// The premise check: a cmp.diff-base decision rests on A-SEP for both
-  /// addresses; --seam-check states it as their A-INB (which implies A-SEP),
+  /// addresses (and so do the A-SEP / A-NULL decisions of a read against a
+  /// memory-operation range: decideIn, buildIn, rowWideMemOp, rowWideSmap);
+  /// --seam-check states it as their A-INB (which implies A-SEP),
   /// which the run states only for the accesses OpSem recorded
-  /// (accessAddr: the address in normal form and the access's units). Both
+  /// (accessAddr: the address in normal form and the access's units;
+  /// accessRange: a range's destination, its numeral length or 1). Both
   /// addresses of a decision must lie in a recorded access: the same term,
   /// or p + k with 0 <= k and k + span <= units (cancelDiff; the byte
   /// fallback's p + k of a wide access). Counted (premise.inb-checked /
@@ -4709,6 +4823,60 @@ public:
   // ite and Boolean rules
   //===------------------------------------------------------------------===//
 
+  /// Does \p e hold a node with a promise (nusw / nuw), at any depth? True
+  /// past kPromiseWalk nodes (the caller then assumes one).
+  static constexpr size_t kPromiseWalk = 4096;
+  static bool holdsPromise(const Expr &e) {
+    std::unordered_set<ENode *> seen;
+    llvm::SmallVector<ENode *, 32> stack{e.get()};
+    while (!stack.empty()) {
+      ENode *n = stack.pop_back_val();
+      if (!seen.insert(n).second)
+        continue;
+      if (op::ptr::isFlagged(n) || seen.size() > kPromiseWalk)
+        return true;
+      for (size_t i = 0; i < n->arity(); ++i)
+        stack.push_back(n->arg(i));
+    }
+    return false;
+  }
+
+  /// ite(c, t, e) with t and e equal values (sameAddr): the branch that may
+  /// replace it, or null. A node's promise is a fact only on the path that
+  /// made it (PtrIndex.md section 2): equal values are not equal promises
+  /// (a node and its unflagged twin, a node and a plain sum, constants equal
+  /// mod 2^n), and the kept branch's promise would hold on the other path
+  /// too (R-STRIDE then skips writes the other path's read sees). So:
+  ///  - t == e: t;
+  ///  - a branch without a promise anywhere: that branch (t first);
+  ///  - two nodes with the same operator, the same base and index pairs
+  ///    (strides as integers, in any order), and c and K equal as integers:
+  ///    t (one promise);
+  ///  - otherwise null (the ite stays).
+  Expr samePromise(const Expr &t, const Expr &e) const {
+    if (t == e || !holdsPromise(t))
+      return t;
+    if (!holdsPromise(e))
+      return e;
+    using namespace op;
+    if (!ptr::isPtrIndex(t) || !(t->op() == e->op()) ||
+        ptr::base(t) != ptr::base(e) ||
+        ptr::numIndices(t) != ptr::numIndices(e) ||
+        ptr::constant(t) != ptr::constant(e) ||
+        ptr::byteOffset(t) != ptr::byteOffset(e))
+      return Expr();
+    auto pairs = [](const Expr &n) {
+      std::vector<std::pair<size_t, mpz_class>> v;
+      for (size_t k = 0; k < ptr::numIndices(n); ++k)
+        v.push_back({size_t(ptr::index(n, k)->getId()), ptr::stride(n, k)});
+      std::sort(v.begin(), v.end(), [](const auto &l, const auto &r) {
+        return l.first != r.first ? l.first < r.first : l.second < r.second;
+      });
+      return v;
+    };
+    return pairs(t) == pairs(e) ? t : Expr();
+  }
+
   static bool areNegations(const Expr &x, const Expr &y) {
     return (isOpX<NEG>(x) && x->left() == y) ||
            (isOpX<NEG>(y) && y->left() == x);
@@ -4716,7 +4884,9 @@ public:
 
   /// Fig. 2.1 (and the branch's ITERewriteRule). No assumption.
   ///   ite(true, t, e) ~> t, ite(false, t, e) ~> e, ite(c, a, a) ~> a:
-  ///     RW_DONE (the result is a kid, normal).
+  ///     RW_DONE (the result is a kid, normal). ite.same: t and e equal
+  ///     values (sameAddr), kept as one branch only when that drops no
+  ///     path's promise (samePromise); otherwise the ite stays.
   ///   ite(c, true, false) ~> c: RW_DONE.
   ///   ite(c, false, true) ~> !c: RW_1: `!` at level 0 over the normal kid c
   ///     (!!x is removed by the NEG rule at the root).
@@ -4733,8 +4903,11 @@ public:
       return {e, RWStatus::RW_DONE};
     }
     if (sameAddr(t, e)) {
-      m_stats.count("ite.same");
-      return {t, RWStatus::RW_DONE};
+      if (Expr keep = samePromise(t, e)) {
+        m_stats.count("ite.same");
+        return {keep, RWStatus::RW_DONE};
+      }
+      ++m_stats.rules["ite.same-promise-kept"]; // bookkeeping: the ite stays
     }
     if (isOpX<TRUE>(t) && isOpX<FALSE>(e)) {
       m_stats.count("ite.bool");
@@ -5402,6 +5575,12 @@ public:
           }
           apart = apart && e.first != od->order && e.first < m_bases.size();
         }
+        // a provenance of j without an A-INB condition: no A-SEP decision
+        // (armInbGap)
+        if (apart && armInbGap(j, span)) {
+          ++m_stats.rules["arm.skip-no-inb"]; // bookkeeping: not in the trail
+          apart = false;
+        }
         if (apart) {
           dec.add("arm.skip", PremASep); // uses: A-SEP
           // a size-0 provenance of j is another object than d's (d's is of
@@ -5452,6 +5631,9 @@ public:
     bool allIn = true, allOut = true, sameK = true;
     std::optional<mpz_class> common;
     Decision all;
+    // the pairs decided by a program premise (checkInbPremise once the
+    // answer is used)
+    llvm::SmallVector<const std::pair<Expr, Expr> *, 8> premised;
     for (auto &p : pairs) {
       Decision dp;
       mpz_class kv = -1;
@@ -5464,12 +5646,16 @@ public:
       allOut = allOut && r == Range::Out;
       if (r != Range::Unknown)
         all.add(dp);
+      if (dp.premises & (PremASep | PremANull))
+        premised.push_back(&p);
     }
     if (sameK && common)
       k = num(*common, widthOf(d));
     if (!allIn && !allOut)
       return Range::Unknown;
     dec.add(all);
+    for (const auto *p : premised)
+      checkInbPremise(p->first, 1, p->second, 1); // a read in a range
     return allIn ? Range::In : Range::Out;
   }
 
@@ -5511,6 +5697,8 @@ public:
       ++resolved;
       countReasons(d);
       premises |= d.premises;
+      if (d.premises & (PremASep | PremANull))
+        checkInbPremise(a, 1, b, 1); // as decideIn
       return rg == Range::In ? mk<TRUE>(m_efac) : mk<FALSE>(m_efac);
     }
     Expr in = memOpIn(mk<PTR_DIFF>(a, b), n); // S1.5: a pointer difference
@@ -5942,9 +6130,9 @@ public:
     auto idle = [&](const RewriteResult &r) {
       return r.exp == exp && r.status == RWStatus::RW_DONE;
     };
-    // PTR_INDEX (PtrIndex.md, step (a)): a node outside an address position
-    // is its flat form; RW_1: the term at level 0 again, its kids (flat
-    // forms of normal nodes, ites of them) at level 1
+    // PTR_INDEX (PtrIndex.md, step (a)): the node rule (Rules::ptrIndex:
+    // index folds, pull-ite; an unflagged node with no index left is its
+    // flat form)
     if (op::ptr::isPtrIndex(exp))
       return m_rules.ptrIndex(exp);
     if (isOpX<PTR_FROM_BITS>(exp)) {

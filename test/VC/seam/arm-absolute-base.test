@@ -1,0 +1,131 @@
+// ARM reads ptr.index(from_int(16), [to_bits(select(c, b1, b3))]) as a
+// pointer into b1 or b3 (its stride-1 index holds the base), but the A-INB
+// condition cannot name that provenance (the node's base is absolute), so
+// the access states no condition. arm.skip must not then separate it from
+// b2 by A-SEP: for c = 1 the store lands on b2's first cell (16 + 4096 =
+// 4112) and the assertion fails.
+// RUN: split-file %s %t
+// RUN: sea-vc %t/out.mlir --lower --seam --seam-stats 2>&1 | FileCheck %s --check-prefix=OUT
+// OUT-NOT: seam.rule.arm.skip-diff-base
+// OUT: result: sat
+// OUT: replay: assert-failed
+// RUN: sea-run %t/out.mlir --input=1=1 | FileCheck %s --check-prefix=INTERP
+// INTERP: status: assert-failed
+// The read at that node of a memset of b2's first cell: row.mset-skip by
+// arm.skip (decideInPair) is refused the same way.
+// RUN: sea-vc %t/mset.mlir --lower --seam --seam-stats 2>&1 | FileCheck %s --check-prefix=MSET
+// MSET-NOT: seam.rule.arm.skip-diff-base
+// MSET: seam.rule.arm.skip-no-inb: {{[1-9]}}
+// MSET: result: sat
+// MSET: replay: assert-failed
+// RUN: sea-run %t/mset.mlir --input=1=1 | FileCheck %s --check-prefix=INTERP
+// One provenance of that node is an object of size 0 (heap.0 at 4096), the
+// other b1 (at 4112): ARM drops the size-0 entry (cmp.size0-vacuous) and
+// the compare against b1 is then same-base; that drop rests on a premise
+// too and is refused the same way. For c = 1 the store lands on b1's first
+// cell.
+// RUN: sea-vc %t/zero.mlir --lower --seam --seam-stats 2>&1 | FileCheck %s --check-prefix=ZERO
+// ZERO-NOT: seam.rule.cmp.size0-vacuous
+// ZERO: seam.rule.arm.skip-no-inb: {{[1-9]}}
+// ZERO: result: sat
+// ZERO: replay: assert-failed
+// RUN: sea-run %t/zero.mlir --input=1=1 | FileCheck %s --check-prefix=INTERP
+// The same with from_int(3): every provenance stays in its object (ARM
+// says so), no condition is needed, and arm.skip decides by A-SEP.
+// RUN: sea-vc %t/in.mlir --lower --seam --seam-stats 2>&1 | FileCheck %s --check-prefix=IN
+// IN: seam.rule.arm.skip-diff-base: {{[1-9]}}
+// IN: result: unsat
+// The A-INB premise check looks at that arm.skip, and both addresses are
+// recorded accesses.
+// RUN: sea-vc %t/in.mlir --lower --seam --seam-stats --seam-check-inb-premise 2>&1 | FileCheck %s --check-prefix=CHK
+// CHK: seam.rule.premise.inb-checked: {{[1-9]}}
+// CHK-NOT: premise.inb-unrecorded
+// CHK: result: unsat
+
+//--- out.mlir
+!am = !sea.mem<!sea.addr<64>, i8>
+sea.program @out {
+  %b1 = sea.segment "heap.1" base 4096 : i64 size 16 : i64 align 1 kind "heap" : !sea.addr<64>
+  %b2 = sea.segment "heap.2" base 4112 : i64 size 16 : i64 align 1 kind "heap" : !sea.addr<64>
+  %b3 = sea.segment "heap.3" base 8192 : i64 size 16 : i64 align 1 kind "heap" : !sea.addr<64>
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !am
+  %v7 = sea.const 7 : i8
+  %c16 = sea.const 16 : i64
+  %zp = sea.addr.from_int %c16 : i64 to !sea.addr<64>
+  %c = sea.nondet "c" [1] : i1
+  %pb = sea.select %c, %b1, %b3 : !sea.addr<64>
+  %x = sea.addr.to_bits %pb : !sea.addr<64> to i64
+  %q = sea.ptr.index %zp [%x] strides [1] offset 0 : !sea.addr<64>, i64
+  %m1 = sea.store %m0[%q], %v7 inplace : !am, i8
+  %r = sea.load %m1[%b2] : !am -> i8
+  %ok = sea.icmp eq, %r, %z : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- mset.mlir
+!am = !sea.mem<!sea.addr<64>, i8>
+sea.program @mset {
+  %b1 = sea.segment "heap.1" base 4096 : i64 size 16 : i64 align 1 kind "heap" : !sea.addr<64>
+  %b2 = sea.segment "heap.2" base 4112 : i64 size 16 : i64 align 1 kind "heap" : !sea.addr<64>
+  %b3 = sea.segment "heap.3" base 8192 : i64 size 16 : i64 align 1 kind "heap" : !sea.addr<64>
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !am
+  %v7 = sea.const 7 : i8
+  %one = sea.const 1 : i64
+  %m1 = sea.memset %m0[%b2], %v7, %one inplace : !am
+  %c16 = sea.const 16 : i64
+  %zp = sea.addr.from_int %c16 : i64 to !sea.addr<64>
+  %c = sea.nondet "c" [1] : i1
+  %pb = sea.select %c, %b1, %b3 : !sea.addr<64>
+  %x = sea.addr.to_bits %pb : !sea.addr<64> to i64
+  %q = sea.ptr.index %zp [%x] strides [1] offset 0 : !sea.addr<64>, i64
+  %r = sea.load %m1[%q] : !am -> i8
+  %ok = sea.icmp eq, %r, %z : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- zero.mlir
+!am = !sea.mem<!sea.addr<64>, i8>
+sea.program @zero {
+  %z0 = sea.segment "heap.0" base 4096 : i64 size 0 : i64 align 1 kind "heap" : !sea.addr<64>
+  %b1 = sea.segment "heap.1" base 4112 : i64 size 16 : i64 align 1 kind "heap" : !sea.addr<64>
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !am
+  %v7 = sea.const 7 : i8
+  %c16 = sea.const 16 : i64
+  %zp = sea.addr.from_int %c16 : i64 to !sea.addr<64>
+  %c = sea.nondet "c" [1] : i1
+  %pb = sea.select %c, %z0, %b1 : !sea.addr<64>
+  %x = sea.addr.to_bits %pb : !sea.addr<64> to i64
+  %q = sea.ptr.index %zp [%x] strides [1] offset 0 : !sea.addr<64>, i64
+  %m1 = sea.store %m0[%q], %v7 inplace : !am, i8
+  %r = sea.load %m1[%b1] : !am -> i8
+  %ok = sea.icmp eq, %r, %z : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- in.mlir
+!am = !sea.mem<!sea.addr<64>, i8>
+sea.program @in {
+  %b1 = sea.segment "heap.1" base 4096 : i64 size 16 : i64 align 1 kind "heap" : !sea.addr<64>
+  %b2 = sea.segment "heap.2" base 4112 : i64 size 16 : i64 align 1 kind "heap" : !sea.addr<64>
+  %b3 = sea.segment "heap.3" base 8192 : i64 size 16 : i64 align 1 kind "heap" : !sea.addr<64>
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !am
+  %v7 = sea.const 7 : i8
+  %c3 = sea.const 3 : i64
+  %zp = sea.addr.from_int %c3 : i64 to !sea.addr<64>
+  %c = sea.nondet "c" [1] : i1
+  %pb = sea.select %c, %b1, %b3 : !sea.addr<64>
+  %x = sea.addr.to_bits %pb : !sea.addr<64> to i64
+  %q = sea.ptr.index %zp [%x] strides [1] offset 0 : !sea.addr<64>, i64
+  %m1 = sea.store %m0[%q], %v7 inplace : !am, i8
+  %r = sea.load %m1[%b2] : !am -> i8
+  %ok = sea.icmp eq, %r, %z : i8
+  sea.assert %ok
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

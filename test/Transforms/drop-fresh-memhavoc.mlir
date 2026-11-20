@@ -5,7 +5,7 @@
 !m = !sea.mem<!sea.ptr<64>, i8>
 
 // CHECK-LABEL: sea.program @fresh
-// CHECK-NOT: sea.memhavoc
+// CHECK-NOT: = sea.memhavoc
 sea.program @fresh {
   %m0 = sea.mem.nondet "m" [0] : !m
   %n = sea.const 8 : i64
@@ -55,7 +55,7 @@ sea.program @join {
 // The allocator pattern: the pointer is a fresh allocation or null (failed
 // allocation) at a join; a havoc of null touches nothing.
 // CHECK-LABEL: sea.program @alloc_or_null
-// CHECK-NOT: sea.memhavoc
+// CHECK-NOT: = sea.memhavoc
 sea.program @alloc_or_null {
   %m0 = sea.mem.nondet "m" [0] : !m
   %n = sea.nondet "n" [1] : i64
@@ -102,7 +102,7 @@ sea.program @const_root_behind {
 
 // A nondet memory behind updates that precede the allocation: fresh.
 // CHECK-LABEL: sea.program @nondet_root_behind
-// CHECK-NOT: sea.memhavoc
+// CHECK-NOT: = sea.memhavoc
 sea.program @nondet_root_behind {
   %m0 = sea.mem.nondet "m" [0] : !m
   %z = sea.const 9 : i8
@@ -142,7 +142,7 @@ sea.program @join_store {
 
 // The same join, its store to another object: still a no-op.
 // CHECK-LABEL: sea.program @join_store_other
-// CHECK-NOT: sea.memhavoc
+// CHECK-NOT: = sea.memhavoc
 sea.program @join_store_other {
   %m0 = sea.mem.nondet "m" [0] : !m
   %c = sea.nondet "c" [3] : i1
@@ -160,6 +160,138 @@ sea.program @join_store_other {
   %m1 = sea.store %m0[%b], %v inplace : !m, i8
   %m2 = sea.memhavoc %m1[%p], %c4 [2] inplace : !m
   %x = sea.load %m2[%p] : !m -> i8
+  sea.halt
+}
+
+// A read of the object before the memhavoc: the memhavoc is observable.
+// CHECK-LABEL: sea.program @read_before
+// CHECK: sea.memhavoc
+sea.program @read_before {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %a = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %x = sea.load %m0[%a] : !m -> i8
+  %m1 = sea.memhavoc %m0[%a], %c4 [2] inplace : !m
+  sea.halt
+}
+
+// Two memhavocs with a read between them: the first is a no-op, the
+// second stays.
+// CHECK-LABEL: sea.program @twice
+// CHECK: sea.memhavoc {{.*}}[3]
+// CHECK-NOT: = sea.memhavoc
+// CHECK: sea.halt
+sea.program @twice {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %a = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %m1 = sea.memhavoc %m0[%a], %c4 [2] inplace : !m
+  %x = sea.load %m1[%a] : !m -> i8
+  %m2 = sea.memhavoc %m1[%a], %c4 [3] inplace : !m
+  %y = sea.load %m2[%a] : !m -> i8
+  sea.halt
+}
+
+// A read of an earlier version after a (not in-place) memhavoc sees the
+// cells before it: the memhavoc stays.
+// CHECK-LABEL: sea.program @read_earlier_version
+// CHECK: sea.memhavoc
+sea.program @read_earlier_version {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %a = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %m1 = sea.memhavoc %m0[%a], %c4 [2] : !m
+  %y = sea.load %m1[%a] : !m -> i8
+  %x = sea.load %m0[%a] : !m -> i8
+  sea.halt
+}
+
+// The source of a memmove is a read.
+// CHECK-LABEL: sea.program @memmove_source
+// CHECK: sea.memhavoc
+sea.program @memmove_source {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %a = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c4 align 4 [2] : i64 -> !sea.ptr<64>
+  %m1 = sea.memmove %m0[%b], %m0[%a], %c4 inplace : !m
+  %m2 = sea.memhavoc %m1[%a], %c4 [3] inplace : !m
+  sea.halt
+}
+
+// A read of another object only: still a no-op (counted as resting on
+// A-SEP, test/VC/drop-fresh-memhavoc-inb.test).
+// CHECK-LABEL: sea.program @read_other
+// CHECK-NOT: = sea.memhavoc
+// CHECK: sea.halt
+sea.program @read_other {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %a = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c4 align 4 [2] : i64 -> !sea.ptr<64>
+  %x = sea.load %m0[%b] : !m -> i8
+  %m1 = sea.memhavoc %m0[%a], %c4 [3] inplace : !m
+  sea.halt
+}
+
+// A read through an unknown pointer after the allocation may read the
+// object: the memhavoc stays. Before the allocation it cannot.
+// CHECK-LABEL: sea.program @read_unknown
+// CHECK: sea.memhavoc
+sea.program @read_unknown {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %q = sea.ptr.nondet "q" [1] : !sea.ptr<64>
+  %a = sea.malloc %c4 align 4 [2] : i64 -> !sea.ptr<64>
+  %x = sea.load %m0[%q] : !m -> i8
+  %m1 = sea.memhavoc %m0[%a], %c4 [3] inplace : !m
+  sea.halt
+}
+
+// CHECK-LABEL: sea.program @read_unknown_before
+// CHECK-NOT: = sea.memhavoc
+// CHECK: sea.halt
+sea.program @read_unknown_before {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %q = sea.ptr.nondet "q" [1] : !sea.ptr<64>
+  %x = sea.load %m0[%q] : !m -> i8
+  %a = sea.malloc %c4 align 4 [2] : i64 -> !sea.ptr<64>
+  %m1 = sea.memhavoc %m0[%a], %c4 [3] inplace : !m
+  sea.halt
+}
+
+// A read after a join that the memhavoc's path enters through its result
+// and another path enters around the allocation and the memhavoc: on no
+// run does the read see the object's cells before the memhavoc. Dropped.
+// CHECK-LABEL: sea.program @read_after_skip
+// CHECK-NOT: = sea.memhavoc
+// CHECK: sea.halt
+sea.program @read_after_skip {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %q = sea.ptr.nondet "q" [1] : !sea.ptr<64>
+  %c = sea.nondet "c" [2] : i1
+  sea.cond_br %c, ^j(%m0 : !m), ^a
+^a:
+  %a = sea.malloc %c4 align 4 [3] : i64 -> !sea.ptr<64>
+  %m1 = sea.memhavoc %m0[%a], %c4 [4] inplace : !m
+  sea.br ^j(%m1 : !m)
+^j(%m2: !m):
+  %x = sea.load %m2[%q] : !m -> i8
+  sea.halt
+}
+
+// null + k is not null and no object: its memhavoc is no no-op (the
+// interpreter reports it out of bounds). It stays.
+// CHECK-LABEL: sea.program @null_plus_k
+// CHECK: = sea.memhavoc
+sea.program @null_plus_k {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %null = sea.ptr.null : !sea.ptr<64>
+  %p = sea.ptr.add %null, %c4 : !sea.ptr<64>, i64
+  %m1 = sea.memhavoc %m0[%p], %c4 [1] inplace : !m
   sea.halt
 }
 

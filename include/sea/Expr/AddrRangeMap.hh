@@ -45,9 +45,16 @@
 //    value). An absolute entry may be anywhere: it never differs from an
 //    entry of a base (no provenance for it), only from another absolute
 //    interval that does not meet. A term that mentions a registered base
-//    through an operator other than bvadd / ite (bvsub of two bases, bvand, a
-//    ptr.to_int round trip) is top. This is the mentionsBase rule: a pointer
-//    built from integer casts is no pointer into a base.
+//    through an operator other than bvadd / ite / a PTR_INDEX node (bvsub of
+//    two bases, bvand, a product) is top. This is the mentionsBase rule.
+//    The observation markers (ADDR, PTR_TO_INT, PTR_TO_BITS) are
+//    transparent: the map of their argument, so `to_int(b) + 4` keeps b's
+//    entry. A constructor (PTR_FROM_INT, PTR_FROM_BITS) has no provenance:
+//    of a numeral it is that absolute point, else an unknown absolute
+//    value, so `from_int(to_int(b))` is no pointer into b (D17). A base can
+//    still reach a map through an integer index: a node over an absolute
+//    base whose stride-1 index holds b has b's entry (SeaMRules.hh
+//    armInbGap: no A-INB condition names that provenance).
 //  - Differences from the figures: bottom is the identity of join and absorbs
 //    add (Fig. 5.3 has [a, b] +^ bottom = [a, b], which is wrong for the sums
 //    of sets, one of them empty); bottom is never produced by alpha, only by

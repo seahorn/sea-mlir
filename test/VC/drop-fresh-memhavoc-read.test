@@ -1,0 +1,48 @@
+// A read of a fresh object makes a later memhavoc of it observable: a read
+// after the memhavoc may see other values. sea-drop-fresh-memhavoc keeps
+// such a memhavoc. Regression: it looked at writes only, dropped it, and
+// the VC answered unsat while the program fails.
+// RUN: split-file %s %t
+// A read, then the memhavoc.
+// RUN: sea-vc %t/read.mlir --lower | FileCheck %s
+// RUN: sea-run %t/read.mlir --input=0@heap.1+0=0 --input=2@heap.1+0=1 | FileCheck %s --check-prefix=INTERP
+// Two memhavocs of one object with a read between them: the first one is a
+// no-op, the second is not.
+// RUN: sea-vc %t/twice.mlir --lower | FileCheck %s
+// RUN: sea-run %t/twice.mlir --input=2@heap.1+0=0 --input=3@heap.1+0=1 | FileCheck %s --check-prefix=INTERP
+// CHECK: result: sat
+// CHECK: replay: assert-failed
+// INTERP: status: assert-failed
+// REQUIRES: z3
+
+//--- read.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %p = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %x = sea.load %m0[%p] : !m -> i8
+  %m1 = sea.memhavoc %m0[%p], %c4 [2] inplace : !m
+  %y = sea.load %m1[%p] : !m -> i8
+  %ok = sea.icmp eq, %x, %y : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- twice.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %p = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %m1 = sea.memhavoc %m0[%p], %c4 [2] inplace : !m
+  %x = sea.load %m1[%p] : !m -> i8
+  %m2 = sea.memhavoc %m1[%p], %c4 [3] inplace : !m
+  %y = sea.load %m2[%p] : !m -> i8
+  %ok = sea.icmp eq, %x, %y : i8
+  sea.assert %ok
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -162,6 +162,10 @@ inline const char *landingName(Landing l) {
 /// that land outside every object (gap spans, with their provenance).
 struct OutOfObjectSpans {
   bool object = false, unknown = false, null = false;
+  /// some leaf's address wraps: its placed base plus its numeral offset,
+  /// read as an integer with the offset signed, is outside [0, 2^w) (the
+  /// access breaks A-NOWRAP if it executes through that leaf)
+  bool wrap = false;
   /// [lo, hi) as integers, lo in [0, 2^w) (hi may pass 2^w); loDown /
   /// hiDown: the same span one address space down (lo - 2^w, hi - 2^w),
   /// so that a span that wraps is compared at both images.

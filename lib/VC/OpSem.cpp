@@ -176,13 +176,13 @@ static std::string locText(Location loc) {
   return s;
 }
 
-void SeaOpSem::noteInbViolation(Location loc, llvm::StringRef kind,
+void SeaOpSem::noteInbViolation(Location loc, llvm::StringRef kind, bool write,
                                 seam::OutOfObjectSpans spans,
                                 llvm::function_ref<std::string()> reason) {
   OutOfObject r;
   r.loc = locText(loc);
   r.kind = kind.str();
-  r.write = kind != "load";
+  r.write = write;
   // the reason (a walk of the address) only for the notes printed
   if (++inbStaticViolations <= kInbViolationNotes)
     r.reason = reason();
@@ -191,18 +191,30 @@ void SeaOpSem::noteInbViolation(Location loc, llvm::StringRef kind,
   oobClassified = false;
 }
 
+void SeaOpSem::noteMixedAccess(Expr addr, uint64_t units, Expr n, bool write) {
+  mixed.push_back({addr, n, units, write, curOp->getLoc()});
+  oobClassified = false;
+}
+
 /// The pairwise step of the static out-of-object report. A-SEP is pairwise:
 /// two accesses through different provenances that both leave their objects
 /// into the same gap cell break it, though each lands "in no object". So:
 ///  - Object: some span meets another object;
 ///  - Shared: a gap span meets a gap span of another access through another
-///    provenance, one of the two a write (a load and a load do not break
-///    A-SEP); both accesses are Shared, each names the other (with=);
+///    provenance, one of the two a write (a read and a read, a memmove's
+///    source included, do not break A-SEP); both accesses are Shared, each
+///    names the other (with=). The other side of a pair may also be an
+///    access that was not flagged (its address an ite with a leaf in its
+///    object) through a leaf that is definitely outside its object
+///    (Rules::definiteGapSpans); that access is named in with=, not
+///    reported itself;
 ///  - Unknown: some leaf's span is unknown; or a gap span while some access
 ///    has an unknown leaf (it may reach that cell through any provenance);
 ///  - Null: some leaf through an object of size 0;
-///  - Gap: the rest. In-bounds accesses never reach a gap cell, so a gap
-///    access meets no other access.
+///  - Gap: the rest: no flagged access and no such leaf of another
+///    provenance reaches its cells. Best effort, not a proof that A-SEP
+///    holds: an access with a symbolic offset may reach them, and so may
+///    a leaf the test above leaves out.
 /// Only what the encoding saw: accesses that are not definite violations
 /// (a symbolic offset that may leave its object) are not in the pairs.
 void SeaOpSem::classifyOutOfObject() {
@@ -232,6 +244,36 @@ void SeaOpSem::classifyOutOfObject() {
         with[j] = oob[i].loc;
       shared[i] = shared[j] = true;
     }
+  // the definite out-of-object leaves of the accesses not flagged, only if
+  // some flagged access has a gap span (nothing to pair otherwise)
+  bool anyGap = false;
+  for (const OutOfObject &r : oob)
+    anyGap = anyGap || !r.spans.gaps.empty();
+  // the pointer views of the leaves are memoized, except in trail mode,
+  // where view() counts again (view.*): the report leaves the counters as
+  // the encoding left them
+  if (anyGap && seamRw) {
+    llvm::StringMap<uint64_t> savedRules = seamRw->stats().rules;
+    for (const MixedAccess &m : mixed) {
+      std::vector<Spans::Span> leaves =
+          seamRw->rules().definiteGapSpans(m.addr, m.units, m.n);
+      if (leaves.empty())
+        continue;
+      for (size_t i = 0; i < oob.size(); ++i) {
+        if (shared[i] || (!oob[i].write && !m.write))
+          continue;
+        bool meet = false;
+        for (const Spans::Span &a : oob[i].spans.gaps)
+          for (const Spans::Span &b : leaves)
+            meet = meet || (a.base != b.base && Spans::overlap(a, b));
+        if (meet) {
+          shared[i] = true;
+          with[i] = locText(m.loc);
+        }
+      }
+    }
+    seamRw->stats().rules = std::move(savedRules);
+  }
   for (size_t i = 0; i < oob.size(); ++i) {
     OutOfObject &r = oob[i];
     r.with.clear();
@@ -254,6 +296,20 @@ unsigned SeaOpSem::outOfObjectCount(seam::Landing l) {
   unsigned n = 0;
   for (const OutOfObject &r : oob)
     n += r.landing == l;
+  return n;
+}
+
+unsigned SeaOpSem::outOfObjectNullCount() const {
+  unsigned n = 0;
+  for (const OutOfObject &r : oob)
+    n += r.spans.null;
+  return n;
+}
+
+unsigned SeaOpSem::outOfObjectWrapCount() const {
+  unsigned n = 0;
+  for (const OutOfObject &r : oob)
+    n += r.spans.wrap;
   return n;
 }
 
@@ -326,9 +382,12 @@ Expr SeaOpSem::firingPremise(const RewriteTrail &trail,
   ExprVector conj{base};
   for (const auto &[a, al] : aligns) {
     unsigned w = seamRw->rules().widthOf(a);
-    conj.push_back(
-        mk<EQ>(mk<BAND>(mk<ADDR>(a), bv::bvnum(mpz_class(al - 1), w, ef)),
-               bv::bvnum(mpz_class(0UL), w, ef)));
+    // the mask at w bits: an align above 2^w gives all ones (only address 0
+    // is aligned), not a numeral that does not fit
+    uint64_t mask = w < 64 ? (al - 1) & ((uint64_t(1) << w) - 1) : al - 1;
+    conj.push_back(mk<EQ>(
+        mk<BAND>(mk<ADDR>(a), bv::bvnum(mpz_class((unsigned long)mask), w, ef)),
+        bv::bvnum(mpz_class(0UL), w, ef)));
   }
   return mknary<AND>(trueE, conj);
 }
@@ -420,7 +479,7 @@ Expr SeaOpSem::accessPremise(const RewriteTrail &trail,
 /// (seam::Rules::outOfObjectSpans, then pairwise: classifyOutOfObject),
 /// and keeps the premises (they fail
 /// only if the access executes).
-Expr SeaOpSem::accessAddr(Expr mem, Expr ptr, uint64_t units,
+Expr SeaOpSem::accessAddr(Expr mem, Expr ptr, uint64_t units, bool write,
                           OpSemContext &ctx) {
   if (!seamMode)
     return ptr;
@@ -436,19 +495,21 @@ Expr SeaOpSem::accessAddr(Expr mem, Expr ptr, uint64_t units,
   }
   if (keyedAccess()) {
     ++seamRw->stats().rules["companion.access"];
-    pendingKeyed.push_back({ptr, curOp->getLoc()});
+    pendingKeyed.push_back({ptr, write, curOp->getLoc()});
     return ptr;
   }
-  blockAddrs.insert(ptr);
+  (write ? blockStoreAddrs : blockLoadAddrs).insert(ptr);
   seamRw->rules().noteInbAccess(ptr, units);
   ++inbAccesses;
   bool violated = false;
   Expr inb = seamRw->rules().inBounds(ptr, units, violated);
   if (violated)
     noteInbViolation(
-        curOp->getLoc(), curOp->getName().stripDialect(),
+        curOp->getLoc(), curOp->getName().stripDialect(), write,
         seamRw->rules().outOfObjectSpans(ptr, units),
         [&] { return seamRw->rules().explainViolation(ptr, units, false); });
+  else if (isOpX<ITE>(ptr))
+    noteMixedAccess(ptr, units, Expr(), write);
   if (!isOpX<TRUE>(inb))
     inbSeen.insert(mk<AND>(ctx.getPathCond(), boolop::lneg(inb)));
   return ptr;
@@ -534,7 +595,7 @@ static Expr curIndexSort(Operation *op, ExprFactory &ef) {
 Expr SeaOpSem::memLoad(Expr mem, Expr ptr, uint64_t units, OpSemContext &ctx) {
   if (lambdaMode)
     return bind::fapp(mem, ptr);
-  ptr = accessAddr(mem, ptr, units, ctx);
+  ptr = accessAddr(mem, ptr, units, /*write=*/false, ctx);
   trailAccess("load", units);
   Expr sel = op::array::select(mem, ptr);
   if (!seamMode)
@@ -554,7 +615,7 @@ Expr SeaOpSem::memStore(Expr mem, Expr ptr, Expr val, uint64_t units,
     return mkLambda(curIndexSort(curOp, ef), [&](Expr i) {
       return mk<ITE>(mk<EQ>(i, ptr), val, bind::fapp(mem, i));
     });
-  ptr = accessAddr(mem, ptr, units, ctx);
+  ptr = accessAddr(mem, ptr, units, /*write=*/true, ctx);
   trailAccess("store", units);
   Expr st = op::array::store(mem, ptr, val);
   return seamMode ? seamRw->rewrite(st) : st;
@@ -577,7 +638,7 @@ uint64_t SeaOpSem::curAlign() const {
 Expr SeaOpSem::memLoadWide(Expr mem, Expr ptr, unsigned bits,
                            OpSemContext &ctx) {
   uint64_t bytes = bits / 8;
-  ptr = accessAddr(mem, ptr, bytes, ctx);
+  ptr = accessAddr(mem, ptr, bytes, /*write=*/false, ctx);
   trailAccess("load", bytes);
   seamRw->noteWide();
   return seamRw->rewrite(
@@ -587,7 +648,7 @@ Expr SeaOpSem::memLoadWide(Expr mem, Expr ptr, unsigned bits,
 Expr SeaOpSem::memStoreWide(Expr mem, Expr ptr, Expr val, unsigned bits,
                             OpSemContext &ctx) {
   uint64_t bytes = bits / 8;
-  ptr = accessAddr(mem, ptr, bytes, ctx);
+  ptr = accessAddr(mem, ptr, bytes, /*write=*/true, ctx);
   trailAccess("store", bytes);
   seamRw->noteWide();
   return seamRw->rewrite(op::array::wstore(mem, ptr, val, curAlign()));
@@ -698,8 +759,10 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
   }
   // companion (keyed) accesses of this block wait for their mirrored
   // program access (see keyedAccess)
-  blockAddrs.clear();
-  blockRanges.clear();
+  blockLoadAddrs.clear();
+  blockStoreAddrs.clear();
+  blockReadRanges.clear();
+  blockWriteRanges.clear();
   pendingKeyed.clear();
   pendingKeyedRanges.clear();
   // the defHook of the results of the op before (the loop below leaves an
@@ -1087,41 +1150,48 @@ void SeaOpSem::noteOrigins(Operation &op, OpSemContext &ctx) {
 }
 
 /// The mirror check of the companion exemption: a keyed access is exempt
-/// only if a program access of this
-/// block has the same address term (a range: the same (d, n)). The proof
-/// rests on that: the data access's A-INB condition, under the same path
+/// only if a program access of this block of the same kind has the same
+/// address term (a range: the same (d, n), in the same role: a written
+/// range by a written one, a memmove's source by a source). The proof rests
+/// on that: the data access's A-INB condition, under the same path
 /// condition, implies the 1-unit facts the rules on the companion memory
-/// use. An unmirrored one is a program access after all (its own 1-unit
+/// use, and a pair of companion accesses the rules separate by A-SEP
+/// mirrors a pair of data accesses A-SEP covers. A-SEP exempts a read and a
+/// read, so a keyed store needs a data store (a keyed store mirrored by a
+/// data load would be separated with no data write to back it). The
+/// lowering (sea-lower-fat-pointers) emits mirrors of the data op's kind.
+/// An unmirrored one is a program access after all (its own 1-unit
 /// condition, counted), with a warning (vc.seam-companion-unmirrored).
 void SeaOpSem::settleKeyed(OpSemContext &ctx) {
   auto fallback = [&](Expr inb, Location loc) {
     ++seamRw->stats().rules["companion.unmirrored"];
     diag::warn("vc.seam-companion-unmirrored",
-               "a keyed (companion) access with no program access at the "
-               "same address in its block: counted as a program access",
+               "a keyed (companion) access with no program access of its "
+               "kind at the same address in its block: counted as a "
+               "program access",
                loc);
     ++inbAccesses;
     if (!isOpX<TRUE>(inb))
       inbSeen.insert(mk<AND>(ctx.getPathCond(), boolop::lneg(inb)));
   };
-  for (const auto &[p, loc] : pendingKeyed)
-    if (!blockAddrs.count(p)) {
+  for (const auto &[p, write, loc] : pendingKeyed)
+    if (!(write ? blockStoreAddrs : blockLoadAddrs).count(p)) {
       bool violated = false;
       fallback(seamRw->rules().inBounds(p, 1, violated), loc);
       if (violated)
         noteInbViolation(
-            loc, "companion", seamRw->rules().outOfObjectSpans(p, 1),
+            loc, "companion", write, seamRw->rules().outOfObjectSpans(p, 1),
             [&] { return seamRw->rules().explainViolation(p, 1, false); });
     }
-  for (const auto &[dv, nv, loc] : pendingKeyedRanges)
-    if (!blockRanges.count({dv, nv})) {
+  for (const auto &[dv, nv, write, loc] : pendingKeyedRanges)
+    if (!(write ? blockWriteRanges : blockReadRanges).count({dv, nv})) {
       bool violated = false;
       Expr d = seamRw->rewrite(lookup(dv, ctx)),
            n = seamRw->rewrite(lookup(nv, ctx));
       fallback(seamRw->rules().rangeInBounds(d, n, violated), loc);
       if (violated)
         noteInbViolation(
-            loc, "companion", seamRw->rules().outOfObjectSpans(d, 0, n),
+            loc, "companion", write, seamRw->rules().outOfObjectSpans(d, 0, n),
             [&] { return seamRw->rules().explainViolation(d, 0, true, n); });
     }
   pendingKeyed.clear();
@@ -1227,21 +1297,34 @@ bool SeaOpSem::keyedAccess() const {
          cast<MemType>(curOp->getOperand(0).getType()).isKeyed();
 }
 
-void SeaOpSem::accessRange(Expr d, Expr n, OpSemContext &ctx) {
+void SeaOpSem::accessRange(Expr d, Expr n, bool write, OpSemContext &ctx) {
   // a companion range (memset / memmove of a keyed memory) mirrors the data
   // range op, which states the condition
   if (keyedAccess()) {
     ++seamRw->stats().rules["companion.access"];
     return; // its mirror is checked on the op's operands (execRangeOp)
   }
+  // the range's A-INB condition is stated below: a cross-object decision
+  // against it names a recorded access (Rules::checkInbPremise; the units:
+  // a numeral length, else its first cell; a numeral 0 accesses nothing)
+  uint64_t units = 1;
+  unsigned nw;
+  if (op::bv::isBvNum(n, nw)) {
+    mpz_class nv = op::bv::toMpz(n);
+    units = mpz_fits_ulong_p(nv.get_mpz_t()) ? nv.get_ui() : ~uint64_t(0);
+  }
+  if (units)
+    seamRw->rules().noteInbAccess(d, units);
   ++inbAccesses;
   bool violated = false;
   Expr inb = seamRw->rules().rangeInBounds(d, n, violated);
   if (violated)
-    noteInbViolation(curOp->getLoc(), curOp->getName().stripDialect(),
+    noteInbViolation(curOp->getLoc(), curOp->getName().stripDialect(), write,
                      seamRw->rules().outOfObjectSpans(d, 0, n), [&] {
                        return seamRw->rules().explainViolation(d, 0, true, n);
                      });
+  else if (isOpX<ITE>(d))
+    noteMixedAccess(d, 0, n, write);
   if (!isOpX<TRUE>(inb))
     inbSeen.insert(mk<AND>(ctx.getPathCond(), boolop::lneg(inb)));
 }
@@ -1258,7 +1341,7 @@ void SeaOpSem::execRangeTerm(Operation &op, Value lenV, OpSemContext &ctx) {
   Expr n = seamRw->rewrite(lookup(lenV, ctx));
   Expr mem = in(0);
   Expr dst = seamRw->rewrite(in(1));
-  accessRange(dst, n, ctx);
+  accessRange(dst, n, /*write=*/true, ctx);
   Expr res;
   if (isa<MemSetOp>(op)) {
     res = op::array::memSet(
@@ -1267,7 +1350,7 @@ void SeaOpSem::execRangeTerm(Operation &op, Value lenV, OpSemContext &ctx) {
   } else if (isa<MemMoveOp>(op)) {
     // the source as it was before the op: its own memory version
     Expr from = seamRw->rewrite(in(3));
-    accessRange(from, n, ctx);
+    accessRange(from, n, /*write=*/false, ctx);
     res = op::array::memCopy(mem, in(2), dst, from, n);
   } else {
     auto mh = cast<MemHavocOp>(op);
@@ -1293,16 +1376,18 @@ LogicalResult SeaOpSem::execRangeOp(Operation &op, OpSemContext &ctx) {
                    .Case([](MemHavocOp o) { return o.getLen(); });
   // the mirror check of companion ranges (settleKeyed), on the operands
   if (seamMode) {
-    SmallVector<Value, 2> addrs{op.getOperand(1)};
+    // (address, written): the destination is written, a memmove's source
+    // read
+    SmallVector<std::pair<Value, bool>, 2> addrs{{op.getOperand(1), true}};
     if (auto mv = dyn_cast<MemMoveOp>(op))
-      addrs.push_back(mv.getSrcAddr());
+      addrs.push_back({mv.getSrcAddr(), false});
     if (auto mh = dyn_cast<MemHavocOp>(op))
-      addrs = {mh.getAddr()};
-    for (Value a : addrs) {
+      addrs = {{mh.getAddr(), true}};
+    for (auto [a, write] : addrs) {
       if (keyedAccess())
-        pendingKeyedRanges.push_back({a, lenV, op.getLoc()});
+        pendingKeyedRanges.push_back({a, lenV, write, op.getLoc()});
       else
-        blockRanges.insert({a, lenV});
+        (write ? blockWriteRanges : blockReadRanges).insert({a, lenV});
     }
   }
   if (lambdaMode) {

@@ -72,8 +72,10 @@ void CheckAlignPass::runOnOperation() {
       return;
     }
     auto iW = IntegerType::get(ctx, w);
-    Value mask =
-        ConstOp::create(b, loc, iW, IntegerAttr::get(iW, APInt(w, *align - 1)));
+    // an align of 2^w or more: the mask truncated to w bits is all ones, so
+    // only address 0 passes
+    APInt maskBits(w, *align - 1, /*isSigned=*/false, /*implicitTrunc=*/true);
+    Value mask = ConstOp::create(b, loc, iW, IntegerAttr::get(iW, maskBits));
     Value zero = ConstOp::create(b, loc, iW, IntegerAttr::get(iW, APInt(w, 0)));
     Value low = AndOp::create(b, loc, iW, i, mask);
     Value ok = ICmpOp::create(b, loc, ICmpPredicate::eq, low, zero);

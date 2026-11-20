@@ -26,7 +26,21 @@
 // The abstract program shows the out-of-bounds store.
 // RUN: not sea-run %t/oob.mlir --input=2@heap.1+0=0 2>&1 | FileCheck %s --check-prefix=INTERP
 // INTERP: status: error
-// No update before the memhavoc and its range in the object: no reliance.
+// A read through another object before the memhavoc: after placement it
+// may read the fresh object's cells (here b - 4 is the last cell of a), and
+// then the memhavoc was not a no-op either. Any access before the memhavoc
+// makes the drop rest on A-SEP. The placed program, where nothing is
+// dropped, fails.
+// RUN: sea-vc %t/xread.mlir --lower | FileCheck %s --check-prefix=XREAD
+// XREAD: assume.a-sep: drop-fresh-memhavoc=1
+// XREAD: result: unsat
+// RUN: sea-vc %t/xread.mlir --lower --seam --seam-premises=0 | FileCheck %s --check-prefix=XREAD0
+// XREAD0: seam.premises: off (lowering: drop-fresh-memhavoc=1 rests on A-SEP)
+// RUN: sea-opt %t/xread.mlir --sea-lower-tracking --sea-lower-fat-pointers --sea-place-static -o %t/xread-placed.mlir
+// RUN: sea-vc %t/xread-placed.mlir --lower | FileCheck %s --check-prefix=PLACED
+// PLACED: result: sat
+// PLACED: replay: assert-failed
+// No access before the memhavoc and its range in the object: no reliance.
 // RUN: sea-vc %t/plain.mlir --lower | FileCheck %s --check-prefix=PLAIN
 // PLAIN-NOT: assume.a-sep
 // PLAIN: result: sat
@@ -46,6 +60,26 @@ sea.program @main {
   %m2 = sea.memhavoc %mu[%a], %c4 [2] inplace : !m
   %x = sea.load %m2[%a] : !m -> i8
   %ok = sea.icmp eq, %x, %v : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- xread.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c4 = sea.const 4 : i64
+  %a = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %c4 align 4 [4] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64
+  %m4 = sea.const -4 : i64
+  %is = sea.icmp eq, %i, %m4 : i64
+  sea.assume %is
+  %e = sea.ptr.add %b, %i : !sea.ptr<64>, i64
+  %x = sea.load %m0[%e] : !m -> i8
+  %m1 = sea.memhavoc %m0[%a], %c4 [2] inplace : !m
+  %y = sea.load %m1[%a] : !m -> i8
+  %ok = sea.icmp eq, %x, %y : i8
   sea.assert %ok
   sea.halt
 }

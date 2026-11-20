@@ -239,10 +239,15 @@ and SeaM read the shadow access in a size-0 object as vacuous under A-INB
    a companion access is one whole cell and is never split, also when the
    data access is. A-INB is shared, not restated: a companion (keyed)
    access is exempt from its own condition only when a program access of
-   the same block has the same address term (a range op: the same
-   (d, n)), whose A-INB condition under the same path condition implies
-   the 1-unit facts the rules use on the companion memory
-   (`SeaOpSem::settleKeyed`, counter `companion.access`). An unmirrored
+   the same block and the same kind has the same address term (a keyed
+   store needs a data store, a keyed load a data load; a range op: the
+   same (d, n) in the same role, written or a memmove's source), whose
+   A-INB condition under the same path condition implies the 1-unit facts
+   the rules use on the companion memory, and whose pairs A-SEP covers
+   (a read and a read are exempt from A-SEP, so a keyed store mirrored by
+   a data load alone would be separated with nothing to back it)
+   (`SeaOpSem::settleKeyed`, counter `companion.access`). The lowering
+   emits mirrors of the data op's kind. An unmirrored
    one is counted as a program access with its own condition (warning
    `vc.seam-companion-unmirrored`, counter `companion.unmirrored`).
 5. **Diagnostic.** With (1) and (2) both in, tracking on an object of size
