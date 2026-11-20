@@ -35,7 +35,11 @@
   placement an access of another object could reach the object's cells, or
   when the memhavoc's range is not provably in its object; it is reported as `assume.a-sep:
   drop-fresh-memhavoc=<n>`, also without `--seam`. The count is coarse:
-  an access that provably stays in its object counts too. A separate
+  an access that provably stays in its object counts too. The static
+  out-of-object report (`--seam`) does not see a dropped memhavoc; the
+  pass warns `drop-fresh-memhavoc.range` for one whose range it cannot
+  show in its object by a cheap syntactic check (best effort: no warning
+  is no proof; the count is what the answer rests on). A separate
   memory-safety check of the program would discharge it; sea-mlir has
   none yet.
 - Open semantics decision: `sea.memhavoc` of the null pointer is a no-op

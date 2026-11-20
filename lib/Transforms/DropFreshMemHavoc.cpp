@@ -61,11 +61,17 @@
 //     sea-guard-null-memhavoc's guards (kMemhavocNullGuardsAttr, reported
 //     as assume.memhavoc-null-noop: vc sites). Under error the memhavoc is
 //     kept, so the run on null stays an error.
+//   Warns: drop-fresh-memhavoc.range for a drop whose range is not
+//     provably in its object (rangeInObject): the static out-of-object
+//     report of sea-vc --seam runs on the lowered program and no longer
+//     sees the memhavoc. Best effort, syntactic and cheap; the A-SEP count
+//     is the guarantee, not the warning.
 //
 //===----------------------------------------------------------------------===//
 
 #include "PassUtils.h"
 #include "sea/Dialect/Sea/SeaOps.h"
+#include "sea/Support/Diag.h"
 #include "sea/Transforms/Passes.h"
 
 #include "mlir/IR/Dominance.h"
@@ -500,8 +506,18 @@ void DropFreshMemHavocPass::runOnOperation() {
     // other provenance. With no such access and the range in the object,
     // the object's cells are the initial memory's: unconstrained already,
     // and nothing saw them.
-    if (acc.any || !rangeInObject(op))
+    bool inObject = rangeInObject(op);
+    if (acc.any || !inObject)
       ++inbDrops;
+    // The static out-of-object report (sea-vc --seam) runs on the lowered
+    // program, where this memhavoc is gone: say it here. Best effort, as
+    // cheap as rangeInObject; the A-SEP count above is the guarantee.
+    if (!inObject)
+      diag::warn("drop-fresh-memhavoc.range",
+                 "dropped a memhavoc whose range this pass could not show "
+                 "to be in its object: the drop rests on A-SEP, and the "
+                 "out-of-object report does not see it",
+                 op.getLoc());
     // a pointer that may be null: the drop rests on memhavoc(null) being a
     // no-op, counted with sea-guard-null-memhavoc's guards
     if (mayBeNull)

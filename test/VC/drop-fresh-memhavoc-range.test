@@ -1,0 +1,65 @@
+// sea-drop-fresh-memhavoc removes a memhavoc before the static
+// out-of-object report (sea-vc --seam) runs, so it warns itself when the
+// memhavoc's range is not provably in its object. The drop rests on A-SEP
+// either way (assume.a-sep: drop-fresh-memhavoc).
+// RUN: split-file %s %t
+// A memhavoc of 8 bytes of a 2-byte object.
+// RUN: sea-vc %t/oob.mlir --lower 2>&1 | FileCheck %s --check-prefix=OOB
+// RUN: sea-vc %t/oob.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=OOB
+// OOB: [drop-fresh-memhavoc.range]
+// OOB: assume.a-sep: {{.*}}drop-fresh-memhavoc=1
+// The abstract program leaves the object.
+// RUN: not sea-run %t/oob.mlir --missing=zero 2>&1 | FileCheck %s --check-prefix=INTERP
+// INTERP: memory access out of bounds
+// The allocator's memhavoc: the pointer is the allocation or null, the
+// length the allocation's size (malloc(n * 1)). In its object: no warning
+// and, with nothing accessed before it, no A-SEP (the null alternative
+// rests on --memhavoc-null=noop, test/VC/drop-fresh-memhavoc-null.test).
+// RUN: sea-vc %t/alloc.mlir --lower 2>&1 | FileCheck %s --check-prefix=ALLOC
+// ALLOC-NOT: [drop-fresh-memhavoc.range]
+// ALLOC-NOT: assume.a-sep
+// ALLOC: result: unsat
+// REQUIRES: z3
+
+//--- oob.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %c2 = sea.const 2 : i64
+  %a = sea.malloc %c2 align 1 [1] : i64 -> !sea.ptr<64>
+  %c4 = sea.const 4 : i64
+  %b = sea.malloc %c4 align 4 [2] : i64 -> !sea.ptr<64>
+  %m0 = sea.mem.nondet "m" [3] : !m
+  %x = sea.load %m0[%b] : !m -> i8
+  %c8 = sea.const 8 : i64
+  %m1 = sea.memhavoc %m0[%a], %c8 [4] inplace : !m
+  %y = sea.load %m1[%b] : !m -> i8
+  %ok = sea.icmp eq, %x, %y : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- alloc.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @main {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %n = sea.nondet "n" [1] : i64
+  %c16 = sea.const 16 : i64
+  %small = sea.icmp ule, %n, %c16 : i64
+  sea.assume %small
+  %fail = sea.nondet "fail" [2] : i1
+  %null = sea.ptr.null : !sea.ptr<64>
+  sea.cond_br %fail, ^j(%null : !sea.ptr<64>), ^a
+^a:
+  %one = sea.const 1 : i64
+  %size = sea.mul %n, %one : i64
+  %p = sea.malloc %size align 16 [3] : i64 -> !sea.ptr<64>
+  sea.br ^j(%p : !sea.ptr<64>)
+^j(%q: !sea.ptr<64>):
+  %m1 = sea.memhavoc %m0[%q], %n [4] inplace : !m
+  %t = sea.const 1 : i1
+  sea.assert %t
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
