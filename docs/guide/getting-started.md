@@ -53,7 +53,7 @@ assumption holds.
 
 ```console
 $ sea-vc double.mlir
-tool.version: sea-mlir 0.2.0 (...)
+tool.version: sea-mlir 0.3.0 (...)
 vc.typecheck-time: 0.000
 program: @main
 ...

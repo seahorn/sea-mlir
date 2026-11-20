@@ -130,13 +130,14 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   contract at the top of its file and checks its postcondition
   (`<pass>.postcondition` = a bug in the pass)
 - `tools/sea-opt` (mlir-opt driver), `tools/sea-run` (interpreter CLI),
-  `tools/sea-vc` (VC + solve + replay), `tools/sea-expr-eval` (test
-  utility: evaluate terms through Expr), `tools/sea-reduce` (mlir-reduce
+  `tools/sea-vc` (VC + solve + replay), `tools/sea-expr-eval` (evaluate
+  terms through Expr; not installed; built into `bin/` because tools outside the
+  repository run it), `tools/sea-reduce` (mlir-reduce
   with the sea dialect: test-case reduction, `docs/Reducer.md`; its
   patterns and passes `sea-reduce-apply` / `sea-reduce-cleanup` are in
   `lib/Reduce/`, the driver of interestingness tests is
   `utils/reduce-test.py`)
-- `unittests/` — plain-main C++ test drivers run by lit (`sea-expr-rewriter-test`,
+- `unittests/` — plain-main C++ test drivers run by lit (built into `build/test-bin/`, not `bin/`: `sea-expr-rewriter-test`,
   `sea-seam-rules-test`, `sea-addr-range-test`: ARM, `include/sea/Expr/AddrRangeMap.hh`,
   `sea-store-map-test`: Store-Map, `include/sea/Expr/StoreMap.hh`, `sea-bv-rules-test`: the bit-vector / Boolean normalization rules, `include/sea/Expr/BvRules.hh`, `sea-log-test`: the log selection syntax and event text, `include/sea/Support/Log.h`, `sea-timer-test`: the timers of the `*-time` keys, `include/sea/Support/Timer.h`, `sea-stats-test`: stat lines and their BRUNCH_STAT form, `include/sea/Support/Stats.h`, and the ledger of named assumptions behind every `assume.*` line, `include/sea/Support/Assume.h`, `sea-solver-factory-test`: the solver factory, `include/sea/Expr/Smt/SolverFactory.h`, `sea-small-arith-test`: the small-integer fast paths of the rules' modular arithmetic against GMP, `include/sea/Expr/SmallArith.hh`). `sea-vc --seam`: SeaM, the object-aware rewriting of loads and
   stores in the VC (`include/sea/Expr/SeaMRules.hh`, `docs/design/SeaM.md`);

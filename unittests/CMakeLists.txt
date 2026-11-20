@@ -1,6 +1,10 @@
 # SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+# test drivers stay out of bin/ (the tools); directory scope, so it covers the
+# subdirectories and ends with this file
+set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/test-bin)
+
 add_subdirectory(ExprRewriter)
 add_subdirectory(AddrRange)
 add_subdirectory(Log)

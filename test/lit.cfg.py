@@ -26,15 +26,22 @@ for param, var in (("sea_log", "SEA_LOG"), ("sea_log_file", "SEA_LOG_FILE")):
 llvm_config.use_default_substitutions()
 
 sea_tools_dir = os.path.join(config.sea_obj_root, "bin")
+# the unittests/ drivers, kept out of bin/
+sea_test_bin_dir = os.path.join(config.sea_obj_root, "test-bin")
 llvm_config.with_environment("PATH", config.llvm_tools_dir, append_path=True)
 llvm_config.add_tool_substitutions(
     [
         "sea-opt",
         "sea-reduce",
         "sea-run",
-        "sea-expr-eval",
         "sea-vc",
         "sea-seam-export",
+        "sea-expr-eval",
+    ],
+    [sea_tools_dir],
+)
+llvm_config.add_tool_substitutions(
+    [
         "sea-expr-rewriter-test",
         "sea-seam-rules-test",
         "sea-bv-rules-test",
@@ -53,7 +60,7 @@ llvm_config.add_tool_substitutions(
         "sea-int-ranges-test",
         "sea-diff-decider-test",
     ],
-    [sea_tools_dir],
+    [sea_test_bin_dir],
 )
 
 config.substitutions.append(("%sea_src_root", config.sea_src_root))
