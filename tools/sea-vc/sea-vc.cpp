@@ -793,8 +793,9 @@ static cl::opt<OutOfObject> seamOutOfObject(
              "one may break A-SEP if it executes through that alternative "
              "and the cell is also accessed through the other object, a "
              "shared pair if both execute through the alternatives that "
-             "meet, an unknown one may; a null one breaks A-NULL if it "
-             "executes through that alternative). "
+             "meet, an unknown one may; whatever its class, one through "
+             "null breaks A-NULL and one whose address wraps A-NOWRAP if "
+             "it executes through that alternative). "
              "fallback: run again without the premises (as --seam-premises=0)"),
     cl::values(clEnumValN(OutOfObject::Report, "report",
                           "report and keep the premises (default)"),
@@ -3307,9 +3308,17 @@ OUTPUT (stdout, `key: value` lines):
                                   sees reaches the cell through another
                                   provenance; best effort, not a proof
                                   that A-SEP holds). The premises
-                                  stay: an unsat holds for the executions
-                                  that reach none of the object / shared /
-                                  unknown / null ones;
+                                  stay. Whatever its class, an access with
+                                  an address alternative in an object of
+                                  size 0 also breaks A-NULL, and one whose
+                                  address wraps (base plus signed offset
+                                  outside the address space) A-NOWRAP, if
+                                  it executes through that alternative;
+                                  the warning names both. An unsat holds
+                                  for the executions that reach none of
+                                  the object / shared / unknown / null
+                                  ones and none the warning names for
+                                  A-NULL or A-NOWRAP;
                                   --seam-out-of-object=fallback runs again
                                   without the premises)
   seam.out-of-object-at: <file:line:col> <op>: <reason> lands=<class> [with=<file:line:col>]
@@ -6536,6 +6545,10 @@ int main(int argc, char **argv) {
       const unsigned unk = sem.outOfObjectCount(Landing::Unknown);
       const unsigned nul = sem.outOfObjectCount(Landing::Null);
       const unsigned gap = sem.outOfObjectCount(Landing::Gap);
+      // the premises named whatever the landing: a leaf through an object
+      // of size 0 (A-NULL), an address that wraps (A-NOWRAP)
+      const unsigned nullLeaf = sem.outOfObjectNullCount();
+      const unsigned wrap = sem.outOfObjectWrapCount();
       // what the verdict rests on, by class
       std::string what;
       if (mayRetry)
@@ -6549,10 +6562,16 @@ int main(int argc, char **argv) {
                   "pair execute through the address alternatives that meet, "
                   "or if one of unknown landing executes: an unsat holds "
                   "only for the executions that reach none of those";
-        if (nul)
-          what += "; A-NULL breaks if one through null executes through "
-                  "that alternative: an unsat holds only for the executions "
-                  "that reach none of those";
+        if (nullLeaf)
+          what += "; A-NULL breaks if one executes through an address "
+                  "alternative in null (an object of size 0), whatever its "
+                  "landing: an unsat holds only for the executions that "
+                  "reach none of those";
+        if (wrap)
+          what += "; A-NOWRAP breaks if one executes through an address "
+                  "that wraps (base plus signed offset outside the address "
+                  "space), whatever its landing: an unsat holds only for "
+                  "the executions that reach none of those";
         if (gap)
           what += "; no other out-of-object access or address alternative "
                   "the check sees reaches the cells of the gap ones through "

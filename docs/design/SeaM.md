@@ -225,6 +225,13 @@ classifies each one by where it lands in the placement
   out-of-object leaf of another access (below), reaches through another
   provenance. This is not a proof that A-SEP holds.
 
+Whatever the class, the warning names A-NULL when some flagged access has an
+address alternative in an object of size 0 (an `unknown` one through
+`null + i` breaks A-NULL whenever it executes), and A-NOWRAP when one has an
+address that wraps (placed base plus signed numeral offset outside
+`[0, 2^n)`: `OutOfObjectSpans::wrap`), each a premise that breaks if such an
+access executes through that alternative.
+
 The pairs cover the accesses the encoding flagged, and, on the other side of
 a pair only, the leaves of the accesses it did not flag (an ite address with
 some leaf in its object) whose span is known (a numeral offset and width)

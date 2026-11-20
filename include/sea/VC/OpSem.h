@@ -333,6 +333,11 @@ public:
   /// classified pairwise over all of them (classifyOutOfObject): ask after
   /// the encoding.
   unsigned outOfObjectCount(expr::seam::Landing l);
+  /// The static out-of-object accesses, whatever their landing, with a leaf
+  /// through an object of size 0 (A-NULL breaks if it executes through it)
+  /// / with a leaf whose address wraps (A-NOWRAP).
+  unsigned outOfObjectNullCount() const;
+  unsigned outOfObjectWrapCount() const;
   /// The first kInbViolationNotes static out-of-object accesses, as
   /// `<file:line:col> <kind>: <reason> lands=<class>[ with=<file:line:col>]`
   /// (with: the access of another provenance a `shared` one meets; sea-vc

@@ -1546,6 +1546,14 @@ public:
       }
       const unsigned w = o->base.getBitWidth();
       mpz_class mod = pow2(w), lo = toMpz(o->base.zext(w + 1));
+      {
+        // A-NOWRAP: base + off as integers, off signed
+        mpz_class off = numVal(v->off);
+        if (off >= pow2(nw - 1))
+          off = off - pow2(nw);
+        mpz_class at = lo + off;
+        res.wrap = res.wrap || at < mpz_class(0L) || at >= mod;
+      }
       lo = modPow2(lo + numVal(v->off), w);
       mpz_class hi = lo; // exclusive, may pass 2^w
       hi = hi + span;

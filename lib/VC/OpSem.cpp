@@ -299,6 +299,20 @@ unsigned SeaOpSem::outOfObjectCount(seam::Landing l) {
   return n;
 }
 
+unsigned SeaOpSem::outOfObjectNullCount() const {
+  unsigned n = 0;
+  for (const OutOfObject &r : oob)
+    n += r.spans.null;
+  return n;
+}
+
+unsigned SeaOpSem::outOfObjectWrapCount() const {
+  unsigned n = 0;
+  for (const OutOfObject &r : oob)
+    n += r.spans.wrap;
+  return n;
+}
+
 std::vector<std::string> SeaOpSem::inbViolationNotes() {
   classifyOutOfObject();
   std::vector<std::string> notes;
