@@ -24,8 +24,11 @@ static void report_fatal_error(std::string const &s) {
 }
 
 static term_t encode_term_fail(Expr e, const char *error_msg) {
+  // held here: a pointer into the returned string would outlive it
+  std::string yices_msg;
   if (!error_msg) {
-    error_msg = yices::error_string().c_str();
+    yices_msg = yices::error_string();
+    error_msg = yices_msg.c_str();
   }
   std::string str;
   raw_string_ostream str_os(str);
