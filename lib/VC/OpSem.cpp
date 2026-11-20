@@ -1234,6 +1234,17 @@ void SeaOpSem::accessRange(Expr d, Expr n, OpSemContext &ctx) {
     ++seamRw->stats().rules["companion.access"];
     return; // its mirror is checked on the op's operands (execRangeOp)
   }
+  // the range's A-INB condition is stated below: a cross-object decision
+  // against it names a recorded access (Rules::checkInbPremise; the units:
+  // a numeral length, else its first cell; a numeral 0 accesses nothing)
+  uint64_t units = 1;
+  unsigned nw;
+  if (op::bv::isBvNum(n, nw)) {
+    mpz_class nv = op::bv::toMpz(n);
+    units = mpz_fits_ulong_p(nv.get_mpz_t()) ? nv.get_ui() : ~uint64_t(0);
+  }
+  if (units)
+    seamRw->rules().noteInbAccess(d, units);
   ++inbAccesses;
   bool violated = false;
   Expr inb = seamRw->rules().rangeInBounds(d, n, violated);

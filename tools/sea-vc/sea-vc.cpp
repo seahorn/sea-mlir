@@ -839,7 +839,9 @@ static cl::opt<bool> seamRowGroup(
 static cl::opt<bool> seamCheckInbPremise(
     "seam-check-inb-premise",
     cl::desc("With --seam: check that every cmp.diff-base decision's two "
-             "addresses lie in accesses whose in-bounds condition the run "
+             "addresses (and those of a read decided apart from a memset / "
+             "memmove / memhavoc range) lie in accesses whose in-bounds "
+             "condition the run "
              "recorded (counters premise.inb-checked / "
              "premise.inb-unrecorded; warning vc.inb-premise-unrecorded). "
              "Default off: the matcher is still too narrow (keyed companions, "
@@ -6136,7 +6138,7 @@ int main(int argc, char **argv) {
     };
     if (ptrSortLeft(query))
       return 1;
-    // cmp.diff-base decisions whose A-INB premise names no recorded access
+    // cross-object decisions whose A-INB premise names no recorded access
     // (seam::Rules::checkInbPremise)
     if (sem.seamRewriter()) {
       const auto &rules = sem.seamRewriter()->rules();
@@ -6148,7 +6150,7 @@ int main(int argc, char **argv) {
           ex += "\n  " + e;
         sea::diag::warn("vc.inb-premise-unrecorded",
                         Twine(it->second) +
-                            " address(es) of cmp.diff-base decisions lie in no "
+                            " address(es) of cross-object decisions lie in no "
                             "access whose A-INB condition the run recorded "
                             "(the rule's premise is not stated); first:" +
                             ex);

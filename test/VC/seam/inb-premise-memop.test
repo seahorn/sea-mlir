@@ -1,0 +1,92 @@
+// The A-INB premise check (--seam-check-inb-premise) covers a read decided
+// apart from a memory-operation range (row.mset-skip, row.mcopy-skip by
+// cmp.diff-base: A-SEP), as it covers a store skipped by cmp.diff-base, and
+// a range is a recorded access (its destination, its numeral length or its
+// first cell).
+// RUN: split-file %s %t
+// In bounds: a memset of a (8 bytes), then a 4-byte load of b; the range
+// is recorded, so the check finds both addresses (no false alarm).
+// RUN: sea-vc %t/wide.mlir --lower --seam --seam-stats --seam-check-inb-premise 2>&1 | FileCheck %s --check-prefix=WIDE
+// WIDE: seam.rule.premise.a-sep: {{[1-9]}}
+// WIDE: seam.rule.premise.inb-checked: {{[1-9]}}
+// WIDE-NOT: premise.inb-unrecorded
+// WIDE: seam.rule.row.mset-skip: {{[1-9]}}
+// WIDE: result: unsat
+// RUN: sea-run %t/wide.mlir | FileCheck %s --check-prefix=RUN-OK
+// RUN-OK: status: halted
+// A memmove of symbolic length into a, read at b: the range's first cell
+// is recorded.
+// RUN: sea-vc %t/copy.mlir --lower --seam --seam-stats --seam-check-inb-premise 2>&1 | FileCheck %s --check-prefix=COPY
+// COPY: seam.rule.premise.a-sep: {{[1-9]}}
+// COPY: seam.rule.premise.inb-checked: {{[1-9]}}
+// COPY-NOT: premise.inb-unrecorded
+// COPY: seam.rule.row.mcopy-skip: {{[1-9]}}
+// COPY: result: unsat
+// A memset whose destination is select(c, a + 8, a): for c = 1 it writes
+// b's first cell, so A-SEP is broken there (the interpreter fails the
+// assertion) and the unsat rests on it. The skip is counted as A-SEP and
+// the check looks at it. The check also reports the two leaves of the ite
+// destination (a + 8 and a) as unrecorded: noteInbAccess records the whole
+// ite, while decideIn checks leaf pairs (a gap of the matcher, as for a
+// store at an ite address).
+// RUN: sea-vc %t/ite.mlir --lower --seam --seam-stats --seam-check-inb-premise 2>&1 | FileCheck %s --check-prefix=ITE
+// ITE: assume.a-sep: seam={{[1-9]}}
+// ITE: seam.rule.premise.a-sep: {{[1-9]}}
+// ITE: seam.rule.premise.inb-checked: {{[1-9]}}
+// ITE: seam.rule.row.mset-skip: {{[1-9]}}
+// RUN: sea-run %t/ite.mlir --input=1=1 | FileCheck %s --check-prefix=RUN-FAIL
+// RUN-FAIL: status: assert-failed
+
+//--- wide.mlir
+!m = !sea.mem<!sea.addr<64>, i8>
+sea.program @wide {
+  %A = sea.segment "heap.1" base 4096 : i64 size 8 : i64 align 8 kind "heap" : !sea.addr<64>
+  %B = sea.segment "heap.2" base 4104 : i64 size 8 : i64 align 8 kind "heap" : !sea.addr<64>
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %v = sea.const 7 : i8
+  %eight = sea.const 8 : i64
+  %m1 = sea.memset %m0[%A], %v, %eight inplace : !m
+  %x = sea.load %m1[%B] : !m -> i32
+  %z32 = sea.const 0 : i32
+  %ok = sea.icmp eq, %x, %z32 : i32
+  sea.assert %ok
+  sea.halt
+}
+//--- copy.mlir
+!m = !sea.mem<!sea.addr<64>, i8>
+sea.program @copy {
+  %A = sea.segment "heap.1" base 4096 : i64 size 8 : i64 align 8 kind "heap" : !sea.addr<64>
+  %B = sea.segment "heap.2" base 4104 : i64 size 8 : i64 align 8 kind "heap" : !sea.addr<64>
+  %C = sea.segment "heap.3" base 4112 : i64 size 8 : i64 align 8 kind "heap" : !sea.addr<64>
+  %m0 = sea.mem.nondet "m" [1] : !m
+  %n = sea.nondet "n" [2] : i64
+  %old = sea.load %m0[%B] : !m -> i8
+  %m1 = sea.memmove %m0[%A], %m0[%C], %n inplace : !m
+  %x = sea.load %m1[%B] : !m -> i8
+  %ok = sea.icmp eq, %x, %old : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- ite.mlir
+!m = !sea.mem<!sea.addr<64>, i8>
+sea.program @ite {
+  %A = sea.segment "heap.1" base 4096 : i64 size 8 : i64 align 8 kind "heap" : !sea.addr<64>
+  %B = sea.segment "heap.2" base 4104 : i64 size 8 : i64 align 8 kind "heap" : !sea.addr<64>
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %c = sea.nondet "c" [1] : i1
+  %c8 = sea.const 8 : i64
+  %pa = sea.addr.add %A, %c8 : !sea.addr<64>, i64
+  %p = sea.select %c, %pa, %A : !sea.addr<64>
+  %v = sea.const 7 : i8
+  %one = sea.const 1 : i64
+  %m1 = sea.memset %m0[%p], %v, %one inplace : !m
+  %x = sea.load %m1[%B] : !m -> i8
+  %ok = sea.icmp eq, %x, %z : i8
+  sea.assert %ok
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -156,8 +156,9 @@ struct SeaMOptions {
   /// afterwards (bv.ite-merge) rebuilt a growing disjunction per level,
   /// quadratic. Exact. sea-vc --seam-row-group.
   bool groupSameValueRow = true;
-  /// checkInbPremise (cmp.diff-base's A-INB premise names recorded
-  /// accesses); sea-vc --seam-check-inb-premise. Off by default: on
+  /// checkInbPremise (the A-INB premise of cmp.diff-base and of the
+  /// cross-object decisions of a read against a memory-operation range names
+  /// recorded accesses); sea-vc --seam-check-inb-premise. Off by default: on
   /// vcc-pi2: 9,475 of 11,117 checked addresses are not matched,
   /// mostly the matcher's gaps (keyed companions recorded through their
   /// mirror, other normal forms of one address), to be refined.
@@ -3442,9 +3443,12 @@ public:
   /// cancels: a - b is the numeral \p d (mod 2^w). Valid over bit-vectors
   /// (addition mod 2^w is cancellative). Replaces cancel() on the flat forms.
   /// The premise check: a cmp.diff-base decision rests on A-SEP for both
-  /// addresses; --seam-check states it as their A-INB (which implies A-SEP),
+  /// addresses (and so do the A-SEP / A-NULL decisions of a read against a
+  /// memory-operation range: decideIn, buildIn, rowWideMemOp, rowWideSmap);
+  /// --seam-check states it as their A-INB (which implies A-SEP),
   /// which the run states only for the accesses OpSem recorded
-  /// (accessAddr: the address in normal form and the access's units). Both
+  /// (accessAddr: the address in normal form and the access's units;
+  /// accessRange: a range's destination, its numeral length or 1). Both
   /// addresses of a decision must lie in a recorded access: the same term,
   /// or p + k with 0 <= k and k + span <= units (cancelDiff; the byte
   /// fallback's p + k of a wide access). Counted (premise.inb-checked /
@@ -5452,6 +5456,9 @@ public:
     bool allIn = true, allOut = true, sameK = true;
     std::optional<mpz_class> common;
     Decision all;
+    // the pairs decided by a program premise (checkInbPremise once the
+    // answer is used)
+    llvm::SmallVector<const std::pair<Expr, Expr> *, 8> premised;
     for (auto &p : pairs) {
       Decision dp;
       mpz_class kv = -1;
@@ -5464,12 +5471,16 @@ public:
       allOut = allOut && r == Range::Out;
       if (r != Range::Unknown)
         all.add(dp);
+      if (dp.premises & (PremASep | PremANull))
+        premised.push_back(&p);
     }
     if (sameK && common)
       k = num(*common, widthOf(d));
     if (!allIn && !allOut)
       return Range::Unknown;
     dec.add(all);
+    for (const auto *p : premised)
+      checkInbPremise(p->first, 1, p->second, 1); // a read in a range
     return allIn ? Range::In : Range::Out;
   }
 
@@ -5511,6 +5522,8 @@ public:
       ++resolved;
       countReasons(d);
       premises |= d.premises;
+      if (d.premises & (PremASep | PremANull))
+        checkInbPremise(a, 1, b, 1); // as decideIn
       return rg == Range::In ? mk<TRUE>(m_efac) : mk<FALSE>(m_efac);
     }
     Expr in = memOpIn(mk<PTR_DIFF>(a, b), n); // S1.5: a pointer difference
