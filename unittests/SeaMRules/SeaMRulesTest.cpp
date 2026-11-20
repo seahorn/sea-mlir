@@ -1728,6 +1728,22 @@ void testProvenance() {
   }
 }
 
+/// A non-unit IS_OVERLAP at the boundary: the circular interval test with
+/// the widths as numerals; a width of 2^w units covers every address
+void testOverlapWidth() {
+  Fixture F;
+  Expr two = erased(op::ptr::overlap(F.p, 2, F.q, 1));
+  Expr expect = mk<OR>(mk<BULT>(mk<BSUB>(F.q, F.p), F.num(2)),
+                       mk<BULT>(mk<BSUB>(F.p, F.q), F.num(1)));
+  CHECK(str(two) == str(expect), "overlap(p, 2, q, 1): " << str(two));
+  Expr full = erased(op::ptr::overlap(F.p, 1UL << kWidth, F.q, 1));
+  CHECK(isOpX<TRUE>(full), "overlap(p, 2^w, q, 1): " << str(full));
+  Expr fullQ = erased(op::ptr::overlap(F.p, 1, F.q, 1UL << kWidth));
+  CHECK(isOpX<TRUE>(fullQ), "overlap(p, 1, q, 2^w): " << str(fullQ));
+  Expr big = erased(op::ptr::overlap(F.p, (1UL << kWidth) + 5, F.q, 1));
+  CHECK(isOpX<TRUE>(big), "overlap(p, 2^w + 5, q, 1): " << str(big));
+}
+
 int main(int argc, char **argv) {
   unsigned randomCount = 300;
   if (argc > 1)
@@ -1748,7 +1764,8 @@ int main(int argc, char **argv) {
                {"load-resolve", testLoadResolve},
                {"null", testNull},
                {"prune-size0", testPruneSize0},
-               {"shadow", testShadow}};
+               {"shadow", testShadow},
+               {"overlap-width", testOverlapWidth}};
   for (const Test &t : tests) {
     int before = failures;
     t.fn();
