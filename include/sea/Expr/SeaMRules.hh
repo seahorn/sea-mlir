@@ -516,12 +516,11 @@ public:
   // PTR_INDEX nodes (docs/design/PtrIndex.md)
   //===------------------------------------------------------------------===//
   //
-  // The VC builds a node for sea.ptr.index only. A node stays where
-  // an address is used as one: the index of select / store / wselect /
-  // wstore, the address arguments of a memory-operation term, a branch of an
-  // ite, the base of a node. Everywhere else (compares, arithmetic, stored
-  // values) the rewriter replaces it by its flat form (doRewrite), and the
-  // deciders read an address through it (view, decidePair, decideEq,
+  // The VC builds a node for sea.ptr.index only. A node stays where OpSem
+  // put it (an address, a compare, arithmetic, a stored value): the node
+  // rule (ptrIndex) folds numeral indices and pulls ites, and turns only an
+  // unflagged node with no index left into its flat form. The deciders read
+  // an address through its summands (view, decidePair, decideEq,
   // wideRelation, offsetDiff, congruentStarts, ARM). The flat form is the
   // normalized term produced by sea-lower-ptr-index: the sum of the base's
   // summands, one x_k * s_k per index (normalized as bv.ac does) and the
@@ -662,10 +661,12 @@ public:
   /// does not change the value), a chain of nodes merged into one over the
   /// innermost base, numeral indices folded into c (mod 2^n), stride-0
   /// pairs dropped, K added into c, the pairs sorted by (index id, stride);
-  /// a node with no pair left and c = 0 is its base. Equal canonical forms
-  /// are equal values (not a provenance claim: markers are kept). This
-  /// comparison is restricted to nodes; a plain bvadd and a node at
-  /// the same address are not equated.
+  /// a node with no pair left and c = 0 is its base. A bvadd of one pointer
+  /// (a base or a node) and integers is the node it equals (canonSum), so a
+  /// plain sum and a node at the same address are equated. Equal canonical
+  /// forms are equal values (not a provenance claim: markers are kept), not
+  /// equal promises: ite.same keeps a branch only when the promises agree
+  /// (samePromise).
   /// Memoized over the rewriter's life; iterative (memory chains are deep).
   Expr canon(const Expr &e) const {
     if (e->arity() == 0)
@@ -4771,6 +4772,60 @@ public:
   // ite and Boolean rules
   //===------------------------------------------------------------------===//
 
+  /// Does \p e hold a node with a promise (nusw / nuw), at any depth? True
+  /// past kPromiseWalk nodes (the caller then assumes one).
+  static constexpr size_t kPromiseWalk = 4096;
+  static bool holdsPromise(const Expr &e) {
+    std::unordered_set<ENode *> seen;
+    llvm::SmallVector<ENode *, 32> stack{e.get()};
+    while (!stack.empty()) {
+      ENode *n = stack.pop_back_val();
+      if (!seen.insert(n).second)
+        continue;
+      if (op::ptr::isFlagged(n) || seen.size() > kPromiseWalk)
+        return true;
+      for (size_t i = 0; i < n->arity(); ++i)
+        stack.push_back(n->arg(i));
+    }
+    return false;
+  }
+
+  /// ite(c, t, e) with t and e equal values (sameAddr): the branch that may
+  /// replace it, or null. A node's promise is a fact only on the path that
+  /// made it (PtrIndex.md section 2): equal values are not equal promises
+  /// (a node and its unflagged twin, a node and a plain sum, constants equal
+  /// mod 2^n), and the kept branch's promise would hold on the other path
+  /// too (R-STRIDE then skips writes the other path's read sees). So:
+  ///  - t == e: t;
+  ///  - a branch without a promise anywhere: that branch (t first);
+  ///  - two nodes with the same operator, the same base and index pairs
+  ///    (strides as integers, in any order), and c and K equal as integers:
+  ///    t (one promise);
+  ///  - otherwise null (the ite stays).
+  Expr samePromise(const Expr &t, const Expr &e) const {
+    if (t == e || !holdsPromise(t))
+      return t;
+    if (!holdsPromise(e))
+      return e;
+    using namespace op;
+    if (!ptr::isPtrIndex(t) || !(t->op() == e->op()) ||
+        ptr::base(t) != ptr::base(e) ||
+        ptr::numIndices(t) != ptr::numIndices(e) ||
+        ptr::constant(t) != ptr::constant(e) ||
+        ptr::byteOffset(t) != ptr::byteOffset(e))
+      return Expr();
+    auto pairs = [](const Expr &n) {
+      std::vector<std::pair<size_t, mpz_class>> v;
+      for (size_t k = 0; k < ptr::numIndices(n); ++k)
+        v.push_back({size_t(ptr::index(n, k)->getId()), ptr::stride(n, k)});
+      std::sort(v.begin(), v.end(), [](const auto &l, const auto &r) {
+        return l.first != r.first ? l.first < r.first : l.second < r.second;
+      });
+      return v;
+    };
+    return pairs(t) == pairs(e) ? t : Expr();
+  }
+
   static bool areNegations(const Expr &x, const Expr &y) {
     return (isOpX<NEG>(x) && x->left() == y) ||
            (isOpX<NEG>(y) && y->left() == x);
@@ -4778,7 +4833,9 @@ public:
 
   /// Fig. 2.1 (and the branch's ITERewriteRule). No assumption.
   ///   ite(true, t, e) ~> t, ite(false, t, e) ~> e, ite(c, a, a) ~> a:
-  ///     RW_DONE (the result is a kid, normal).
+  ///     RW_DONE (the result is a kid, normal). ite.same: t and e equal
+  ///     values (sameAddr), kept as one branch only when that drops no
+  ///     path's promise (samePromise); otherwise the ite stays.
   ///   ite(c, true, false) ~> c: RW_DONE.
   ///   ite(c, false, true) ~> !c: RW_1: `!` at level 0 over the normal kid c
   ///     (!!x is removed by the NEG rule at the root).
@@ -4795,8 +4852,11 @@ public:
       return {e, RWStatus::RW_DONE};
     }
     if (sameAddr(t, e)) {
-      m_stats.count("ite.same");
-      return {t, RWStatus::RW_DONE};
+      if (Expr keep = samePromise(t, e)) {
+        m_stats.count("ite.same");
+        return {keep, RWStatus::RW_DONE};
+      }
+      ++m_stats.rules["ite.same-promise-kept"]; // bookkeeping: the ite stays
     }
     if (isOpX<TRUE>(t) && isOpX<FALSE>(e)) {
       m_stats.count("ite.bool");
@@ -6019,9 +6079,9 @@ public:
     auto idle = [&](const RewriteResult &r) {
       return r.exp == exp && r.status == RWStatus::RW_DONE;
     };
-    // PTR_INDEX (PtrIndex.md, step (a)): a node outside an address position
-    // is its flat form; RW_1: the term at level 0 again, its kids (flat
-    // forms of normal nodes, ites of them) at level 1
+    // PTR_INDEX (PtrIndex.md, step (a)): the node rule (Rules::ptrIndex:
+    // index folds, pull-ite; an unflagged node with no index left is its
+    // flat form)
     if (op::ptr::isPtrIndex(exp))
       return m_rules.ptrIndex(exp);
     if (isOpX<PTR_FROM_BITS>(exp)) {

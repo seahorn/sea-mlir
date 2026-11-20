@@ -525,6 +525,45 @@ void testIteBool() {
   F.expect("ite-false", mk<ITE>(F.f, F.x, F.y), F.y, {"ite.false"});
   F.expect("ite-same", mk<ITE>(c, F.x, F.x), F.x, {"ite.same"});
   F.expect("ite-id", mk<ITE>(c, F.t, F.f), c, {"ite.bool"});
+  // ite.same over equal values with different promises (PtrIndex.md section
+  // 2: a promise holds only on the path that made the node): the branch
+  // without a promise, the one promise when both agree, else the ite stays
+  {
+    using op::PtrOpKind;
+    auto node = [&](PtrOpKind k, std::vector<std::pair<Expr, mpz_class>> idx,
+                    long cst) {
+      return op::ptr::ptrIndex(k, F.o1, idx, mpz_class(cst), mpz_class(0L));
+    };
+    Expr u = node(PtrOpKind::PTR_INDEX, {{F.x, 3}}, 0);
+    Expr n = node(PtrOpKind::PTR_INDEX_NUSW, {{F.x, 3}}, 0);
+    for (bool flip : {false, true}) {
+      RewriteStats st;
+      Expr out =
+          F.rewrite(flip ? mk<ITE>(c, u, n) : mk<ITE>(c, n, u), P1(), st);
+      CHECK(out == u && st.get("ite.same") == 1,
+            "ite-same: the unflagged branch: " << str(out));
+    }
+    // the same promise, index pairs in another order: one of them
+    Expr nxy = node(PtrOpKind::PTR_INDEX_NUSW, {{F.x, 3}, {F.y, 5}}, 4);
+    Expr nyx = node(PtrOpKind::PTR_INDEX_NUSW, {{F.y, 5}, {F.x, 3}}, 4);
+    RewriteStats sa;
+    Expr oa = F.rewrite(mk<ITE>(c, nxy, nyx), P1(), sa);
+    CHECK(sa.get("ite.same") == 1 && !isOpX<ITE>(oa),
+          "ite-same: agreeing promises: " << str(oa));
+    // the operators differ (nusw / nuw), or c only mod 2^n: the ite stays
+    Expr w = node(PtrOpKind::PTR_INDEX_NUW, {{F.x, 3}}, 0);
+    mpz_class two;
+    mpz_ui_pow_ui(two.get_mpz_t(), 2, kWidth);
+    Expr cm = op::ptr::ptrIndex(PtrOpKind::PTR_INDEX_NUSW, F.o1, {{F.x, 3}},
+                                two - mpz_class(1L), mpz_class(0L));
+    Expr cn = node(PtrOpKind::PTR_INDEX_NUSW, {{F.x, 3}}, -1);
+    for (const auto &[l, r] : {std::pair<Expr, Expr>{n, w}, {cm, cn}}) {
+      RewriteStats sk;
+      Expr ok = F.rewrite(mk<ITE>(c, l, r), P1(), sk);
+      CHECK(sk.get("ite.same") == 0 && isOpX<ITE>(ok),
+            "ite-same: different promises keep the ite: " << str(ok));
+    }
+  }
   F.expect("ite-neg", mk<ITE>(c, F.f, F.t), mk<NEG>(c), {"ite.bool"});
   F.expect("ite-neg-cond", mk<ITE>(c, F.x, mk<ITE>(mk<NEG>(c), F.y, F.z)),
            mk<ITE>(c, F.x, F.y), {"ite.neg-cond"});

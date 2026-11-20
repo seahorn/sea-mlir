@@ -1,0 +1,114 @@
+// ite.same replaces ite(c, t, e) by one branch when t and e are equal
+// values (sameAddr). A ptr.index promise is a fact only on the path that
+// made the node, so the kept branch must not carry a promise the other
+// path lacks: R-STRIDE (--seam-stride) would then skip writes that path
+// reads. Each program stores 7 in two cells of a, joins a plain address
+// (c path) with a nusw node of the same value (!c path), and loads there;
+// for c = 1, x = -85 the plain address is a written cell and the
+// assertion fails (sea-run), with no promise made on that path.
+// @flags: a[3x] vs a[3x] nusw (equal by canon, which drops flags).
+// @sum: a + 3x (addr.add) vs a[3x] nusw (canon reads the sum as a node).
+// @fold: a + 3x + 255 vs a[3x] offset -1 nusw (c equal only mod 2^8).
+// RUN: split-file %s %t
+// RUN: sea-vc %t/flags.mlir --lower --seam --seam-stride 2>&1 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/sum.mlir --lower --seam --seam-stride 2>&1 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/fold.mlir --lower --seam --seam-stride 2>&1 | FileCheck %s --check-prefix=SAT
+// SAT: result: sat
+// SAT: replay: assert-failed
+// RUN: sea-run %t/flags.mlir --input=1=-85 --input=2=1 2>&1 | FileCheck %s --check-prefix=INTERP
+// RUN: sea-run %t/sum.mlir --input=1=-85 --input=2=1 2>&1 | FileCheck %s --check-prefix=INTERP
+// RUN: sea-run %t/fold.mlir --input=1=-85 --input=2=1 2>&1 | FileCheck %s --check-prefix=INTERP
+// INTERP-NOT: interp.ptr-index-promise
+// INTERP: status: assert-failed
+
+//--- flags.mlir
+!am = !sea.mem<!sea.addr<8>, i8>
+sea.program @flags {
+  %a = sea.segment "heap.1" base 16 : i8 size 16 : i8 align 1 kind "heap" : !sea.addr<8>
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !am
+  %v7 = sea.const 7 : i8
+  %o = sea.const 1 : i8
+  %p = sea.addr.add %a, %o : !sea.addr<8>, i8
+  %m1a = sea.store %m0[%p], %v7 inplace : !am, i8
+  %o2 = sea.const 2 : i8
+  %p2 = sea.addr.add %a, %o2 : !sea.addr<8>, i8
+  %m1 = sea.store %m1a[%p2], %v7 inplace : !am, i8
+  %x = sea.nondet "x" [1] : i8
+  %c = sea.nondet "c" [2] : i1
+  sea.cond_br %c, ^t, ^f
+^t:
+  %n = sea.ptr.index %a [%x] strides [3] offset 0 : !sea.addr<8>, i8
+  sea.br ^j(%n : !sea.addr<8>)
+^f:
+  %u = sea.ptr.index %a [%x] strides [3] offset 0 nusw : !sea.addr<8>, i8
+  sea.br ^j(%u : !sea.addr<8>)
+^j(%q : !sea.addr<8>):
+  %y = sea.load %m1[%q] : !am -> i8
+  %ok = sea.icmp eq, %y, %z : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- sum.mlir
+!am = !sea.mem<!sea.addr<8>, i8>
+sea.program @sum {
+  %a = sea.segment "heap.1" base 16 : i8 size 16 : i8 align 1 kind "heap" : !sea.addr<8>
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !am
+  %v7 = sea.const 7 : i8
+  %o = sea.const 1 : i8
+  %p = sea.addr.add %a, %o : !sea.addr<8>, i8
+  %m1a = sea.store %m0[%p], %v7 inplace : !am, i8
+  %o2 = sea.const 2 : i8
+  %p2 = sea.addr.add %a, %o2 : !sea.addr<8>, i8
+  %m1 = sea.store %m1a[%p2], %v7 inplace : !am, i8
+  %x = sea.nondet "x" [1] : i8
+  %c = sea.nondet "c" [2] : i1
+  sea.cond_br %c, ^t, ^f
+^t:
+  %three = sea.const 3 : i8
+  %x3 = sea.mul %x, %three : i8
+  %n = sea.addr.add %a, %x3 : !sea.addr<8>, i8
+  sea.br ^j(%n : !sea.addr<8>)
+^f:
+  %u = sea.ptr.index %a [%x] strides [3] offset 0 nusw : !sea.addr<8>, i8
+  sea.br ^j(%u : !sea.addr<8>)
+^j(%q : !sea.addr<8>):
+  %y = sea.load %m1[%q] : !am -> i8
+  %ok = sea.icmp eq, %y, %z : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- fold.mlir
+!am = !sea.mem<!sea.addr<8>, i8>
+sea.program @fold {
+  %a = sea.segment "heap.1" base 16 : i8 size 16 : i8 align 1 kind "heap" : !sea.addr<8>
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !am
+  %v7 = sea.const 7 : i8
+  %m1a = sea.store %m0[%a], %v7 inplace : !am, i8
+  %o2 = sea.const 1 : i8
+  %p2 = sea.addr.add %a, %o2 : !sea.addr<8>, i8
+  %m1 = sea.store %m1a[%p2], %v7 inplace : !am, i8
+  %x = sea.nondet "x" [1] : i8
+  %c = sea.nondet "c" [2] : i1
+  sea.cond_br %c, ^t, ^f
+^t:
+  %three = sea.const 3 : i8
+  %x3 = sea.mul %x, %three : i8
+  %k = sea.const 255 : i8
+  %s = sea.add %x3, %k : i8
+  %n = sea.addr.add %a, %s : !sea.addr<8>, i8
+  sea.br ^j(%n : !sea.addr<8>)
+^f:
+  %u = sea.ptr.index %a [%x] strides [3] offset -1 nusw : !sea.addr<8>, i8
+  sea.br ^j(%u : !sea.addr<8>)
+^j(%q : !sea.addr<8>):
+  %y = sea.load %m1[%q] : !am -> i8
+  %ok = sea.icmp eq, %y, %z : i8
+  sea.assert %ok
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
