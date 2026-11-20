@@ -28,7 +28,10 @@
 //   - sea.select, the promise guarded by the condition.
 // A block argument (a phi) is not followed: the GEPs that reach an access
 // only through one get no assertion there, and the job says so (warning
-// check-ptr-index.phi).
+// check-ptr-index.phi). Any other def the walk does not follow (a load,
+// addr.from_bits, ...) ends it the same way, with a warning
+// (check-ptr-index.not-followed) at the def; fresh objects, null and
+// nondeterministic pointers end it silently.
 //
 // The program's own asserts are dropped (the job checks the promises on
 // every execution, not the functional property); sea-merge-asserts then
@@ -126,7 +129,21 @@ void CheckPtrIndexPass::runOnOperation() {
           Value gf = guard ? Value(AndOp::create(b, loc, guard, nc)) : nc;
           sources(s.getTrueValue(), gt, loc, out);
           sources(s.getFalseValue(), gf, loc, out);
+          return;
         }
+        // a fresh object, a null or an unconstrained pointer is the end of
+        // the chain: no GEP promise comes from it
+        if (isa<SegmentOp, AllocaOp, MallocOp, GlobalOp, PtrNullOp,
+                PtrNondetOp>(def))
+          return;
+        // any other def (a load, addr.from_bits, ...) is not followed: the
+        // promises of the GEPs behind it are not checked at the access
+        diag::warn("check-ptr-index.not-followed",
+                   "an access address comes from " +
+                       def->getName().getStringRef() +
+                       ", which is not followed: the promises of the GEPs "
+                       "that reach it are not checked there",
+                   def->getLoc());
       };
 
   // the promise of \p g as an i1 (P1-P3; signed and / or unsigned)

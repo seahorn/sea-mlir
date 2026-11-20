@@ -715,7 +715,8 @@ made by the expansion, counts `premise.a-nowrap`.
   want the op. The VC keeps the op.
 - Paranoid mode (`--check-ptr-index`, optional): for each access whose
   address operand reaches a flagged ptr.index through a chain of ptr.index
-  / ptr.add results only (no block arguments), assert the order-free
+  / ptr.add results only (a block argument or any other def ends the walk
+  with a warning, below), assert the order-free
   promise right before the access, once per (ptr.index, access) pair.
   - A flagged ptr.index with no such use has its flags dropped, counted
     `check-ptr-index.unused`.
@@ -733,6 +734,10 @@ made by the expansion, counts `premise.a-nowrap`.
   - Block arguments (phis) are not followed: warning
     `check-ptr-index.phi`. [OPEN] Follow them, with the edge guards. The
     Ackermann rule's ite-of-node origins come from such joins.
+  - Any other def it does not follow (a load, addr.from_bits / from_int,
+    ptr.from_int) ends the walk with warning `check-ptr-index.not-followed`
+    at that def; segments (fresh objects, null, nondet pointers after
+    placement) end it silently.
   - Unused flagged GEPs are not touched; sea-merge-asserts makes the BMC
     form.
   - Not with --check-align: each job drops the program's asserts.
