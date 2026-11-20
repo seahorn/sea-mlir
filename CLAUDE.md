@@ -118,8 +118,8 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   docs/design/BoxAll.md),
   `sea-print-strengthen` / `sea-print-weaken` (counterexample print ops,
   weak = by name vs strong = SSA operands, docs/design/Print.md),
-  `sea-drop-fresh-memhavoc` (memhavoc of an object nothing wrote since its
-  allocation is a no-op: removed; others stay), `sea-guard-null-memhavoc`
+  `sea-drop-fresh-memhavoc` (memhavoc of an object nothing wrote or read
+  since its allocation is a no-op: removed; others stay), `sea-guard-null-memhavoc`
   (a memhavoc whose pointer may be null runs only when it is not: the open
   decision memhavoc(null) = no-op, `--memhavoc-null`); all run before placement
   in the lowering of abstract programs. `Passes.cpp`: registration and

@@ -74,7 +74,7 @@ The main lines of `sea-vc`:
 | `seam.ptrint-violated: <where> addr= [obj=] bits= stored=` | `--ptr-companion=check`, `sat`: a split pointer load in the replay that reads bits other than the pointer last stored there |
 | `seam.ptrint-unstored: <where> addr= [obj=] bits=` | `--ptr-companion=check`, `sat`: a split pointer load from a cell no pointer was stored to |
 | `seam.ptrint-replay: loads= holds= violated= unstored=` | `--ptr-companion=check`, `sat`: the split pointer loads of the replay; the `sat` is confirmed if one fails |
-| `assume.a-sep: drop-fresh-memhavoc=<n>` | `--lower` of an abstract program dropped n memhavocs of fresh objects whose no-op rests on A-SEP (also without `--seam` and with `--seam-premises=0`); a separate memory-safety check discharges it |
+| `assume.a-sep: drop-fresh-memhavoc=<n>` | `--lower` of an abstract program dropped n memhavocs of fresh objects whose no-op rests on A-SEP: some access (a read or a write, through any pointer) of the memory comes before the memhavoc, or its range is not provably in its object (also without `--seam` and with `--seam-premises=0`); a separate memory-safety check discharges it |
 | `assume.addr0-is-null: vc null-uses=<n>` | `--lower`: placement puts the null object at address 0, so the VC identifies null with address 0 (n: uses of its segment); a fact about the target, not discharged |
 | `assume.memhavoc-null-noop: vc sites=<n>` | `--lower`: memhavocs whose pointer may be null, guarded so that the VC runs them only when it is not (`--memhavoc-null=noop`) |
 | `assume.memhavoc-null-noop: uses=<n>` | after `replay.original:` (and in `sea-run`): memhavocs of the null pointer the run executed as no-ops, an open semantics decision (`--memhavoc-null`) |

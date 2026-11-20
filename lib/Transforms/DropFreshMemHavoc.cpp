@@ -5,9 +5,9 @@
 //-*-===//
 //
 // The contents of a fresh object are unconstrained already, so a memhavoc
-// of it before anything wrote to it changes nothing: it is removed. That is
-// SeaHorn's sound use of memhavoc (protecting a fresh allocation); a
-// memhavoc elsewhere stays and is modeled as such (the VC: constant
+// of it before anything wrote or read them changes nothing: it is removed.
+// That is SeaHorn's sound use of memhavoc (protecting a fresh allocation);
+// a memhavoc elsewhere stays and is modeled as such (the VC: constant
 // lengths only).
 //
 // Fresh: the memhavoc's pointer comes only from allocations (sea.alloca /
@@ -23,22 +23,34 @@
 // after an allocation in one branch). Block arguments: all incoming
 // versions must be fresh; a cycle is not.
 //
+// Unread: no read may have seen A's cells. A read (sea.load, the source of
+// sea.memmove) of a version that descends from the chain's roots without
+// passing the memhavoc (the chain, or a version that branches off it) whose
+// pointer may come from A, or from somewhere unknown, makes the memhavoc
+// observable (a later read of the object may differ from it), unless it
+// happens before A. Such a memhavoc stays. The walk skips users in blocks
+// and branch edges that no run through the memhavoc passes (a join after
+// a path around the allocation), but does not order reads against the
+// memhavoc: a read of an earlier version after it also keeps it (coarse,
+// never unsound).
+//
 // Contract.
 //   Accepts: abstract programs (pointer-indexed memory); runs before
 //     sea-lower-tracking: a memhavoc of a fresh object is a no-op, so not a
 //     modification either (verify-c-common allocates and havocs inputs
 //     after sea_tracking_on and expects them unmodified, as SeaHorn, whose
 //     memhavoc writes nothing).
-//   Produces: no memhavoc on a fresh object (by the rule above); the others
-//     unchanged. Premise A-SEP (no cell accessed through two provenances):
-//     a drop is sound only if no access through another object touches a
-//     cell this one's accesses touch (after placement, objects share one
-//     memory), the memhavoc's own range included. The drops that rest on it
-//     (the chain passed an update, or the memhavoc's range is not provably
-//     in its object) are counted on the program (kDropFreshInbAttr); sea-vc
-//     reports them (assume.a-sep), also with --seam-premises=0. A separate
-//     memory-safety (bounds) check of the program discharges A-INB, which
-//     implies A-SEP.
+//   Produces: no memhavoc on a fresh, unread object (by the rules above);
+//     the others unchanged. Premise A-SEP (no cell accessed through two
+//     provenances): a drop is sound only if no access through another
+//     object touches a cell this one's accesses touch (after placement,
+//     objects share one memory), the memhavoc's own range included. The
+//     drops that rest on it are counted on the program (kDropFreshInbAttr):
+//     every drop with an access (a read or a write, through any pointer) of
+//     the versions the unread walk visits, or whose range is not provably in
+//     its object. sea-vc reports them (assume.a-sep), also with
+//     --seam-premises=0. A separate memory-safety (bounds) check of the
+//     program discharges A-INB, which implies A-SEP.
 //
 //===----------------------------------------------------------------------===//
 
@@ -62,8 +74,8 @@ public:
 
   StringRef getArgument() const final { return "sea-drop-fresh-memhavoc"; }
   StringRef getDescription() const final {
-    return "Remove memhavoc of objects nothing has written since their "
-           "allocation (a no-op)";
+    return "Remove memhavoc of objects nothing has written or read since "
+           "their allocation (a no-op)";
   }
 
   void runOnOperation() override;
@@ -132,6 +144,8 @@ public:
     Block *a = op->getBlock(), *b = alloc->getBlock();
     return a != b && reachable(a).contains(b) && !reachable(b).contains(a);
   }
+  /// Is there a path of one or more edges from `a` to `b`?
+  bool reaches(Block *a, Block *b) { return reachable(a).contains(b); }
 
 private:
   const llvm::DenseSet<Block *> &reachable(Block *from) {
@@ -210,9 +224,10 @@ static bool fresh(Value mem, Operation *alloc, HappensBefore &before,
   return r;
 }
 
-/// Does the chain ending in `mem` pass an update before it reaches its
-/// roots (through block arguments)?
-static bool hasUpdate(Value mem) {
+/// The roots of the chain ending in `mem`: walked back through updates and
+/// the incoming values of block arguments, a root is any other value (after
+/// fresh(), a sea.mem.nondet; a memhavoc of null only skips that check).
+static void rootsOf(Value mem, SmallVectorImpl<Value> &roots) {
   llvm::DenseSet<Value> seen;
   SmallVector<Value> work{mem};
   while (!work.empty()) {
@@ -221,19 +236,115 @@ static bool hasUpdate(Value mem) {
       continue;
     if (auto arg = dyn_cast<BlockArgument>(v)) {
       Block *b = arg.getOwner();
-      for (auto p = b->pred_begin(); p != b->pred_end(); ++p) {
+      bool known = !b->hasNoPredecessors();
+      SmallVector<Value> ins;
+      for (auto p = b->pred_begin(); known && p != b->pred_end(); ++p) {
         auto br = dyn_cast<BranchOpInterface>((*p)->getTerminator());
-        if (!br)
-          return true; // decided not fresh before; be conservative
-        work.push_back(
-            br.getSuccessorOperands(p.getSuccessorIndex())[arg.getArgNumber()]);
+        known = br != nullptr;
+        if (known)
+          ins.push_back(br.getSuccessorOperands(
+              p.getSuccessorIndex())[arg.getArgNumber()]);
       }
+      if (known)
+        work.append(ins.begin(), ins.end());
+      else
+        roots.push_back(v);
       continue;
     }
-    if (!isa<MemNondetOp>(v.getDefiningOp()))
-      return true;
+    Operation *def = v.getDefiningOp();
+    if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(def))
+      work.push_back(def->getOperand(0));
+    else
+      roots.push_back(v);
   }
-  return false;
+}
+
+/// The accesses of the memory that may see its cells as they are before
+/// the memhavoc, in a run that executes it: the users of every version that
+/// descends from the chain's roots without passing the memhavoc's result
+/// (the chain itself, and versions that branch off it: a load may read an
+/// earlier version, a non-inplace update makes a copy), as far as a path
+/// through the memhavoc can hold them: a user in a block no such path
+/// passes, or a branch edge none takes (a join after a path that skips the
+/// allocation and the memhavoc), is not followed. Coarse otherwise: the
+/// order of an access relative to the memhavoc is not looked at, and a
+/// join reached both through the memhavoc and around it counts.
+struct PriorAccesses {
+  /// some load, store, memset, memmove or other memhavoc
+  bool any = false;
+  /// a read that may read a cell of one of the memhavoc's objects: its
+  /// pointer may come from that allocation, or from somewhere unknown (and
+  /// it does not happen before the allocation); also any user the walk does
+  /// not know
+  bool readsObject = false;
+};
+
+static PriorAccesses
+priorAccesses(MemHavocOp op, const llvm::SmallPtrSetImpl<Operation *> &allocs,
+              HappensBefore &before) {
+  PriorAccesses acc;
+  Block *hb = op->getBlock();
+  Region *top = hb->getParent();
+  // can a run execute both the memhavoc and an op in `b`?
+  auto withHavoc = [&](Block *b) {
+    return b == hb || before.reaches(b, hb) || before.reaches(hb, b);
+  };
+  // can a run take the edge from `p` to `s` and execute the memhavoc?
+  auto edgeWithHavoc = [&](Block *p, Block *s) {
+    return p == hb || before.reaches(hb, p) || s == hb || before.reaches(s, hb);
+  };
+  auto read = [&](Operation *user, Value ptr) {
+    acc.any = true;
+    llvm::SmallPtrSet<Operation *, 4> from;
+    llvm::DenseSet<Value> seen;
+    bool known = allocationsOf(ptr, from, seen);
+    for (Operation *alloc : allocs)
+      if ((!known || from.contains(alloc)) && !before(user, alloc))
+        acc.readsObject = true;
+  };
+  SmallVector<Value> work;
+  rootsOf(op.getMem(), work);
+  llvm::DenseSet<Value> seen;
+  while (!work.empty() && !acc.readsObject) {
+    Value v = work.pop_back_val();
+    if (!seen.insert(v).second)
+      continue;
+    for (OpOperand &use : v.getUses()) {
+      Operation *user = use.getOwner();
+      if (user == op.getOperation())
+        continue; // its result and what descends only from it come after
+      // the op (or the region op holding it) in the memhavoc's region
+      Operation *at = top->findAncestorOpInRegion(*user);
+      if (at && !withHavoc(at->getBlock()))
+        continue; // no run executes both
+      if (auto load = dyn_cast<LoadOp>(user)) {
+        read(user, load.getAddr());
+      } else if (auto mv = dyn_cast<MemMoveOp>(user)) {
+        if (&use == &mv.getSrcMutable()) {
+          read(user, mv.getSrcAddr());
+        } else {
+          acc.any = true;
+          work.push_back(mv.getResult());
+        }
+      } else if (isa<StoreOp, MemSetOp, MemHavocOp>(user)) {
+        acc.any = true;
+        work.push_back(user->getResult(0));
+      } else if (isa<ResetModifiedOp>(user)) {
+        work.push_back(user->getResult(0)); // no cell changes
+      } else if (isa<IsModifiedOp, PrintMemOp>(user)) {
+        // the set of modified objects, not the cells; a print changes nothing
+      } else if (auto br = dyn_cast<BranchOpInterface>(user)) {
+        if (auto arg = br.getSuccessorBlockArgument(use.getOperandNumber())) {
+          if (at != user || edgeWithHavoc(user->getBlock(), arg->getOwner()))
+            work.push_back(*arg);
+        } else
+          acc.readsObject = true;
+      } else {
+        acc.any = acc.readsObject = true; // an unknown user: assume it reads
+      }
+    }
+  }
+  return acc;
 }
 
 /// Does the memhavoc's range provably lie in its object: its address is an
@@ -275,14 +386,20 @@ void DropFreshMemHavocPass::runOnOperation() {
     }
     if (!allFresh)
       continue;
+    // A read of the object since its allocation makes the memhavoc
+    // observable: a later read may see other values. Then it stays.
+    PriorAccesses acc = priorAccesses(op, allocs, before);
+    if (acc.readsObject)
+      continue;
     // A-SEP: the drop is sound only if no access through another provenance
-    // touches the object's cells: an update the walk passed (another
-    // object's, or one before the allocation) must not, and the memhavoc's
-    // cells outside its object (if any) are touched by no other provenance.
-    // After placement objects share one memory. With no update and the range in
-    // the object, the object's cells are the initial memory's: unconstrained
-    // already.
-    if (hasUpdate(op.getMem()) || !rangeInObject(op))
+    // touches the object's cells (after placement objects share one
+    // memory): an access before the memhavoc (a write the chain walk passed,
+    // a read of another object, or one before the allocation) must not, and
+    // the memhavoc's cells outside its object (if any) are touched by no
+    // other provenance. With no such access and the range in the object,
+    // the object's cells are the initial memory's: unconstrained already,
+    // and nothing saw them.
+    if (acc.any || !rangeInObject(op))
       ++inbDrops;
     op.getResult().replaceAllUsesWith(op.getMem());
     op.erase();

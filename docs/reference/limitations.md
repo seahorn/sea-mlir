@@ -27,10 +27,14 @@
 - Front-end annotations (`align`, and the no-wrap flags of pointer
   arithmetic) are trusted. `--check-align` and `--check-ptr-index` check
   them as separate jobs.
-- `--lower` of an abstract program removes memhavocs of fresh objects;
-  when one rests on A-SEP (an access of another object could land in the
-  object after placement), it reports `assume.a-sep:
-  drop-fresh-memhavoc=<n>`, also without `--seam`. A separate
+- `--lower` of an abstract program removes memhavocs of fresh objects
+  (nothing wrote or read the object since its allocation). A drop rests on
+  A-SEP when any access (a read or a write, through any pointer) of the
+  memory comes before the memhavoc, since after placement an access of
+  another object could reach the object's cells, or when the memhavoc's
+  range is not provably in its object; it is reported as `assume.a-sep:
+  drop-fresh-memhavoc=<n>`, also without `--seam`. The count is coarse:
+  an access that provably stays in its object counts too. A separate
   memory-safety check of the program would discharge it; sea-mlir has
   none yet.
 - Open semantics decision: `sea.memhavoc` of the null pointer is a no-op
