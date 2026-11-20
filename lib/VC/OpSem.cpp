@@ -382,9 +382,12 @@ Expr SeaOpSem::firingPremise(const RewriteTrail &trail,
   ExprVector conj{base};
   for (const auto &[a, al] : aligns) {
     unsigned w = seamRw->rules().widthOf(a);
-    conj.push_back(
-        mk<EQ>(mk<BAND>(mk<ADDR>(a), bv::bvnum(mpz_class(al - 1), w, ef)),
-               bv::bvnum(mpz_class(0UL), w, ef)));
+    // the mask at w bits: an align above 2^w gives all ones (only address 0
+    // is aligned), not a numeral that does not fit
+    uint64_t mask = w < 64 ? (al - 1) & ((uint64_t(1) << w) - 1) : al - 1;
+    conj.push_back(mk<EQ>(
+        mk<BAND>(mk<ADDR>(a), bv::bvnum(mpz_class((unsigned long)mask), w, ef)),
+        bv::bvnum(mpz_class(0UL), w, ef)));
   }
   return mknary<AND>(trueE, conj);
 }
