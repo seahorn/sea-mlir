@@ -428,7 +428,12 @@ Notes:
   resort, after the syntactic checks, and only for the compare of a ROW step
   (`decidePair`, and `decideEq` when the leaf pairs exceed the bound):
   `arm.skip`. Never a program compare, though the same-base part would need
-  no assumption. Differences from
+  no assumption. An `arm.skip` that uses a premise (A-SEP across bases, or
+  a size-0 provenance dropped by `cmp.size0-vacuous`) is refused when the A-INB
+  condition of an address cannot name one of its ARM provenances (a node
+  over an absolute base whose stride-1 index holds the base: the run would
+  state no condition for that access; counted `arm.skip-no-inb`), unless
+  ARM puts every provenance inside its object. Differences from
   the thesis figures: top / bottom and the absolute entry as above; bottom
   absorbs add (Fig. 5.3 has `[a, b] +^ bot = [a, b]`, wrong for a sum of
   sets); a mutation switch for the tests.

@@ -1900,6 +1900,52 @@ public:
     return memo.find(addr)->second;
   }
 
+  /// Does armInBounds leave a provenance of \p addr without a condition? A
+  /// part of the term that ARM reads as a pointer (its map has a base entry,
+  /// not top) but that armInBounds cannot follow to its base: a node whose
+  /// base ARM reads as absolute and whose stride-1 index holds the base
+  /// (`ptr.index(from_int(16), [to_bits(ite(c, obj.a, obj.b))])`:
+  /// armNodeBase is null), so its condition is true while ARM still names
+  /// obj.a and obj.b as its provenances. A decision that separates such a
+  /// provenance from another base by A-SEP, or drops it as size 0 by
+  /// A-SEP / A-NULL (arm.skip, cmp.size0-vacuous), rests on an A-INB
+  /// condition the run never states: it is refused (armDisjoint,
+  /// decideInPair; counted arm.skip-no-inb). False when every base entry of the
+  /// map is inside its object (armAllIn: nothing to condition). Same walk as
+  /// armInBounds.
+  bool armInbGap(const Expr &addr, uint64_t units) const {
+    if (!m_opts.arm || armAllIn(addr, units))
+      return false;
+    auto pointerPart = [&](const Expr &p) {
+      const AddrRangeMap &m = m_arm.alpha(p);
+      return !m.isTop() && m.hasBases();
+    };
+    std::unordered_set<Expr> seen;
+    llvm::SmallVector<Expr, 32> stack{addr};
+    while (!stack.empty()) {
+      Expr p = stack.pop_back_val();
+      if (!seen.insert(p).second || m_bases.lookup(p))
+        continue;
+      Expr kid;
+      if (isOpX<ITE>(p)) {
+        stack.push_back(p->arg(1));
+        stack.push_back(p->arg(2));
+        continue;
+      }
+      if (isOpX<BADD>(p))
+        kid = armPtrArg(p);
+      else if (op::ptr::isObservation(p))
+        kid = p->arg(0);
+      else if (op::ptr::isPtrIndex(p))
+        kid = armNodeBase(p);
+      if (kid)
+        stack.push_back(kid);
+      else if (pointerPart(p))
+        return true;
+    }
+    return false;
+  }
+
   /// `value - obj.k <= size_k - units` (unsigned), false if the object is
   /// smaller than the access.
   Expr rangeCond(const ObjectBase &o, const Expr &value, uint64_t units) const {
@@ -3313,7 +3359,11 @@ public:
   /// because of A-SEP (the maps are disjoint only across different bases),
   /// and `cmp.size0-vacuous` if it dropped the provenance of an object of
   /// size 0 (AddrRangeMap::disjoint): A-SEP if the maps are disjoint without
-  /// the drop, every base its own provenance; else A-NULL.
+  /// the drop, every base its own provenance; else A-NULL. An answer that
+  /// needs a premise (across bases, or a dropped size-0 provenance) is
+  /// refused (counted arm.skip-no-inb) when the A-INB condition of a or b
+  /// leaves one of its ARM provenances out (armInbGap); otherwise its premise
+  /// is checked (checkInbPremise).
   bool armDisjoint(const Expr &a, const Expr &b, bool rowCompare,
                    Decision &d) const {
     if (!rowCompare || !m_opts.arm)
@@ -3321,7 +3371,15 @@ public:
     bool cross = false, zero = false;
     if (!m_arm.disjoint(a, b, m_opts.assumePremises, &cross, &zero))
       return false;
+    // a premise (A-SEP across bases, A-SEP / A-NULL for a dropped size-0
+    // provenance) needs every provenance's A-INB condition stated
+    if ((cross || zero) && (armInbGap(a, 1) || armInbGap(b, 1))) {
+      ++m_stats.rules["arm.skip-no-inb"]; // bookkeeping: not in the trail
+      return false;
+    }
     d.add("arm.skip", cross ? PremASep : PremNone);
+    if (cross || zero)
+      checkInbPremise(a, 1, b, 1);
     // the dropped size-0 provenances: A-SEP when the maps are disjoint with
     // every base its own provenance (no drop: each dropped entry meets only
     // entries of other bases), else A-NULL
@@ -5405,6 +5463,12 @@ public:
             continue;
           }
           apart = apart && e.first != od->order && e.first < m_bases.size();
+        }
+        // a provenance of j without an A-INB condition: no A-SEP decision
+        // (armInbGap)
+        if (apart && armInbGap(j, span)) {
+          ++m_stats.rules["arm.skip-no-inb"]; // bookkeeping: not in the trail
+          apart = false;
         }
         if (apart) {
           dec.add("arm.skip", PremASep); // uses: A-SEP
