@@ -4,6 +4,8 @@
 # sea-mlir recipes. Benchmarks live outside this repo (docs/Benchmarks.md):
 # `just bench-connect` links / clones them into bench/work/<name>.
 
+set positional-arguments
+
 bench := "python3 utils/bench.py"
 
 # list the recipes
@@ -32,7 +34,15 @@ bench-canary *args="":
 
 # the release gate (docs/Release.md): Release build in BUILD, lit, install to a temp prefix, smoke-run the installed tools, bench smoke gate if connected
 release-check build="build-rc" *cmake_args="":
-    utils/release-check.sh {{build}} {{ if cmake_args == "" { "" } else { "-- " + cmake_args } }}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    build="$1"
+    shift  # an unset *cmake_args arrives as one empty argument
+    if [[ -n "$*" ]]; then
+      utils/release-check.sh "$build" -- "$@"
+    else
+      utils/release-check.sh "$build"
+    fi
 
 # the documentation site (mkdocs.yml; needs `pip install -r docs/requirements.txt`): build site/ with warnings as errors
 docs:
