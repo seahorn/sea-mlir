@@ -86,6 +86,15 @@
   separation.
 - `--seam-check` states every premise firing as the in-bounds conditions of
   its accesses; checks stated per premise are an open follow-up.
+- `--seam-stride` (R-STRIDE) is opt-in and has known wrong answers, an
+  `unsat` where the program can fail:
+  - It can skip a store-map entry that lies outside its object, justified
+    only by the signed reading of the no-wrap premise.
+  - It can fire after constant offsets are folded mod 2^n into a GEP's
+    byte offset, which no reading of the no-wrap premise covers.
+  - It uses a GEP promise where `--check-ptr-index` does not reach it
+    (through memory, a block argument or an integer round trip), so that check does not cover the
+    promise it relied on.
 - `--ptr-mode=address` can be much slower on code that aligns pointers by
   integer arithmetic.
 

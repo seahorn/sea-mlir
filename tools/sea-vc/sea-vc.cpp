@@ -678,7 +678,13 @@ static cl::opt<bool> seamStride(
              "with a byte offset K != 0, A-NOWRAP (only for b + size - 2^n <= "
              "K <= b, the window where in-bounds would give the same); "
              "--seam-check checks the "
-             "firings under them"),
+             "firings under them. Opt-in, with known wrong answers (an "
+             "unsat that should be sat): an entry outside its object "
+             "justified by the signed no-wrap reading; after "
+             "constant offsets are folded mod 2^n into a GEP's byte offset; a "
+             "promise used where --check-ptr-index does "
+             "not reach it (through memory, a block argument or an integer "
+             "round trip)"),
     cl::init(false));
 
 enum class AckMode { Auto, On, Off };
@@ -2690,8 +2696,10 @@ TYPICAL:
                                  #   skipped for reads at promised GEP
                                  #   nodes whose offsets never reach them
                                  #   (premise.ptr-index; --seam-check proves
-                                 #   each firing under P1-P3). Off: on vcc
-                                 #   it slows the solver (PtrIndex.md 0c)
+                                 #   each firing under P1-P3). Off: known
+                                 #   wrong unsat answers (see --help and
+                                 #   docs/reference/limitations.md), and on
+                                 #   vcc it slows the solver
   sea-vc p.mlir --ack-dump-pairs=<f>  # with the lowering on: every lowered
                                  #   read (`read <a> <k> <index> loc=<l>`)
                                  #   and every constrained pair (`pair <a>
