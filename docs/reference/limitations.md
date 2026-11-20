@@ -29,10 +29,11 @@
   them as separate jobs.
 - `--lower` of an abstract program removes memhavocs of fresh objects
   (nothing wrote or read the object since its allocation). A drop rests on
-  A-SEP when any access (a read or a write, through any pointer) of the
-  memory comes before the memhavoc, since after placement an access of
-  another object could reach the object's cells, or when the memhavoc's
-  range is not provably in its object; it is reported as `assume.a-sep:
+  A-SEP when a run that executes the memhavoc may also access (read or
+  write, through any pointer, in any order) the memory as it was before
+  it, since after
+  placement an access of another object could reach the object's cells, or
+  when the memhavoc's range is not provably in its object; it is reported as `assume.a-sep:
   drop-fresh-memhavoc=<n>`, also without `--seam`. The count is coarse:
   an access that provably stays in its object counts too. A separate
   memory-safety check of the program would discharge it; sea-mlir has
@@ -45,9 +46,11 @@
   `interp.memhavoc-null-noop`. Only null itself: `null + k` and a non-null
   range outside its object stay errors. The VC follows the same rule: the
   lowering runs a memhavoc whose pointer may be null only when it is not
-  (`sea-guard-null-memhavoc`, `assume.memhavoc-null-noop: vc sites=<n>`).
-  With `=error` the VC havocs the cells from address 0 on, which may be
-  the first object's in the compact layout.
+  (`sea-guard-null-memhavoc`), or drops it when its object is fresh
+  (`sea-drop-fresh-memhavoc`); both count in `assume.memhavoc-null-noop:
+  vc sites=<n>`. With `=error` neither happens: the VC havocs the cells
+  from address 0 on, which may be the first object's in the compact
+  layout.
 - Address 0 is the null pointer (`addr0-is-null`). Placement puts the null
   object at address 0, so every VC of a lowered program rests on it
   (`assume.addr0-is-null: vc null-uses=<n>`), and the replays recover null

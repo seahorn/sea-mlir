@@ -25,7 +25,9 @@
 //     ptr.add / ptr.index bases, select and block arguments, only
 //     allocations, globals and function addresses) in a block of its own,
 //     entered only when the pointer is not null. The number of guards is
-//     set on the program (kMemhavocNullGuardsAttr); sea-vc reports it.
+//     added to the program's kMemhavocNullGuardsAttr (which also counts the
+//     memhavocs of such pointers sea-drop-fresh-memhavoc dropped); sea-vc
+//     reports it.
 //     Leaves critical edges (sea-split-critical-edges runs later).
 //
 //===----------------------------------------------------------------------===//
@@ -153,10 +155,16 @@ void GuardNullMemHavocPass::runOnOperation() {
       return signalPassFailure();
     }
   }
-  if (!havocs.empty())
-    program->setAttr(
-        kMemhavocNullGuardsAttr,
-        IntegerAttr::get(IntegerType::get(&getContext(), 64), havocs.size()));
+  // added to the count sea-drop-fresh-memhavoc may have set (its drops of
+  // pointers that may be null rest on the same decision)
+  if (!havocs.empty()) {
+    uint64_t n = havocs.size();
+    if (auto prev =
+            program->getAttrOfType<IntegerAttr>(kMemhavocNullGuardsAttr))
+      n += prev.getInt();
+    program->setAttr(kMemhavocNullGuardsAttr,
+                     IntegerAttr::get(IntegerType::get(&getContext(), 64), n));
+  }
 }
 
 } // namespace

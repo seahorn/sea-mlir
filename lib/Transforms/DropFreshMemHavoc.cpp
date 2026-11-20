@@ -48,9 +48,19 @@
 //     drops that rest on it are counted on the program (kDropFreshInbAttr):
 //     every drop with an access (a read or a write, through any pointer) of
 //     the versions the unread walk visits, or whose range is not provably in
-//     its object. sea-vc reports them (assume.a-sep), also with
+//     its object (rangeInObject: the pointer is an allocation's result or
+//     null, through select and block arguments, and the length at most the
+//     allocation's size: constants, or one value up to `mul x, 1`). sea-vc
+//     reports them (assume.a-sep), also with
 //     --seam-premises=0. A separate memory-safety (bounds) check of the
 //     program discharges A-INB, which implies A-SEP.
+//   Null: a pointer that may be null itself (through select and block
+//     arguments; null + k is not null, and a memhavoc of it is kept) follows
+//     --memhavoc-null. Under noop (the default) a memhavoc of null touches
+//     nothing: such a drop rests on that open decision and is counted with
+//     sea-guard-null-memhavoc's guards (kMemhavocNullGuardsAttr, reported
+//     as assume.memhavoc-null-noop: vc sites). Under error the memhavoc is
+//     kept, so the run on null stays an error.
 //
 //===----------------------------------------------------------------------===//
 
@@ -72,6 +82,9 @@ class DropFreshMemHavocPass
 public:
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(DropFreshMemHavocPass)
 
+  explicit DropFreshMemHavocPass(bool memhavocNullNoop)
+      : memhavocNullNoop(memhavocNullNoop) {}
+
   StringRef getArgument() const final { return "sea-drop-fresh-memhavoc"; }
   StringRef getDescription() const final {
     return "Remove memhavoc of objects nothing has written or read since "
@@ -79,16 +92,26 @@ public:
   }
 
   void runOnOperation() override;
+
+private:
+  /// --memhavoc-null=noop: a memhavoc of null is a no-op
+  bool memhavocNullNoop;
 };
 
-/// The allocations a pointer may point into: through ptr.add, select and
-/// block arguments (every incoming value); null adds none (a memhavoc of
-/// null touches nothing). False if some source is not an allocation.
+/// Values visited by allocationsOf, with whether under an offset.
+using PtrSeen = llvm::DenseSet<std::pair<Value, unsigned>>;
+
+/// The allocations a pointer may point into: through ptr.add, ptr.index,
+/// select and block arguments (every incoming value). Null itself adds none
+/// and sets `null` (a memhavoc of null touches nothing under
+/// --memhavoc-null=noop); null + k (under ptr.add / ptr.index) is no object:
+/// false, as when some source is not an allocation.
 static bool allocationsOf(Value p, llvm::SmallPtrSetImpl<Operation *> &allocs,
-                          llvm::DenseSet<Value> &seen, unsigned depth = 0) {
+                          PtrSeen &seen, bool *null = nullptr,
+                          bool offset = false, unsigned depth = 0) {
   if (depth > 64)
     return false;
-  if (!seen.insert(p).second)
+  if (!seen.insert({p, offset ? 1u : 0u}).second)
     return true; // joins and cycles: the other paths decide
   if (auto arg = dyn_cast<BlockArgument>(p)) {
     Block *b = arg.getOwner();
@@ -99,7 +122,7 @@ static bool allocationsOf(Value p, llvm::SmallPtrSetImpl<Operation *> &allocs,
       Value in = br ? br.getSuccessorOperands(
                           it.getSuccessorIndex())[arg.getArgNumber()]
                     : Value();
-      if (!in || !allocationsOf(in, allocs, seen, depth + 1))
+      if (!in || !allocationsOf(in, allocs, seen, null, offset, depth + 1))
         return false;
     }
     return true;
@@ -109,22 +132,29 @@ static bool allocationsOf(Value p, llvm::SmallPtrSetImpl<Operation *> &allocs,
     allocs.insert(def);
     return true;
   }
-  if (isa<PtrNullOp>(def))
+  if (isa<PtrNullOp>(def)) {
+    if (offset)
+      return false;
+    if (null)
+      *null = true;
     return true;
+  }
   if (auto add = dyn_cast<PtrAddOp>(def))
-    return allocationsOf(add.getPtr(), allocs, seen, depth + 1);
+    return allocationsOf(add.getPtr(), allocs, seen, null, true, depth + 1);
   if (auto pi = dyn_cast<PtrIndexOp>(def))
-    return allocationsOf(pi.getBase(), allocs, seen, depth + 1);
+    return allocationsOf(pi.getBase(), allocs, seen, null, true, depth + 1);
   if (auto sel = dyn_cast<SelectOp>(def))
-    return allocationsOf(sel.getTrueValue(), allocs, seen, depth + 1) &&
-           allocationsOf(sel.getFalseValue(), allocs, seen, depth + 1);
+    return allocationsOf(sel.getTrueValue(), allocs, seen, null, offset,
+                         depth + 1) &&
+           allocationsOf(sel.getFalseValue(), allocs, seen, null, offset,
+                         depth + 1);
   return false;
 }
 
 /// The allocation a pointer points into, if it is exactly one.
 static Operation *allocationOf(Value p) {
   llvm::SmallPtrSet<Operation *, 4> allocs;
-  llvm::DenseSet<Value> seen;
+  PtrSeen seen;
   if (!allocationsOf(p, allocs, seen) || allocs.size() != 1)
     return nullptr;
   return *allocs.begin();
@@ -296,7 +326,7 @@ priorAccesses(MemHavocOp op, const llvm::SmallPtrSetImpl<Operation *> &allocs,
   auto read = [&](Operation *user, Value ptr) {
     acc.any = true;
     llvm::SmallPtrSet<Operation *, 4> from;
-    llvm::DenseSet<Value> seen;
+    PtrSeen seen;
     bool known = allocationsOf(ptr, from, seen);
     for (Operation *alloc : allocs)
       if ((!known || from.contains(alloc)) && !before(user, alloc))
@@ -347,19 +377,85 @@ priorAccesses(MemHavocOp op, const llvm::SmallPtrSetImpl<Operation *> &allocs,
   return acc;
 }
 
-/// Does the memhavoc's range provably lie in its object: its address is an
-/// allocation's result (offset 0) and its constant length at most the
-/// allocation's constant size?
+/// The allocations a pointer is the result of, at offset 0: through select
+/// and block arguments (every incoming value); null adds none (a memhavoc
+/// of null touches nothing). False if some source is anything else.
+static bool objectStarts(Value p, llvm::SmallPtrSetImpl<Operation *> &allocs,
+                         llvm::DenseSet<Value> &seen, unsigned depth = 0) {
+  if (depth > 64)
+    return false;
+  if (!seen.insert(p).second)
+    return true; // joins and cycles: the other paths decide
+  if (auto arg = dyn_cast<BlockArgument>(p)) {
+    Block *b = arg.getOwner();
+    if (b->hasNoPredecessors())
+      return false;
+    for (auto it = b->pred_begin(); it != b->pred_end(); ++it) {
+      auto br = dyn_cast<BranchOpInterface>((*it)->getTerminator());
+      Value in = br ? br.getSuccessorOperands(
+                          it.getSuccessorIndex())[arg.getArgNumber()]
+                    : Value();
+      if (!in || !objectStarts(in, allocs, seen, depth + 1))
+        return false;
+    }
+    return true;
+  }
+  Operation *def = p.getDefiningOp();
+  if (isa<AllocaOp, MallocOp>(def)) {
+    allocs.insert(def);
+    return true;
+  }
+  if (isa<PtrNullOp>(def))
+    return true;
+  if (auto sel = dyn_cast<SelectOp>(def))
+    return objectStarts(sel.getTrueValue(), allocs, seen, depth + 1) &&
+           objectStarts(sel.getFalseValue(), allocs, seen, depth + 1);
+  return false;
+}
+
+/// `v` without the factors `mul x, 1` around it (the front end's
+/// malloc(n * sizeof(char))): the same bit-vector value.
+static Value withoutMulOne(Value v) {
+  for (unsigned i = 0; i < 8; ++i) {
+    auto mul = v.getDefiningOp<MulOp>();
+    if (!mul)
+      break;
+    if (matchPattern(mul.getRhs(), m_One()))
+      v = mul.getLhs();
+    else if (matchPattern(mul.getLhs(), m_One()))
+      v = mul.getRhs();
+    else
+      break;
+  }
+  return v;
+}
+
+/// Is `len` at most `size`: one value (up to `mul x, 1`), or two constants?
+static bool lenFits(Value len, Value size) {
+  if (len.getType() == size.getType() &&
+      withoutMulOne(len) == withoutMulOne(size))
+    return true;
+  llvm::APInt l, n;
+  if (!matchPattern(len, m_ConstantInt(&l)) ||
+      !matchPattern(size, m_ConstantInt(&n)))
+    return false;
+  return l.getActiveBits() <= 64 && n.getActiveBits() <= 64 &&
+         l.getZExtValue() <= n.getZExtValue();
+}
+
+/// Does the memhavoc's range provably lie in its object? Its pointer is an
+/// allocation's result (offset 0; through select and block arguments, or
+/// null) and its length at most that allocation's size (lenFits). Cheap and
+/// syntactic: a range it cannot decide is reported as not in its object.
 static bool rangeInObject(MemHavocOp op) {
-  Operation *def = op.getAddr().getDefiningOp();
-  if (!isa_and_present<AllocaOp, MallocOp>(def))
+  llvm::SmallPtrSet<Operation *, 4> allocs;
+  llvm::DenseSet<Value> seen;
+  if (!objectStarts(op.getAddr(), allocs, seen))
     return false;
-  llvm::APInt len, size;
-  if (!matchPattern(op.getLen(), m_ConstantInt(&len)) ||
-      !matchPattern(def->getOperand(0), m_ConstantInt(&size)))
-    return false;
-  return len.getActiveBits() <= 64 && size.getActiveBits() <= 64 &&
-         len.getZExtValue() <= size.getZExtValue();
+  for (Operation *alloc : allocs)
+    if (!lenFits(op.getLen(), alloc->getOperand(0)))
+      return false;
+  return true;
 }
 
 void DropFreshMemHavocPass::runOnOperation() {
@@ -373,11 +469,16 @@ void DropFreshMemHavocPass::runOnOperation() {
     return;
   DominanceInfo dom(program);
   HappensBefore before(dom);
-  uint64_t inbDrops = 0;
+  uint64_t inbDrops = 0, nullDrops = 0;
   for (MemHavocOp op : havocs) {
     llvm::SmallPtrSet<Operation *, 4> allocs;
-    llvm::DenseSet<Value> seen;
-    if (!allocationsOf(op.getAddr(), allocs, seen))
+    PtrSeen seen;
+    bool mayBeNull = false;
+    if (!allocationsOf(op.getAddr(), allocs, seen, &mayBeNull))
+      continue;
+    // --memhavoc-null=error: a memhavoc of null is an error, not a no-op;
+    // it stays so the run on null keeps it
+    if (mayBeNull && !memhavocNullNoop)
       continue;
     bool allFresh = true;
     for (Operation *alloc : allocs) {
@@ -401,19 +502,27 @@ void DropFreshMemHavocPass::runOnOperation() {
     // and nothing saw them.
     if (acc.any || !rangeInObject(op))
       ++inbDrops;
+    // a pointer that may be null: the drop rests on memhavoc(null) being a
+    // no-op, counted with sea-guard-null-memhavoc's guards
+    if (mayBeNull)
+      ++nullDrops;
     op.getResult().replaceAllUsesWith(op.getMem());
     op.erase();
   }
+  auto i64 = IntegerType::get(&getContext(), 64);
   if (inbDrops)
-    program->setAttr(
-        kDropFreshInbAttr,
-        IntegerAttr::get(IntegerType::get(&getContext(), 64), inbDrops));
+    program->setAttr(kDropFreshInbAttr, IntegerAttr::get(i64, inbDrops));
+  if (nullDrops) {
+    if (auto n = program->getAttrOfType<IntegerAttr>(kMemhavocNullGuardsAttr))
+      nullDrops += n.getInt();
+    program->setAttr(kMemhavocNullGuardsAttr, IntegerAttr::get(i64, nullDrops));
+  }
 }
 
 } // namespace
 
-std::unique_ptr<Pass> createDropFreshMemHavocPass() {
-  return std::make_unique<DropFreshMemHavocPass>();
+std::unique_ptr<Pass> createDropFreshMemHavocPass(bool memhavocNullNoop) {
+  return std::make_unique<DropFreshMemHavocPass>(memhavocNullNoop);
 }
 
 } // namespace sea

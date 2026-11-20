@@ -212,7 +212,8 @@ enum class MemhavocNull { Noop, Error };
 static cl::opt<MemhavocNull> memhavocNull(
     "memhavoc-null",
     cl::desc("sea.memhavoc of the null pointer in an abstract program, in "
-             "the lowering (sea-guard-null-memhavoc) and the replays: "
+             "the lowering (sea-drop-fresh-memhavoc, "
+             "sea-guard-null-memhavoc) and the replays: "
              "noop (default; an open semantics decision, counted as "
              "`assume.memhavoc-null-noop: uses=<n>`, warning "
              "interp.memhavoc-null-noop) or error (a memory-safety error, "
@@ -3205,11 +3206,14 @@ OUTPUT (stdout, `key: value` lines):
   replay.original: skipped (<reason>)   (no lowering ran, a check job, or
                                   --ptr-companion=check)
   assume.memhavoc-null-noop: vc sites=<n>   (n > 0: --lower of an abstract
-                                  program guarded n memhavocs whose pointer
-                                  may be null (sea-guard-null-memhavoc): the
-                                  VC runs them only when it is not null, as
-                                  the interpreter; --memhavoc-null=error:
-                                  no guard, the VC havocs from address 0)
+                                  program guarded or dropped n memhavocs
+                                  whose pointer may be null: guarded
+                                  (sea-guard-null-memhavoc), the VC runs
+                                  them only when it is not null, as the
+                                  interpreter; dropped
+                                  (sea-drop-fresh-memhavoc), the object is
+                                  fresh; --memhavoc-null=error: neither,
+                                  the VC havocs from address 0)
   assume.memhavoc-null-noop: uses=<n>   (after replay.original or
                                   seam.inb-violation, n > 0: memhavocs of
                                   null its run executed as no-ops, an open
@@ -3244,9 +3248,13 @@ OUTPUT (stdout, `key: value` lines):
                                   discharges all three.
                                   drop-fresh-memhavoc=<m>, m > 0: --lower of
                                   an abstract program dropped m memhavocs of
-                                  fresh objects whose no-op rests on A-SEP;
-                                  also without --seam and with
-                                  --seam-premises=0, then the only field)
+                                  fresh objects whose no-op rests on A-SEP:
+                                  a run through the memhavoc may access the
+                                  memory as it was before it (any pointer,
+                                  any order), or its range is not provably
+                                  in its object; also without --seam and
+                                  with --seam-premises=0, then the only
+                                  field)
   assume.a-inb: narrow-reads=<n> narrow-pairs=<m>   (--narrow-offsets, on:
                                   n reads whose index was narrowed rest on
                                   the A-INB of their access (each stays in
@@ -4835,8 +4843,9 @@ int main(int argc, char **argv) {
     if (seg.getKind() == "null")
       nullUses += std::distance(seg->use_begin(), seg->use_end());
   });
-  // the memhavocs sea-guard-null-memhavoc guarded (memhavoc of null is a
-  // no-op in the VC too)
+  // the memhavocs whose pointer may be null that sea-guard-null-memhavoc
+  // guarded or sea-drop-fresh-memhavoc dropped (memhavoc of null is a no-op
+  // in the VC too)
   uint64_t nullGuards = 0;
   if (auto n =
           program->getAttrOfType<IntegerAttr>(sea::kMemhavocNullGuardsAttr))

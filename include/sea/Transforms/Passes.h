@@ -124,12 +124,13 @@ std::unique_ptr<mlir::Pass> createExpandSmallMemMovePass();
 inline constexpr llvm::StringLiteral kExpandMemMoveStatsAttr =
     "sea.expand_memmove";
 /// On the sea.program: the number of memhavocs sea-drop-fresh-memhavoc
-/// dropped whose soundness rests on A-SEP (an access, read or write through
-/// any pointer, of the memory before the memhavoc, or a range not provably
-/// in its object; an i64; absent: none). sea-vc
-/// reports it as `assume.a-sep: drop-fresh-memhavoc=<n>`.
+/// dropped whose soundness rests on A-SEP (a run through the memhavoc may
+/// access the memory as it was before it, read or write through any
+/// pointer, in any order, or its range is not provably in its object; an i64;
+/// absent: none). sea-vc reports it as `assume.a-sep: drop-fresh-memhavoc=<n>`.
 /// On the sea.program: the number of memhavocs sea-guard-null-memhavoc
-/// guarded (their pointer may be null). sea-vc reports it as
+/// guarded (their pointer may be null), plus those of a pointer that may be
+/// null sea-drop-fresh-memhavoc dropped as no-ops. sea-vc reports it as
 /// `assume.memhavoc-null-noop: vc sites=<n>`.
 inline constexpr llvm::StringLiteral kMemhavocNullGuardsAttr =
     "sea.memhavoc_null_guards";
@@ -182,8 +183,11 @@ std::unique_ptr<mlir::Pass> createLowerTrackingPass();
 std::unique_ptr<mlir::Pass> createLowerFatPointersPass();
 
 /// sea-drop-fresh-memhavoc: memhavoc of an object nothing wrote or read
-/// since its allocation is a no-op: removed.
-std::unique_ptr<mlir::Pass> createDropFreshMemHavocPass();
+/// since its allocation is a no-op: removed. A pointer that may be null
+/// follows `memhavocNullNoop` (--memhavoc-null): noop drops it and counts
+/// it in kMemhavocNullGuardsAttr, error keeps it.
+std::unique_ptr<mlir::Pass>
+createDropFreshMemHavocPass(bool memhavocNullNoop = true);
 /// sea-guard-null-memhavoc: a memhavoc whose pointer may be null runs only
 /// when it is not (memhavoc of null is a no-op; GuardNullMemHavoc.cpp).
 std::unique_ptr<mlir::Pass> createGuardNullMemHavocPass();

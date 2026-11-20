@@ -345,7 +345,7 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
   prog.addPass(createScalarizeStructsPass());
   if (abstract) {
     // object metadata, while pointers still know their objects
-    prog.addPass(createDropFreshMemHavocPass());
+    prog.addPass(createDropFreshMemHavocPass(memhavocNullNoop));
     // memhavoc of null is a no-op (an open semantics decision, as in the
     // interpreter): explicit in the program, for every VC encoding
     if (memhavocNullNoop)
