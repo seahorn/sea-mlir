@@ -447,15 +447,18 @@ private:
   bool keyedAccess() const;
   /// the mirror check of a block's keyed accesses (see OpSem.cpp)
   void settleKeyed(OpSemContext &ctx);
-  /// this block's program access addresses / ranges, and its keyed
-  /// accesses waiting for a mirror
-  expr::ExprSet blockAddrs;
-  /// range ops: their (address, length) operands; a companion range op has
-  /// the data op's own Values (sea-lower-fat-pointers), whatever encoding
-  /// (term or store chain) each side gets
-  llvm::DenseSet<std::pair<mlir::Value, mlir::Value>> blockRanges;
-  std::vector<std::pair<expr::Expr, mlir::Location>> pendingKeyed;
-  std::vector<std::tuple<mlir::Value, mlir::Value, mlir::Location>>
+  /// this block's program access addresses / ranges by kind (load /
+  /// store), and its keyed accesses waiting for a mirror of their kind
+  expr::ExprSet blockLoadAddrs, blockStoreAddrs;
+  /// range ops: their (address, length) operands, written (a memset's, a
+  /// memhavoc's, a memmove's destination) / read (a memmove's source); a
+  /// companion range op has the data op's own Values
+  /// (sea-lower-fat-pointers), whatever encoding (term or store chain) each
+  /// side gets
+  llvm::DenseSet<std::pair<mlir::Value, mlir::Value>> blockReadRanges,
+      blockWriteRanges;
+  std::vector<std::tuple<expr::Expr, bool, mlir::Location>> pendingKeyed;
+  std::vector<std::tuple<mlir::Value, mlir::Value, bool, mlir::Location>>
       pendingKeyedRanges;
   /// addr.add (see OpSem.cpp)
   expr::Expr addrAdd(expr::Expr a, expr::Expr o);

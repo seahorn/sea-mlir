@@ -492,10 +492,10 @@ Expr SeaOpSem::accessAddr(Expr mem, Expr ptr, uint64_t units, bool write,
   }
   if (keyedAccess()) {
     ++seamRw->stats().rules["companion.access"];
-    pendingKeyed.push_back({ptr, curOp->getLoc()});
+    pendingKeyed.push_back({ptr, write, curOp->getLoc()});
     return ptr;
   }
-  blockAddrs.insert(ptr);
+  (write ? blockStoreAddrs : blockLoadAddrs).insert(ptr);
   seamRw->rules().noteInbAccess(ptr, units);
   ++inbAccesses;
   bool violated = false;
@@ -756,8 +756,10 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
   }
   // companion (keyed) accesses of this block wait for their mirrored
   // program access (see keyedAccess)
-  blockAddrs.clear();
-  blockRanges.clear();
+  blockLoadAddrs.clear();
+  blockStoreAddrs.clear();
+  blockReadRanges.clear();
+  blockWriteRanges.clear();
   pendingKeyed.clear();
   pendingKeyedRanges.clear();
   // the defHook of the results of the op before (the loop below leaves an
@@ -1145,44 +1147,48 @@ void SeaOpSem::noteOrigins(Operation &op, OpSemContext &ctx) {
 }
 
 /// The mirror check of the companion exemption: a keyed access is exempt
-/// only if a program access of this
-/// block has the same address term (a range: the same (d, n)). The proof
-/// rests on that: the data access's A-INB condition, under the same path
+/// only if a program access of this block of the same kind has the same
+/// address term (a range: the same (d, n), in the same role: a written
+/// range by a written one, a memmove's source by a source). The proof rests
+/// on that: the data access's A-INB condition, under the same path
 /// condition, implies the 1-unit facts the rules on the companion memory
-/// use. An unmirrored one is a program access after all (its own 1-unit
+/// use, and a pair of companion accesses the rules separate by A-SEP
+/// mirrors a pair of data accesses A-SEP covers. A-SEP exempts a read and a
+/// read, so a keyed store needs a data store (a keyed store mirrored by a
+/// data load would be separated with no data write to back it). The
+/// lowering (sea-lower-fat-pointers) emits mirrors of the data op's kind.
+/// An unmirrored one is a program access after all (its own 1-unit
 /// condition, counted), with a warning (vc.seam-companion-unmirrored).
 void SeaOpSem::settleKeyed(OpSemContext &ctx) {
   auto fallback = [&](Expr inb, Location loc) {
     ++seamRw->stats().rules["companion.unmirrored"];
     diag::warn("vc.seam-companion-unmirrored",
-               "a keyed (companion) access with no program access at the "
-               "same address in its block: counted as a program access",
+               "a keyed (companion) access with no program access of its "
+               "kind at the same address in its block: counted as a "
+               "program access",
                loc);
     ++inbAccesses;
     if (!isOpX<TRUE>(inb))
       inbSeen.insert(mk<AND>(ctx.getPathCond(), boolop::lneg(inb)));
   };
-  for (const auto &[p, loc] : pendingKeyed)
-    if (!blockAddrs.count(p)) {
+  for (const auto &[p, write, loc] : pendingKeyed)
+    if (!(write ? blockStoreAddrs : blockLoadAddrs).count(p)) {
       bool violated = false;
       fallback(seamRw->rules().inBounds(p, 1, violated), loc);
       if (violated)
-        // a companion's kind is not recorded: counted as a write
-        noteInbViolation(loc, "companion", /*write=*/true,
-                         seamRw->rules().outOfObjectSpans(p, 1), [&] {
-                           return seamRw->rules().explainViolation(p, 1, false);
-                         });
+        noteInbViolation(
+            loc, "companion", write, seamRw->rules().outOfObjectSpans(p, 1),
+            [&] { return seamRw->rules().explainViolation(p, 1, false); });
     }
-  for (const auto &[dv, nv, loc] : pendingKeyedRanges)
-    if (!blockRanges.count({dv, nv})) {
+  for (const auto &[dv, nv, write, loc] : pendingKeyedRanges)
+    if (!(write ? blockWriteRanges : blockReadRanges).count({dv, nv})) {
       bool violated = false;
       Expr d = seamRw->rewrite(lookup(dv, ctx)),
            n = seamRw->rewrite(lookup(nv, ctx));
       fallback(seamRw->rules().rangeInBounds(d, n, violated), loc);
       if (violated)
         noteInbViolation(
-            loc, "companion", /*write=*/true,
-            seamRw->rules().outOfObjectSpans(d, 0, n),
+            loc, "companion", write, seamRw->rules().outOfObjectSpans(d, 0, n),
             [&] { return seamRw->rules().explainViolation(d, 0, true, n); });
     }
   pendingKeyed.clear();
@@ -1367,16 +1373,18 @@ LogicalResult SeaOpSem::execRangeOp(Operation &op, OpSemContext &ctx) {
                    .Case([](MemHavocOp o) { return o.getLen(); });
   // the mirror check of companion ranges (settleKeyed), on the operands
   if (seamMode) {
-    SmallVector<Value, 2> addrs{op.getOperand(1)};
+    // (address, written): the destination is written, a memmove's source
+    // read
+    SmallVector<std::pair<Value, bool>, 2> addrs{{op.getOperand(1), true}};
     if (auto mv = dyn_cast<MemMoveOp>(op))
-      addrs.push_back(mv.getSrcAddr());
+      addrs.push_back({mv.getSrcAddr(), false});
     if (auto mh = dyn_cast<MemHavocOp>(op))
-      addrs = {mh.getAddr()};
-    for (Value a : addrs) {
+      addrs = {{mh.getAddr(), true}};
+    for (auto [a, write] : addrs) {
       if (keyedAccess())
-        pendingKeyedRanges.push_back({a, lenV, op.getLoc()});
+        pendingKeyedRanges.push_back({a, lenV, write, op.getLoc()});
       else
-        blockRanges.insert({a, lenV});
+        (write ? blockWriteRanges : blockReadRanges).insert({a, lenV});
     }
   }
   if (lambdaMode) {
