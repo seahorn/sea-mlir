@@ -3957,6 +3957,9 @@ Kinds and fields:
                 name=), order, objkind, base, size, align
   result        value: sat|unsat|unknown|none
   check-inb     (--check-inb) checks, static, left, zero_length
+  check-inb.split folded (checks the optimize stages removed before the
+                split), parts, trivial (folded to true in their own
+                optimize: not run), to_solve
   check-inb-dir path (a kept job directory: --check-inb-dir,
                 --check-inb-keep, --vcgen-only)
   check-inb.manifest path, parts (--check-inb --vcgen-only: the parts and
@@ -3966,7 +3969,7 @@ Kinds and fields:
                 without one); one per part, as it ends
   check-inb.part-error part, message (a failed part's first error line)
   check-inb.parts total, unsat, sat, unknown, other, skipped, median_time,
-                max_time, time
+                max_time, solve_time (summed over the parts), time
   check-inb.part-diags one field per diagnostic kind of the parts' stderr:
                 the number of parts that reported it
   check-inb.discharges premises (`a-inb a-sep a-null[ a-nowrap]` or `none`;
@@ -4592,67 +4595,6 @@ int main(int argc, char **argv) {
       return fail("several programs; pick one with --program");
     program = p;
   }
-  // --check-inb: instrument, split, and run each part as a job of its own
-  if (checkInb) {
-    if (!program)
-      return fail(programName.empty()
-                      ? "no sea.program in input"
-                      : "no program named '" + programName + "'");
-    if (!lower || !seam || ackermannize != AckMode::Off) {
-      sea::diag::error("vc.check-inb-config",
-                       "--check-inb runs with --lower --seam "
-                       "--ackermannize=off (the premises of each check's "
-                       "part are justified by the checks before it; the "
-                       "Ackermann lowering uses A-INB itself)");
-      return 1;
-    }
-    if (checkAlign || checkPtrIndex || reachKind != sea::ReachKind::Off ||
-        rangeFoldOpt == sea::RangeFoldMode::Check) {
-      sea::diag::error("vc.check-jobs",
-                       "--check-inb is a job of its own: not with "
-                       "--check-align, --check-ptr-index, --reach or "
-                       "--range-fold=check");
-      return 1;
-    }
-    if (!sea::isAbstract(program)) {
-      sea::diag::error("vc.check-inb-config",
-                       "--check-inb needs an abstract program (pointers "
-                       "with their objects)",
-                       program.getLoc());
-      return 1;
-    }
-    sea::checkinb::JobOptions jo;
-    jo.self = llvm::sys::fs::getMainExecutable(
-        argv[0], reinterpret_cast<void *>(&printSolverVersions));
-    jo.dir = checkInbDir;
-    jo.staticDischarge = checkInbStatic;
-    jo.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
-    jo.maxSeconds = checkInbMaxTime;
-    jo.boxAllExpand = boxAllExpandOpt;
-    jo.keep = checkInbKeep;
-    // --vcgen-only: the parts and the manifest, no part run
-    jo.prepareOnly = vcgenOnly;
-    jo.source = inputFilename;
-    for (int i = 1; i < argc; ++i)
-      jo.jobArgs.push_back(argv[i]);
-    // the part's options: the command line's, without the input and the
-    // options of the job itself (each part is one program in a file)
-    bool inputDropped = false;
-    for (int i = 1; i < argc; ++i) {
-      StringRef a(argv[i]);
-      StringRef name = a.ltrim('-').split('=').first;
-      if (!inputDropped && a == inputFilename) {
-        inputDropped = true;
-        continue;
-      }
-      if (a.starts_with("-") &&
-          (name.starts_with("check-inb") || name == "program" ||
-           name == "format" || name == "vcgen-only"))
-        continue;
-      jo.partArgs.push_back(a.str());
-    }
-    return sea::checkinb::runJob(*module, program, jo, *gOut);
-  }
   if ((!seamPremises || seamOutOfObject.getNumOccurrences() || !seamRowExpand ||
        !seamRowGroup || seamCheckInbPremise || !seamLayout || !seamArm ||
        !seamPruneSize0 || seamWide || seamWideIteOpen || !seamLeafSplit ||
@@ -4860,6 +4802,116 @@ int main(int argc, char **argv) {
   // gets the expansion (as do add / sub overflow for every solver: solvers
   // expand those eagerly anyway).
   bool nativeMulOverflow = backend != Backend::Yices;
+  // --check-inb: instrument, split, and run each part as a job of its own
+  if (checkInb) {
+    if (!program)
+      return fail(programName.empty()
+                      ? "no sea.program in input"
+                      : "no program named '" + programName + "'");
+    if (!lower || !seam || ackermannize != AckMode::Off) {
+      sea::diag::error("vc.check-inb-config",
+                       "--check-inb runs with --lower --seam "
+                       "--ackermannize=off (the premises of each check's "
+                       "part are justified by the checks before it; the "
+                       "Ackermann lowering uses A-INB itself)");
+      return 1;
+    }
+    if (checkAlign || checkPtrIndex || reachKind != sea::ReachKind::Off ||
+        rangeFoldOpt == sea::RangeFoldMode::Check) {
+      sea::diag::error("vc.check-jobs",
+                       "--check-inb is a job of its own: not with "
+                       "--check-align, --check-ptr-index, --reach or "
+                       "--range-fold=check");
+      return 1;
+    }
+    if (!sea::isAbstract(program)) {
+      sea::diag::error("vc.check-inb-config",
+                       "--check-inb needs an abstract program (pointers "
+                       "with their objects)",
+                       program.getLoc());
+      return 1;
+    }
+    sea::checkinb::JobOptions jo;
+    jo.self = llvm::sys::fs::getMainExecutable(
+        argv[0], reinterpret_cast<void *>(&printSolverVersions));
+    jo.dir = checkInbDir;
+    jo.staticDischarge = checkInbStatic;
+    jo.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
+    jo.maxSeconds = checkInbMaxTime;
+    jo.boxAllExpand = boxAllExpandOpt;
+    // the lowering's options, as the --lower below would take them; the
+    // job runs its stages (docs/design/CheckInb.md)
+    jo.lower.abstract = true;
+    jo.lower.nativeMulOverflow = nativeMulOverflow;
+    jo.lower.fold = true;
+    jo.lower.widenMemory = widenMemory;
+    jo.lower.expandMemSet = !seam && !lambdaMem;
+    jo.lower.widenReport = widenMemoryReport;
+    jo.lower.keepByteWide = seam && seamWide;
+    jo.lower.opt = lowerOpt;
+    jo.lower.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
+    jo.lower.disable = lowerDisableMask;
+    jo.lower.place = sea::PlaceFiles{placeIn, placeOut};
+    jo.lower.rangeFold = rangeFoldOpt;
+    jo.lower.expandMemMove = expandMemMoveOpt;
+    jo.lower.ptrCompanion = ptrCompanion != CompanionMode::Off;
+    jo.lower.boxAllExpand = boxAllExpandOpt;
+    jo.lower.widenPerClass = widenMemoryPerClass;
+    // the pointer mode of the input (the parts are lowered programs)
+    {
+      bool intToPtr = false;
+      program.walk([&](Operation *op) {
+        intToPtr |= isa<sea::PtrFromIntOp, sea::AddrFromIntOp>(op);
+      });
+      if (ptrMode == PtrMode::Opaque && intToPtr) {
+        sea::diag::error("vc.int-to-ptr",
+                         "--ptr-mode=opaque: the program converts an integer "
+                         "to a pointer (use --ptr-mode=address)");
+        return 1;
+      }
+      jo.ptrMode =
+          ptrMode == PtrMode::Address || (ptrMode == PtrMode::Auto && intToPtr)
+              ? "address"
+              : "opaque";
+    }
+    jo.keep = checkInbKeep;
+    // --vcgen-only: the parts and the manifest, no part run
+    jo.prepareOnly = vcgenOnly;
+    jo.source = inputFilename;
+    for (int i = 1; i < argc; ++i)
+      jo.jobArgs.push_back(argv[i]);
+    // the part's options: the command line's, without the input and the
+    // options of the job itself (each part is one program in a file)
+    bool inputDropped = false;
+    for (int i = 1; i < argc; ++i) {
+      StringRef a(argv[i]);
+      StringRef name = a.ltrim('-').split('=').first;
+      if (!inputDropped && a == inputFilename) {
+        inputDropped = true;
+        continue;
+      }
+      // the job's own options, and the lowering's: a part is lowered
+      // already (its argv has no --lower)
+      static const llvm::StringSet<> lowering = {"lower",
+                                                 "lower-opt",
+                                                 "lower-disable",
+                                                 "range-fold",
+                                                 "expand-memmove",
+                                                 "box-all-expand",
+                                                 "place-in",
+                                                 "place-out",
+                                                 "widen-memory",
+                                                 "widen-memory-report",
+                                                 "widen-memory-per-class",
+                                                 "ptr-mode"};
+      if (a.starts_with("-") &&
+          (name.starts_with("check-inb") || name == "program" ||
+           name == "format" || name == "vcgen-only" || lowering.contains(name)))
+        continue;
+      jo.partArgs.push_back(a.str());
+    }
+    return sea::checkinb::runJob(*module, program, jo, *gOut);
+  }
   // With --seam the answer rests on the premises. A sat whose replay fails may
   // be an artifact of a program that leaves its objects; the abstract program
   // (every access checked against its object) tells, so keep a copy.

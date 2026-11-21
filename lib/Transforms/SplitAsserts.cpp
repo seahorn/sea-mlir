@@ -31,7 +31,9 @@
 //
 // Contract.
 //   Accepts: a module of sea.program ops; option `program`: split only
-//     the program of that name (the others stay). The block of a split
+//     the program of that name (the others stay); option `group`: asserts
+//     per part, a hook for parts of g asserts merged within each part,
+//     only 1 built (another g: error split-asserts.group). The block of a split
 //     assert must not lie on a CFG cycle (error split-asserts.cycle).
 //   Produces: in place of each split program with k > 0 asserts, its k
 //     parts, right after where it was; each part has exactly one assert,
@@ -76,6 +78,13 @@ public:
 
   void runOnOperation() override;
 
+  /// Parts of g asserts, merged within each part: the hook for grouping
+  /// (docs/design/CheckInb.md). Only g = 1 is built; another g is an
+  /// error (split-asserts.group), not a silent fallback.
+  Option<unsigned> group{
+      *this, "group",
+      llvm::cl::desc("Asserts per part (only 1 is implemented)"),
+      llvm::cl::init(1)};
   Option<std::string> program{
       *this, "program",
       llvm::cl::desc("Split only the program of this name (default: all)"),
@@ -198,6 +207,13 @@ LogicalResult makePart(ProgramOp part, unsigned index) {
 
 void SplitAssertsPass::runOnOperation() {
   ModuleOp module = getOperation();
+  if (group != 1) {
+    diag::error("split-asserts.group",
+                "sea-split-asserts: group=" + Twine(group.getValue()) +
+                    " is not implemented (one assert per part only)",
+                module.getLoc());
+    return signalPassFailure();
+  }
   SmallVector<ProgramOp> todo;
   for (auto p : module.getOps<ProgramOp>())
     if (program.empty() || p.getSymName() == program)

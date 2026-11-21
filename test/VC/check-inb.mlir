@@ -11,12 +11,13 @@
 // RUN: sea-vc %s --program=ag --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=AG
 // RUN: %if yices %{ sea-vc %s --program=ag --check-inb --lower --seam --ackermannize=off --solver=yices | FileCheck %s --check-prefix=AG %}
 // RUN: sea-vc %s --program=ag_alone --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=ALONE
-// RUN: sea-vc %s --program=diag --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=DIAG
+// RUN: sea-vc %s --program=diag --check-inb --lower --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=DIAG
 // RUN: sea-opt %s --sea-check-inb --sea-split-asserts=program=ag | FileCheck %s --check-prefix=PARTS
+// RUN: sea-vc %s --program=implied --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=FOLD
 // RUN: sea-vc %s --program=prior --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=PRIOR
 // RUN: printf -- '--check-inb\n--lower\n--seam\n--ackermannize=off\n' > %t.cfg
 // RUN: sea-vc %s --program=oob --config=%t.cfg | FileCheck %s --check-prefix=CFG
-// RUN: not sea-vc %s --program=oob --check-inb --lower --seam --ackermannize=off --place-in=%t.missing | FileCheck %s --check-prefix=PERR
+// RUN: not sea-vc %s --program=oob --check-inb --lower --seam --ackermannize=off --print-lowered=%t.nodir/x.mlir | FileCheck %s --check-prefix=PERR
 // RUN: not sea-vc %s --program=inb --check-inb --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=CONFIG
 // RUN: not sea-vc %s --program=inb --check-inb --lower --seam 2>&1 | FileCheck %s --check-prefix=CONFIG
 // RUN: not sea-vc %s --program=inb --check-inb --lower --ackermannize=off 2>&1 | FileCheck %s --check-prefix=CONFIG
@@ -110,12 +111,12 @@ sea.program @ag_alone {
   sea.halt
 }
 
-// A part's warnings are on its own stderr; the job counts the parts that
-// reported each kind. Here placement assumes the symbolic size fits.
-// DIAG: check-inb.part-diags: {{.*}}place.symbolic-size-assume=1
+// The job lowers (and places) once: placement assumes the symbolic size
+// fits, a warning of the job itself.
+// DIAG: Warning: {{.*}}[place.symbolic-size-assume]
 // The verdict rests on that assumption: it is on the discharges line.
 // A-NOWRAP is decided by the program's objects (the symbolic one at its
-// room), not by what a part prints: the part here folds to `assert true`.
+// room).
 // DIAG: check-inb.discharges: a-inb a-sep a-null a-nowrap under={{.*}}place.symbolic-size-assume
 sea.program @diag {
   %m0 = sea.mem.nondet "m" [0] : !m
@@ -149,10 +150,25 @@ sea.program @prior attributes {sea.split_assert = {count = 2 : i64, index = 1 : 
 // CFG: result: sat
 
 // A part that fails says why without --check-inb-dir.
-// PERR: check-inb.part: 0 {{.*}} result=error status=1 {{.*}}error=place.in-file
-// PERR: check-inb.part-error: 0 Error: {{.*}}[place.in-file]
-// PERR: check-inb.part-diags: place.in-file=1
+// PERR: check-inb.part: 0 {{.*}} result=error status=1 {{.*}}error=vc.print-lowered
+// PERR: check-inb.part-error: 0 Error: {{.*}}[vc.print-lowered]
+// PERR: check-inb.part-diags: vc.print-lowered=1
 // PERR: result: unknown
+
+// A check implied by an earlier one (the same span of the same pointer)
+// folds before the split: one part, not two.
+// FOLD: check-inb.split: folded=1 parts=1
+// FOLD: result: sat
+sea.program @implied {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %n = sea.nondet "n" [2] : i64
+  %p = sea.ptr.add %a, %n : !sea.ptr<64>, i64
+  %x = sea.load %m0[%p] : !m -> i8
+  %y = sea.load %m0[%p] : !m -> i8
+  sea.halt
+}
 
 // CONFIG: --check-inb runs with --lower --seam --ackermannize=off{{.*}}[vc.check-inb-config]
 

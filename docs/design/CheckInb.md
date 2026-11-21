@@ -41,26 +41,34 @@ Every part prints one line, then the job prints a summary and the verdict:
 
 ```text
 check-inb: checks=5 static=3 left=2 zero-length=0
+check-inb.split: folded=0 parts=2 trivial=0 to-solve=2
 check-inb.part: 0 id=1 at=p.mlir:50:9 result=unsat status=0 time=0.024 solve-time=0.000
 check-inb.part: 1 id=3 at=p.mlir:53:9 result=sat status=0 time=0.035 solve-time=0.000 fail-at=p.mlir:53:9
-check-inb.parts: total=2 unsat=1 sat=1 unknown=0 other=0 skipped=0 median-time=0.029 max-time=0.035 time=0.061
+check-inb.parts: total=2 unsat=1 sat=1 unknown=0 other=0 skipped=0 median-time=0.029 max-time=0.035 solve-time=0.000 time=0.061
 check-inb.part-diags: none
 check-inb.discharges: none under=addr0-is-null
 result: sat
 ```
 
 - `checks`: the access spans checked (a memmove has two); `static`: the
-  checks proved by static discharge, never solved; `left`: the parts;
-  `zero-length`: ranges of constant length 0, which are not accesses.
+  checks proved by static discharge, never solved; `left`: the checks
+  left after it; `zero-length`: ranges of constant length 0, which are
+  not accesses. `check-inb.split`: `folded`, the checks the optimize
+  stages removed before the split; `parts`; `trivial`, the parts whose
+  check folded to true in their own optimize (not run, unsat);
+  `to-solve`, the parts run. `check-inb.parts` counts the parts run;
+  its `solve-time` sums their solver time, `time` is the wall time of the
+  runs (processes, parsing and encoding included).
 - `id`: the check's id (`sea.inb_check`, program order, statically
   discharged checks included); `at`: the access; `fail-at`: the failing
   check of a replayed counterexample; `status`: the part's exit status.
 - `check-inb.part-diags`: the warning and error kinds on the parts'
   stderr, each with the number of parts that reported it. A part's
-  warnings name approximations and assumptions its answer rests on (for
-  example `place.symbolic-size-assume`: an allocation of symbolic size
-  gets a fixed room); its `assume.*` lines are in its output
-  (`--check-inb-dir`).
+  warnings name approximations and assumptions its answer rests on; its
+  `assume.*` lines are in its output (`--check-inb-dir`). The lowering
+  runs in the job itself, so its warnings (such as
+  `place.symbolic-size-assume`: an allocation of symbolic size gets a
+  fixed room) are the job's own, on its stderr.
 - `result: unsat` iff every part is unsat. `sat` if some part's
   counterexample replays: an execution reaches that access out of its
   object, every earlier check holding. Otherwise `unknown` (exit 3), or
@@ -122,8 +130,8 @@ ignores fields it does not know and checks `format` and `version`.
 | `source` | `{path, sha256}`: the input file (absolute path) and the SHA-256 of its contents (`null` for standard input) |
 | `program` | the program's name |
 | `args` | the job's command line, without the binary |
-| `counters` | `{checks, static, left, zero_length}`, as on the `check-inb:` line |
-| `parts` | one object per part, in order |
+| `counters` | `{checks, static, left, zero_length}`, as on the `check-inb:` line, and `{folded, parts, trivial}`, as on `check-inb.split:` |
+| `parts` | one object per part that needs a solver, in order (a trivial part, whose assert folded to true, is counted, not listed) |
 
 Each part:
 
@@ -133,7 +141,7 @@ Each part:
 | `check_id` | the check's id (`sea.inb_check`) |
 | `at` | the check's source location (the access) |
 | `mlir` | the part's file, relative to the job directory |
-| `argv` | the exact command line that runs it: the sea-vc binary, the part's absolute path, the job's options (filtered as above, never `--vcgen-only`), `--format=jsonl`, `--check-inb=false` |
+| `argv` | the exact command line that runs it: the sea-vc binary, the part's absolute path, the job's options (filtered as above, never `--vcgen-only`; without `--lower` and the options that need it: the part is lowered already), `--ptr-mode=<the mode resolved on the input>`, `--format=jsonl`, `--check-inb=false` |
 | `stdout`, `stderr` | the file names (in the job directory) the job's own runner writes the part's output to; the job reads `result`, `solve-time` and the replay's `at` from the jsonl |
 
 A part's verdict is the `result` record of its jsonl and its exit status
@@ -251,10 +259,65 @@ before the part's check. Rules that use the A-INB of a later access do not
 apply: the part has no later access. The Ackermann lowering is the known
 user of A-INB itself, and the job refuses it.
 
-Each part runs as its own sea-vc process. sea-vc's safety flow keeps
-global state (the output, the warning summary, the assumption ledger)
-that each part needs fresh, and a process per part bounds its memory
+Each part runs as its own sea-vc process, on the lowered part: it encodes
+and solves, and does not lower again. sea-vc's safety flow keeps global
+state (the output, the warning summary, the assumption ledger) that each
+part needs fresh, and a process per part bounds its memory
 (`--mem-limit`) and allows running parts in parallel later.
+
+## Instrument, optimize, lower, unique
+
+Instrumentation, optimization and assertion uniquing (merging or
+splitting) are three independent steps. `--lower` combines them one way:
+it lowers and then merges every assert into one. The job combines them
+differently:
+
+```text
+instrument -> optimize -> lower -> optimize -> unique -> optimize each part
+```
+
+1. *Instrument*: `sea-apply-tracking`, `sea-lower-box-all`, then
+   `sea-check-inb` on the abstract program (static discharge included).
+2. *Optimize*: `sccp`, `cse`, `sea-assume-fold`, `canonicalize`, `cse`:
+   the folds of `--lower` that are exact with many asserts in the
+   program. A check that an earlier check (or assume) implies on every
+   path folds to `assert true` and disappears. This is the BMC reading:
+   the merged program fails at the first failing assert on a path, so a
+   later assert may assume the earlier ones, the same assume-guarantee
+   step the split takes. Most checks go here, before any part exists.
+3. *Lower*: the memory lowering of `--lower`, once (`sea-drop-fresh-memhavoc`,
+   `sea-guard-null-memhavoc`, `sea-lower-tracking`, `sea-lower-fat-pointers`,
+   `sea-place-static`, widening and the memory-operation expansions). The
+   checks become offset and size arithmetic; placement happens once for
+   every part.
+4. *Optimize* again: placement made addresses constant.
+5. *Unique*: `sea-split-asserts` (or `sea-merge-asserts`; or, a hook not
+   built yet, groups of g asserts merged within each group: the split's
+   `group` parameter, 1 today).
+6. *Optimize each part*, with the rest of `--lower`: `sea-assume-fold`,
+   `sea-merge-asserts` (one assert: a no-op), then the tail
+   (`sea-split-wide-access`, `sea-expand-intrinsics`, `canonicalize`,
+   `cse`, `sea-prune-edges`, `sea-split-critical-edges`). Inside a part
+   the earlier checks are assumes, and only its cone is left, so folds
+   blocked before (a possibly unreachable access) may go through. A part
+   whose assert folds to true needs no solver.
+
+`lib/Transforms/Passes.cpp` assembles `--lower` from the same stages
+(prefix, memory lowering, assume-fold, merge, tail), in the same order,
+so its queries do not change. The parts are lowered programs in BMC
+form: each part's argv runs sea-vc on it without `--lower` (and without
+the options that need `--lower`), with the pointer mode the job resolved
+on the input (`--ptr-mode`), so a part does not lower or place again.
+What the lowering assumed is the job's to report: `under=` adds the
+lowering's own facts (null is address 0, the explicit `*-assume`
+warnings, guarded memhavocs) to the parts' lines.
+
+Counters: `static` (tier (a)), `folded` (checks removed by the optimize
+stages before the split), `parts`, `parts-trivial` (a part whose assert
+folded to true after its own optimize: not run, unsat), `parts-solved`
+(the parts run), and `solve-time` (the parts' solver time, summed)
+apart from `time` (wall time of the runs, mostly process and encoding
+overhead).
 
 ## A-INB and the premises
 

@@ -333,6 +333,48 @@ void buildVCLoweringPipeline(
     unsigned expandMemMove = 0, bool ptrCompanion = false,
     unsigned boxAllExpand = kBoxAllExpandDefault, bool widenPerClass = true);
 
+/// The options of the VC lowering (buildVCLoweringPipeline's parameters,
+/// documented there), for its stages one by one.
+struct VCLowerConfig {
+  bool abstract = false;
+  bool nativeMulOverflow = false;
+  bool fold = true;
+  unsigned widenMemory = 0;
+  bool expandMemSet = true;
+  bool widenReport = false;
+  bool keepByteWide = false;
+  bool checkAlign = false;
+  unsigned checkPtrIndex = 0;
+  bool opt = true;
+  bool memhavocNullNoop = true;
+  unsigned disable = 0;
+  PlaceFiles place;
+  RangeFoldMode rangeFold = RangeFoldMode::Off;
+  unsigned expandMemMove = 0;
+  bool ptrCompanion = false;
+  unsigned boxAllExpand = kBoxAllExpandDefault;
+  bool widenPerClass = true;
+};
+/// The stages of the VC lowering, which buildVCLoweringPipeline runs in
+/// this order: prefix (sea-apply-tracking, sea-lower-box-all, sccp, cse,
+/// sea-scalarize-structs), memory (the metadata lowerings and placement of
+/// an abstract program, the check jobs, widening, the memory-operation
+/// expansions), assume-fold (sea-assume-fold), then sea-merge-asserts
+/// (assertion uniquing), then the tail (sea-split-wide-access,
+/// sea-expand-intrinsics, sea-range-fold, canonicalize, cse,
+/// sea-prune-edges, sea-merge-asserts again, sea-split-critical-edges).
+/// Each adds passes to a sea.program pass manager. A job may combine them
+/// differently (sea-vc --check-inb: docs/design/CheckInb.md).
+void addVCLowerPrefix(mlir::OpPassManager &prog, const VCLowerConfig &c);
+void addVCLowerMemory(mlir::OpPassManager &prog, const VCLowerConfig &c);
+void addVCAssumeFold(mlir::OpPassManager &prog, const VCLowerConfig &c);
+void addVCLowerTail(mlir::OpPassManager &prog, const VCLowerConfig &c);
+/// The optimize stage of a program with many asserts: sccp, cse,
+/// sea-assume-fold, canonicalize, cse (as the options enable them). Exact:
+/// a check that dominating checks or assumes imply folds to true (the
+/// first failing assert of a path is the one that counts).
+void addVCOptimizeChecks(mlir::OpPassManager &prog, const VCLowerConfig &c);
+
 /// Attaches the `lower.pass` log (one level-1 event per pass run: ops
 /// before and after, time; lib/Transforms/PassLog.cpp) to \p pm. Costs a
 /// check per pass when the tag is off.

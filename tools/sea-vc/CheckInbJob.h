@@ -80,6 +80,13 @@ struct JobOptions {
   std::vector<std::string> jobArgs;
   /// sea-lower-box-all's expand-max (sea-vc --box-all-expand)
   unsigned boxAllExpand = kBoxAllExpandDefault;
+  /// the lowering, as --lower would run it (its options); the job runs its
+  /// stages itself (docs/design/CheckInb.md, "Instrument, optimize,
+  /// lower, unique")
+  VCLowerConfig lower;
+  /// the pointer mode resolved on the input (--ptr-mode for each part,
+  /// which sees a lowered program)
+  std::string ptrMode;
 };
 
 /// What one part's run said.
@@ -268,20 +275,23 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     if (p != program)
       p.erase();
   std::string name = program.getSymName().str();
-  {
-    // boxes first, as the lowering does (tracking markers, then boxes):
-    // the loads of a box's body become ordinary loads at the box's place,
-    // which sea-check-inb checks; a box not in assert polarity is refused
-    // here as in --lower. In each part's own --lower both passes are then
-    // no-ops (no marker, no box left).
+  // one pass manager run at a time, on one thread (the passes report
+  // through the shared diagnostics)
+  ctx->disableMultithreading();
+  auto run = [&](llvm::function_ref<void(mlir::OpPassManager &)> add) {
     mlir::PassManager pm(ctx);
-    mlir::OpPassManager &prog = pm.nest<ProgramOp>();
-    prog.addPass(createApplyTrackingPass());
-    prog.addPass(createLowerBoxAllPass(o.boxAllExpand));
-    prog.addPass(createCheckInbPass(o.staticDischarge, o.memhavocNullNoop));
-    if (mlir::failed(pm.run(module)))
-      return 1;
-  }
+    add(pm.nest<ProgramOp>());
+    return pm.run(module);
+  };
+  // instrument: tracking markers and boxes first, as the lowering does (the
+  // loads of a box's body become ordinary loads at the box's place), then
+  // the checks (static discharge included)
+  if (mlir::failed(run([&](mlir::OpPassManager &prog) {
+        prog.addPass(createApplyTrackingPass());
+        prog.addPass(createLowerBoxAllPass(o.boxAllExpand));
+        prog.addPass(createCheckInbPass(o.staticDischarge, o.memhavocNullNoop));
+      })))
+    return 1;
   // the pointer width (the narrowest one, if several)
   unsigned ptrWidth = 64;
   {
@@ -323,6 +333,24 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
                    .str();
     out.emit(rec);
   }
+  // optimize, lower once (placement, fat pointers), optimize again
+  auto countAsserts = [&]() {
+    uint64_t n = 0;
+    program.walk([&](AssertOp a) {
+      if (!mlir::matchPattern(a.getCond(), mlir::m_One()))
+        ++n;
+    });
+    return n;
+  };
+  if (mlir::failed(run([&](mlir::OpPassManager &prog) {
+        addVCOptimizeChecks(prog, o.lower);
+        prog.addPass(createScalarizeStructsPass());
+        addVCLowerMemory(prog, o.lower);
+        addVCOptimizeChecks(prog, o.lower);
+      })))
+    return 1;
+  const uint64_t beforeSplit = countAsserts();
+  const uint64_t folded = left > beforeSplit ? left - beforeSplit : 0;
   // the parts are the programs the split makes: an input that carries the
   // attribute already (a part of an earlier split) is not one
   program->removeAttr(kSplitAssertAttr);
@@ -336,6 +364,57 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
   for (ProgramOp p : module.getOps<ProgramOp>())
     if (p->hasAttr(kSplitAssertAttr))
       parts.push_back(p);
+  // each part's check, before its own optimize merges it
+  struct PartCheck {
+    int64_t id = -1;
+    std::string at;
+  };
+  std::vector<PartCheck> partChecks;
+  for (ProgramOp part : parts) {
+    AssertOp a;
+    part.walk([&](AssertOp x) { a = x; });
+    if (!a) {
+      (void)postconditionFailedNoAssert(part);
+      return 1;
+    }
+    PartCheck pc;
+    pc.at = locText(a.getLoc());
+    if (auto id = a->getAttrOfType<mlir::IntegerAttr>(kInbCheckAttr))
+      pc.id = id.getInt();
+    partChecks.push_back(pc);
+  }
+  // optimize each part with the rest of --lower: the fold of facts (the
+  // earlier checks are assumes now), merge (one assert), the tail
+  if (mlir::failed(run([&](mlir::OpPassManager &prog) {
+        addVCAssumeFold(prog, o.lower);
+        prog.addPass(createMergeAssertsPass());
+        addVCLowerTail(prog, o.lower);
+      })))
+    return 1;
+  // a part whose assert folded to true needs no solver: unsat
+  std::vector<bool> trivial;
+  uint64_t trivialN = 0;
+  for (ProgramOp part : parts) {
+    bool t = true;
+    part.walk([&](AssertOp a) {
+      t = t && mlir::matchPattern(a.getCond(), mlir::m_One());
+    });
+    trivial.push_back(t);
+    trivialN += t;
+  }
+  {
+    out::Record rec("check-inb.split");
+    rec.num("folded", folded)
+        .num("parts", parts.size())
+        .num("trivial", trivialN)
+        .num("to_solve", parts.size() - trivialN);
+    rec.text =
+        llvm::formatv("check-inb.split: folded={0} parts={1} "
+                      "trivial={2} to-solve={3}",
+                      folded, parts.size(), trivialN, parts.size() - trivialN)
+            .str();
+    out.emit(rec);
+  }
 
   // the work directory
   std::string dir = o.dir;
@@ -376,17 +455,12 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
   // step 1: every part and the manifest, before any part runs
   std::vector<PartSpec> specs;
   for (auto [i, part] : llvm::enumerate(parts)) {
+    if (trivial[i])
+      continue;
     PartSpec sp;
     sp.index = i;
-    AssertOp a;
-    part.walk([&](AssertOp x) { a = x; });
-    if (!a) {
-      (void)postconditionFailedNoAssert(part);
-      return 1;
-    }
-    sp.at = locText(a.getLoc());
-    if (auto id = a->getAttrOfType<mlir::IntegerAttr>(kInbCheckAttr))
-      sp.checkId = id.getInt();
+    sp.at = partChecks[i].at;
+    sp.checkId = partChecks[i].id;
     std::string base = ("part-" + llvm::Twine(i)).str();
     sp.mlir = base + ".mlir";
     sp.stdoutFile = base + ".jsonl";
@@ -410,6 +484,9 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     sp.argv = {o.self, mlirPath};
     for (const std::string &s : o.partArgs)
       sp.argv.push_back(s);
+    // the part is lowered: the pointer mode of the input, not of the
+    // lowered program (sea-split-wide-access makes addr.from_int)
+    sp.argv.push_back("--ptr-mode=" + o.ptrMode);
     sp.argv.push_back("--format=jsonl");
     // the last occurrence wins: a --config file or response file that
     // names --check-inb does not run the job again inside the part
@@ -451,7 +528,10 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
         {"counters", llvm::json::Object{{"checks", int64_t(checks)},
                                         {"static", int64_t(staticN)},
                                         {"left", int64_t(left)},
-                                        {"zero_length", int64_t(zero)}}},
+                                        {"zero_length", int64_t(zero)},
+                                        {"folded", int64_t(folded)},
+                                        {"parts", int64_t(parts.size())},
+                                        {"trivial", int64_t(trivialN)}}},
         {"parts", std::move(partsJ)}};
     if (mlir::failed(writeFileAtomic(
             dir + "/manifest.json",
@@ -561,10 +641,12 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
   // no "slowest part" here: which part is slowest is a timing, which the
   // part lines give; a summary field of it would differ between two runs
   // that agree on everything else
-  double maxT = 0;
+  double maxT = 0, solveSum = 0;
   for (const PartRun &r : runs) {
     times.push_back(r.seconds);
     maxT = std::max(maxT, r.seconds);
+    if (r.solveSeconds > 0)
+      solveSum += r.solveSeconds;
     if (r.status == 0 && r.result == "unsat")
       ++unsat;
     else if (r.status == 0 && r.result == "sat")
@@ -582,7 +664,7 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
           : (times[times.size() / 2 - 1] + times[times.size() / 2]) / 2;
   {
     out::Record rec("check-inb.parts");
-    rec.num("total", parts.size())
+    rec.num("total", specs.size())
         .num("unsat", unsat)
         .num("sat", sat)
         .num("unknown", unknown)
@@ -590,20 +672,21 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
         .num("skipped", skipped)
         .str("median_time", llvm::formatv("{0:f3}", median).str())
         .str("max_time", llvm::formatv("{0:f3}", maxT).str())
+        .str("solve_time", llvm::formatv("{0:f3}", solveSum).str())
         .str("time", llvm::formatv("{0:f3}", secondsSince(t0)).str());
     rec.text =
         llvm::formatv("check-inb.parts: total={0} unsat={1} sat={2} "
                       "unknown={3} other={4} skipped={5} median-time={6:f3} "
-                      "max-time={7:f3} time={8:f3}",
-                      parts.size(), unsat, sat, unknown, other, skipped, median,
-                      maxT, secondsSince(t0))
+                      "max-time={7:f3} solve-time={8:f3} time={9:f3}",
+                      specs.size(), unsat, sat, unknown, other, skipped, median,
+                      maxT, solveSum, secondsSince(t0))
             .str();
     out.emit(rec);
   }
   // the verdict: sat if a part's failure replayed; unsat iff every part
-  // is unsat; else unknown
+  // is unsat (a trivial part is); else unknown
   std::string verdict = sat                                 ? "sat"
-                        : unsat == parts.size() && !skipped ? "unsat"
+                        : unsat == specs.size() && !skipped ? "unsat"
                                                             : "unknown";
   {
     // the parts' diagnostics, which their own output (stderr) holds: the
@@ -655,6 +738,13 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     // as place.symbolic-size-assume: an allocation of symbolic size is
     // assumed to fit its room); sorted, `none` without any
     std::set<std::string> under;
+    // the lowering is the job's: placement made null address 0, and its
+    // explicit assumptions are the job's own warnings (`*-assume`)
+    if (o.lower.abstract)
+      under.insert("addr0-is-null");
+    for (const std::string &k : diag::warningKinds())
+      if (llvm::StringRef(k).ends_with("-assume"))
+        under.insert(k);
     for (const PartRun &r : runs) {
       for (const std::string &a : r.assumes)
         // a part's use of A-NOWRAP is discharged only with it listed
