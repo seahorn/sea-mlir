@@ -5,7 +5,8 @@
 //
 // docs/design/SeaImp.md. Two steps. First, every region access is
 // expanded in place: `get` the memory, apply the sea op `inplace`, `set`
-// the result (seaimp.load: `get` and load). Then every seaimp.var becomes
+// the result (seaimp.load: `get` and load; seaimp.alloca: sea.alloca, the
+// region dropped). Then every seaimp.var becomes
 // SSA values by MLIR's Mem2Reg (tryToPromoteMemorySlots,
 // mlir/lib/Transforms/Mem2Reg.cpp): a seaimp.get is replaced by the value of
 // the last seaimp.set on its path, joins get block arguments (the iterated
@@ -67,7 +68,7 @@ static void expandRegionAccesses(ProgramOp program) {
   SmallVector<Operation *> accesses;
   program.walk([&](Operation *op) {
     if (isa<imp::LoadOp, imp::StoreOp, imp::MemSetOp, imp::MemMoveOp,
-            imp::MemHavocOp>(op))
+            imp::MemHavocOp, imp::AllocaOp>(op))
       accesses.push_back(op);
   });
   for (Operation *op : accesses) {
@@ -109,6 +110,12 @@ static void expandRegionAccesses(ProgramOp program) {
                                    mh.getLen(), mh.getSiteAttr(), inplace,
                                    /*tracked=*/UnitAttr());
       imp::SetOp::create(b, loc, mh.getVar(), r);
+    } else if (auto al = dyn_cast<imp::AllocaOp>(op)) {
+      // sea allocation takes no memory: the region is dropped
+      Value r = AllocaOp::create(b, loc, al.getType(), al.getSize(),
+                                 al.getAlignAttr(), al.getSiteAttr(),
+                                 al.getLabelAttr());
+      al.getResult().replaceAllUsesWith(r);
     }
     op->erase();
   }

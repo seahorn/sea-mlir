@@ -18,7 +18,7 @@
 sea.program @imp_safe {
   %mem = seaimp.var "mem" [0] : !seaimp.var<!m>
   %c4  = sea.const 4 : i64
-  %p   = sea.alloca %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %p   = seaimp.alloca %mem, %c4 align 4 [1] : !seaimp.var<!m>, i64 -> !sea.ptr<64>
   %v5  = sea.const 5 : i32
   seaimp.store %mem[%p], %v5 align 4 : !seaimp.var<!m>, i32
   %c   = sea.nondet "nd_bool" [2] : i1
@@ -61,8 +61,8 @@ sea.program @imp_bug {
   %c16 = sea.const 16 : i64
   %c8 = sea.const 8 : i64
   %z8 = sea.const 0 : i8
-  %buf = sea.alloca %c16 align 8 [1] : i64 -> !sea.ptr<64>
-  %dst = sea.alloca %c8 align 8 [2] : i64 -> !sea.ptr<64>
+  %buf = seaimp.alloca %mem, %c16 align 8 [1] : !seaimp.var<!m>, i64 -> !sea.ptr<64>
+  %dst = seaimp.alloca %mem, %c8 align 8 [2] : !seaimp.var<!m>, i64 -> !sea.ptr<64>
   seaimp.memset %mem[%buf], %z8, %c16 : !seaimp.var<!m>
   seaimp.memmove %mem[%dst], %mem[%buf], %c8 : !seaimp.var<!m>
   seaimp.memhavoc %mem[%buf], %c16 [5] : !seaimp.var<!m>

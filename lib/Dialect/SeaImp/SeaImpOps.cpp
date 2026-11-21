@@ -70,7 +70,8 @@ LogicalResult VarOp::verify() {
     // variable operand (the others are typed as sea values), except set's
     // stored value
     bool ok =
-        isa<GetOp, LoadOp, StoreOp, MemSetOp, MemMoveOp, MemHavocOp>(user) ||
+        isa<GetOp, LoadOp, StoreOp, MemSetOp, MemMoveOp, MemHavocOp, AllocaOp>(
+            user) ||
         (isa<SetOp>(user) && use.getOperandNumber() == 0);
     if (!ok) {
       InFlightDiagnostic diag =
@@ -244,3 +245,23 @@ LogicalResult MemMoveOp::verify() {
 }
 
 LogicalResult MemHavocOp::verify() { return verifyAccess(*this, getVar()); }
+
+//===----------------------------------------------------------------------===//
+// Allocation in a region
+//===----------------------------------------------------------------------===//
+
+LogicalResult AllocaOp::verify() {
+  if (failed(verifyAccess(*this, getVar())))
+    return failure();
+  sea::MemType mem = regionOf(getVar().getType());
+  auto ptr = cast<sea::PtrType>(getResult().getType());
+  if (ptr != mem.getIndex())
+    return emitOpError("result must be the pointer type that indexes the "
+                       "region (")
+           << mem.getIndex() << "), got " << getResult().getType();
+  if (sea::bitWidthOf(getSize().getType()) != ptr.getWidth())
+    return emitOpError("size must have the pointer width");
+  if (!llvm::isPowerOf2_64(getAlign()))
+    return emitOpError("alignment must be a power of 2");
+  return success();
+}

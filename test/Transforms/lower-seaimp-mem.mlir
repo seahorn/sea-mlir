@@ -14,7 +14,7 @@
 // join gets a memory block argument.
 // CHECK-LABEL: sea.program @ptr
 // CHECK-NEXT: %[[M0:.*]] = sea.mem.nondet "mem" [0] : !sea.mem<!sea.ptr<64>, i8>
-// CHECK: %[[P:.*]] = sea.alloca
+// CHECK: %[[P:.*]] = sea.alloca %{{.*}} align 4 [1] : i64 -> !sea.ptr<64>
 // CHECK: %[[M1:.*]] = sea.store %[[M0]][%[[P]]], %{{.*}} inplace align 4 : !sea.mem<!sea.ptr<64>, i8>, i32
 // CHECK: sea.cond_br %{{.*}}, ^[[T:.*]], ^[[J:.*]](%[[M1]] : !sea.mem<!sea.ptr<64>, i8>)
 // CHECK: ^[[T]]:
@@ -25,7 +25,7 @@
 sea.program @ptr {
   %mem = seaimp.var "mem" [0] : !seaimp.var<!m>
   %c4  = sea.const 4 : i64
-  %p   = sea.alloca %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %p   = seaimp.alloca %mem, %c4 align 4 [1] : !seaimp.var<!m>, i64 -> !sea.ptr<64>
   %v5  = sea.const 5 : i32
   seaimp.store %mem[%p], %v5 align 4 : !seaimp.var<!m>, i32
   %c   = sea.nondet "nd_bool" [2] : i1
@@ -54,8 +54,8 @@ sea.program @bulk {
   %c16 = sea.const 16 : i64
   %c8 = sea.const 8 : i64
   %z8 = sea.const 0 : i8
-  %buf = sea.alloca %c16 align 8 [1] : i64 -> !sea.ptr<64>
-  %dst = sea.alloca %c8 align 8 [2] : i64 -> !sea.ptr<64>
+  %buf = seaimp.alloca %mem, %c16 align 8 [1] : !seaimp.var<!m>, i64 -> !sea.ptr<64>
+  %dst = seaimp.alloca %mem, %c8 align 8 [2] : !seaimp.var<!m>, i64 -> !sea.ptr<64>
   seaimp.memset %mem[%buf], %z8, %c16 : !seaimp.var<!m>
   seaimp.memmove %mem[%dst], %mem[%buf], %c8 align 8 src_align 8 : !seaimp.var<!m>
   seaimp.memhavoc %mem[%buf], %c16 [5] : !seaimp.var<!m>
@@ -78,7 +78,7 @@ sea.program @two_regions {
   %heap  = seaimp.var "heap"  [0] : !seaimp.var<!m>
   %stack = seaimp.var "stack" [1] : !seaimp.var<!m>
   %c8 = sea.const 8 : i64
-  %buf = sea.alloca %c8 align 8 [2] : i64 -> !sea.ptr<64>
+  %buf = seaimp.alloca %stack, %c8 align 8 [2] : !seaimp.var<!m>, i64 -> !sea.ptr<64>
   %dst = sea.malloc %c8 align 8 [3] : i64 -> !sea.ptr<64>
   seaimp.memmove %heap[%dst], %stack[%buf], %c8 : !seaimp.var<!m>
   %x = seaimp.load %heap[%dst] : !seaimp.var<!m> -> i64
@@ -101,7 +101,7 @@ sea.program @loop {
   %mem = seaimp.var "mem" [0] : !seaimp.var<!m>
   %i = seaimp.var "i" [1] : !seaimp.var<i64>
   %c4 = sea.const 4 : i64
-  %a = sea.alloca %c4 align 1 [2] : i64 -> !sea.ptr<64>
+  %a = seaimp.alloca %mem, %c4 align 1 [2] : !seaimp.var<!m>, i64 -> !sea.ptr<64>
   %z = sea.const 0 : i64
   seaimp.set %i, %z : !seaimp.var<i64>
   sea.br ^head
@@ -141,6 +141,22 @@ sea.program @whole {
   %v = sea.const 1 : i8
   seaimp.store %b[%p], %v : !seaimp.var<!m>, i8
   %x = seaimp.load %b[%p] : !seaimp.var<!m> -> i8
+  sea.halt
+}
+
+// A region used only by allocations: the variable goes away, each
+// seaimp.alloca becomes sea.alloca with its size, align, site and label.
+// CHECK-LABEL: sea.program @alloca_only
+// CHECK-NOT: sea.mem.nondet
+// CHECK: sea.alloca %{{.*}} align 8 [1] label "buf" : i64 -> !sea.ptr<64>
+// CHECK: sea.ptr.cmp
+sea.program @alloca_only {
+  %mem = seaimp.var "mem" [0] : !seaimp.var<!m>
+  %c4 = sea.const 4 : i64
+  %p = seaimp.alloca %mem, %c4 align 8 [1] label "buf" : !seaimp.var<!m>, i64 -> !sea.ptr<64>
+  %z = sea.ptr.null : !sea.ptr<64>
+  %ok = sea.ptr.cmp ne, %p, %z : !sea.ptr<64>
+  sea.assert %ok
   sea.halt
 }
 

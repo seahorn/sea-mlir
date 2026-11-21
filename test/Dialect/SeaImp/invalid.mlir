@@ -203,5 +203,56 @@ sea.program @region_nested {
   sea.halt
 }
 
+// -----
+
+sea.program @alloca_index {
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.addr<64>, i8>>
+  %c4 = sea.const 4 : i64
+  // expected-error@+1 {{result must be the pointer type that indexes the region ('!sea.addr<64>'), got '!sea.ptr<64>'}}
+  %p = seaimp.alloca %m, %c4 align 4 [2] : !seaimp.var<!sea.mem<!sea.addr<64>, i8>>, i64 -> !sea.ptr<64>
+  sea.halt
+}
+
+// -----
+
+sea.program @alloca_size {
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  %c4 = sea.const 4 : i32
+  // expected-error@+1 {{size must have the pointer width}}
+  %p = seaimp.alloca %m, %c4 align 4 [2] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i32 -> !sea.ptr<64>
+  sea.halt
+}
+
+// -----
+
+sea.program @alloca_align {
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  %c4 = sea.const 4 : i64
+  // expected-error@+1 {{alignment must be a power of 2}}
+  %p = seaimp.alloca %m, %c4 align 3 [2] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> !sea.ptr<64>
+  sea.halt
+}
+
+// -----
+
+sea.program @alloca_not_region {
+  %x = seaimp.var "x" [1] : !seaimp.var<i64>
+  %c4 = sea.const 4 : i64
+  // expected-error@+1 {{must be seaimp variable holding a memory}}
+  %p = seaimp.alloca %x, %c4 align 4 [2] : !seaimp.var<i64>, i64 -> !sea.ptr<64>
+  sea.halt
+}
+
+// -----
+
+sea.program @alloca_site {
+  // expected-note@+1 {{previous use here}}
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  %c4 = sea.const 4 : i64
+  // expected-error@+1 {{duplicate nondet site 1}}
+  %p = seaimp.alloca %m, %c4 align 4 [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> !sea.ptr<64>
+  sea.halt
+}
+
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

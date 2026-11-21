@@ -108,6 +108,7 @@ def SeaImp_MemVar : Type<
     "seaimp variable holding a memory", "::sea::imp::VarType">;
 def SeaImp_Index : Type<CPred<"::llvm::isa<::sea::AddrType, ::sea::PtrType>($_self)">,
                         "address or pointer">;
+def SeaImp_Ptr : Type<CPred<"::llvm::isa<::sea::PtrType>($_self)">, "pointer">;
 def SeaImp_BV : Type<CPred<"::llvm::isa<::mlir::IntegerType>($_self)">,
                      "integer">;
 def SeaImp_CellValue : Type<
@@ -234,6 +235,40 @@ def SeaImp_MemHavocOp : SeaImp_Op<"memhavoc", [
   let assemblyFormat = [{
     $var `[` $addr `]` `,` $len ` ` `[` $site `]` attr-dict `:`
     qualified(type($var))
+  }];
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// Allocation in a region
+//===----------------------------------------------------------------------===//
+
+def SeaImp_AllocaOp : SeaImp_Op<"alloca", [Sea_NondetSiteOpInterface]> {
+  let summary = "Allocate a new stack object in a region";
+  let description = [{
+    `sea.alloca` of an object whose cells are in the region `var`: each
+    execution creates a new object of `size` units, aligned to `align`.
+    The lowering is `sea.alloca` with the same operands and attributes
+    (sea allocation takes no memory: pointers are not tied to a memory);
+    the region is what a later partition into regions checks accesses
+    against. `site` is unique with the program's other nondet sites; the
+    result is a pointer that indexes the region.
+
+    ```mlir
+    %p = seaimp.alloca %mem, %c4 align 4 [1] : !seaimp.var<!m>, i64 -> !sea.ptr<64>
+    ```
+  }];
+  let arguments = (ins SeaImp_MemVar:$var, SeaImp_BV:$size,
+                   ConfinedAttr<I64Attr, [IntPositive]>:$align,
+                   ConfinedAttr<I64Attr, [IntNonNegative]>:$site,
+                   OptionalAttr<StrAttr>:$label);
+  // no declared effects, as sea.alloca: an unused allocation stays (it
+  // names an object of the program, by its site)
+  let results = (outs SeaImp_Ptr:$result);
+  let assemblyFormat = [{
+    $var `,` $size `align` $align ` ` `[` $site `]` (`label` $label^)?
+    attr-dict `:` qualified(type($var)) `,` type($size) `->`
+    qualified(type($result))
   }];
   let hasVerifier = 1;
 }

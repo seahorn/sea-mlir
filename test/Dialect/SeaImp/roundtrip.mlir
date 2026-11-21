@@ -70,5 +70,18 @@ sea.program @addr_region {
   sea.halt
 }
 
+// Allocation names its region.
+// CHECK-LABEL: sea.program @alloca
+sea.program @alloca {
+  // CHECK: %[[M:.*]] = seaimp.var "mem"
+  %mem = seaimp.var "mem" [0] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  %c4 = sea.const 4 : i64
+  // CHECK: seaimp.alloca %[[M]], %{{.*}} align 4 [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> !sea.ptr<64>
+  %p = seaimp.alloca %mem, %c4 align 4 [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> !sea.ptr<64>
+  // CHECK: seaimp.alloca %[[M]], %{{.*}} align 8 [2] label "buf" : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> !sea.ptr<64>
+  %q = seaimp.alloca %mem, %c4 align 8 [2] label "buf" : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> !sea.ptr<64>
+  sea.halt
+}
+
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
