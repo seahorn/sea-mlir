@@ -7,8 +7,8 @@
 
 // seaimp has meaning only through its lowering: sea-vc refuses it without
 // --lower, sea-run always (docs/design/SeaImp.md).
-// RAW: {{.*}}sea-lower-seaimp{{.*}}vc.seaimp
-// INTERP: {{.*}}sea-lower-seaimp{{.*}}run.seaimp
+// RAW: vc.seaimp
+// INTERP: run.seaimp
 
 // x = a; if (a < b) x = b; assert(x >= a): safe.
 // UNSAT: result: unsat

@@ -71,6 +71,7 @@ phase, pass or solver call.
 ```text
 $ sea-vc p.mlir --lower --seam '--log=*:1'
 log: vc.phase start phase=lower
+log: lower.pass pass=sea-lower-seaimp on=sea.program program=@p ops-before=7 ops-after=7 time=0.000
 log: lower.pass pass=sea-apply-tracking on=sea.program program=@p ops-before=7 ops-after=7 time=0.000
 ...
 log: lower.pass pass=sea-split-critical-edges on=sea.program program=@p ops-before=7 ops-after=7 time=0.000

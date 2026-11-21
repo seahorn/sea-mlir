@@ -110,7 +110,7 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   `sea-widen-memory` (byte
   memory -> aligned words when every access provably fits, per memory the
   largest size <= k; in the lowering with `sea-vc --widen-memory=k`), `sea-apply-tracking`
-  (tracking_on/off markers -> `tracked` updates; first in the lowering),
+  (tracking_on/off markers -> `tracked` updates; first in the lowering after sea-lower-seaimp),
   `sea-lower-tracking` (tracking -> a shadow memory chain per tracked
   memory, keyed by sea.ptr.base, starting as sea.mem.const 0 shadow:
   read by object identity in the VC, never by a pointer premise),

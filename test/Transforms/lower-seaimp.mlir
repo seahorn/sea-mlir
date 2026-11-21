@@ -180,5 +180,14 @@ sea.program @unread {
   sea.halt
 }
 
+// A variable with no uses is erased.
+// CHECK-LABEL: sea.program @unused
+// CHECK-NOT: sea.nondet
+// CHECK: sea.halt
+sea.program @unused {
+  %x = seaimp.var "x" [1] : !seaimp.var<i32>
+  sea.halt
+}
+
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

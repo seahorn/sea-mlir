@@ -61,8 +61,19 @@ public:
 void LowerSeaImpPass::runOnOperation() {
   ProgramOp program = getOperation();
   SmallVector<PromotableAllocationOpInterface> vars;
-  program.walk([&](imp::VarOp v) { vars.push_back(v); });
-  if (!vars.empty()) {
+  bool anyVar = false;
+  SmallVector<imp::VarOp> unused;
+  program.walk([&](imp::VarOp v) {
+    anyVar = true;
+    // upstream tryToPromoteMemorySlots skips slots with no uses
+    if (v->use_empty())
+      unused.push_back(v);
+    else
+      vars.push_back(v);
+  });
+  for (imp::VarOp v : unused)
+    v->erase();
+  if (anyVar) {
     Block &entry = program.getBody().front();
     OpBuilder builder(&entry, entry.begin());
     DominanceInfo &dominance = getAnalysis<DominanceInfo>();

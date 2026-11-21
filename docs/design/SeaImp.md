@@ -154,6 +154,6 @@ the program's ops per variable: O(variables x ops).
 - Memory variables (`!sea.mem`) and the region accesses that would use
   them; allocation in a region comes with those ops.
 - Address variables (`!sea.addr`).
-- An address-of: a variable whose address is taken is an object
-  (`sea.alloca`) in memory, not a `seaimp.var`.
+- An address-of: a variable whose address is taken is an object in
+  a memory region; allocation in a region comes with the region ops.
 - Uses in nested regions (`sea.box.all` bodies).
