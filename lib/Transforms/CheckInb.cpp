@@ -20,8 +20,9 @@
 // one gets `n == 0 || deref(p, n)`. A memhavoc of the null pointer itself
 // is a no-op (the open decision of sea-guard-null-memhavoc, sea-vc
 // --memhavoc-null=noop, the default): with memhavoc-null-noop (default
-// true) its check also passes when p is null (`p == null || ...`); with
-// false it is an access like any other.
+// true) the check of a memhavoc whose pointer may be null (the test of
+// sea-guard-null-memhavoc) also passes when p is null (`p == null ||
+// ...`); with false it is an access like any other.
 //
 // The object of an access is its pointer's provenance (fat pointers, as
 // SeaHorn's fpf), not whatever object the address lands in. A pointer made
@@ -72,8 +73,9 @@
 //     (kCheckInbStatsAttr): checks (spans checked, discharged ones
 //     included), static (discharged by tier (a)), left (asserts inserted),
 //     zero-length (constant length 0: no check), and null-noop (when not
-//     0: the memhavoc checks that pass for the null pointer itself, under
-//     memhavoc-null-noop; the job's result rests on that decision).
+//     0: the memhavoc checks, of a pointer that may be null, that pass
+//     for the null pointer itself under memhavoc-null-noop; the job's
+//     result rests on that decision).
 //
 //===----------------------------------------------------------------------===//
 
@@ -256,8 +258,10 @@ void CheckInbPass::runOnOperation() {
       Value empty = ICmpOp::create(b, loc, ICmpPredicate::eq, len, zero);
       cond = OrOp::create(b, loc, i1, empty, cond);
     }
-    if (nullNoop) {
-      // the check rests on memhavoc(null) = no-op (sea-vc reports it)
+    // a pointer that may be null (the test of sea-guard-null-memhavoc): the
+    // check rests on memhavoc(null) = no-op (sea-vc reports it); one that
+    // cannot be null needs no disjunct
+    if (nullNoop && mayBeNullPointer(p)) {
       ++nullNoopChecks;
       Value null = PtrNullOp::create(b, loc, pt);
       Value isNull = PtrCmpOp::create(b, loc, ICmpPredicate::eq, p, null);

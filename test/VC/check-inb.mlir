@@ -16,6 +16,7 @@
 // RUN: sea-vc %s --program=implied --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=FOLD
 // RUN: sea-vc %s --program=mhnull --check-inb --lower --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=MHNULL
 // RUN: sea-vc %s --program=mhnull --check-inb --lower --seam --ackermannize=off --memhavoc-null=error 2>&1 | FileCheck %s --check-prefix=MHERR
+// RUN: sea-vc %s --program=mhnotnull --check-inb --lower --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=MHNN
 // RUN: sea-vc %s --program=prior --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=PRIOR
 // RUN: printf -- '--check-inb\n--lower\n--seam\n--ackermannize=off\n' > %t.cfg
 // RUN: sea-vc %s --program=oob --config=%t.cfg | FileCheck %s --check-prefix=CFG
@@ -187,6 +188,21 @@ sea.program @mhnull {
   %c16 = sea.const 16 : i64
   %null = sea.ptr.null : !sea.ptr<64>
   %m2 = sea.memhavoc %m0[%null], %c16 [5] inplace : !m
+  sea.halt
+}
+
+// A memhavoc of a pointer that cannot be null rests on no null decision.
+// MHNN-NOT: memhavoc-null-noop
+// MHNN: result: unsat
+sea.program @mhnotnull {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %n = sea.nondet "n" [2] : i64
+  %lt = sea.icmp ule, %n, %c16 : i64
+  sea.assume %lt
+  %m2 = sea.memhavoc %m0[%a], %n [5] inplace : !m
+  %x = sea.load %m2[%a] : !m -> i8
   sea.halt
 }
 

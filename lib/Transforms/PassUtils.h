@@ -24,6 +24,12 @@ namespace sea {
 /// right when run alone.
 std::optional<llvm::APInt> foldConstant(mlir::Value v);
 
+/// May pointer `p` be the null pointer? No only if every source (through
+/// ptr.add / ptr.index bases, select and block arguments) is an object: an
+/// allocation, a global, a function address. Shared by
+/// sea-guard-null-memhavoc and sea-check-inb.
+bool mayBeNullPointer(mlir::Value p);
+
 /// The index `base` plus `off` units (an address or a pointer; `off` has
 /// the index width).
 mlir::Value offsetIndex(mlir::OpBuilder &b, mlir::Location loc,

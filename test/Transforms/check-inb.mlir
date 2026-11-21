@@ -102,9 +102,10 @@ sea.program @tier_a {
 
 // Ranges. A constant length of 0 is no access: no check. A symbolic length
 // n is checked as n == 0 || deref. memmove checks both ends; memhavoc of
-// null is a no-op (null || n == 0 || deref) unless memhavoc-null-noop=false.
+// null is a no-op (null || n == 0 || deref, for a pointer that may be
+// null) unless memhavoc-null-noop=false.
 // CHECK-LABEL: sea.program @ranges
-// CHECK-SAME: sea.check_inb = {checks = 4 : i64, left = 4 : i64, "null-noop" = 1 : i64, static = 0 : i64, "zero-length" = 1 : i64}
+// CHECK-SAME: sea.check_inb = {checks = 5 : i64, left = 5 : i64, "null-noop" = 1 : i64, static = 0 : i64, "zero-length" = 1 : i64}
 // CHECK: %[[Z:.*]] = sea.icmp eq, %[[N:.*]], %{{.*}} : i64
 // CHECK: %[[OR:.*]] = sea.or %[[Z]], %{{.*}} : i1
 // CHECK: sea.assert %[[OR]]
@@ -118,8 +119,11 @@ sea.program @tier_a {
 // CHECK: sea.ptr.cmp eq
 // CHECK: sea.assert
 // CHECK-NEXT: sea.memhavoc
+// CHECK-NOT: sea.ptr.cmp
+// CHECK: sea.assert
+// CHECK-NEXT: sea.memhavoc
 // STRICT-LABEL: sea.program @ranges
-// STRICT-NOT: sea.ptr.null
+// STRICT-NOT: sea.ptr.cmp
 // STRICT: sea.memhavoc
 sea.program @ranges {
   %m0 = sea.mem.nondet "m" [0] : !m
@@ -132,7 +136,12 @@ sea.program @ranges {
   %m1 = sea.memset %m0[%p], %v, %zero inplace : !m
   %m2 = sea.memset %m1[%p], %v, %n inplace : !m
   %m3 = sea.memmove %m2[%p], %m2[%q], %n inplace : !m
-  %m4 = sea.memhavoc %m3[%p], %n [4] inplace : !m
+  %c = sea.nondet "c" [6] : i1
+  %null = sea.ptr.null : !sea.ptr<64>
+  %h = sea.select %c, %p, %null : !sea.ptr<64>
+  %m4 = sea.memhavoc %m3[%h], %n [4] inplace : !m
+  // a memhavoc of a pointer that cannot be null: no null disjunct
+  %m5 = sea.memhavoc %m4[%q], %n [7] inplace : !m
   sea.halt
 }
 
