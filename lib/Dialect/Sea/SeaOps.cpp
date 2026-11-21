@@ -117,14 +117,17 @@ struct SimplifyCondBr : OpRewritePattern<CondBrOp> {
     // reports) go to the new branch
     auto n = dyn_cast<NameLoc>(op.getLoc());
     const bool merged = n && n.getName().getValue() == "sea.assert";
-    // the br is not that assert (kAssertIdAttr, "sea.assert_id", Passes.h)
+    // the br is not that assert (kAssertIdAttr, "sea.assert_id", and
+    // kPremiseAttr, "sea.premise", Passes.h)
     const bool dropAssertId =
         merged && matchPattern(op.getCondition(), m_One());
     auto toBr = [&](ValueRange args, Block *dest,
                     std::optional<Location> loc = std::nullopt) {
       NamedAttrList marks(op->getDiscardableAttrDictionary());
-      if (dropAssertId)
+      if (dropAssertId) {
         marks.erase("sea.assert_id");
+        marks.erase("sea.premise");
+      }
       DictionaryAttr kept = marks.getDictionary(op->getContext());
       auto br = rewriter.replaceOpWithNewOp<BrOp>(op, args, dest);
       br->setDiscardableAttrs(kept);

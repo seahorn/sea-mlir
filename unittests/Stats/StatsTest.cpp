@@ -341,8 +341,11 @@ void testAssume() {
   vc.site(Name::ASep, "drop-fresh-memhavoc", 3);
   vc.site(Name::MemsetBound, "count", 1);
   vc.site(Name::MemsetBound, "bound", 64);
+  vc.site(Name::SymbolicSizeBound, "allocs", 2);
+  vc.site(Name::SymbolicSizeBound, "room", 4096);
   Rendered r = render(Brunch::Derived, [&](Report &rep) { vc.report(rep); });
   CHECK(r.text == "assume.memset-bound: count=1 bound=64\n"
+                  "assume.symbolic-size-bound: allocs=2 room=4096\n"
                   "assume.a-sep: seam=5 drop-fresh-memhavoc=3\n"
                   "assume.a-null: seam=2\n"
                   "assume.a-nowrap: seam=0\n"
@@ -351,6 +354,8 @@ void testAssume() {
         r.text);
   CHECK(r.brunch == "BRUNCH_STAT assume.memset-bound-count 1\n"
                     "BRUNCH_STAT assume.memset-bound-bound 64\n"
+                    "BRUNCH_STAT assume.symbolic-size-bound-allocs 2\n"
+                    "BRUNCH_STAT assume.symbolic-size-bound-room 4096\n"
                     "BRUNCH_STAT assume.a-sep-seam 5\n"
                     "BRUNCH_STAT assume.a-sep-drop-fresh-memhavoc 3\n"
                     "BRUNCH_STAT assume.a-null-seam 2\n"

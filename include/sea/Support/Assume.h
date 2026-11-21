@@ -9,6 +9,8 @@
 //
 //  Name    the named assumptions, in their printed order:
 //            memset-bound        sea-expand-memset's bound (VC)
+//            symbolic-size-bound every allocation of non-constant size fits
+//                                the room placement gave it (VC)
 //            a-sep               SeaM's rewrites that rest on separation,
 //                                the lowering's dropped memhavocs (VC)
 //            a-null              SeaM's rewrites that rest on "no access
@@ -68,6 +70,7 @@ namespace assume {
 /// The named assumptions, in their printed order.
 enum class Name : unsigned {
   MemsetBound,
+  SymbolicSizeBound,
   ASep,
   ANull,
   ANoWrap,
@@ -75,7 +78,7 @@ enum class Name : unsigned {
   Addr0IsNull,
   MemhavocNullNoop,
 };
-constexpr unsigned kNames = 7;
+constexpr unsigned kNames = 8;
 
 /// `memset-bound`, `a-sep`, ...
 llvm::StringRef nameOf(Name a);

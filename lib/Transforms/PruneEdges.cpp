@@ -281,12 +281,15 @@ private:
   }
 };
 
-/// The discardable attributes of a merged assert's branch for a branch
-/// that is no failure site: without the assert id.
-DictionaryAttr marksWithout(Operation *op, StringRef drop) {
+/// The discardable attributes of \p op for the op that replaces it; with
+/// \p noFailure (a merged assert's branch that is no failure site any
+/// more): without the assert id and the premise mark.
+DictionaryAttr marksOf(Operation *op, bool noFailure) {
   NamedAttrList marks(op->getDiscardableAttrDictionary());
-  if (!drop.empty())
-    marks.erase(drop);
+  if (noFailure) {
+    marks.erase(kAssertIdAttr);
+    marks.erase(kPremiseAttr);
+  }
   return marks.getDictionary(op->getContext());
 }
 
@@ -407,8 +410,7 @@ uint64_t PruneEdgesPass::round(ProgramOp program, Counters &n) {
       // be no failure site any more)
       auto u = UnreachableOp::create(ob, merged ? Location(ob.getUnknownLoc())
                                                 : t->getLoc());
-      u->setDiscardableAttrs(
-          marksWithout(t, merged ? StringRef(kAssertIdAttr) : StringRef()));
+      u->setDiscardableAttrs(marksOf(t, merged));
       t->erase();
       ++n.unreachable;
       continue;
@@ -432,8 +434,7 @@ uint64_t PruneEdgesPass::round(ProgramOp program, Counters &n) {
         ob, held ? Location(ob.getUnknownLoc()) : t->getLoc(),
         keepTrue ? cbr.getTrueDestOperands() : cbr.getFalseDestOperands(),
         keepTrue ? cbr.getTrueDest() : cbr.getFalseDest());
-    br->setDiscardableAttrs(
-        marksWithout(t, held ? StringRef(kAssertIdAttr) : StringRef()));
+    br->setDiscardableAttrs(marksOf(t, held));
     t->erase();
     ++n.condBr;
   }

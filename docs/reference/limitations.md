@@ -65,6 +65,12 @@
 - Without `--seam`, `--lower` bounds a memset or memmove of symbolic
   length and reports the bound (`assume.memset-bound`); an `unsat` then
   holds only for lengths up to the bound.
+- `--lower` places an allocation of non-constant size in
+  `--max-symbolic-size` units (default 4096) and assumes that its size
+  fits (`assume.symbolic-size-bound`); an `unsat` then holds only for sizes
+  up to that room. The object keeps its symbolic size for bounds; the room
+  matters for placement. `--symbolic-size=assert` checks the bound instead
+  (`premise.failed`, exit 4, when a run exceeds it).
 
 ## Running
 

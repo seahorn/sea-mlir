@@ -48,6 +48,8 @@ claim your harness is intended to establish.
    accesses; for 9 of them the in-bounds condition, which a bounds check
    would check, was not constant. The other assumption lines are
    `assume.memset-bound` (a memset of symbolic length was bounded),
+   `assume.symbolic-size-bound` (allocations of non-constant size were
+   assumed to fit the room placement gave them),
    `assume.a-inb` (opt-in premise: every access stays
    in its object; only with `--narrow-offsets`),
    `seam.premises: off (fallback: ...)` (the premises were dropped),

@@ -25,13 +25,23 @@ class ProgramOp;
 /// address) replaces the object's uses.
 std::unique_ptr<mlir::Pass> createPlaceStaticPass();
 
+/// sea-place-static's default max-symbolic-size: the units it reserves for
+/// an allocation of non-constant size (assumed or asserted to fit).
+inline constexpr uint64_t kPlaceMaxSymbolicSize = 4096;
+
+/// The options of sea-place-static that sea-vc sets.
 /// External placement (sea-place-static place-in / place-out; sea-vc
 /// --place-in / --place-out): `out` writes the placement the pass computed,
 /// one object per line; `in` takes every object's base from such a file
 /// instead of computing it, and checks it as placement does (an object the
 /// file does not name is an error). Empty: not used.
+/// `symbolicSize`, `maxSymbolicSize`: the pass options symbolic-size
+/// (assume, assert, refuse) and max-symbolic-size (sea-vc --symbolic-size,
+/// --max-symbolic-size).
 struct PlaceFiles {
   std::string in, out;
+  std::string symbolicSize = "assume";
+  uint64_t maxSymbolicSize = kPlaceMaxSymbolicSize;
 };
 std::unique_ptr<mlir::Pass> createPlaceStaticPass(const PlaceFiles &files);
 
@@ -92,9 +102,6 @@ inline constexpr llvm::StringLiteral kInbCheckAttr = "sea.inb_check";
 /// On the sea.program after sea-check-inb: its counters (a dictionary of
 /// i64 attributes: checks, static, left, zero-length).
 inline constexpr llvm::StringLiteral kCheckInbStatsAttr = "sea.check_inb";
-/// sea-place-static's default max-symbolic-size: the units it reserves for
-/// an allocation of non-constant size (assumed or asserted to fit).
-inline constexpr uint64_t kPlaceMaxSymbolicSize = 4096;
 
 /// sea-expand-intrinsics: intrinsic ops (min/max, abs, bswap, funnel shifts,
 /// overflow bits) become core bit-vector ops; with \p keepMulOverflow,
@@ -139,6 +146,20 @@ std::unique_ptr<mlir::Pass> createExpandMemSetPass();
 /// name was an i64 K on each such assume; sea-vc still counts those
 /// (programs lowered by an older sea-mlir).
 inline constexpr llvm::StringLiteral kMemSetBoundAttr = "sea.memset_bound";
+/// The discardable attribute (an i64, the room R) sea-place-static
+/// (symbolic-size=assume) puts on each sea.assume(size <= R) it adds for an
+/// allocation of non-constant size: sea-vc reports them
+/// (assume.symbolic-size-bound).
+inline constexpr llvm::StringLiteral kSymbolicSizeBoundAttr =
+    "sea.symbolic_size_bound";
+/// A premise assert: a sea.assert of a premise the answer would otherwise
+/// rest on, asserted instead of assumed (sea-place-static
+/// symbolic-size=assert: "symbolic-size-bound", the name of the assumption
+/// it replaces, a string). Its failure is not the property's: sea-vc
+/// reports it as `premise.failed:` (exit status 4). sea-merge-asserts copies
+/// it onto the branches it makes of the assert (as kAssertIdAttr); a branch
+/// of an assert that held drops it.
+inline constexpr llvm::StringLiteral kPremiseAttr = "sea.premise";
 /// sea-expand-small-memmove: a memmove of a constant length <= maxBytes
 /// index units as loads of every source cell, then stores in address order
 /// (exact). \p ptrCompanion: keep every memmove (sea-vc --ptr-companion).

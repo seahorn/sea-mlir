@@ -26,7 +26,8 @@
 // The cond_br and the landing br carry the assert's location wrapped as
 // loc("sea.assert"(<loc>)) (kMergedAssertLocName): a replay reports it as
 // the failing assert, not as a branch of the source. Both carry the
-// assert's id attribute (kAssertIdAttr), if it has one; the assume in
+// assert's id attribute (kAssertIdAttr) and its premise mark
+// (kPremiseAttr), if it has them; the assume in
 // ^cont carries its reach site (kReachSiteAttr), if it has one; under
 // kReachFailuresAttr the landing block starts with the reach-site marker
 // of its failure (kAssertFailMarker; inert, a print).
@@ -219,11 +220,13 @@ void MergeAssertsPass::runOnOperation() {
                     .getOperation();
     if (blkIds)
       cbr->setAttr(kBlockIdsAttr, blkIds);
-    // the assert's id (kAssertIdAttr), on both branches made of it
-    if (Attribute id = a->getAttr(kAssertIdAttr)) {
-      cbr->setAttr(kAssertIdAttr, id);
-      land->getTerminator()->setAttr(kAssertIdAttr, id);
-    }
+    // the assert's id (kAssertIdAttr) and premise mark (kPremiseAttr), on
+    // both branches made of it
+    for (StringRef mark : {StringRef(kAssertIdAttr), StringRef(kPremiseAttr)})
+      if (Attribute v = a->getAttr(mark)) {
+        cbr->setAttr(mark, v);
+        land->getTerminator()->setAttr(mark, v);
+      }
     a.erase();
   }
   // postcondition: one assert, right before the only halt

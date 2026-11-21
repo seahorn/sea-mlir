@@ -26,6 +26,7 @@ The main lines of `sea-vc`:
 | `seam.premises: off (fallback: an access leaves its object)` | `--seam-out-of-object=fallback`: the premises were dropped after a static out-of-object access |
 | `seam.out-of-object: accesses=<n> object=<a> shared=<s> unknown=<u> null=<z> gap=<g>` | $n$ accesses leave their object on every address alternative, by where they land, pairwise (`shared`: a gap cell out-of-object accesses, or address alternatives outside their object, through two provenances reach); the premises stay, so an `unsat` holds only if the `object`, `shared`, `unknown` and `null` ones do not execute (A-SEP or A-NULL may break if they do, through the alternatives that meet; the warning also names A-NULL for any one through null and A-NOWRAP for any one whose address wraps, each if it executes through that alternative); `gap`: no other provenance found in their cells (best effort, not a proof that A-SEP holds); `seam.out-of-object-at:` names the first 8 (`with=`: the other access of a shared pair) |
 | `assume.memset-bound: count=<n> bound=<K>` | $n$ symbolic-length memsets were bounded by $K$; counted where `sea-expand-memset` made the bounds, so it may include bounds the answer no longer needs (a later fold proved one redundant, or the lowering erased its memset) |
+| `assume.symbolic-size-bound: allocs=<n> room=<r>` | `--lower` of an abstract program: $n$ allocations of non-constant size got $r$ units of room each (`--max-symbolic-size`, default 4096) and `assume(size <= r)` (`--symbolic-size=assume`, the default; warning `place.symbolic-size-assume`); $n$ counts the assumes left in the program the VC encodes (allocations of one size share one). An `unsat` holds only for sizes up to $r$. Not with `--symbolic-size=assert`, which asserts the bound instead |
 | `solve-time: <s>` | the solver's check |
 | `solver.z3-tactic: <t>`, `solver.z3-logic: <logic>` | z3 only: `--z3-tactic` when not the default, `--z3-logic` when given |
 | `result: sat|unsat|unknown|none` | the verdict (`none`: `--vcgen-only`, `--split-candidates`) |
@@ -56,6 +57,7 @@ The main lines of `sea-vc`:
 | `replay: assert-path: <where> <- <where> ...` | up to five branch locations on the way, most recent first |
 | `print: <path> = <value>` | a print operation evaluated in the replay ([notation](print.md)) |
 | `validate: checked= mismatches= dontcare=` | values compared between the model and the replay |
+| `premise.failed: <name> [size=<n> room=<r>] at=<where>` | the replayed run fails a premise assert, not a property assert: the answer is inconclusive (exit status 4, error `vc.premise-failed`). `--symbolic-size=assert`: name `symbolic-size-bound`, at the allocation whose size $n$ in the counterexample exceeds its room $r$ (`?`: not found); a rerun with `--max-symbolic-size` $\ge n$ can pass it |
 | `interp.earlier-version-loads: <n>` | loads of an earlier memory version in the replay; `validate` checks their values |
 | `mismatch: ...` | one value where they differ (then exit status 2) |
 | `seam.rule.<rule>: <n>` | how often a SeaM rule fired (`--seam-stats`) |
@@ -495,6 +497,7 @@ The record kinds of `sea-vc`:
 | `memread` | `site`, `addr`, `width`, `value`, [`obj`, `off`] |
 | `replay` | `status`, [`at`, `at_inlined`, `at_name`] (assert-at), [`loc`] (`at:`), [`op`, `op_inlined`, `op_name`] (assert-op), [`path`] (most recent first), [`path_inlined`], [`message`] |
 | `validate` | `checked`, `mismatches`, `dontcare` |
+| `premise` | `status` (`failed`), `name`, [`size`, `room`] (`null`: not found), `at`, [`at_inlined`, `at_name`] |
 | `reach` | `id`, `status`, `op`, [`via`, `by`] (decided by a run), [`reason`], [`replay`], [`inb`], [`mismatches`], [`witness`], `time`, [`at`, `at_inlined`, `at_name`], [`site`, [`of`], [`cond`, `next`]] |
 | `reach.program` | `id`, `op`, `file`, [`at`, `at_inlined`, `at_name`], [`site`], [`of`] (`--reach-programs`) |
 | `mismatch` | `def`, `type`, `interp`, `model`, [`obj`, `off`] |
@@ -559,7 +562,7 @@ other output is unchanged. The benchmark harness runs with it.
 | 1 | error: bad input, not in BMC form, unsupported operation, replay impossible |
 | 2 | `sat`, but the replay disagrees with the model (a value differs, or the run shows no failure of the property: `vc.replay-no-failure`): a bug, or a load of an earlier memory version whose cell was overwritten (counted as `interp.earlier-version-loads`). Also the model of the Ackermann lowering not a function on an array (`vc.ackermann-inconsistent`), except under `--ack-own` when every such pair is one the ownership drop dropped and the replay fails the assertion with no mismatch: then 0 with the warning `vc.ack-own-collision-excused` |
 | 3 | `unknown`, including a timeout or a memory limit |
-| 4 | with `--seam`: a `sat` whose replay leaves an object; the in-bounds assumption does not hold, the answer is inconclusive, and the program has a memory-safety error. With `--replay-original`: the original program's run makes a memory-safety violation and does not fail the same assertion |
+| 4 | with `--seam`: a `sat` whose replay leaves an object; the in-bounds assumption does not hold, the answer is inconclusive, and the program has a memory-safety error. With `--replay-original`: the original program's run makes a memory-safety violation and does not fail the same assertion. With `--symbolic-size=assert`: the replayed run fails a premise assert (`premise.failed`), not the property; inconclusive (decided before `--replay-original`: the input program has no premise assert) |
 | 5 | with `--seam-check`: an invalid rewrite; a bug, and the verdict is not to be trusted. It takes precedence over 0, 2, 3 and 4, not over 1 |
 | 6 | with `--replay-original`: `sat` confirmed on the lowered program, but the original program on the same inputs does not fail the same assertion: the lowering changed what the program does (a bug in a pass, or a program whose behavior depends on where placement puts its objects) |
 

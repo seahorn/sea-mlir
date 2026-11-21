@@ -9,11 +9,18 @@
 // functions from the text segment start (4 units each), then globals, then
 // the heap; stack objects downwards from the stack top. An allocation whose
 // size is not a constant gets `max-symbolic-size` units and an explicit
-// sea.assume (or sea.assert) that its size fits. The placement is recorded
-// as sea.segment ops at the start of the entry block; a segment's result is
-// the object's base address, and every use of the object becomes that result
-// (plus sea.addr.add for offsets), not a numeral: the object stays visible
-// to the VC (SeaM) while the interpreter and the default VC see its base.
+// sea.assume (or sea.assert) that its size fits: symbolic-size=assume marks
+// the assume with the room (kSymbolicSizeBoundAttr: the answer rests on it,
+// sea-vc reports assume.symbolic-size-bound), symbolic-size=assert makes it
+// a premise assert (kPremiseAttr = "symbolic-size-bound": a failure is not
+// the property's, sea-vc reports premise.failed), symbolic-size=refuse is an
+// error. The object keeps its symbolic size for bounds (the fat-pointer size
+// companion); the room matters only for placement (no overlap). The
+// placement is recorded as sea.segment ops at the start of the entry block;
+// a segment's result is the object's base address, and every use of the
+// object becomes that result (plus sea.addr.add for offsets), not a
+// numeral: the object stays visible to the VC (SeaM) while the interpreter
+// and the default VC see its base.
 //
 // Contract.
 //   Accepts: abstract programs without struct values (scalarize first) and
@@ -108,6 +115,8 @@ public:
   explicit PlaceStaticPass(const PlaceFiles &files) {
     placeIn = files.in;
     placeOut = files.out;
+    symbolicSize = files.symbolicSize;
+    maxSymbolicSize = files.maxSymbolicSize;
   }
 
   StringRef getArgument() const final { return "sea-place-static"; }
@@ -707,10 +716,16 @@ void PlaceStaticPass::runOnOperation() {
                    loc);
         Value fits = ICmpOp::create(b, loc, ICmpPredicate::ule, size,
                                     constant(loc, APInt(*width, o.room)));
+        // assume: the answer rests on it (kSymbolicSizeBoundAttr, the room:
+        // sea-vc's assume.symbolic-size-bound); assert: a premise assert
+        // (kPremiseAttr), whose failure is not the property's
         if (symbolicSize == "assume")
-          AssumeOp::create(b, loc, fits);
+          AssumeOp::create(b, loc, fits)
+              ->setAttr(kSymbolicSizeBoundAttr,
+                        IntegerAttr::get(i64, APInt(64, o.room)));
         else
-          AssertOp::create(b, loc, fits);
+          AssertOp::create(b, loc, fits)
+              ->setAttr(kPremiseAttr, b.getStringAttr("symbolic-size-bound"));
       }
       replace(baseOf[objectOf.lookup(op)]);
     } else if (isa<GlobalOp, FuncAddrOp, PtrNondetOp>(op)) {

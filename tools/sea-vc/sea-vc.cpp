@@ -62,6 +62,7 @@
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/Timing.h"
 #include "llvm/ADT/DenseSet.h"
@@ -197,6 +198,25 @@ static cl::opt<std::string> placeIn(
              "as placement does; an object the file does not name is an "
              "error (place.in-unplaced)"),
     cl::value_desc("file"));
+
+static cl::opt<std::string> symbolicSizeOpt(
+    "symbolic-size",
+    cl::desc("With --lower, an abstract program: how placement bounds an "
+             "allocation of non-constant size, which gets "
+             "--max-symbolic-size units of room: assume (default; "
+             "`assume.symbolic-size-bound: allocs=<n> room=<r>`, warning "
+             "place.symbolic-size-assume), assert (a premise assert: a run "
+             "whose size exceeds the room fails it, `premise.failed:`, "
+             "exit 4; nothing assumed) or refuse (an error, "
+             "place.symbolic-size-refused)"),
+    cl::value_desc("assume|assert|refuse"), cl::init("assume"));
+
+static cl::opt<uint64_t> maxSymbolicSizeOpt(
+    "max-symbolic-size",
+    cl::desc("With --lower, an abstract program: the units of room placement "
+             "reserves for an allocation of non-constant size (default "
+             "4096, SeaHorn's; not tuned)"),
+    cl::value_desc("N"), cl::init(sea::kPlaceMaxSymbolicSize));
 
 static cl::opt<bool> addr0IsNull(
     "addr0-is-null",
@@ -2203,6 +2223,12 @@ TYPICAL:
                                  #   the program lacks are holes. Two
                                  #   lowerings on one file: common objects
                                  #   at the same addresses (cover-diff)
+  sea-vc p.mlir --lower --symbolic-size=assert  # assert, not assume,
+                                 #   that each allocation of non-constant
+                                 #   size fits its room: no
+                                 #   assume.symbolic-size-bound; a run that
+                                 #   exceeds it is premise.failed (exit 4);
+                                 #   rerun with --max-symbolic-size=<n>
   sea-vc p.mlir --lower --reach --reach-failures  # also each tagged
                                  #   assert's failure (reached with its
                                  #   condition false): op=sea.print
@@ -3237,6 +3263,16 @@ OUTPUT (stdout, `key: value` lines):
                                   no-clobber claim (Memory.md) fails there,
                                   not the VC; exit 2, vc.replay-mismatch
                                   names the claim)
+  premise.failed: <name> [size=<n> room=<r>] at=<where>   (sat, after
+                                  validate: the replayed run fails a
+                                  premise assert, not a property assert:
+                                  --symbolic-size=assert, name
+                                  symbolic-size-bound, at the allocation
+                                  whose size n (the counterexample's;
+                                  `?`: not found) exceeds its room r; a
+                                  rerun with --max-symbolic-size >= n may
+                                  pass it. Error vc.premise-failed, exit 4;
+                                  replay: assert-op names the allocation)
   seam.ptrint-violated: <loc> addr=<q> [obj=&<o>[<off>]] bits=<b> stored=<p>
   seam.ptrint-unstored: <loc> addr=<q> [obj=&<o>[<off>]] bits=<b>
                                   (--ptr-companion=check, sat: a split
@@ -3360,6 +3396,17 @@ OUTPUT (stdout, `key: value` lines):
                                   erased); an unsat holds only for lengths
                                   <= K; K the largest bound; with --smt2 on
                                   stderr)
+  assume.symbolic-size-bound: allocs=<n> room=<r>   (n > 0: --lower of an
+                                  abstract program placed n allocations of
+                                  non-constant size in r units of room each
+                                  (--max-symbolic-size) with assume(size
+                                  <= r), the sea.assume ops marked
+                                  sea.symbolic_size_bound left in the
+                                  program the VC encodes (allocations of
+                                  one size share one); an unsat holds only
+                                  for sizes <= r (--symbolic-size=assume,
+                                  the default; =assert asserts it instead
+                                  and records nothing)
   seam.premises: assumed accesses=<n> conditions=<m>
   seam.premises: off [(fallback: an access leaves its object)]
       [(lowering: drop-fresh-memhavoc=<n> rests on A-SEP)]   (--seam:
@@ -4048,6 +4095,8 @@ Kinds and fields:
                 for the `replay:` / `at:` / `message:` lines (text has
                 several lines)
   validate      checked, mismatches, dontcare
+  premise       status (failed), name, [size, room] (null: not found), at
+                [at_inlined] [at_name] (premise.failed)
   reach         id, status, op, [via, by], [reason], [replay], [inb],
                 [mismatches], [witness], time, [at] [at_inlined] [at_name],
                 [site] (--reach; reach.config, reach.summary and reach.runs are
@@ -4096,7 +4145,8 @@ vc-time, solve-time, status (the exit status; not for status 1 before the
 verdict), seam.premises (assumed|off) with seam.premises-accesses /
 seam.premises-conditions, the assume.* lines split the same way
 (assume.a-sep-seam, assume.a-sep-drop-fresh-memhavoc,
-assume.memset-bound-count / -bound, assume.addr0-is-null vc with
+assume.memset-bound-count / -bound, assume.symbolic-size-bound-allocs /
+-room, assume.addr0-is-null vc with
 assume.addr0-is-null-null-uses), with --ack-relax vc.ack-relax-stop /
 -rounds / -kept / -conflicts,
 and with --seam-stats every seam.* counter and time (also vc.*-time). With
@@ -4139,7 +4189,11 @@ index in the model (seam.narrow-inb-violation, vc.narrow-inb-spurious): a
 run that executes that load leaves its object. 7 (--narrow-check) a
 narrowed read index whose obligation is not proven (narrow-check-unknown /
 -unexpressible lines, vc.narrow-check-unproven): the narrowing is not
-discharged (takes precedence over 0 and 3).
+discharged (takes precedence over 0 and 3). 4 also
+(--symbolic-size=assert) when the replayed run fails a premise assert, not
+the property (premise.failed, vc.premise-failed): an allocation's size
+exceeds its room; inconclusive, before --replay-original (the input
+program has no premise assert).
 Split (--split*): the status of the verdict (0 sat or unsat, 3 unknown); a
 part's status 1, 2, 4, 5 or 6 stops the split with that status; 5 also for
 a failed --split-check.
@@ -4172,6 +4226,79 @@ static void printValue(raw_ostream &os, Value v) {
     os << op->getName() << " " << op->getLoc();
   else
     os << "block-arg " << v.getLoc();
+}
+
+/// A confirmed sat whose replay fails a premise assert (kPremiseAttr) \p pa
+/// (the branch sea-merge-asserts made of it, or the assert): the
+/// `premise.failed: <name> [size=<n> room=<r>] at=<where>` line and the
+/// error vc.premise-failed. symbolic-size-bound (placement's
+/// `assert(size ule room)`): the allocation's size in the counterexample
+/// (the model's value of the icmp's left operand, which the replay
+/// validated) and its room; `?` if the condition is not that icmp any more.
+static void reportPremiseFailed(StringRef name, Operation &pa,
+                                const sea::RunResult &run,
+                                sea::solver::Model &model, sea::SeaOpSem &sem,
+                                sea::OpSemContext &ctx) {
+  Value cond;
+  if (auto cbr = dyn_cast<sea::CondBrOp>(pa))
+    cond = cbr.getCondition();
+  else if (auto a = dyn_cast<sea::AssertOp>(pa))
+    cond = a.getCond();
+  std::optional<APInt> size, room;
+  if (auto cmp = cond ? cond.getDefiningOp<sea::ICmpOp>() : sea::ICmpOp();
+      cmp && cmp.getPredicate() == sea::ICmpPredicate::ule) {
+    APInt k;
+    if (matchPattern(cmp.getRhs(), m_ConstantInt(&k)))
+      room = k;
+    unsigned w = cmp.getLhs().getType().getIntOrFloatBitWidth();
+    if (expr::Expr t = sem.solverTerm(sem.lookup(cmp.getLhs(), ctx)))
+      size = sea::numeralToAPInt(model.eval(t, /*complete=*/true), w);
+  }
+  const bool sizeBound = name == "symbolic-size-bound";
+  std::string at = run.assertLoc ? sea::formatLoc(*run.assertLoc) : "";
+  if (at.empty())
+    at = "-";
+  sea::out::Record rec("premise");
+  rec.str("status", "failed").str("name", name);
+  raw_string_ostream os(rec.text);
+  os << "premise.failed: " << name;
+  auto field = [&](StringRef key, const std::optional<APInt> &v) {
+    os << " " << key << "=";
+    if (v) {
+      v->print(os, /*isSigned=*/false);
+      rec.integer(key, *v);
+    } else {
+      os << "?";
+      rec.set(key, "null");
+    }
+  };
+  if (sizeBound) {
+    field("size", size);
+    field("room", room);
+  }
+  os << " at=" << at;
+  if (run.assertLoc)
+    sea::addLocFields(rec, "at", *run.assertLoc);
+  gOut->emit(rec);
+  gOut->flush();
+  std::string what = "sat, but the counterexample fails a premise assert (" +
+                     name.str() +
+                     "), not the property: the answer is "
+                     "inconclusive";
+  if (sizeBound) {
+    what += "; an allocation of non-constant size exceeds the room "
+            "placement reserved for it";
+    if (size && room) {
+      SmallString<24> n, r;
+      size->toStringUnsigned(n);
+      room->toStringUnsigned(r);
+      what += " (size " + n.str().str() + ", room " + r.str().str() +
+              "): rerun with --max-symbolic-size=" + n.str().str() + " or more";
+    }
+  }
+  sea::diag::error("vc.premise-failed", what,
+                   run.assertLoc ? std::optional<Location>(*run.assertLoc)
+                                 : std::nullopt);
 }
 
 /// MLIR's pass-manager options (--mlir-print-ir-*, --mlir-pass-statistics,
@@ -4542,6 +4669,13 @@ int main(int argc, char **argv) {
                 ")");
   if ((!placeIn.empty() || !placeOut.empty()) && !lower)
     return fail("--place-in and --place-out need --lower");
+  if (symbolicSizeOpt != "assume" && symbolicSizeOpt != "assert" &&
+      symbolicSizeOpt != "refuse")
+    return fail("--symbolic-size must be assume, assert or refuse");
+  if ((symbolicSizeOpt.getNumOccurrences() ||
+       maxSymbolicSizeOpt.getNumOccurrences()) &&
+      !lower)
+    return fail("--symbolic-size and --max-symbolic-size need --lower");
   if (!placeIn.empty() && !placeOut.empty())
     return fail("--place-in and --place-out exclude each other");
   if (printLowered == "-")
@@ -5026,9 +5160,9 @@ int main(int argc, char **argv) {
         /*keepByteWide=*/seam && seamWide, checkAlign,
         checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt,
         memhavocNull == MemhavocNull::Noop, lowerDisableMask,
-        sea::PlaceFiles{placeIn, placeOut}, rangeFoldOpt, expandMemMoveOpt,
-        ptrCompanion != CompanionMode::Off, boxAllExpandOpt,
-        widenMemoryPerClass);
+        sea::PlaceFiles{placeIn, placeOut, symbolicSizeOpt, maxSymbolicSizeOpt},
+        rangeFoldOpt, expandMemMoveOpt, ptrCompanion != CompanionMode::Off,
+        boxAllExpandOpt, widenMemoryPerClass);
     // pm keeps a reference to the phase's scope; SEA_PHASE_END resets it after
     // pm.run, and the reference is not used after that
     if (failed(configurePM(pm, lowerPhase.timing())) || failed(pm.run(*module)))
@@ -5194,10 +5328,19 @@ int main(int argc, char **argv) {
     if (auto k = d.getAs<IntegerAttr>("bound"))
       memsetBoundK = k.getInt();
   }
+  // and placement's bounds of symbolic allocation sizes
+  // (--symbolic-size=assume): assume(size <= room), the room reserved
+  // (assume.symbolic-size-bound); those of allocations the lowering erased
+  // or settled are not counted
+  uint64_t sizeBounds = 0, sizeBoundRoom = 0;
   program.walk([&](sea::AssumeOp a) {
     if (auto k = a->getAttrOfType<IntegerAttr>(sea::kMemSetBoundAttr)) {
       ++memsetBounds;
       memsetBoundK = std::max<uint64_t>(memsetBoundK, k.getInt());
+    }
+    if (auto r = a->getAttrOfType<IntegerAttr>(sea::kSymbolicSizeBoundAttr)) {
+      ++sizeBounds;
+      sizeBoundRoom = std::max<uint64_t>(sizeBoundRoom, r.getInt());
     }
   });
   // --sink-assumes: the pass erases assumes; the ledger above was counted
@@ -7036,6 +7179,10 @@ int main(int argc, char **argv) {
         vcAssumes.site(Name::MemsetBound, "count", memsetBounds);
         vcAssumes.site(Name::MemsetBound, "bound", memsetBoundK);
       }
+      if (sizeBounds) {
+        vcAssumes.site(Name::SymbolicSizeBound, "allocs", sizeBounds);
+        vcAssumes.site(Name::SymbolicSizeBound, "room", sizeBoundRoom);
+      }
       // the premises of --seam: the rewrites that rest on each (0: the
       // answer does not), always shown when they are on
       if (inb && sem.seam()) {
@@ -8652,6 +8799,15 @@ int main(int argc, char **argv) {
     }
     if (ackModel && ackModel->inconsistent() && !ownExcused)
       return 2;
+    // a premise assert failed (kPremiseAttr; --symbolic-size=assert): the run
+    // breaks a premise the answer would otherwise rest on, not the
+    // property; inconclusive, as a sat that breaks a premise (status 4)
+    if (Operation *pa = ptrIntCheck ? nullptr : replay.run.assertOp)
+      if (auto premise = pa->getAttrOfType<StringAttr>(sea::kPremiseAttr)) {
+        reportPremiseFailed(premise.getValue(), *pa, replay.run, replayModel,
+                            sem, ctx);
+        return 4;
+      }
     if (originalModule)
       return replayOnOriginal(replayModel, sem, ctx, replay.run, ptrIntCheck);
     return 0;

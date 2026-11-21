@@ -349,6 +349,11 @@ the check jobs below is run.
     address space.
 - **Bounded memset**: a symbolic-length memset is expanded up to a bound,
   with an explicit assume. It is reported as `assume.memset-bound`.
+- **Bounded symbolic allocations**: an allocation of non-constant size is
+  placed in `--max-symbolic-size` units (default 4096) with an explicit
+  assume that its size fits. It is reported as
+  `assume.symbolic-size-bound`; `--symbolic-size=assert` checks it instead
+  (`premise.failed`, exit status 4).
 - **Dropped memhavocs**: `--lower` of an abstract program removes a
   memhavoc of a fresh object (a no-op). That rests on A-SEP when an access
   of another object, or the memhavoc itself, could reach the object after
