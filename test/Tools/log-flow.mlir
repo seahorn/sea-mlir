@@ -24,7 +24,8 @@
 // and end.
 // RUN: sea-vc %s --lower '--log=vc.phase,lower.pass' 2>&1 >/dev/null | FileCheck %s --check-prefix=PASS
 // PASS: log: vc.phase start phase=lower
-// PASS-NEXT: log: lower.pass pass=sea-apply-tracking on=sea.program program=@main ops-before={{[0-9]+}} ops-after={{[0-9]+}} time={{[0-9.]+}}{{$}}
+// PASS-NEXT: log: lower.pass pass=sea-lower-seaimp on=sea.program program=@main ops-before={{[0-9]+}} ops-after={{[0-9]+}} time={{[0-9.]+}}{{$}}
+// PASS: log: lower.pass pass=sea-apply-tracking on=sea.program
 // PASS: log: lower.pass pass=sccp on=sea.program
 // PASS: log: lower.pass pass=sea-split-critical-edges on=sea.program
 // PASS-NEXT: log: vc.phase end phase=lower

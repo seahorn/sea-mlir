@@ -8,7 +8,8 @@
 #
 # Vendored and generated files are excluded everywhere: KaTeX
 # (docs/assets/katex), the license texts. The dialect reference
-# (docs/reference/dialect.md) is mlir-tblgen output: whitespace hooks skip it.
+# (docs/reference/dialect.md, seaimp.md) is mlir-tblgen output: whitespace
+# hooks skip it.
 minimum_pre_commit_version: "3.2.0"
 exclude: ^(docs/assets/katex/|LICENSES/|LICENSE$)
 
@@ -17,9 +18,9 @@ repos:
     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # frozen: v6.0.0
     hooks:
       - id: trailing-whitespace
-        exclude: ^docs/reference/dialect\.md$
+        exclude: ^docs/reference/(dialect|seaimp)\.md$
       - id: end-of-file-fixer
-        exclude: ^docs/reference/dialect\.md$
+        exclude: ^docs/reference/(dialect|seaimp)\.md$
       - id: check-yaml
       - id: check-toml
       - id: check-merge-conflict

@@ -26,7 +26,7 @@ The input is a module with a `sea.program` in BMC form, or a program that
 
 | option | effect |
 |---|---|
-| `--lower` | run the lowering first (the passes of `sea-opt --sea-vc-lower`): constant folding, struct scalarization, placement of abstract objects, memory widening, intrinsics, splitting critical edges |
+| `--lower` | run the lowering first (the passes of `sea-opt --sea-vc-lower`): seaimp variables to SSA values ([SeaImp](../design/SeaImp.md)), constant folding, struct scalarization, placement of abstract objects, memory widening, intrinsics, splitting critical edges |
 | `--lower-opt=false` | with `--lower`: no cse and no canonicalize (every op stays) |
 | `--print-lowered=<file>` | write the program the VC encodes (after the lowering and every other pass of sea-vc) to this file, with its locations, named as the VC names it: the names of `--split` / `--split-leaves` selectors and of the `split.*` and other report lines (a nondet result is `nd.<site>` in the VC). The run goes on (`--vcgen-only`: no solver); the file is input to sea-vc without `--lower`, with the same names |
 | `--place-out=<file>` | with `--lower`: write the placement of the program's objects to a file, one object per line ([Placement files](output-formats.md#placement-files)) |

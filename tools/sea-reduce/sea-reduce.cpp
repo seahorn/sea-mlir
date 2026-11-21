@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "sea/Dialect/Sea/SeaDialect.h"
+#include "sea/Dialect/SeaImp/SeaImpDialect.h"
 #include "sea/Reduce/Reduce.h"
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
@@ -139,7 +140,7 @@ int main(int argc, char **argv) {
   } summary;
 
   mlir::DialectRegistry registry;
-  registry.insert<sea::SeaDialect>();
+  registry.insert<sea::SeaDialect, sea::imp::SeaImpDialect>();
   sea::registerSeaReductionInterface(registry);
   mlir::MLIRContext context(registry);
   // Sequential verification stops at a candidate's first error: one error

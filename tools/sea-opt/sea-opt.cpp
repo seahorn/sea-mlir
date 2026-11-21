@@ -10,6 +10,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include "sea/Dialect/Sea/SeaDialect.h"
+#include "sea/Dialect/SeaImp/SeaImpDialect.h"
 #include "sea/Reduce/Reduce.h"
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
@@ -18,8 +19,8 @@
 
 static const char *const agentGuide = R"(sea-opt agent guide (plain, terse)
 
-WHAT: the mlir-opt driver for the sea dialect: parse, verify, print, and
-run passes on sea programs.
+WHAT: the mlir-opt driver for the sea dialect (and seaimp, the variables
+lowered to sea): parse, verify, print, and run passes on sea programs.
 
 WHY BEAT MANUAL: the verifier checks what eyeballing misses (types of
 block arguments, unique nondet sites, cast widths, terminators). Printing
@@ -72,6 +73,13 @@ TYPICAL:
                                           #   constant-0 assert but SeaHorn's
                                           #   unlocated error marker
                                           #   (report=false: no warning)
+  sea-opt p.mlir --sea-lower-seaimp       # seaimp variables (var / get / set)
+                                          #   -> SSA values and block
+                                          #   arguments (Mem2Reg); a read
+                                          #   before any set = sea.nondet
+                                          #   "<name>" [<site>] of the var;
+                                          #   sea-run needs this first
+                                          #   (docs/design/SeaImp.md)
   sea-opt p.mlir --sea-vc-lower           # what sea-vc --lower runs (placed input)
   sea-opt p.mlir --sea-vc-lower='reach=true'
                                           # what sea-vc --lower --reach runs:
@@ -113,7 +121,7 @@ int main(int argc, char **argv) {
   } summary;
 
   mlir::DialectRegistry registry;
-  registry.insert<sea::SeaDialect>();
+  registry.insert<sea::SeaDialect, sea::imp::SeaImpDialect>();
 
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "sea optimizer driver\n", registry));

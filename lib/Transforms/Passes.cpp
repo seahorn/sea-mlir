@@ -339,6 +339,7 @@ void registerPasses() {
   registerPass([] { return createAssumeFoldPass(); });
   registerPass([] { return createPruneEdgesPass(); });
   registerPass([] { return createLowerBoxAllPass(); });
+  registerPass([] { return createLowerSeaImpPass(); });
   registerPass([] { return createLowerPtrIndexPass(); });
   registerPass([] { return createCheckAlignPass(); });
   registerPass([] { return createCheckPtrIndexPass(); });
@@ -374,6 +375,9 @@ void addPrintRefsPass(OpPassManager &pm, PrintRefs refs) {
 
 void addVCLowerPrefix(OpPassManager &prog, const VCLowerConfig &c) {
   const bool cse = c.opt && !(c.disable & LowerDisableCse);
+  // seaimp variables -> SSA values, before any pass reads the program
+  // (a no-op without seaimp ops)
+  prog.addPass(createLowerSeaImpPass());
   prog.addPass(createApplyTrackingPass());
   // claims over index boxes, before anything else sees a region op
   prog.addPass(createLowerBoxAllPass(c.boxAllExpand));

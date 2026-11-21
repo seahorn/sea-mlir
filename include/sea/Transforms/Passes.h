@@ -77,6 +77,10 @@ inline constexpr llvm::StringLiteral kMergedAssertLocName = "sea.assert";
 /// it onto the branches it makes of the assert, and RunResult::assertOp
 /// is the op that carries it for the failing assert.
 inline constexpr llvm::StringLiteral kAssertIdAttr = "sea.assert_id";
+/// sea-lower-seaimp: seaimp variables -> SSA values by MLIR's Mem2Reg; a
+/// read before any write is the variable's nondet initial value
+/// (docs/design/SeaImp.md). First in the VC lowering.
+std::unique_ptr<mlir::Pass> createLowerSeaImpPass();
 /// sea-lower-ptr-index: sea.ptr.index -> mul / add / ptr.add (the no-wrap
 /// flags dropped; docs/design/PtrIndex.md).
 std::unique_ptr<mlir::Pass> createLowerPtrIndexPass();

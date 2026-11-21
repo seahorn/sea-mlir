@@ -19,6 +19,7 @@
 
 #include "sea/Dialect/Sea/SeaDialect.h"
 #include "sea/Dialect/Sea/SeaOps.h"
+#include "sea/Dialect/SeaImp/SeaImpDialect.h"
 #include "sea/Interp/Fuzz.h"
 #include "sea/Interp/Interpreter.h"
 #include "sea/Interp/ParseInput.h"
@@ -376,7 +377,8 @@ TYPICAL:
   sea-run p.mlir --fuzz=10000 --keep-going --corpus=w --reach-targets \
       --reach-witness=w2                    # reach coverage (see REACH)
 
-INPUTS: a module with sea.program ops. --input values are decimal, negative
+INPUTS: a module with sea.program ops (seaimp ops: error run.seaimp; run
+sea-opt --sea-lower-seaimp first). --input values are decimal, negative
 decimal, or 0x-hex, and must fit the nondet's width (a negative v means
 2^w + v). The key is the site number in `sea.nondet "<callee>" [<site>]`;
 for a memory cell, <site>@<addr> with the site of `sea.mem.nondet` or
@@ -2104,9 +2106,18 @@ int main(int argc, char **argv) {
   sea::log::setFormat(outFormat);
   MLIRContext context;
   context.getOrLoadDialect<sea::SeaDialect>();
+  context.getOrLoadDialect<sea::imp::SeaImpDialect>();
   OwningOpRef<ModuleOp> module = sea::parseInputFile(inputFilename, &context);
   if (!module)
     return 1;
+  // seaimp has no runtime semantics: only its lowering to sea runs
+  if (Operation *imp = sea::imp::findSeaImpOp(*module)) {
+    sea::diag::error("run.seaimp",
+                     "seaimp ops have meaning only through their lowering: "
+                     "run sea-opt --sea-lower-seaimp first",
+                     imp->getLoc());
+    return 1;
+  }
 
   if (printRefs != sea::PrintRefs::AsIs) {
     PassManager pm(&context);

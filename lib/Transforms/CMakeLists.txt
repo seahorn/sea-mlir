@@ -32,6 +32,7 @@ add_mlir_library(SeaTransforms
   AssumeFold.cpp
   PruneEdges.cpp
   LowerBoxAll.cpp
+  LowerSeaImp.cpp
   TestInsertPrints.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -39,6 +40,7 @@ add_mlir_library(SeaTransforms
 
   LINK_LIBS PUBLIC
   MLIRSea
+  MLIRSeaImp
   MLIRIR
   MLIRPass
   MLIRTransforms

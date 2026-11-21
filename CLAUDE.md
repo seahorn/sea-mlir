@@ -33,6 +33,14 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
 ## Layout
 
 - `include/sea/Dialect/Sea/*.td` — the dialect (ODS); `lib/Dialect/Sea/`
+- `include/sea/Dialect/SeaImp/`, `lib/Dialect/SeaImp/` — `seaimp`, the
+  imperative layer over sea: variables (`seaimp.var` / `get` / `set`),
+  lowered to SSA values by `sea-lower-seaimp` (MLIR Mem2Reg; first in the
+  VC lowering; a read before any set = `sea.nondet "<name>" [<site>]`).
+  No runtime semantics, on purpose: an exception to the new-op rule below
+  (no `Semantics.cpp`, no `check-semantics.py`, no interpreter tests);
+  sea-run refuses seaimp ops, sea-vc lowers them first under `--lower` and
+  refuses them otherwise; docs/design/SeaImp.md
 - `include/sea/Dialect/Sea/Semantics.h` (`lib/Dialect/Sea/Semantics.cpp`) —
   op semantics (`evalPureOp`, the only place values are computed: the
   interpreter and the op folders call it; it lives in the dialect library
@@ -123,6 +131,9 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   uses are errors; a constant box of at most K indices is expanded instead,
   `sea-vc --box-all-expand=K`; first after sea-apply-tracking in the lowering;
   docs/design/BoxAll.md),
+  `sea-lower-seaimp` (seaimp variables -> SSA values by upstream
+  Mem2Reg, the verifier admitting only promotable variables; first in the
+  lowering; docs/design/SeaImp.md),
   `sea-print-strengthen` / `sea-print-weaken` (counterexample print ops,
   weak = by name vs strong = SSA operands, docs/design/Print.md),
   `sea-drop-fresh-memhavoc` (memhavoc of an object nothing wrote or read
@@ -268,7 +279,8 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
 - Derive semantics questions with z3 before coding them.
 - After fixing a soundness bug, look for the same pattern elsewhere.
 - New op: add it to `Semantics.cpp`, to `utils/check-semantics.py`, and to
-  roundtrip and interpreter tests in the same change. A pure value op gets
+  roundtrip and interpreter tests in the same change (not seaimp ops: they
+  mean their lowering, docs/design/SeaImp.md). A pure value op gets
   a folder through `evalPureOp` (`foldByEval`, SeaOps.cpp), never its own
   arithmetic; an op with nsw / nuw folds only constants that keep its promise (`brokenWrapPromise`) and identities that never wrap. Identity folders (`x & 0`, `icmp eq x, x`, `(x ^ k) ^ k`, `addr.cmp` of one address or two constant ones) take their value from `evalPureOp` with the free operand set to 0, or return the operand; each is proved with z3 and checked by `check-semantics.py --fold`. `sea.segment` is in `evalPureOp` but has no folder on purpose (sccp would erase the object it names), and it is not in `check-semantics.py`: that oracle folds every case to a constant and checks bit-vector arithmetic against z3, while a segment's value is its `base` attribute (checked by `test/Interp/ptr/segment.mlir` and `test/VC/segment-replay.mlir`).
 - Tag conjectures in comments and notes as hypotheses; cite SeaHorn
