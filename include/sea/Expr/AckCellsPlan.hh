@@ -63,7 +63,9 @@
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <set>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -72,11 +74,15 @@
 namespace expr {
 
 /// An object of the plan, by ObjectBase::order: its base as the query has
-/// it (erased), its size in address units (0: no cells, or not usable), its
-/// name (the log).
+/// it (erased), its size in address units (0: no cells), whether the plan can
+/// use it (size < 2^63; a read touching one it cannot is unknown), its
+/// alignment (the word-cell rule needs a k-aligned base), its name (the
+/// log).
 struct CellsObjectInfo {
   Expr base;
   uint64_t size = 0;
+  bool usable = true;
+  uint64_t align = 1;
   std::string name;
 };
 
@@ -93,8 +99,8 @@ struct CellsPlan {
     std::vector<unsigned> objects; ///< ObjectBase::order, increasing
     uint64_t reads = 0, readsInterval = 0, readsFull = 0;
     uint64_t unknown = 0; ///< |U|
-    /// distinct symbolic parts of the indices decoded here (the selectors
-    /// of reads S + c_1, S + c_2 test S: shared)
+    /// distinct symbolic parts of the reads' offsets decoded here (the
+    /// selectors of offsets S + c_1, S + c_2 test S: shared)
     uint64_t indices = 0;
     uint64_t arms = 0, cells = 0;
     bool cellsBound = false;
@@ -109,6 +115,14 @@ struct CellsPlan {
   /// inside the object)
   uint64_t reads = 0, readsInterval = 0, readsFull = 0, readsUnknown = 0,
            readsMulti = 0, readsInb = 0;
+  /// of the unknown reads: those with an access address whose ARM
+  /// provenance no A-INB condition names (seam::Rules::armInbGap; set by
+  /// the caller), and those touching an object the plan cannot use
+  uint64_t readsInbGap = 0, readsUnusable = 0;
+  /// bits set in the cell bitmaps (the plan's own cost: one pass per
+  /// distinct candidate progression of a group and base), groups whose C is
+  /// a bound (an object over kMaxBitmap units)
+  uint64_t cellsMarked = 0, groupsCellsBound = 0;
   /// constrained pairs of the lowering; of them those ARM separates (the
   /// maps of both reads disjoint): by different bases (A-SEP), by intervals
   /// of one base (exact)
@@ -150,8 +164,12 @@ struct CellsPlan {
     line("reads-unknown").value(readsUnknown);
     line("reads-multi-base").value(readsMulti);
     line("reads-a-inb").value(readsInb);
+    line("reads-inb-gap").value(readsInbGap);
+    line("reads-unusable").value(readsUnusable);
     line("groups").value(groups.size());
     line("cells").value(cells);
+    line("cells-marked").value(cellsMarked);
+    line("groups-cells-bound").value(groupsCellsBound);
     line("arms").value(arms);
     line("decider-dropped").value(deciderDropped);
     line("unknown-constraints").value(unk);
@@ -222,10 +240,16 @@ inline CellsPlan planCells(
     return key != AddrRangeMap::kAbs && key < objs.size() &&
            objs[key].size != 0;
   };
+  auto unusable = [&](unsigned key) {
+    return key == AddrRangeMap::kAbs || key >= objs.size() ||
+           (objs[key].size != 0 && !objs[key].usable);
+  };
   // per array, per read: its map (or none) and its group (-1: unknown)
   std::vector<std::vector<std::optional<AddrRangeMap>>> maps(arrs.size());
   std::vector<std::vector<long>> groupOf(arrs.size());
-  std::unordered_set<size_t> decoded; // symbolic parts (Read::group)
+  // the decoded offsets: (width, symbolic part of rest's linear form), or
+  // (0, the index's symbolic part Read::group) for a read without rest
+  std::set<std::pair<unsigned, ackermann_detail::LinearForms::Key>> decoded;
   std::map<unsigned, std::unique_ptr<DiffDecider>> deciders;
   std::map<unsigned, std::unique_ptr<ackermann_detail::LinearForms>> forms;
   BvRanges ranges;
@@ -255,9 +279,15 @@ inline CellsPlan planCells(
       const auto &m = maps[a][k];
       bool ok = m && !m->isTop() && !m->hasAbs();
       if (ok)
-        for (const AddrRangeMap::Entry &e : m->entries())
+        for (const AddrRangeMap::Entry &e : m->entries()) {
+          if (unusable(e.first)) {
+            ok = false;
+            ++plan.readsUnusable;
+            break;
+          }
           if (known(e.first))
             bases[k].push_back(e.first);
+        }
       if (!ok || bases[k].empty()) {
         bases[k].clear();
         ++unknown;
@@ -290,10 +320,14 @@ inline CellsPlan planCells(
       plan.groups[groupNo.at(find(b))].objects.push_back(b);
     for (const auto &[root, gi] : groupNo)
       std::sort(plan.groups[gi].objects.begin(), plan.groups[gi].objects.end());
-    // per group and base: the cells (a bitmap; empty above kMaxBitmap)
+    // per group and base: the cells (a bitmap; empty above kMaxBitmap), and
+    // the progressions marked in it (first, t, count: marked once)
     std::map<std::pair<size_t, unsigned>, std::vector<bool>> cellMap;
-    std::vector<std::vector<std::pair<uint64_t, size_t>>> perRead(
-        plan.groups.size());
+    std::set<std::tuple<size_t, unsigned, uint64_t, unsigned, uint64_t>> marked;
+    // per group: (candidates, decoding key) of each read
+    std::vector<std::vector<std::pair<
+        uint64_t, std::pair<unsigned, ackermann_detail::LinearForms::Key>>>>
+        perRead(plan.groups.size());
     for (size_t k = 0; k < rs.size(); ++k) {
       if (groupOf[a][k] < 0)
         continue;
@@ -302,6 +336,9 @@ inline CellsPlan planCells(
       ++g.reads;
       bool full = false, inb = false;
       uint64_t n = 0;
+      std::pair<unsigned, ackermann_detail::LinearForms::Key> dkey{
+          0, ackermann_detail::LinearForms::Key{
+                 {nullptr, mpz_class((unsigned long)rd.group)}}};
       if (bases[k].size() > 1)
         ++plan.readsMulti;
       for (unsigned b : bases[k]) {
@@ -325,7 +362,8 @@ inline CellsPlan planCells(
         // one base: the index's offset, its range and residue
         uint64_t f = 0;
         unsigned t = 0;
-        Expr rest = rd.rest;
+        // a narrowed read's offset before narrowing, if its base is b
+        Expr rest = rd.rest && rd.nbase == o.base ? rd.rest : Expr();
         if (bases[k].size() == 1 &&
             (rest || Ackermannizer::splitBase(rd.index, o.base, w, rest))) {
           BvInterval ri = ranges.unsignedRange(rest);
@@ -338,6 +376,7 @@ inline CellsPlan planCells(
               hi = mpz_get_ui(ri.hi.get_mpz_t());
           }
           const ackermann_detail::Linear &lin = lf->of(rest.get());
+          dkey = {w, lf->key(lin)};
           t = w;
           for (const auto &[atom, coef] : lin.coef)
             t = std::min(t, Ackermannizer::trailingZeros(coef, w));
@@ -353,7 +392,8 @@ inline CellsPlan planCells(
           }
         }
         // the array's cells: offsets 0 mod u (u = 2^tu)
-        const unsigned u = cellUnits(a);
+        const unsigned u0 = cellUnits(a);
+        const unsigned u = o.align % u0 == 0 ? u0 : 1;
         unsigned tu = 0;
         while (tu < 63 && (uint64_t(1) << tu) < u)
           ++tu;
@@ -391,13 +431,19 @@ inline CellsPlan planCells(
           std::vector<bool> &bm = cellMap[{size_t(groupOf[a][k]), b}];
           if (bm.empty())
             bm.assign(o.size, false);
-          if (filter)
+          if (filter) {
             for (uint64_t x : kept)
               bm[x] = true;
-          else
+            plan.cellsMarked += nb;
+          } else if (marked.insert({size_t(groupOf[a][k]), b, first, t, nb})
+                         .second) {
             for (uint64_t i = 0, x = first; i < nb; ++i, x += step)
               bm[x] = true;
+            plan.cellsMarked += nb;
+          }
         } else if (nb) {
+          if (!g.cellsBound)
+            ++plan.groupsCellsBound;
           g.cellsBound = true;
           g.cells += nb; // a bound
         }
@@ -406,18 +452,19 @@ inline CellsPlan planCells(
       ++(full ? plan.readsFull : plan.readsInterval);
       plan.readsInb += inb;
       g.arms += n;
-      perRead[groupOf[a][k]].push_back({n, rd.group});
+      perRead[groupOf[a][k]].push_back({n, dkey});
     }
     for (const auto &[key, bm] : cellMap)
       plan.groups[key.first].cells +=
           uint64_t(std::count(bm.begin(), bm.end(), true));
-    // the decoding, once per distinct index term (all arrays)
+    // the decoding, once per distinct symbolic part of the reads' offsets
+    // (all arrays); nothing for a read with at most one candidate
     for (const auto &[root, gi] : groupNo) {
       CellsPlan::Group &g = plan.groups[gi];
       g.iw = ceilLog2(g.cells);
       uint64_t decode = 0;
-      for (const auto &[n, sym] : perRead[gi])
-        if (sym != 0 && decoded.insert(sym).second) {
+      for (const auto &[n, key] : perRead[gi])
+        if (n > 1 && decoded.insert(key).second) {
           ++g.indices;
           decode += n * g.iw;
         }

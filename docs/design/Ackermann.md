@@ -352,27 +352,32 @@ constraint.
 The objects come from ARM (`AddrRangeMap.hh`), not from the shape of the
 index: the join of the ARM maps of the access addresses behind the read's
 selects (`AccessOrigins`, recorded at the boundary). A read is unknown when
-it has no record (more than 8 addresses, a shadow read), a top map, or an
-absolute entry (a loaded or numeric address: no provenance); otherwise it is
-on the bases of its map (objects of size 0 dropped), each with an interval
-(arm-interval when every interval is bounded, full-object when one is top).
-Bases read together by one read form a group, converted as a whole.
+it has no record (more than 8 addresses, a shadow read), a top map, an
+absolute entry (a loaded or numeric address: no provenance), an address
+whose ARM provenance no A-INB condition names (an absolute node whose
+stride-1 index holds the base: `Rules::armInbGap`, where the rewriter
+refuses its decisions too; `reads-inb-gap`), or an entry of an object the
+plan cannot use (size >= 2^63; `reads-unusable`); otherwise it is on the
+bases of its map (objects of size 0 dropped), each with an interval
+(arm-interval when every interval is bounded, full-object when one is
+top). Bases read together by one read form a group, converted as a whole.
 
 Candidates of a read on base b of size N: the offsets in [0, N) ∩ I_b;
 for a read on one base whose index splits as `b + rest` (the offset before
-narrowing for a narrowed read), also ∩ the unsigned interval of rest
-(`BvRanges`) and its residue (c mod 2^t, t the trailing zeros common to the
-coefficients of its linear form); only the array's cells (an array whose
-value width is that of aligned word memories only, k-unit words: offsets
-0 mod k, which `sea-widen-memory` proved); and, for at most 64 candidates
-(a cost bound, untuned), minus those the difference decider finds never
-equal to rest (leaf by leaf through an ite offset). Under A-INB of the
-read's access the set holds every offset it can have; a read whose interval
-is not inside its object rests on A-INB (counted, `reads-a-inb`). A read
-with no candidate (every offset ruled out: it cannot execute in bounds)
-costs no arm here; the lowering will still need a value for it, since the
-case split of B.5 ends in an unconditional arm: one cell of the object, or
-a fresh constant.
+narrowing for a read narrowed in b), also ∩ the unsigned interval of rest
+(`BvRanges`) and its residue (c mod 2^t, t the trailing zeros common to
+the coefficients of its linear form); only the array's cells (an array
+whose memory type has the aligned word layout, k-unit cells, found from the
+array constant's name: offsets 0 mod k, when b's alignment is a multiple
+of k; else every unit); and, for at most 64 candidates (a cost bound,
+untuned), minus those the difference decider finds never equal to rest
+(leaf by leaf through an ite offset). Under A-INB of the read's access the
+set holds every offset it can have; a read whose interval is not inside
+its object rests on A-INB (counted, `reads-a-inb`). A read with no
+candidate (every offset ruled out: it cannot execute in bounds) costs no
+arm here; the lowering will still need a value for it, since the case split
+will end in an unconditional arm: one cell of the object, or a fresh
+constant.
 
 The plan runs a second lowering, configured as the real one, recording its
 constrained pairs and the selects of each read, after the real lowering;
@@ -385,10 +390,13 @@ of the candidates over R):
 - count cost: arms + C + C x |U|.
 - bit cost, against keep x (aw + vw) (a pair: the index compare and the
   guarded equality; aw, vw the index and value widths): arms x vw (the
-  mux), the decoding n x iw per distinct symbolic part S of the indices
-  (iw = ceil(log2 C); the selectors of `S + c1` and `S + c2`, two fields of
-  one slot, test S: shared, also across arrays; counted at its first
-  read), C x vw (the cells), C x |U| x (aw + vw).
+  mux), the decoding n x iw per distinct symbolic part S of the reads'
+  offsets (the linear form of rest, so also under `--narrow-offsets`; iw =
+  ceil(log2 C); the selectors of `S + c1` and `S + c2`, two fields of one
+  slot, test S: shared, also across arrays; counted at its first read;
+  nothing for a read with at most one candidate; a read without rest, on
+  several bases, is keyed by its index's symbolic part), C x vw (the
+  cells), C x |U| x (aw + vw).
 - converted: keep > 0 and cost < keep, by each measure (ratio 1, untuned).
 
 There is no bound on the candidate sets: the cost decides.
@@ -396,23 +404,28 @@ There is no bound on the candidate sets: the cost decides.
 Reported with the switch: `vc.cells-plan: on | off-no-premises |
 off-no-ackermann | off-seam-words` (needs `--seam` with its premises and
 the eager lowering), then `vc.cells-plan-*`: reads, reads-arm-interval,
-reads-full-object, reads-unknown, reads-multi-base, reads-a-inb; groups,
-cells, arms, decider-dropped (candidates the decider removed),
-unknown-constraints (C x |U|), keep (all groups); pairs (the constrained
-ones), arm-pairs-cross-base / arm-pairs-interval (of them, the pairs ARM
-separates for plain Ackermann: different bases under A-SEP, or disjoint
-intervals of one base); by count: converted, reads-converted, removed,
-added, other-object-pairs (pairs of a converted group with another group);
-by bits: bits-converted, bits-reads-converted, bits-removed, bits-keep,
-bits-cost, bits-other-object-pairs. Per group, `--log=vc.cells-plan:2`:
-objects, sizes, reads by source, cells, arms, keep, both costs
-(`keep-bits=`, `cost-bits=`) and both modes.
+reads-full-object, reads-unknown, reads-multi-base, reads-a-inb,
+reads-inb-gap, reads-unusable; groups, cells, cells-marked,
+groups-cells-bound, arms, decider-dropped (candidates the decider
+removed), unknown-constraints (C x |U|), keep (all groups); pairs (the
+constrained ones), arm-pairs-cross-base / arm-pairs-interval (of them, the
+pairs ARM separates for plain Ackermann: different bases under A-SEP, or
+disjoint intervals of one base); by count: converted, reads-converted,
+removed, added, other-object-pairs (pairs of a converted group with
+another group); by bits: bits-converted, bits-reads-converted,
+bits-removed, bits-keep, bits-cost, bits-other-object-pairs. Per group,
+`--log=vc.cells-plan:2`: objects, sizes, reads by source, cells, arms,
+keep, both costs (`keep-bits=`, `cost-bits=`) and both modes.
 
 Cost: the second lowering costs about as much as the first in time, and
 holds the image of every node of the query (`keepImages`, to reach the
 reads' selects) while the plan runs; it keeps the ownership drop's pair
-set only when `--ack-own` is on, as the real one does. Per object of at
-most 2^24 units a bitmap of its cells.
+set only when `--ack-own` is on, as the real one does. C is counted on a
+bitmap per group and object of at most 2^24 units (above: the sum of the
+reads' candidates, a bound, `groups-cells-bound`); filling it takes one
+pass per distinct candidate progression (reads with the same interval,
+residue and step mark once) plus the filtered small sets, so the work is
+at most that many passes times N; `cells-marked` counts the bits set.
 
 ## Measurements (Release, timeout 300 s)
 

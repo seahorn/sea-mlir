@@ -3077,8 +3077,13 @@ OUTPUT (stdout, `key: value` lines):
                                   (--ack-cells-plan; on: vc.cells-plan-
                                   reads / -reads-arm-interval / -reads-full-
                                   object / -reads-unknown / -reads-multi-
-                                  base / -reads-a-inb (reads by ARM source),
-                                  -groups / -cells / -arms / -decider-
+                                  base / -reads-a-inb / -reads-inb-gap /
+                                  -reads-unusable (reads by ARM source; of
+                                  the unknown ones, an address whose ARM
+                                  provenance no A-INB condition names, an
+                                  object of size >= 2^63),
+                                  -groups / -cells / -cells-marked /
+                                  -groups-cells-bound / -arms / -decider-
                                   dropped / -unknown-constraints / -keep,
                                   -pairs / -arm-pairs-cross-base / -arm-
                                   pairs-interval (the constrained pairs,
@@ -7028,8 +7033,10 @@ int main(int argc, char **argv) {
         if (o.order < objs.size())
           objs[o.order] = expr::CellsObjectInfo{
               rules.erase(o.constant),
-              o.size.getActiveBits() <= 63 ? o.size.getZExtValue() : 0, o.name};
+              o.size.getActiveBits() <= 63 ? o.size.getZExtValue() : UINT64_MAX,
+              o.size.getActiveBits() <= 63, o.align, o.name};
       expr::AddrRangeAnalysis arm(reg);
+      uint64_t inbGapReads = 0;
       // the join of the ARM maps of the access addresses of every select
       // merged into the read; none if one has no usable record
       auto readMap = [&](size_t a,
@@ -7042,6 +7049,12 @@ int main(int argc, char **argv) {
               it->second.shadow || it->second.addrs.empty())
             return std::nullopt;
           for (const expr::Expr &ad : it->second.addrs) {
+            // a provenance no A-INB condition names (Rules::armInbGap): the
+            // rewriter refuses decisions on it; the read is unknown
+            if (rules.armInbGap(ad, 1)) {
+              ++inbGapReads;
+              return expr::AddrRangeMap::top();
+            }
             const expr::AddrRangeMap &x = arm.alpha(ad);
             m = m ? m->join(x) : x;
           }
@@ -7067,6 +7080,7 @@ int main(int argc, char **argv) {
                                                              : 1;
       };
       cellsPlan = expr::planCells(dry, readMap, objs, cellUnits);
+      cellsPlan->readsInbGap = inbGapReads;
       for (const expr::CellsPlan::Group &g : cellsPlan->groups) {
         std::string names, sizes;
         for (unsigned b : g.objects) {
