@@ -14,6 +14,8 @@
 // RUN: sea-vc %s --program=diag --check-inb --lower --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=DIAG
 // RUN: sea-opt %s --sea-check-inb --sea-split-asserts=program=ag | FileCheck %s --check-prefix=PARTS
 // RUN: sea-vc %s --program=implied --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=FOLD
+// RUN: sea-vc %s --program=mhnull --check-inb --lower --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=MHNULL
+// RUN: sea-vc %s --program=mhnull --check-inb --lower --seam --ackermannize=off --memhavoc-null=error 2>&1 | FileCheck %s --check-prefix=MHERR
 // RUN: sea-vc %s --program=prior --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=PRIOR
 // RUN: printf -- '--check-inb\n--lower\n--seam\n--ackermannize=off\n' > %t.cfg
 // RUN: sea-vc %s --program=oob --config=%t.cfg | FileCheck %s --check-prefix=CFG
@@ -167,6 +169,23 @@ sea.program @implied {
   %p = sea.ptr.add %a, %n : !sea.ptr<64>, i64
   %x = sea.load %m0[%p] : !m -> i8
   %y = sea.load %m0[%p] : !m -> i8
+  sea.halt
+}
+
+// A memhavoc of the null pointer itself: a no-op by default, so its check
+// passes (no size-0 warning) and folds away, and the result rests on that
+// decision; with --memhavoc-null=error it fails.
+// MHNULL-NOT: check-inb.size0-object
+// MHNULL: check-inb.split: folded=1 parts=0
+// MHNULL: check-inb.discharges: {{.*}} under=addr0-is-null,memhavoc-null-noop
+// MHNULL: result: unsat
+// MHERR: Warning: {{.*}}[check-inb.size0-object]
+// MHERR: result: sat
+sea.program @mhnull {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %null = sea.ptr.null : !sea.ptr<64>
+  %m2 = sea.memhavoc %m0[%null], %c16 [5] inplace : !m
   sea.halt
 }
 

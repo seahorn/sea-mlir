@@ -104,7 +104,7 @@ sea.program @tier_a {
 // n is checked as n == 0 || deref. memmove checks both ends; memhavoc of
 // null is a no-op (null || n == 0 || deref) unless memhavoc-null-noop=false.
 // CHECK-LABEL: sea.program @ranges
-// CHECK-SAME: sea.check_inb = {checks = 4 : i64, left = 4 : i64, static = 0 : i64, "zero-length" = 1 : i64}
+// CHECK-SAME: sea.check_inb = {checks = 4 : i64, left = 4 : i64, "null-noop" = 1 : i64, static = 0 : i64, "zero-length" = 1 : i64}
 // CHECK: %[[Z:.*]] = sea.icmp eq, %[[N:.*]], %{{.*}} : i64
 // CHECK: %[[OR:.*]] = sea.or %[[Z]], %{{.*}} : i1
 // CHECK: sea.assert %[[OR]]

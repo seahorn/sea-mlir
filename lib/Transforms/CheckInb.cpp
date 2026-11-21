@@ -71,7 +71,9 @@
 //     original assert, and the counters on the program
 //     (kCheckInbStatsAttr): checks (spans checked, discharged ones
 //     included), static (discharged by tier (a)), left (asserts inserted),
-//     zero-length (constant length 0: no check).
+//     zero-length (constant length 0: no check), and null-noop (when not
+//     0: the memhavoc checks that pass for the null pointer itself, under
+//     memhavoc-null-noop; the job's result rests on that decision).
 //
 //===----------------------------------------------------------------------===//
 
@@ -196,7 +198,8 @@ void CheckInbPass::runOnOperation() {
   SmallVector<AssertOp> original;
   program.walk([&](AssertOp a) { original.push_back(a); });
 
-  uint64_t checks = 0, discharged = 0, left = 0, zeroLength = 0;
+  uint64_t checks = 0, discharged = 0, left = 0, zeroLength = 0,
+           nullNoopChecks = 0;
   bool ok = true;
 
   // one span: `len` units at `p` (a constant length: `constLen`)
@@ -219,8 +222,10 @@ void CheckInbPass::runOnOperation() {
       return;
     }
     uint64_t id = checks++;
+    // (a memhavoc of the null pointer itself passes under null-noop)
     if (Operation *root = rootOf(p);
-        root && isa<PtrFromIntOp, PtrNullOp, FuncAddrOp, PtrNondetOp>(root))
+        root && isa<PtrFromIntOp, PtrNullOp, FuncAddrOp, PtrNondetOp>(root) &&
+        !(nullNoop && p.getDefiningOp<PtrNullOp>()))
       diag::warn("check-inb.size0-object",
                  "the access's pointer comes from " +
                      root->getName().getStringRef() +
@@ -252,6 +257,8 @@ void CheckInbPass::runOnOperation() {
       cond = OrOp::create(b, loc, i1, empty, cond);
     }
     if (nullNoop) {
+      // the check rests on memhavoc(null) = no-op (sea-vc reports it)
+      ++nullNoopChecks;
       Value null = PtrNullOp::create(b, loc, pt);
       Value isNull = PtrCmpOp::create(b, loc, ICmpPredicate::eq, p, null);
       cond = OrOp::create(b, loc, i1, isNull, cond);
@@ -327,6 +334,15 @@ void CheckInbPass::runOnOperation() {
                        b.getNamedAttr("static", i64(discharged)),
                        b.getNamedAttr("zero-length", i64(zeroLength)),
                    }));
+  if (nullNoopChecks)
+    program->setAttr(
+        kCheckInbStatsAttr, DictionaryAttr::get(ctx, [&] {
+          SmallVector<NamedAttribute> a(
+              program->getAttrOfType<DictionaryAttr>(kCheckInbStatsAttr)
+                  .getValue());
+          a.push_back(b.getNamedAttr("null-noop", i64(nullNoopChecks)));
+          return a;
+        }()));
 
   // postcondition: no original assert, every assert is a check
   unsigned asserts = 0;

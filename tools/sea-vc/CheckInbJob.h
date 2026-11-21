@@ -383,7 +383,7 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     if (w)
       ptrWidth = w;
   }
-  uint64_t checks = 0, staticN = 0, left = 0, zero = 0;
+  uint64_t checks = 0, staticN = 0, left = 0, zero = 0, nullNoop = 0;
   if (auto d =
           program->getAttrOfType<mlir::DictionaryAttr>(kCheckInbStatsAttr)) {
     auto get = [&](llvm::StringRef k) -> uint64_t {
@@ -394,6 +394,7 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     staticN = get("static");
     left = get("left");
     zero = get("zero-length");
+    nullNoop = get("null-noop");
   }
   {
     out::Record rec("check-inb");
@@ -433,6 +434,10 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     if (sz.ugt(largestObject))
       largestObject = sz;
   });
+  // the memhavocs guarded (or dropped) as no-ops on the null pointer
+  if (auto g =
+          program->getAttrOfType<mlir::IntegerAttr>(kMemhavocNullGuardsAttr))
+    nullNoop += g.getInt();
   if (mlir::failed(run([&](mlir::OpPassManager &prog) {
         addVCOptimizeChecks(prog, o.lower);
       })))
@@ -881,6 +886,11 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     // explicit assumptions are the job's own warnings (`*-assume`)
     if (o.lower.abstract)
       under.insert("addr0-is-null");
+    // a check that passes for memhavoc(null), or a memhavoc the lowering
+    // guarded or dropped for it, rests on memhavoc(null) = no-op, even
+    // when no part is left to report it
+    if (nullNoop)
+      under.insert("memhavoc-null-noop");
     for (const std::string &k : diag::warningKinds())
       if (llvm::StringRef(k).ends_with("-assume"))
         under.insert(k);
