@@ -520,6 +520,10 @@ public:
     /// (no origins, an index without an entry, or one with execAlways)
     std::vector<Expr> exec;
     bool execAlways = true;
+    /// a narrowed read: its offset before narrowing (index = nbase + rest
+    /// at w bits; null otherwise: the index itself is base + rest). The
+    /// cells plan (AckCellsPlan.hh) enumerates its candidate offsets.
+    Expr rest = Expr();
   };
   struct Array {
     Expr array; ///< the array constant A
@@ -614,11 +618,10 @@ public:
           unsigned w = op::bv::width(
               sort::arrayIndexTy(op::bind::declaredSort(m_arrays[a].array)));
           // --narrow-offsets: the index's in-object representative
-          Expr low, nbase;
+          Expr low, nbase, rest;
           if (m_narrow) {
             auto nt = m_narrow->byIndex.find(n->arg(1));
             if (nt != m_narrow->byIndex.end()) {
-              Expr rest;
               if (nt->second.k < w &&
                   splitBase(idx, nt->second.base, w, rest)) {
                 low = m_low.of(rest, nt->second.k);
@@ -650,6 +653,8 @@ public:
           Expr r = freshConstant(a);
           m_arrays[a].reads.push_back(
               Read{idx, r, g->second, off, {}, true, {}, low, nbase});
+          if (low)
+            m_arrays[a].reads.back().rest = rest;
           noteOrigins(m_arrays[a].reads.back(), n->arg(1), true);
           noteOwn(m_arrays[a].reads.back(), n->arg(1), true);
           if (m_keepImages)
@@ -927,6 +932,16 @@ public:
       std::swap(k, l);
     return m_ownDropped[a].count(ownKey(k, l, m_arrays[a].reads.size()));
   }
+  /// \p fn(k, l) on every pair k < l of reads of lowered array \p a whose
+  /// constraint the ownership drop dropped (in no particular order).
+  template <typename Fn>
+  void forEachOwnDropped(size_t a, Fn fn) const {
+    if (a >= m_ownDropped.size())
+      return;
+    const uint64_t n = m_arrays[a].reads.size();
+    for (uint64_t key : m_ownDropped[a])
+      fn(size_t(key / n), size_t(key % n));
+  }
   /// Did the stride rule drop the constraint of reads \p a and \p b?
   bool strideDropped(const Read &a, const Read &b) const {
     return strideApart(a, b);
@@ -956,6 +971,10 @@ public:
   bool uf() const { return m_uf; }
   /// The lowered arrays with their reads (the table of model reconstruction).
   const std::vector<Array> &arrays() const { return m_arrays; }
+  /// Trailing zeros of \p x modulo 2^w (w for 0).
+  static unsigned trailingZeros(const mpz_class &x, unsigned w) {
+    return mpzTrailingZeros(x, w);
+  }
   /// The position of \p a in arrays(), or -1 if it is not lowered.
   long arrayIndex(const Expr &a) const {
     auto it = m_index.find(a.get());

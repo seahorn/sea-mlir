@@ -336,6 +336,56 @@ Measured: hash_iter_begin (`--lower --widen-memory=8 --seam`) 281 reads,
 reads (130 before sharing equal linear forms), 4753 constraints (its
 indices differ in their symbolic parts).
 
+### Cell representatives: the plan (`--ack-cells-plan`)
+
+Status: the plan only, a count; no lowering uses it yet, and the query is
+unchanged (byte-identical with and without the switch). Off by default.
+
+The idea, not implemented: the reads of one object o of array A that sit at
+a small set of offsets need no pairwise constraints. Each offset `off` of o
+becomes one read, a cell (index `o + off`), and a read at `o + rest` becomes
+a case split over its candidate offsets (one arm each). Cells of one object
+never meet (one symbolic part, different numerals); against another object's
+reads A-OWN drops the pair; against a read in no known object (a loaded
+pointer) each cell keeps one constraint. Under A-INB of the read's access its
+offset is in [0, N), so a complete candidate set needs that premise, as the
+ownership drop and narrowed offsets do.
+
+The plan says where that would pay. A second lowering, configured as the
+real one plus the own table (the reads' objects, as `--ack-own` builds it)
+and recording its constrained pairs, runs after the real lowering; its query
+is discarded. For each lowered array A and object o of size N:
+
+- R: the reads of A in o; U: the reads of A in no known object.
+- Candidates of a read: its offset `rest` (`index = o + rest`, the offset
+  before narrowing for a narrowed read) as a linear form with constant c,
+  t = the trailing zeros common to its coefficients (w for a numeral): the
+  offsets in [0, N) congruent to c modulo 2^t, at most 64; minus those the
+  difference decider (without the layout values: the base cancels) finds
+  never equal to `rest`; at most 16 left. Both bounds are first guesses.
+- Eligible: every read of R splits as `o + rest` and has a candidate set
+  (else skip-shape, skip-enum, skip-arms).
+- keep: the constrained pairs with both reads in R or one in R and one in U.
+  cost: the arms (sum of the candidates over R) + C + C x |U|, C the distinct
+  candidate offsets of R.
+- Converted: eligible, keep > 0 and cost < keep (ratio 1). Arms and pairs
+  are not the same size of term (an arm is a compare with a numeral, a pair
+  an equality of two indices and of two cells); the ratio is not tuned.
+
+Reported with the switch: `vc.cells-plan: on | off-no-premises |
+off-no-ackermann | off-seam-words` (needs `--seam` with its premises and the
+eager lowering; the words path records no access origins), then
+`vc.cells-plan-*`: objects, eligible, skip-shape / -enum / -arms / -keep (keep
+= 0) / -cost, converted; reads (of the lowered arrays), reads-own,
+reads-unknown, reads-converted, reads-kept; arms, cells, unknown-constraints
+(C x |U|) of the converted objects; keep and cost summed over the eligible
+objects, keep-skipped (keep of the objects not eligible); removed and added (keep and cost of the converted ones: the
+constraints a cell mode would remove and the terms it would add);
+other-object-pairs (pairs of a converted object's read with a read of
+another known object: a cell mode drops them by A-OWN; with `--ack-own` the
+lowering has dropped them already). Per object, `--log=vc.cells-plan:2`.
+The second lowering costs about as much as the first.
+
 ## Measurements (Release, timeout 300 s)
 
 `--lower --widen-memory=8 --seam`, sea-vc solve-time, off -> on:
