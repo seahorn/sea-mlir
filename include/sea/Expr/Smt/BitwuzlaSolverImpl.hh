@@ -44,6 +44,9 @@ private:
   bzcache_t d_cache;
   /// to build unsat cores: this avoids a decode_term function
   assumptions_map_t d_last_assumptions;
+  /// whether the options turn on produce-unsat-assumptions (off by default:
+  /// it costs every check, see docs/design/Bitwuzla.md); unsat_core needs it
+  bool d_unsatCores = false;
   /// array constants defined by an equation whose right side bottoms out in a
   /// const-array (memory values named at joins): inlined, not asserted, since
   /// Bitwuzla 0.9 answers unknown on equalities over const-arrays. A push
@@ -80,7 +83,8 @@ public:
   SolverResult
   check_with_assumptions(const expr_const_it_range &assumptions) override;
 
-  /** Return an unsatisfiable core (a subset of the last assumptions) */
+  /** Return an unsatisfiable core (a subset of the last assumptions); only
+   * with the option produce-unsat-assumptions, else an error */
   void unsat_core(expr::ExprVector &out) override;
 
   /** Push a context */

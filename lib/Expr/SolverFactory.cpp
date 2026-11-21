@@ -184,6 +184,8 @@ std::unique_ptr<Solver> makeSolver(expr::ExprFactory &efac, Backend backend,
       o["time-limit-per"] = std::to_string(limits.timeoutMs);
     if (limits.memMB)
       o["memory-limit"] = std::to_string(limits.memMB);
+    if (config.unsatCores)
+      o["produce-unsat-assumptions"] = "true";
     return std::make_unique<bitwuzla_solver_impl>(efac, nullptr, o);
 #else
     notBuilt(config, backend);

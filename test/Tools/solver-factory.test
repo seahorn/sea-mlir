@@ -5,7 +5,14 @@ RUN: sea-solver-factory-test 2>&1 | FileCheck %s
 CHECK: z3: ok
 CHECK: yices: ok
 CHECK: bitwuzla: ok
+CHECK: bitwuzla cores: ok
 CHECK: failures: 0
+
+// Bitwuzla builds no unsat cores unless asked (they slow every check):
+// unsat_core on a solver built without the option is an error naming it.
+RUN: %if bitwuzla %{ not --crash sea-solver-factory-test bitwuzla-core-without-option 2>&1 | FileCheck --check-prefix=NOCORE %s %}
+NOCORE: produce-unsat-assumptions{{.*}}[bitwuzla.unsat-core]
+NOCORE-NOT: core size:
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

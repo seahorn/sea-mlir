@@ -40,8 +40,21 @@ BitwuzlaModelImpl}.cpp`, mirroring the Yices backend.
   to `constArray` + `store` chain, like Yices. `print` writes one SMT-LIB
   `define-fun` per constant of the asserted formulas of the current context
   (the API has no model printer).
-- `unsat_core` is a subset of the assumptions of `check_with_assumptions`
-  (`PRODUCE_UNSAT_ASSUMPTIONS`), as for Yices; elsewhere it is an error.
+- `unsat_core` is a subset of the assumptions of `check_with_assumptions`,
+  as for Yices; elsewhere it is an error. It needs the Bitwuzla option
+  `produce-unsat-assumptions`, which is off by default: a caller that reads
+  cores asks for it when it makes the solver (`SolverConfig::unsatCores`, the
+  factory passes the option). Without it `unsat_core` is an error
+  (`bitwuzla.unsat-core`) naming the option; `check_with_assumptions` works
+  without it. Never turned on mid-solve. The reason it is off: Bitwuzla 0.9.1
+  turns on its unsat cores with it, and with cores on it skips the
+  preprocessing passes `skeleton_preproc`, `variable_substitution` and
+  `embedded_constraints` and passes every assertion to the SAT solver as an
+  assumption instead of a clause. Measured with `sea-vc --lower --seam
+  --widen-memory=4 --ackermannize=on --solver=bitwuzla`: firedancer
+  `step-reach-sz` (sat) times out at 150 s with the option and solves in
+  13 s without it; `h2fc-settings-proof` (unsat) takes 12.6 s against 9.4 s.
+  No sea-vc path reads a Bitwuzla core today.
 - `to_smt_lib` is `print_formula` (SMT-LIB 2).
 
 ## Const-array equalities
@@ -83,7 +96,8 @@ the encoding: see the deeper dive below.
 
 `test/VC/bitwuzla/*`, `test/VC/mem/alias-bitwuzla.mlir`,
 `test/Interp/semantics-bitwuzla.test` (op semantics, `--bitwuzla`),
-`test/VC/fuzz-bitwuzla.test` (VC vs interpreter, `--bitwuzla`). Run once over
+`test/VC/fuzz-bitwuzla.test` (VC vs interpreter, `--bitwuzla`),
+`test/Tools/solver-factory.test` (cores only with the option). Run once over
 the whole corpus (every `sea-vc` RUN line forced to Bitwuzla): all pass but
 `VC/names.mlir`, which checks z3's SMT-LIB text.
 
@@ -92,8 +106,9 @@ the whole corpus (every `sea-vc` RUN line forced to Bitwuzla): all pass but
 Not done, to do next: look for Bitwuzla options outside the standard API
 use that are SMT-LIB compatible and could help the VCs (e.g. `--bv-solver`
 engines `preprop` / `prop` / `bitblast`, `--sat-solver` choices, rewrite
-level, abstraction, array handling, `--produce-unsat-cores`, per-check
-limits, and logic-specific behaviour such as `QF_ABV`), measure them on the
-SeaHorn corpus (`test/SeaHorn`), and decide which defaults the backend should
-set through `solver_options`. Today it runs with defaults plus models and
-unsat assumptions.
+level, abstraction, array handling, per-check limits, and logic-specific
+behaviour such as `QF_ABV`), measure them on the SeaHorn corpus
+(`test/SeaHorn`), and decide which defaults the backend should set through
+`solver_options`. Today it runs with defaults plus models; unsat assumptions
+(and with them unsat cores) are settled: off unless a caller reads cores (see
+the mapping notes).
