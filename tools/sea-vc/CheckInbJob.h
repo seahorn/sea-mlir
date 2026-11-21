@@ -555,6 +555,25 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     out.emit(rec);
   }
 
+  // the job's own contributions to under= (its lowering's facts), fixed
+  // before any part runs: the manifest's `discharge` object and the
+  // discharges line read the same set
+  std::set<std::string> jobUnder;
+  // placement made null address 0
+  if (o.lower.abstract)
+    jobUnder.insert("addr0-is-null");
+  // a check that passes for memhavoc(null), or a memhavoc the lowering
+  // guarded or dropped for it, rests on memhavoc(null) = no-op, even when
+  // no part is left to report it
+  if (nullNoop)
+    jobUnder.insert("memhavoc-null-noop");
+  // the lowering's explicit assumptions: the job's own `*-assume` warnings
+  for (const std::string &k : diag::warningKinds())
+    if (llvm::StringRef(k).ends_with("-assume"))
+      jobUnder.insert(k);
+  const llvm::APInt nowrapHalf = llvm::APInt::getOneBitSet(128, ptrWidth - 1);
+  const bool nowrapImplied = largestObject.ult(nowrapHalf);
+
   // step 1: every part, the parts' options (parts.cfg) and the manifest,
   // before any part runs. The directory is self-contained: every path in
   // it is relative to it, and a part runs with it as the working
@@ -672,7 +691,21 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
                                         {"folded", int64_t(folded)},
                                         {"parts", int64_t(parts.size())},
                                         {"trivial", int64_t(trivialN)}}},
-        {"parts", std::move(partsJ)}};
+        {"parts", std::move(partsJ)},
+        // the job-level inputs of check-inb.discharges (docs/design/
+        // CheckInb.md, "Rebuilding the discharges line")
+        {"discharge", llvm::json::Object{
+                          {"pointer_width", int64_t(ptrWidth)},
+                          {"largest_object",
+                           llvm::toString(largestObject, 10, /*Signed=*/false)},
+                          {"nowrap_implied", nowrapImplied},
+                          {"null_noop", int64_t(nullNoop)},
+                          {"under", [&] {
+                             llvm::json::Array a;
+                             for (const std::string &u : jobUnder)
+                               a.push_back(u);
+                             return a;
+                           }()}}}};
     if (mlir::failed(writeFileAtomic(
             dir + "/manifest.json",
             [&](llvm::raw_ostream &os) {
@@ -867,8 +900,7 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     if (verdict == "unsat") {
       what = "a-inb a-sep a-null";
       std::string whyNot;
-      llvm::APInt half = llvm::APInt::getOneBitSet(128, ptrWidth - 1);
-      if (largestObject.uge(half))
+      if (!nowrapImplied)
         whyNot = "an object of " +
                  llvm::toString(largestObject, 10, /*Signed=*/false) +
                  " units, at least 2^" + std::to_string(ptrWidth - 1);
@@ -886,19 +918,7 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     // assumptions their placement made explicit (warnings `<kind>-assume`,
     // as place.symbolic-size-assume: an allocation of symbolic size is
     // assumed to fit its room); sorted, `none` without any
-    std::set<std::string> under;
-    // the lowering is the job's: placement made null address 0, and its
-    // explicit assumptions are the job's own warnings (`*-assume`)
-    if (o.lower.abstract)
-      under.insert("addr0-is-null");
-    // a check that passes for memhavoc(null), or a memhavoc the lowering
-    // guarded or dropped for it, rests on memhavoc(null) = no-op, even
-    // when no part is left to report it
-    if (nullNoop)
-      under.insert("memhavoc-null-noop");
-    for (const std::string &k : diag::warningKinds())
-      if (llvm::StringRef(k).ends_with("-assume"))
-        under.insert(k);
+    std::set<std::string> under = jobUnder;
     for (const PartRun &r : runs) {
       for (const std::string &a : r.assumes)
         // a part's use of A-NOWRAP is discharged only with it listed

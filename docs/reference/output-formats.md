@@ -367,6 +367,12 @@ parts), `check-inb.part`, `check-inb.parts`, `check-inb.part-diags`
 (one field per kind) and `check-inb.discharges` (fields `premises`,
 `under`), with the fields of the text.
 
+The job directory's `manifest.json` (format version 1; fields are only
+added) lists every part with its argv, relative to the directory, and
+the job-level inputs of the discharges line (`discharge`); its fields and
+the rule that rebuilds the line from it and the parts' outputs are in
+[the design note](../design/CheckInb.md#the-manifest).
+
 A part that ends with status 1, 2, 4, 5 or 6 also gets `error=<kind>` on
 its `check-inb.part` line (the `[kind]` of its first error line, `-`
 without one) and a line `check-inb.part-error: <i> <first error line>`

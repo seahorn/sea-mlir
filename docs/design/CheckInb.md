@@ -156,6 +156,7 @@ ignores fields it does not know and checks `format` and `version`.
 | `args` | the job's command line, without the binary |
 | `counters` | `{checks, static, left, zero_length}`, as on the `check-inb:` line, and `{folded, parts, trivial}`, as on `check-inb.split:` |
 | `parts` | one object per part that needs a solver, in order (a trivial part, whose assert folded to true, is counted, not listed) |
+| `discharge` | the job-level inputs of `check-inb.discharges` (below): `pointer_width`; `largest_object` (decimal string, units: the largest placed object, null aside); `nowrap_implied` (`largest_object` < 2^(pointer_width-1)); `null_noop` (checks that pass for memhavoc(null), plus memhavocs the lowering guarded or dropped for it); `under` (the job's own contributions to `under=`, sorted: `addr0-is-null`, `memhavoc-null-noop` when `null_noop` > 0, the job's `*-assume` warning kinds) |
 
 Each part:
 
@@ -171,6 +172,26 @@ Each part:
 A part's verdict is the `result` record of its jsonl and its exit status
 (the statuses of `sea-vc --agent`). The job's verdict is unsat iff every
 part is unsat.
+
+### Rebuilding the discharges line
+
+An outside runner rebuilds `check-inb.discharges` from the manifest and
+the parts' outputs:
+
+- premises: if every listed part's `result` is `unsat` (no part listed:
+  vacuously), `a-inb a-sep a-null`, plus ` a-nowrap` when
+  `discharge.nowrap_implied`; otherwise `none`;
+- under: the union of `discharge.under`; over the parts, the names
+  `<n>` of their `assume.<n>` stat records in effect (some field other
+  than `kind`, `key`, `text` is a nonzero number or a nonempty string
+  other than `0`), except `a-sep` and `a-null`, and except `a-nowrap`
+  when the premises list it; and the kinds `[<kind>]` ending in
+  `-assume` of their stderr `Warning:` lines. Sorted, comma-separated;
+  `none` if empty;
+- the line: `check-inb.discharges: <premises> under=<under>`.
+
+`test/VC/Inputs/rebuild-discharges.py` does this, and
+`test/VC/check-inb-rebuild.mlir` checks it against the job's own line.
 
 ## The check
 
