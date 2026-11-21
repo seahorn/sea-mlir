@@ -219,6 +219,8 @@ void testBitwuzlaCores(Terms &T) {
     // no core option: the checks (also with assumptions) still work
     auto s = sea::solver::makeSolver(T.efac, Backend::Bitwuzla);
     CHECK(s && s->add(fact), "bitwuzla no-core add");
+    if (!s)
+      return;
     CHECK(s->check() == SolverResult::SAT, "bitwuzla no-core check");
     CHECK(s->check_with_assumptions(range(unsatLits)) == SolverResult::UNSAT,
           "bitwuzla no-core assumptions unsat");
@@ -230,8 +232,13 @@ void testBitwuzlaCores(Terms &T) {
     c.unsatCores = true;
     auto s = sea::solver::makeSolver(T.efac, Backend::Bitwuzla, Limits(), c);
     CHECK(s && s->add(fact), "bitwuzla core add");
-    CHECK(s->check_with_assumptions(range(unsatLits)) == SolverResult::UNSAT,
-          "bitwuzla core assumptions unsat");
+    if (!s)
+      return;
+    // a core only after unsat (else unsat_core is a fatal error, not a FAIL)
+    SolverResult r = s->check_with_assumptions(range(unsatLits));
+    CHECK(r == SolverResult::UNSAT, "bitwuzla core assumptions unsat");
+    if (r != SolverResult::UNSAT)
+      return;
     ExprVector core;
     s->unsat_core(core);
     bool subset = true, hasConflict = false;
