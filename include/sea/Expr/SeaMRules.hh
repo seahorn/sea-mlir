@@ -3246,6 +3246,9 @@ public:
   ///                  else A-NULL. Never for a program compare (null + k
   ///                  may equal obj.A + j numerically).
   ///   cmp.cancel     a + x = a + y => x = y numerals     no assumption
+  ///   cmp.congruence the difference is sum c_k x_k + d, 2^t divides
+  ///                  every c_k and not d: a != b (incongruent; off with
+  ///                  --seam-congruence=false)                no assumption
   ///   arm.skip       the address range maps are disjoint: no assumption
   ///                  for one base or numbers, A-SEP (\p d records it) when
   ///                  the decision separates two bases

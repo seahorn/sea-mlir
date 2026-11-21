@@ -4,17 +4,23 @@
 // byte 1 of the read is the node with K = 1, whose skip rests on A-NOWRAP
 // (the access address does not wrap); --seam-check proves each firing.
 // cmp.congruence (default on) decides that byte without a premise, so
-// @kwide runs with --seam-congruence=false.
+// @kwide runs with --seam-congruence=false; KWIDE2 pins the default: no
+// A-NOWRAP, the rule fires, every firing valid.
 // @nul: two reads of the initial memory, one at a node over null (size 0),
 // one over p: the Ackermann stride rule drops the pair under A-NULL (no
 // access of positive width through null), and the null read is reported
 // out of its object.
 // RUN: sea-vc %s --program=kwide --lower --seam --seam-congruence=false --seam-stats --seam-stride --seam-check | FileCheck %s --check-prefix=KWIDE
+// RUN: sea-vc %s --program=kwide --lower --seam --seam-stats --seam-stride --seam-check | FileCheck %s --check-prefix=KWIDE2
 // RUN: sea-vc %s --program=nul --lower --seam --ack-stride 2>&1 | FileCheck %s --check-prefix=NUL
 // KWIDE: assume.a-nowrap: seam={{[1-9][0-9]*}}
 // KWIDE: seam.rule.premise.a-nowrap: {{[1-9][0-9]*}}
 // KWIDE: result: unsat
 // KWIDE: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
+// KWIDE2: assume.a-nowrap: seam=0
+// KWIDE2: seam.rule.cmp.congruence: {{[1-9]}}
+// KWIDE2: result: unsat
+// KWIDE2: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
 // NUL: seam.out-of-object-at: {{.*}} load: access of 1 unit(s) in object null of size 0
 // NUL: vc.ackermann-stride-a-null-pairs: {{[1-9][0-9]*}}
 // NUL: result: sat

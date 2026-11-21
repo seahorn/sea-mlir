@@ -12,8 +12,8 @@
 // ON: seam.rule.cmp.congruence: {{[1-9]}}
 // ON-NOT: seam.rule.row.store:
 // ON: seam.rule.row.store-skip: {{[1-9]}}
-// OFF-NOT: cmp.congruence
 // OFF: seam.alias.open.same-object: {{[1-9]}}
+// OFF-NOT: cmp.congruence
 // OFF: seam.rule.row.store: {{[1-9]}}
 // OFF-NOT: seam.rule.row.store-skip
 // CHECK: result: unsat
