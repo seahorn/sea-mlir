@@ -343,7 +343,7 @@ for the check jobs (`--check-align`, `--check-ptr-index`,
 ```text
 check-inb: checks=<n> static=<n> left=<n> zero-length=<n>
 check-inb.part: <i> id=<check id> at=<loc> result=<r> status=<exit> time=<s> [solve-time=<s>] [fail-at=<loc>]
-check-inb.parts: total=<n> unsat=<n> sat=<n> unknown=<n> other=<n> skipped=<n> median-time=<s> max-time=<s> max-part=<i> time=<s>
+check-inb.parts: total=<n> unsat=<n> sat=<n> unknown=<n> other=<n> skipped=<n> median-time=<s> max-time=<s> time=<s>
 check-inb.part-diags: none | <kind>=<parts> ...
 check-inb.discharges: a-inb a-sep a-null a-nowrap | none
 ```
@@ -354,6 +354,12 @@ One `check-inb.part` line per part, as it ends. `result` is the part's
 `check-inb`, `check-inb.part`, `check-inb.parts`, `check-inb.part-diags`
 (one field per kind) and `check-inb.discharges` (field `premises`), with the fields of the text.
 
+A part that ends with status 1, 2, 4, 5 or 6 also gets `error=<kind>` on
+its `check-inb.part` line (the `[kind]` of its first error line, `-`
+without one) and a line `check-inb.part-error: <i> <first error line>`
+(jsonl `check-inb.part-error`: part, message).
+
+### Where a counterexample fails
 
 After `replay: assert-failed` (`sea-vc`) or `status: assert-failed`
 (`sea-run`):

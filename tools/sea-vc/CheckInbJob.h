@@ -35,6 +35,7 @@
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -77,6 +78,9 @@ struct PartRun {
   std::string failAt;
   /// the kinds of the warnings and errors on its stderr (`... [kind]`)
   std::vector<std::string> diagKinds;
+  /// the first error line of its stderr (`Error: ...` or an MLIR
+  /// `error:`), and its kind (`[kind]`, else empty)
+  std::string firstError, errorKind;
 };
 
 inline std::string locText(mlir::Location loc) {
@@ -141,6 +145,12 @@ inline void readPartDiags(llvm::StringRef path, PartRun &r) {
   (*buf)->getBuffer().split(lines, '\n', -1, false);
   for (llvm::StringRef line : lines) {
     line = line.rtrim();
+    if (r.firstError.empty() &&
+        (line.starts_with("Error:") || line.contains("error:"))) {
+      r.firstError = line.str();
+      if (line.ends_with("]") && line.rfind('[') != llvm::StringRef::npos)
+        r.errorKind = line.substr(line.rfind('[') + 1).drop_back().str();
+    }
     if (!(line.starts_with("Warning:") || line.starts_with("Error:")) ||
         !line.ends_with("]"))
       continue;
@@ -151,6 +161,15 @@ inline void readPartDiags(llvm::StringRef path, PartRun &r) {
     if (!llvm::is_contained(r.diagKinds, kind))
       r.diagKinds.push_back(kind);
   }
+}
+
+/// A part without its assert: a bug of the split.
+inline mlir::LogicalResult postconditionFailedNoAssert(ProgramOp part) {
+  diag::error("vc.check-inb-part",
+              "sea-check-inb: part @" + part.getSymName() +
+                  " has no assert (a bug of sea-split-asserts)",
+              part.getLoc());
+  return mlir::failure();
 }
 
 /// The worst of two exit statuses of parts: a bug or an error (5, 2, 6, 4,
@@ -222,6 +241,9 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
                    .str();
     out.emit(rec);
   }
+  // the parts are the programs the split makes: an input that carries the
+  // attribute already (a part of an earlier split) is not one
+  program->removeAttr(kSplitAssertAttr);
   {
     mlir::PassManager pm(ctx);
     pm.addPass(createSplitAssertsPass(name));
@@ -250,6 +272,11 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     return 1;
   }
 
+  // a temporary directory goes on every return from here
+  auto removeTemp = llvm::scope_exit([&] {
+    if (tempDir)
+      (void)llvm::sys::fs::remove_directories(dir);
+  });
   std::vector<PartRun> runs;
   int worst = 0;
   unsigned skipped = 0;
@@ -259,6 +286,10 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     r.index = i;
     AssertOp a;
     part.walk([&](AssertOp x) { a = x; });
+    if (!a) {
+      (void)postconditionFailedNoAssert(part);
+      return 1;
+    }
     r.at = locText(a.getLoc());
     if (auto id = a->getAttrOfType<mlir::IntegerAttr>(kInbCheckAttr))
       r.checkId = id.getInt();
@@ -288,6 +319,9 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     for (const std::string &s : o.partArgs)
       args.push_back(s);
     args.push_back("--format=jsonl");
+    // the last occurrence wins: a --config file or response file that
+    // names --check-inb does not run the job again inside the part
+    args.push_back("--check-inb=false");
     std::optional<llvm::StringRef> redirects[] = {
         std::nullopt, llvm::StringRef(jsonFile), llvm::StringRef(errFile)};
     auto tp = Clock::now();
@@ -325,22 +359,38 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
       rec.str("fail_at", r.failAt);
       text += " fail-at=" + r.failAt;
     }
+    // why a part failed, without --check-inb-dir: its error's kind here,
+    // its first error line on check-inb.part-error
+    const bool failed = r.status != 0 && r.status != 3;
+    if (failed) {
+      std::string kind = r.errorKind.empty() ? "-" : r.errorKind;
+      rec.str("error", kind);
+      text += " error=" + kind;
+    }
     rec.text = text;
     out.emit(rec);
+    if (failed) {
+      out::Record er("check-inb.part-error");
+      er.num("part", i).str("message", r.firstError);
+      er.text =
+          llvm::formatv("check-inb.part-error: {0} {1}", i,
+                        r.firstError.empty() ? "(no error line)" : r.firstError)
+              .str();
+      out.emit(er);
+    }
     out.flush();
     runs.push_back(r);
   }
-  if (tempDir)
-    (void)llvm::sys::fs::remove_directories(dir);
 
   unsigned unsat = 0, sat = 0, unknown = 0, other = 0;
   std::vector<double> times;
+  // no "slowest part" here: which part is slowest is a timing, which the
+  // part lines give; a summary field of it would differ between two runs
+  // that agree on everything else
   double maxT = 0;
-  int64_t maxPart = -1;
   for (const PartRun &r : runs) {
     times.push_back(r.seconds);
-    if (r.seconds > maxT)
-      maxT = r.seconds, maxPart = r.index;
+    maxT = std::max(maxT, r.seconds);
     if (r.status == 0 && r.result == "unsat")
       ++unsat;
     else if (r.status == 0 && r.result == "sat")
@@ -366,14 +416,13 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
         .num("skipped", skipped)
         .str("median_time", llvm::formatv("{0:f3}", median).str())
         .str("max_time", llvm::formatv("{0:f3}", maxT).str())
-        .snum("max_part", maxPart)
         .str("time", llvm::formatv("{0:f3}", secondsSince(t0)).str());
     rec.text =
         llvm::formatv("check-inb.parts: total={0} unsat={1} sat={2} "
                       "unknown={3} other={4} skipped={5} median-time={6:f3} "
-                      "max-time={7:f3} max-part={8} time={9:f3}",
+                      "max-time={7:f3} time={8:f3}",
                       parts.size(), unsat, sat, unknown, other, skipped, median,
-                      maxT, maxPart, secondsSince(t0))
+                      maxT, secondsSince(t0))
             .str();
     out.emit(rec);
   }

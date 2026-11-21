@@ -19,7 +19,7 @@
 // RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=JOB
 // RUN: %if yices %{ sea-vc %s --check-inb --lower --seam --ackermannize=off --solver=yices | FileCheck %s --check-prefix=JOB %}
 // RUN: %if bitwuzla %{ sea-vc %s --check-inb --lower --seam --ackermannize=off --solver=bitwuzla | FileCheck %s --check-prefix=JOB %}
-// JOB: result=sat status=0
+// JOB: check-inb.part: {{.*}}inb-circular.mlir:45:{{[0-9]+}} result=sat status=0
 // JOB: check-inb.discharges: none
 // JOB: result: sat
 // PLAIN: result: sat

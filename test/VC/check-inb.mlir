@@ -13,6 +13,11 @@
 // RUN: sea-vc %s --program=ag_alone --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=ALONE
 // RUN: sea-vc %s --program=diag --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=DIAG
 // RUN: sea-opt %s --sea-check-inb --sea-split-asserts=program=ag | FileCheck %s --check-prefix=PARTS
+// RUN: sea-vc %s --program=prior --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=PRIOR
+// RUN: printf -- '--check-inb\n--lower\n--seam\n--ackermannize=off\n' > %t.cfg
+// RUN: sea-vc %s --program=oob --config=%t.cfg | FileCheck %s --check-prefix=CFG
+// RUN: not sea-vc %s --program=oob --check-inb --lower --seam --ackermannize=off --place-in=%t.missing | FileCheck %s --check-prefix=PERR
+// RUN: not sea-vc %s --program=inb --check-inb --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=CONFIG
 // RUN: not sea-vc %s --program=inb --check-inb --lower --seam 2>&1 | FileCheck %s --check-prefix=CONFIG
 // RUN: not sea-vc %s --program=inb --check-inb --lower --ackermannize=off 2>&1 | FileCheck %s --check-prefix=CONFIG
 
@@ -121,6 +126,29 @@ sea.program @diag {
   %x = sea.load %m0[%a] : !m -> i8
   sea.halt
 }
+
+// An input that is a part of an earlier split already, with no check left:
+// no part, unsat.
+// PRIOR: check-inb: checks=1 static=1 left=0
+// PRIOR: check-inb.parts: total=0
+// PRIOR: result: unsat
+sea.program @prior attributes {sea.split_assert = {count = 2 : i64, index = 1 : i64}} {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %x = sea.load %m0[%a] : !m -> i8
+  sea.halt
+}
+
+// --check-inb from a --config file: the parts do not run the job again.
+// CFG: check-inb.part: 0 {{.*}} result=sat status=0
+// CFG: result: sat
+
+// A part that fails says why without --check-inb-dir.
+// PERR: check-inb.part: 0 {{.*}} result=error status=1 {{.*}}error=place.in-file
+// PERR: check-inb.part-error: 0 Error: {{.*}}[place.in-file]
+// PERR: check-inb.part-diags: place.in-file=1
+// PERR: result: unknown
 
 // CONFIG: --check-inb runs with --lower --seam --ackermannize=off{{.*}}[vc.check-inb-config]
 

@@ -43,7 +43,7 @@ Every part prints one line, then the job prints a summary and the verdict:
 check-inb: checks=5 static=3 left=2 zero-length=0
 check-inb.part: 0 id=1 at=p.mlir:50:9 result=unsat status=0 time=0.024 solve-time=0.000
 check-inb.part: 1 id=3 at=p.mlir:53:9 result=sat status=0 time=0.035 solve-time=0.000 fail-at=p.mlir:53:9
-check-inb.parts: total=2 unsat=1 sat=1 unknown=0 other=0 skipped=0 median-time=0.029 max-time=0.035 max-part=1 time=0.061
+check-inb.parts: total=2 unsat=1 sat=1 unknown=0 other=0 skipped=0 median-time=0.029 max-time=0.035 time=0.061
 check-inb.part-diags: none
 check-inb.discharges: none
 result: sat
@@ -64,7 +64,11 @@ result: sat
 - `result: unsat` iff every part is unsat. `sat` if some part's
   counterexample replays: an execution reaches that access out of its
   object, every earlier check holding. Otherwise `unknown` (exit 3), or
-  the worst error status of a part (1, 2, 4, 5 or 6).
+  the worst error status of a part (1, 2, 4, 5 or 6). The two can meet:
+  with one sat part and one part that failed, the job prints
+  `result: sat` and exits with the failed part's status. A failed part's
+  line ends with `error=<kind>`, and `check-inb.part-error` gives its
+  first error line.
 - `check-inb.discharges: a-inb a-sep a-null a-nowrap` comes with
   `result: unsat`: every access of every execution within the bound stays
   in its object, so the premises of `--seam` hold (but see the condition
@@ -79,7 +83,12 @@ its output (`part-<i>.jsonl`, `part-<i>.err`); `--check-inb-static=false`
 turns the static discharge off; `--check-inb-max-time=<s>` starts no part
 after that many seconds (the rest are `skipped`, the verdict `unknown`).
 Write each option of the command line as `--name=value`: the parts get the
-command line without its input file and the job's own options.
+command line without its input file and the job's own options, filtered
+token by token. A two-token option (`--program x`) leaves its value
+behind, and the parts then fail with status 1. The contents of
+`--config` files and `@file` response files reach the parts unfiltered;
+each part also gets `--check-inb=false` last, so a `--check-inb` there
+does not run the job again inside a part.
 
 ## The check
 

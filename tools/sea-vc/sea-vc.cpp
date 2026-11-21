@@ -3948,9 +3948,11 @@ Kinds and fields:
   result        value: sat|unsat|unknown|none
   check-inb     (--check-inb) checks, static, left, zero_length
   check-inb.part part, id, at, result, status, time, [solve_time],
-                [fail_at]; one per part, as it ends
+                [fail_at], [error] (a failed part: its error kind, `-`
+                without one); one per part, as it ends
+  check-inb.part-error part, message (a failed part's first error line)
   check-inb.parts total, unsat, sat, unknown, other, skipped, median_time,
-                max_time, max_part, time
+                max_time, time
   check-inb.part-diags one field per diagnostic kind of the parts' stderr:
                 the number of parts that reported it
   check-inb.discharges premises (`a-inb a-sep a-null a-nowrap` or `none`)
