@@ -61,7 +61,9 @@ result: sat
   runs (processes, parsing and encoding included).
 - `id`: the check's id (`sea.inb_check`, program order, statically
   discharged checks included); `at`: the access; `fail-at`: the failing
-  check of a replayed counterexample (the replay's `assert-op`); `status`: the part's exit status.
+  check of a replayed counterexample (the replay's `op`, its
+  `assert-op`; its `at` when there is none); `status`: the part's exit
+  status.
 - `check-inb.part-diags`: the warning and error kinds on the parts'
   stderr, each with the number of parts that reported it. A part's
   warnings name approximations and assumptions its answer rests on; its
@@ -114,13 +116,21 @@ The parts' options are the job's command line expanded: `--config`
 files and `@file` response files read, each option one
 `--name[=value]` token (a two-token option such as `--program x`
 joined), the input file and the job's own options dropped, and so are
-`--lower` and the options that need it (a part is lowered already). Paths
-an option reads or appends to (`--log-file`) are made absolute. They go
-into `parts.cfg` in the job directory, with the pointer mode the job
-resolved on the input (`--ptr-mode`). An option that writes one output
-every part would share (`--smt2`, `--print-lowered`, `--seam-trail`,
-`--ack-dump-pairs`, `--ack-relax-smt2`, `--split-smt2`) is refused
-(`check-inb.unsupported`): run it on one part instead.
+`--lower` and the options that need it (a part is lowered already).
+Diagnostic output options do not pass to the parts either (`--log-file`,
+`--info-output-file`, `--mlir-pass-pipeline-crash-reproducer`,
+`--mlir-print-ir-tree-dir`, `--crash-diagnostics-dir`): they only serve
+debugging, and a path in them would tie the job directory to one place;
+add one when running a part. The options go into `parts.cfg` in the job
+directory, with the pointer mode the job resolved on the input
+(`--ptr-mode`). An option that writes one output every part would share
+(`--smt2`, `--print-lowered`, `--seam-trail`, `--ack-dump-pairs`,
+`--ack-relax-smt2`, `--split-smt2`) is refused when it is in effect
+(`check-inb.unsupported`; a value `false`, `0` or empty turns it off):
+run it on one part instead. `--ptr-companion=check` is refused with the
+other check jobs: it replaces the property of a query (the guard of every
+split pointer load, not the program's assertions), so a part would no
+longer check its bounds check.
 
 ## The manifest
 
@@ -167,7 +177,7 @@ Each part:
 | `at` | the check's source location (the access) |
 | `mlir` | the part's file, relative to the job directory |
 | `argv` | the command line that runs it in the job directory: `sea-vc`, the part's file, `--config=parts.cfg`, `--format=jsonl`, `--check-inb=false` (never `--vcgen-only`, which the job does not pass on) |
-| `stdout`, `stderr` | the file names (in the job directory) the job's own runner writes the part's output to; the job reads `result`, `solve-time` and the replay's `at` from the jsonl |
+| `stdout`, `stderr` | the file names (in the job directory) the job's own runner writes the part's output to; the job reads `result`, `solve-time` and the replay's `op` (else `at`) from the jsonl |
 
 A part's verdict is the `result` record of its jsonl and its exit status
 (the statuses of `sea-vc --agent`). The job's verdict is unsat iff every
@@ -178,16 +188,17 @@ part is unsat.
 An outside runner rebuilds `check-inb.discharges` from the manifest and
 the parts' outputs:
 
-- premises: if every listed part's `result` is `unsat` (no part listed:
-  vacuously), `a-inb a-sep a-null`, plus ` a-nowrap` when
+- premises: if every listed part's `result` is `unsat` and it exited
+  with status 0 (no part listed: vacuously), `a-inb a-sep a-null`, plus
+  ` a-nowrap` when
   `discharge.nowrap_implied`; otherwise `none`;
 - under: the union of `discharge.under`; over the parts, the names
   `<n>` of their `assume.<n>` stat records in effect (some field other
   than `kind`, `key`, `text` is a nonzero number or a nonempty string
   other than `0`), except `a-sep` and `a-null`, and except `a-nowrap`
   when the premises list it; and the kinds `[<kind>]` ending in
-  `-assume` of their stderr `Warning:` lines. Sorted, comma-separated;
-  `none` if empty;
+  `-assume` of their stderr `Warning:` and `Error:` lines. Sorted,
+  comma-separated; `none` if empty;
 - the line: `check-inb.discharges: <premises> under=<under>`.
 
 `test/VC/Inputs/rebuild-discharges.py` does this, and

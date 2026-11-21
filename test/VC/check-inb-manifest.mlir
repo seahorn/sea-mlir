@@ -31,6 +31,18 @@
 // RUN: cp %S/Inputs/check-inb-rel.cfg %t.rel/rel.cfg
 // RUN: cd %t.rel && sea-vc %s --check-inb --config=rel.cfg --vcgen-only --check-inb-dir=jd
 // RUN: cd %S && %python %S/Inputs/run-manifest-part.py %t.rel/jd 1 %sea_vc | FileCheck %s --check-prefix=HAND1
+// Diagnostic output options do not pass to the parts: a job made with a
+// relative --log-file still runs its parts after it is moved and the log
+// directory is gone.
+// RUN: rm -rf %t.w %t.wm && mkdir -p %t.w/logs
+// RUN: cd %t.w && sea-vc %s --check-inb --lower --seam --ackermannize=off --log-file=logs/x.log --vcgen-only --check-inb-dir=jd
+// RUN: mv %t.w/jd %t.wm
+// RUN: rm -rf %t.w/logs
+// RUN: FileCheck %s --check-prefix=NOLOG < %t.wm/parts.cfg
+// RUN: cd %S && %python %S/Inputs/run-manifest-part.py %t.wm 1 %sea_vc | FileCheck %s --check-prefix=HAND1
+// A shared output option turned off (a profile's --smt2=false) is not in
+// effect: not refused.
+// RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off --smt2=false | FileCheck %s --check-prefix=JOB
 // An option that writes one file every part would share is refused.
 // RUN: not sea-vc %s --check-inb --lower --seam --ackermannize=off --print-lowered=%t.low.mlir 2>&1 | FileCheck %s --check-prefix=SHARED
 // RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=JOB
@@ -72,6 +84,9 @@
 // PARTSCFG: --timeout=30
 // PARTSCFG: --ptr-mode=opaque
 // PARTSCFG-NOT: --lower
+
+// NOLOG-NOT: log-file
+// NOLOG: --seam
 
 // SHARED: Error: --check-inb: --print-lowered writes one output{{.*}}[check-inb.unsupported]
 

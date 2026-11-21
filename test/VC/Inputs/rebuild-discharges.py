@@ -6,6 +6,10 @@
 # rule of docs/design/CheckInb.md ("Rebuilding the discharges line"), and
 # compares it with the job's own line.
 # Usage: rebuild-discharges.py <job dir> <the job's text output>
+#
+# The rule also needs each part's exit status 0; the parts' output files
+# do not record it, so this script sees only their `result` (the test runs
+# parts that exit 0 or fail without an unsat result).
 import json
 import os
 import re
@@ -46,7 +50,7 @@ for p in m["parts"]:
             for line in f:
                 line = line.rstrip()
                 mk = re.search(r"\[([^\]]+)\]$", line)
-                if line.startswith("Warning:") and mk:
+                if (line.startswith("Warning:") or line.startswith("Error:")) and mk:
                     part_kinds.add(mk.group(1))
     except FileNotFoundError:
         pass

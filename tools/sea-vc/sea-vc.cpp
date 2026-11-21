@@ -4843,12 +4843,16 @@ int main(int argc, char **argv) {
                        "Ackermann lowering uses A-INB itself)");
       return 1;
     }
+    // --ptr-companion=check replaces the property of the query (every
+    // split pointer load's guard, not the program's assertions): in a
+    // part it would drop the part's bounds check
     if (checkAlign || checkPtrIndex || reachKind != sea::ReachKind::Off ||
-        rangeFoldOpt == sea::RangeFoldMode::Check) {
+        rangeFoldOpt == sea::RangeFoldMode::Check ||
+        ptrCompanion == CompanionMode::Check) {
       sea::diag::error("vc.check-jobs",
                        "--check-inb is a job of its own: not with "
-                       "--check-align, --check-ptr-index, --reach or "
-                       "--range-fold=check");
+                       "--check-align, --check-ptr-index, --reach, "
+                       "--range-fold=check or --ptr-companion=check");
       return 1;
     }
     if (!sea::isAbstract(program)) {

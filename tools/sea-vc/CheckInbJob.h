@@ -250,39 +250,31 @@ inline int worseStatus(int a, int b) {
 /// The options of every part, from the job's expanded command line (no
 /// --config, no response file): one `--name[=value]` token per option (a
 /// two-token option joined), positionals (the input) dropped, the job's
-/// own options and the lowering's dropped (a part is lowered already),
-/// file paths made absolute. An option that writes one file every part
-/// would share is refused (false, \p bad says which).
+/// own options and the lowering's dropped (a part is lowered already), and
+/// so are diagnostic output options (--log-file, crash reproducers, IR
+/// dumps): the job directory stays relocatable. An option that writes one
+/// file every part would share, when in effect, is refused (false, \p bad
+/// says which).
 inline bool partArguments(llvm::ArrayRef<const char *> args,
                           std::vector<std::string> &out, std::string &bad) {
   // the job's own options, and the lowering's: a part is lowered already
-  static const llvm::StringSet<> dropped = {"check-inb",
-                                            "check-inb-dir",
-                                            "check-inb-keep",
-                                            "check-inb-static",
-                                            "check-inb-max-time",
-                                            "program",
-                                            "format",
-                                            "vcgen-only",
-                                            "config",
-                                            "lower",
-                                            "lower-opt",
-                                            "lower-disable",
-                                            "range-fold",
-                                            "expand-memmove",
-                                            "box-all-expand",
-                                            "place-in",
-                                            "place-out",
-                                            "widen-memory",
-                                            "widen-memory-report",
-                                            "widen-memory-per-class",
-                                            "ptr-mode"};
+  static const llvm::StringSet<> dropped = {
+      "check-inb", "check-inb-dir", "check-inb-keep", "check-inb-static",
+      "check-inb-max-time", "program", "format", "vcgen-only", "config",
+      "lower", "lower-opt", "lower-disable", "range-fold", "expand-memmove",
+      "box-all-expand", "place-in", "place-out", "widen-memory",
+      "widen-memory-report", "widen-memory-per-class", "ptr-mode",
+      // diagnostic output (logs,
+      // crash reproducers, IR dumps):
+      // not passed on, so the job
+      // directory stays relocatable;
+      // add one when running a part
+      "log-file", "info-output-file", "mlir-pass-pipeline-crash-reproducer",
+      "mlir-print-ir-tree-dir", "crash-diagnostics-dir"};
   // options that write one file (or stdout) every part would share
   static const llvm::StringSet<> shared = {"smt2",           "print-lowered",
                                            "seam-trail",     "ack-dump-pairs",
                                            "ack-relax-smt2", "split-smt2"};
-  // options whose value is a path a part reads or appends to
-  static const llvm::StringSet<> paths = {"log-file"};
   auto &registered = llvm::cl::getRegisteredOptions();
   bool positional = false;
   for (size_t i = 0; i < args.size(); ++i) {
@@ -307,16 +299,21 @@ inline bool partArguments(llvm::ArrayRef<const char *> args,
     }
     if (dropped.contains(name))
       continue;
+    // a shared output option in effect: no value (a flag), or a value
+    // other than false / 0 / empty (a profile may turn one off)
+    auto inEffect = [&] {
+      if (!hasValue)
+        return true;
+      std::string lv = llvm::StringRef(v).lower();
+      return !(lv.empty() || lv == "false" || lv == "0");
+    };
+    if (shared.contains(name) && !inEffect())
+      continue;
     if (shared.contains(name)) {
       bad = "--" + name.str() +
             " writes one output that every part would share; run it on a "
             "part (--check-inb-dir, the manifest's argv) instead";
       return false;
-    }
-    if (hasValue && paths.contains(name)) {
-      llvm::SmallString<256> abs(v);
-      (void)llvm::sys::fs::make_absolute(abs);
-      v = abs.str().str();
     }
     out.push_back(hasValue ? "--" + name.str() + "=" + v : "--" + name.str());
   }
