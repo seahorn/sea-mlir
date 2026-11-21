@@ -221,6 +221,16 @@ static cl::opt<uint64_t> maxSymbolicSizeOpt(
              "4096, SeaHorn's; not tuned)"),
     cl::value_desc("N"), cl::init(sea::kPlaceMaxSymbolicSize));
 
+static cl::opt<std::string> placeSlotsOpt(
+    "place-slots",
+    cl::desc("With --lower, an abstract program: none (default; each object "
+             "at its own align) or aligned (each object owns a power-of-two "
+             "slot 2^s > its room, its base a multiple of max(2^s, align); "
+             "same order and windows; if the slots do not fit, the plain "
+             "placement with the warning place.slots-fallback). The "
+             "placement is reported as place.* lines"),
+    cl::value_desc("none|aligned"), cl::init("none"));
+
 static cl::opt<bool> addr0IsNull(
     "addr0-is-null",
     cl::desc("The named assumption addr0-is-null (default on) in the "
@@ -2242,6 +2252,15 @@ TYPICAL:
                                  #   exceeds it is premise.failed (exit 4):
                                  #   bound the size in the harness, or
                                  #   rerun with --max-symbolic-size=<n>
+  sea-vc p.mlir --lower --place-slots=aligned  # each object owns a
+                                 #   power-of-two slot (2^s > room, base a
+                                 #   multiple of max(2^s, align)): the
+                                 #   bits above s name the object; off by
+                                 #   default. A verdict differs only if
+                                 #   the result depends on address bits
+                                 #   above the objects' alignment (one
+                                 #   particular layout; so under the
+                                 #   default placement too)
   sea-vc p.mlir --lower --reach --reach-failures  # also each tagged
                                  #   assert's failure (reached with its
                                  #   condition false): op=sea.print
@@ -2892,6 +2911,21 @@ OUTPUT (stdout, `key: value` lines):
                                   widened to each word size, byte memories
                                   kept as bytes, classes that are not byte
                                   memories; widened-<k> per size from max(K, 8) down to 2)
+  place.slots: none|aligned|fallback|file   (--lower of an abstract
+                                  program: the placement's rule; fallback:
+                                  --place-slots=aligned did not fit,
+                                  warning place.slots-fallback; file:
+                                  --place-in)
+  place.objects: <n>  place.slot-bits-max: <s>  place.span: <bytes>
+  place.over-aligned: <n>         (the objects placed but null; the largest
+                                  slot exponent s = bitwidth(max(room, 1));
+                                  lowest base to highest end; objects whose
+                                  base is a multiple of a power of two
+                                  above their align, from the numerals:
+                                  look here when a verdict differs between
+                                  placements (the program depends on bits
+                                  above its objects' alignment);
+                                  BRUNCH_STAT place.*)
   vc.box-all: dead=<n> empty=<n> expand-max=<K> expanded=<n> guarded=<n>
       lowered=<n> nondets=<n>     (--lower, a program with sea.box.all:
                                   ops erased unused, constant empty boxes
@@ -3018,7 +3052,11 @@ OUTPUT (stdout, `key: value` lines):
                                   the largest k, constraints compared at k
                                   bits and the sum of their k, constraints
                                   with one narrowed read and another (64
-                                  bits); with vc-time, stderr with --smt2)
+                                  bits); with vc-time, stderr with --smt2;
+                                  vc.narrow-base-aligned / -unaligned: the
+                                  narrowed indices whose object's base is /
+                                  is not a multiple of 2^k, read from the
+                                  placement, see --place-slots)
   vc.ack-relax: all|off-no-ackermann   (--ack-relax: the selector, or
                                   not run (no lowering); with a selector:
                                   vc.ack-relax-candidates: the constraints
@@ -4760,6 +4798,10 @@ int main(int argc, char **argv) {
        maxSymbolicSizeOpt.getNumOccurrences()) &&
       !lower)
     return fail("--symbolic-size and --max-symbolic-size need --lower");
+  if (placeSlotsOpt != "none" && placeSlotsOpt != "aligned")
+    return fail("--place-slots must be none or aligned");
+  if (placeSlotsOpt.getNumOccurrences() && !lower)
+    return fail("--place-slots needs --lower");
   if (!placeIn.empty() && !placeOut.empty())
     return fail("--place-in and --place-out exclude each other");
   if (printLowered == "-")
@@ -5125,8 +5167,8 @@ int main(int argc, char **argv) {
     jo.lower.opt = lowerOpt;
     jo.lower.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
     jo.lower.disable = lowerDisableMask;
-    jo.lower.place =
-        sea::PlaceFiles{placeIn, placeOut, symbolicSizeOpt, maxSymbolicSizeOpt};
+    jo.lower.place = sea::PlaceFiles{placeIn, placeOut, symbolicSizeOpt,
+                                     maxSymbolicSizeOpt, placeSlotsOpt};
     jo.lower.rangeFold = rangeFoldOpt;
     jo.lower.expandMemMove = expandMemMoveOpt;
     jo.lower.ptrCompanion = ptrCompanion != CompanionMode::Off;
@@ -5270,7 +5312,8 @@ int main(int argc, char **argv) {
         /*keepByteWide=*/seam && seamWide, checkAlign,
         checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt,
         memhavocNull == MemhavocNull::Noop, lowerDisableMask,
-        sea::PlaceFiles{placeIn, placeOut, symbolicSizeOpt, maxSymbolicSizeOpt},
+        sea::PlaceFiles{placeIn, placeOut, symbolicSizeOpt, maxSymbolicSizeOpt,
+                        placeSlotsOpt},
         rangeFoldOpt, expandMemMoveOpt, ptrCompanion != CompanionMode::Off,
         boxAllExpandOpt, widenMemoryPerClass);
     // pm keeps a reference to the phase's scope; SEA_PHASE_END resets it after
@@ -5414,6 +5457,22 @@ int main(int argc, char **argv) {
     for (NamedAttribute a : d)
       if (auto i = dyn_cast<IntegerAttr>(a.getValue()))
         l.kv(a.getName().getValue(), i.getInt());
+  }
+  // sea-place-static's placement (a program placed by this lowering):
+  // the mode and the numbers the slots change (BRUNCH_STAT place.*)
+  if (auto d = program->getAttrOfType<DictionaryAttr>(sea::kPlaceStatsAttr)) {
+    using sea::stats::Brunch;
+    // the rule is this run's option (the program records only numbers)
+    std::string rule = !placeIn.empty() ? std::string("file")
+                       : sea::diag::count("place.slots-fallback")
+                           ? std::string("fallback")
+                           : std::string(placeSlotsOpt);
+    lowerStats.line("place.slots").value(rule);
+    for (StringRef key : {"objects", "slot-bits-max", "span", "over-aligned"})
+      if (auto i = d.getAs<IntegerAttr>(key))
+        lowerStats.line(("place." + key).str())
+            .value(uint64_t(i.getInt()))
+            .brunch(Brunch::Value);
   }
   // sea-lower-box-all's counters (a program with sea.box.all ops)
   if (auto d = program->getAttrOfType<DictionaryAttr>(sea::kBoxAllStatsAttr)) {
@@ -6683,6 +6742,10 @@ int main(int argc, char **argv) {
       uint64_t indices = 0, notOwn = 0, shared = 0, shadow = 0, noObject = 0,
                size = 0, many = 0;
     } narrowSkip;
+    // the narrowed indices whose object's base is / is not a multiple of
+    // 2^k (read from the placement's numeral, BaseRegistry::alignedTo):
+    // bvadd(base, zext(low_k)) is carry-free in the first case
+    uint64_t narrowBaseAligned = 0, narrowBaseUnaligned = 0;
     if (narrowOn || ownOn) {
       const auto &rules = sem.seamRewriter()->rules();
       const expr::BaseRegistry &reg = vcgen.baseRegistry();
@@ -6773,6 +6836,8 @@ int main(int argc, char **argv) {
           continue;
         narrowTable.byIndex.emplace(e->key.get(),
                                     expr::NarrowTable::Entry{site.base, k});
+        ++(expr::BaseRegistry::alignedTo(*obj, k) ? narrowBaseAligned
+                                                  : narrowBaseUnaligned);
         narrowSites.push_back(std::move(site));
       }
     }
@@ -7262,6 +7327,8 @@ int main(int argc, char **argv) {
         if (narrowOn && ackOn) {
           r.line("vc.narrow-indices").value(narrowSkip.indices);
           r.line("vc.narrow-eligible").value(narrowSites.size());
+          r.line("vc.narrow-base-aligned").value(narrowBaseAligned);
+          r.line("vc.narrow-base-unaligned").value(narrowBaseUnaligned);
           r.line("vc.narrow-skip-not-own").value(narrowSkip.notOwn);
           r.line("vc.narrow-skip-shared-boundary").value(narrowSkip.shared);
           r.line("vc.narrow-skip-no-object").value(narrowSkip.noObject);

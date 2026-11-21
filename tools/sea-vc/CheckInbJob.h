@@ -280,7 +280,7 @@ inline bool partArguments(llvm::ArrayRef<const char *> args,
       "check-inb-max-time", "program", "format", "vcgen-only", "config",
       "lower", "lower-opt", "lower-disable", "range-fold", "expand-memmove",
       "box-all-expand", "place-in", "place-out", "symbolic-size",
-      "max-symbolic-size", "widen-memory", "widen-memory-report",
+      "max-symbolic-size", "place-slots", "widen-memory", "widen-memory-report",
       "widen-memory-per-class", "ptr-mode",
       // diagnostic output (logs,
       // crash reproducers, IR dumps):

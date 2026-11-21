@@ -1744,6 +1744,54 @@ void testOverlapWidth() {
   CHECK(isOpX<TRUE>(big), "overlap(p, 2^w + 5, q, 1): " << str(big));
 }
 
+/// BaseRegistry::alignedTo / ownsSlot (sea-place-static slots=aligned):
+/// facts read from the bases, whatever placed them.
+void testSlots() {
+  ExprFactory efac;
+  BaseRegistry reg;
+  auto add = [&](const char *name, unsigned long base,
+                 unsigned long size) -> const ObjectBase & {
+    Expr e = op::ptr::ptrConst(mkTerm<std::string>(name, efac), kWidth);
+    return reg.add(e, name, "heap", llvm::APInt(kWidth, base),
+                   llvm::APInt(kWidth, size), 1);
+  };
+  auto get = [&](const char *name) -> const ObjectBase & {
+    return *reg.lookup(
+        op::ptr::ptrConst(mkTerm<std::string>(name, efac), kWidth));
+  };
+  add("null", 0, 0);
+  add("a", 0x1000, 0x100);  // s 9: [0x1000, 0x1200)
+  add("b", 0x1200, 0x10);   // s 5: [0x1200, 0x1220)
+  add("c", 0x1300, 0);      // size 0, s 1: [0x1300, 0x1302)
+  add("e", 0x1404, 4);      // s 3, base not a multiple of 8
+  add("f", 0x8000, 0x7fff); // s 15: the slot ends at 2^16
+  add("g", 0x4000, 0x4000); // s 15, base 0x4000 not a multiple of 2^15
+  CHECK(BaseRegistry::alignedTo(get("a"), 12), "0x1000 at 12");
+  CHECK(!BaseRegistry::alignedTo(get("a"), 13), "0x1000 not at 13");
+  CHECK(BaseRegistry::alignedTo(get("null"), kWidth), "0 at the width");
+  CHECK(!BaseRegistry::alignedTo(get("a"), kWidth), "0x1000 not at 16");
+  CHECK(BaseRegistry::slotBits(get("a")) == 9, "slot of 0x100: 2^9");
+  CHECK(BaseRegistry::slotBits(get("b")) == 5, "slot of 0x10: 2^5");
+  CHECK(BaseRegistry::slotBits(get("c")) == 1, "slot of size 0: 2^1");
+  CHECK(BaseRegistry::slotBits(get("e")) == 3, "slot of 4: 2^3");
+  CHECK(reg.ownsSlot(get("a")), "a owns its slot");
+  CHECK(reg.ownsSlot(get("b")), "b owns its slot");
+  CHECK(reg.ownsSlot(get("c")), "c (size 0) owns its slot");
+  CHECK(!reg.ownsSlot(get("e")), "e is not aligned to its slot");
+  CHECK(reg.ownsSlot(get("f")), "f's slot ends at 2^w");
+  CHECK(!reg.ownsSlot(get("g")), "g is not aligned to its slot");
+  // an object of size 0 inside a's slot, one at c's second address
+  add("in_a", 0x1100, 0);
+  add("in_c", 0x1301, 0);
+  CHECK(!reg.ownsSlot(get("a")), "a size-0 object in a's slot");
+  CHECK(!reg.ownsSlot(get("c")), "a size-0 object in c's slot");
+  CHECK(reg.ownsSlot(get("b")), "b still owns its slot");
+  // an object below b's slot that reaches into it
+  add("h", 0x1500, 0x100);
+  add("i", 0x1580, 0x10); // s 5 at 0x1580: inside h's range
+  CHECK(!reg.ownsSlot(get("i")), "i's slot is in h's range");
+}
+
 int main(int argc, char **argv) {
   unsigned randomCount = 300;
   if (argc > 1)
@@ -1765,7 +1813,8 @@ int main(int argc, char **argv) {
                {"null", testNull},
                {"prune-size0", testPruneSize0},
                {"shadow", testShadow},
-               {"overlap-width", testOverlapWidth}};
+               {"overlap-width", testOverlapWidth},
+               {"slots", testSlots}};
   for (const Test &t : tests) {
     int before = failures;
     t.fn();

@@ -529,6 +529,11 @@ n-ary regrouping of the index into `base + S` (its ite case is proved).
   `shared-boundary`, `no-object`, `shadow`, `size`, `many`, `shape`), reads narrowed, their
   objects, the largest k, k-bit constraints and the sum of their widths,
   mixed (w-bit) constraints with one narrowed read.
+- `vc.narrow-base-aligned` / `-unaligned`: narrowed indices whose object's
+  base is / is not a multiple of 2^k, read from the placement's numeral
+  (`BaseRegistry::alignedTo`). Aligned, `base + zext(low_k)` has no carry
+  and z3 reads it as a concatenation; `--place-slots=aligned` makes every
+  base aligned at the k of its object.
 - `--seam-check` / `--narrow-check`: what is checked per run and what
   rests on a lemma are split.
   - Per run, for each narrowed index i = base + S (the lowering's record of

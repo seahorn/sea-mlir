@@ -27,6 +27,8 @@ The main lines of `sea-vc`:
 | `seam.out-of-object: accesses=<n> object=<a> shared=<s> unknown=<u> null=<z> gap=<g>` | $n$ accesses leave their object on every address alternative, by where they land, pairwise (`shared`: a gap cell out-of-object accesses, or address alternatives outside their object, through two provenances reach); the premises stay, so an `unsat` holds only if the `object`, `shared`, `unknown` and `null` ones do not execute (A-SEP or A-NULL may break if they do, through the alternatives that meet; the warning also names A-NULL for any one through null and A-NOWRAP for any one whose address wraps, each if it executes through that alternative); `gap`: no other provenance found in their cells (best effort, not a proof that A-SEP holds); `seam.out-of-object-at:` names the first 8 (`with=`: the other access of a shared pair) |
 | `assume.memset-bound: count=<n> bound=<K>` | $n$ symbolic-length memsets were bounded by $K$; counted where `sea-expand-memset` made the bounds, so it may include bounds the answer no longer needs (a later fold proved one redundant, or the lowering erased its memset) |
 | `assume.symbolic-size-bound: allocs=<n> room=<r>` | `--lower` of an abstract program: $n$ allocations of non-constant size got $r$ units of room each (`--max-symbolic-size`, default 4096) and `assume(size <= r)` (`--symbolic-size=assume`, the default; warning `place.symbolic-size-assume`); $n$ is counted at placement, so it may include bounds the answer no longer needs (a later fold proved one redundant, or the lowering erased its allocation). An `unsat` holds only for sizes up to $r$. Not with `--symbolic-size=assert`, which asserts the bound instead |
+| `place.slots: none\|aligned\|fallback\|file` | `--lower` of an abstract program: the placement's rule (`--place-slots`; `fallback`: the aligned slots did not fit, warning `place.slots-fallback`; `file`: `--place-in`) |
+| `place.objects: <n>`, `place.slot-bits-max: <s>`, `place.span: <bytes>`, `place.over-aligned: <n>` | the placed objects except null; the largest slot exponent, s = bitwidth(max(room, 1)); the bytes from the lowest base to the highest end; the objects whose base is a multiple of a power of two larger than their align, read from the bases in every layout (where to look when a verdict differs between placements: such a program depends on address bits above its objects' alignment, [Placement files](#placement-files)). BRUNCH_STAT `place.*` |
 | `solve-time: <s>` | the solver's check |
 | `solver.z3-tactic: <t>`, `solver.z3-logic: <logic>` | z3 only: `--z3-tactic` when not the default, `--z3-logic` when given |
 | `result: sat|unsat|unknown|none` | the verdict (`none`: `--vcgen-only`, `--split-candidates`) |
@@ -471,6 +473,30 @@ same addresses, so their queries agree on `obj.<name>`
 (`utils/cover-diff.py`, [Pass validation](../agents/gates.md#pass-validation)).
 Either option needs `--lower`, and a module with one program
 (`place.file-programs`).
+
+`--place-slots=aligned` (`slots=aligned`) computes another valid
+placement: each object other than null owns the slot `[base, base + 2^s)`,
+s the least exponent with 2^s > max(room, 1) (the one-past-the-end address
+is in the slot), base a multiple of max(2^s, align). The order and the
+windows stay: functions, globals and heap upwards from 0x08048000, stack
+downwards from 0xC0000000 within 9 MiB, the compact layout upwards from 1.
+A symbolic size takes its room. If a slot does not fit, every object is
+placed without slots (warning `place.slots-fallback`, `place.slots:
+fallback`). The file format does not change; a file written under slots is
+read like any other. Nothing downstream reads the mode: a consumer that
+needs alignment reads it from the bases.
+
+Verdicts can differ between the two placements only for programs whose
+result depends on address bits above the objects' minimum alignment, that
+is, on one particular layout; such programs are layout-dependent under the
+default placement too. With a base aligned to at least the object's
+alignment a, the address bits below log2(a) come only from the offset in
+both placements: flags kept in low bits and alignment tests up to a behave
+the same. The bits above are constants in both: the default placement sets
+them by packing objects one after the other, slots set them otherwise.
+Both placements stay below 2^32, so high-bit tests (user vs kernel
+addresses) do not change; a program that relies on such a split must
+model it.
 
 ## JSONL
 

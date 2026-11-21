@@ -1,0 +1,112 @@
+// sea-vc --place-slots=aligned (sea-place-static slots=aligned): each object
+// owns a power-of-two slot. Reported as place.* lines; the narrowed reads
+// of --narrow-offsets see their object's base aligned at k
+// (vc.narrow-base-aligned), read from the placement's numerals, so a
+// --place-in file of any placement is counted by its bases.
+// RUN: rm -rf %t && split-file %s %t
+// DEFINE: %{vc} = sea-vc --lower --seam --ack-decider=false --narrow-offsets
+
+// Default (none): the heap object follows the 3-byte global at 0x08048008,
+// not a multiple of 2^12: its 3 reads are unaligned at k = 12, the
+// global's read (k = 2, at 0x08048000) is aligned.
+// RUN: %{vc} %t/p.mlir 2>&1 | FileCheck %s --check-prefix=NONE
+// NONE: place.slots: none
+// NONE: place.objects: 2
+// NONE: vc.narrow-base-aligned: 1
+// NONE: vc.narrow-base-unaligned: 3
+// NONE: result: sat
+// NONE: validate: checked={{[0-9]+}} mismatches=0
+
+// aligned: the global's slot is 4 units, the heap object's 8192, at
+// 0x0804a000; same verdict, the model replays.
+// RUN: %{vc} %t/p.mlir --place-slots=aligned 2>&1 | FileCheck %s --check-prefix=ALIGNED
+// ALIGNED: place.slots: aligned
+// ALIGNED: place.objects: 2
+// ALIGNED: place.slot-bits-max: 13
+// ALIGNED: place.span: 12288
+// ALIGNED: place.over-aligned: 2
+// ALIGNED: vc.narrow-base-aligned: 4
+// ALIGNED: vc.narrow-base-unaligned: 0
+// ALIGNED: result: sat
+// ALIGNED: validate: checked={{[0-9]+}} mismatches=0
+// RUN: %{vc} %t/p.mlir --place-slots=aligned --smt2 2>/dev/null | FileCheck %s --check-prefix=BASE
+// BASE: (= obj.heap.1 #x000000000804a000)
+
+// Round trip: the aligned placement written and taken back makes the same
+// query; place.slots says file, the counters come from the bases.
+// RUN: %{vc} %t/p.mlir --place-slots=aligned --place-out=%t/a.place --smt2 > %t/a.smt2 2>/dev/null
+// RUN: %{vc} %t/p.mlir --place-in=%t/a.place --smt2 > %t/a-in.smt2 2>/dev/null
+// RUN: diff %t/a.smt2 %t/a-in.smt2
+// RUN: %{vc} %t/p.mlir --place-in=%t/a.place 2>&1 | FileCheck %s --check-prefix=FILE
+// FILE: place.slots: file
+// FILE: vc.narrow-base-aligned: 4
+// FILE: result: sat
+// A hand-written file with an unaligned base: counted unaligned, same
+// verdict, replays.
+// RUN: %{vc} %t/p.mlir --place-in=%t/odd.place 2>&1 | FileCheck %s --check-prefix=ODD
+// ODD: vc.narrow-base-aligned: 1
+// ODD: vc.narrow-base-unaligned: 3
+// ODD: result: sat
+// ODD: validate: checked={{[0-9]+}} mismatches=0
+
+// Slots that do not fit the stack window: the plain placement, reported.
+// RUN: sea-vc %t/big.mlir --lower --place-slots=aligned --vcgen-only 2>&1 | FileCheck %s --check-prefix=FALLBACK
+// FALLBACK: [place.slots-fallback]
+// FALLBACK: place.slots: fallback
+
+// Refused: another mode; without --lower.
+// RUN: not sea-vc %t/p.mlir --lower --place-slots=wide 2>&1 | FileCheck %s --check-prefix=BAD
+// BAD: --place-slots must be none or aligned
+// RUN: not sea-vc %t/p.mlir --place-slots=aligned 2>&1 | FileCheck %s --check-prefix=NOLOWER
+// NOLOWER: --place-slots needs --lower
+
+//--- big.mlir
+sea.program @big {
+  %a = sea.const 5242880 : i64
+  %b = sea.const 3145728 : i64
+  %s1 = sea.alloca %a align 1 [1] : i64 -> !sea.ptr<64>
+  %s2 = sea.alloca %b align 1 [2] : i64 -> !sea.ptr<64>
+  %m = sea.mem.nondet "m" [0] : !sea.mem<!sea.ptr<64>, i8>
+  %x = sea.load %m[%s2] : !sea.mem<!sea.ptr<64>, i8> -> i8
+  %y = sea.load %m[%s1] : !sea.mem<!sea.ptr<64>, i8> -> i8
+  %ok = sea.icmp eq, %x, %y : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- odd.place
+name=global.g kind=global base=0x10000000 size=3 align=1
+name=heap.1 kind=heap base=0x10000008 size=4096 align=8
+
+//--- p.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @cursor {
+  %m = sea.mem.nondet "m" [0] : !m
+  %g = sea.global @g size 3 align 1 : !sea.ptr<64>
+  %c64 = sea.const 4096 : i64
+  %p = sea.malloc %c64 align 8 [1] : i64 -> !sea.ptr<64>
+  %c2 = sea.const 2 : i64
+  %o0 = sea.const 0 : i64
+  %q0 = sea.ptr.add %p, %o0 : !sea.ptr<64>, i64
+  %x0 = sea.load %m[%q0] : !m -> i8
+  %z1 = sea.zext %x0 : i8 to i64
+  %s1 = sea.add %o0, %z1 : i64
+  %o1 = sea.add %s1, %c2 : i64
+  %q1 = sea.ptr.add %p, %o1 : !sea.ptr<64>, i64
+  %x1 = sea.load %m[%q1] : !m -> i8
+  %z2 = sea.zext %x1 : i8 to i64
+  %s2 = sea.add %o1, %z2 : i64
+  %o2 = sea.add %s2, %c2 : i64
+  %q2 = sea.ptr.add %p, %o2 : !sea.ptr<64>, i64
+  %x2 = sea.load %m[%q2] : !m -> i8
+  %y = sea.load %m[%g] : !m -> i8
+  %c7 = sea.const 7 : i8
+  %ok = sea.icmp ne, %x2, %c7 : i8
+  %ok2 = sea.icmp ne, %y, %c7 : i8
+  %both = sea.and %ok, %ok2 : i1
+  sea.assert %both
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

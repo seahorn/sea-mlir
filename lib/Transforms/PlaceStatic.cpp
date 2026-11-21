@@ -58,6 +58,27 @@
 // at the same bases (utils/cover-diff.py --level=1). With either file the
 // module must hold one program (place.file-programs).
 //
+// Slots (slots=aligned, sea-vc --place-slots=aligned; default none): every
+// object but null owns one power-of-two slot. Its exponent s is
+// bitwidth(max(room, 1)), the least s with 2^s > room (strict, so the
+// one-past-the-end address base + room is in the slot too), the slot is
+// [base, base + 2^s) and base is a multiple of max(2^s, align). Order and
+// windows are those of the layout (functions, globals, heap upwards, stack
+// downwards; compact upwards from 1); a symbolic size takes its room
+// (max-symbolic-size); null stays at 0, in no slot. If the slots do not fit
+// (the address width, the stack window, or an align that is not a power of
+// two), every object is placed by the plain rule instead, with the warning
+// place.slots-fallback (all objects or none). The result is one placement
+// under the same contract (own base, no overlap, aligned, in the width):
+// nothing downstream reads the mode; a consumer that needs alignment reads
+// it from the bases (expr::BaseRegistry::alignedTo / ownsSlot). Checked
+// after placing (postcondition): each slot is aligned, no other object
+// meets it. The program's kPlaceStatsAttr records counts read from the
+// bases (sea-vc's place.* lines), not the rule: a place-in of the file a
+// placement wrote makes the same program.
+// place-in and the file format do not change: a file of an aligned
+// placement is a file like any other.
+//
 //===----------------------------------------------------------------------===//
 
 #include "PassUtils.h"
@@ -117,6 +138,7 @@ public:
     placeOut = files.out;
     symbolicSize = files.symbolicSize;
     maxSymbolicSize = files.maxSymbolicSize;
+    slots = files.slots;
   }
 
   StringRef getArgument() const final { return "sea-place-static"; }
@@ -140,6 +162,13 @@ public:
                      "pointers), compact (all objects upwards from 1), auto "
                      "(seahorn if it fits)"),
       llvm::cl::init("auto")};
+  Option<std::string> slots{
+      *this, "slots",
+      llvm::cl::desc("none (each object at its own align) or aligned (each "
+                     "object owns a power-of-two slot above its room, "
+                     "aligned to it; falls back to none with a warning when "
+                     "it does not fit)"),
+      llvm::cl::init("none")};
   Option<bool> reuse{*this, "reuse",
                      llvm::cl::desc("Share space between objects with "
                                     "disjoint lifetimes (not implemented)"),
@@ -162,7 +191,7 @@ private:
   LogicalResult collect(ProgramOp program, SmallVector<Object> &objects,
                         llvm::DenseMap<Operation *, unsigned> &objectOf);
   LogicalResult place(ProgramOp program, unsigned width,
-                      SmallVector<Object> &objects);
+                      SmallVector<Object> &objects, bool &fellBack);
   LogicalResult placeFromFile(ProgramOp program, unsigned width,
                               SmallVector<Object> &objects);
   LogicalResult writeFile(ProgramOp program, ArrayRef<Object> objects);
@@ -381,8 +410,96 @@ static uint64_t addressRoom(const Object &o) {
   return std::max<uint64_t>(o.room, 1);
 }
 
+/// The slot exponent of an object: the least s with 2^s > addressRoom(o)
+/// (64 for a room of 2^63 or more: no slot fits a 64-bit space).
+static unsigned slotBits(const Object &o) {
+  return llvm::bit_width(addressRoom(o));
+}
+
+/// Where an object goes in a layout: the space it reserves and the
+/// alignment of its base.
+struct Slot {
+  uint64_t reserve, align;
+};
+
+/// The object's slot under slots=aligned (reserve 2^s, align max(2^s,
+/// align)), or its plain room and align; nullopt if there is no slot (an
+/// align that is not a power of two, s = 64).
+static std::optional<Slot> slotOf(const Object &o, bool slots) {
+  if (!slots)
+    return Slot{addressRoom(o), o.align};
+  unsigned s = slotBits(o);
+  if (s >= 64 || !llvm::isPowerOf2_64(o.align))
+    return std::nullopt;
+  uint64_t reserve = uint64_t(1) << s;
+  return Slot{reserve, std::max(reserve, o.align)};
+}
+
+/// Places the non-null objects by one rule (slots or plain); the object
+/// that does not fit, or null if all do. Bases of the objects placed before
+/// a failure are left set (the caller reruns or stops).
+static const Object *layoutObjects(SmallVector<Object> &objects, bool seahorn,
+                                   const APInt &limit, bool slots) {
+  if (!seahorn) {
+    // Address 0 stays null; objects follow in program order.
+    uint64_t next = 1;
+    for (Object &o : objects) {
+      if (o.kind == "null")
+        continue; // base 0, no room
+      std::optional<Slot> sl = slotOf(o, slots);
+      if (!sl)
+        return &o;
+      uint64_t base = llvm::alignTo(next, sl->align);
+      uint64_t end;
+      // unchecked uint64 arithmetic wrapped a huge object (malloc(-1)) onto
+      // low addresses: overflow is out of space
+      if (base < next || __builtin_add_overflow(base, sl->reserve, &end) ||
+          APInt(64, end - 1).ugt(limit.zext(64)))
+        return &o;
+      o.base = base;
+      next = end;
+    }
+    return nullptr;
+  }
+
+  // SeaHorn: functions, then globals, then heap upwards from the text
+  // segment start; stack downwards from the stack top.
+  // An object of size 0 gets one unit of address space (addressRoom): its
+  // own base, as in the compact layout.
+  uint64_t next = kTextSegmentStart;
+  for (StringRef kind : {"func", "global", "heap"})
+    for (Object &o : objects)
+      if (o.kind == kind) {
+        std::optional<Slot> sl = slotOf(o, slots);
+        if (!sl)
+          return &o;
+        o.base = llvm::alignTo(next, sl->align);
+        uint64_t end;
+        if (o.base < next || __builtin_add_overflow(o.base, sl->reserve, &end))
+          return &o;
+        next = llvm::alignTo(end, o.align);
+        if (next < end)
+          return &o;
+      }
+  if (next > kMinStackAddr)
+    return &objects.back();
+  uint64_t top = kMaxStackAddr;
+  for (Object &o : objects)
+    if (o.kind == "stack") {
+      std::optional<Slot> sl = slotOf(o, slots);
+      if (!sl || top < sl->reserve)
+        return &o;
+      top = llvm::alignDown(top - sl->reserve, sl->align);
+      if (top < kMinStackAddr)
+        return &o;
+      o.base = top;
+    }
+  return nullptr;
+}
+
 LogicalResult PlaceStaticPass::place(ProgramOp program, unsigned width,
-                                     SmallVector<Object> &objects) {
+                                     SmallVector<Object> &objects,
+                                     bool &fellBack) {
   APInt limit = APInt::getMaxValue(width);
   bool seahorn =
       layout == "seahorn" || (layout == "auto" && limit.uge(kMaxStackAddr));
@@ -401,63 +518,31 @@ LogicalResult PlaceStaticPass::place(ProgramOp program, unsigned width,
                    "objects upwards from address 1",
                program.getLoc());
 
-  auto fail = [&](const Object &o) {
-    diag::error("place.out-of-space",
-                "sea-place-static: no room for " + o.name + " (" +
-                    llvm::Twine(o.room) + " units) in a " + llvm::Twine(width) +
-                    "-bit address space",
-                o.loc);
-    return failure();
-  };
-
-  if (!seahorn) {
-    // Address 0 stays null; objects follow in program order.
-    uint64_t next = 1;
-    for (Object &o : objects) {
-      if (o.kind == "null")
-        continue; // base 0, no room
-      uint64_t base = llvm::alignTo(next, o.align);
-      uint64_t end;
-      // unchecked uint64 arithmetic wrapped a huge object (malloc(-1)) onto
-      // low addresses: overflow is out of space
-      if (base < next || __builtin_add_overflow(base, addressRoom(o), &end) ||
-          APInt(64, end - 1).ugt(limit.zext(64)))
-        return fail(o);
-      o.base = base;
-      next = end;
-    }
-    return success();
+  fellBack = false;
+  if (slots == "aligned") {
+    const Object *at = layoutObjects(objects, seahorn, limit, /*slots=*/true);
+    if (!at)
+      return success();
+    // all objects or none: the plain rule for every object
+    fellBack = true;
+    diag::warn("place.slots-fallback",
+               "sea-place-static: no aligned slot for " + at->name + " (" +
+                   llvm::Twine(at->room) + " units, align " +
+                   llvm::Twine(at->align) + ") in the " +
+                   (seahorn ? "seahorn" : "compact") + " layout of a " +
+                   llvm::Twine(width) +
+                   "-bit address space; placing every object without slots",
+               at->loc);
   }
-
-  // SeaHorn: functions, then globals, then heap upwards from the text
-  // segment start; stack downwards from the stack top.
-  // An object of size 0 gets one unit of address space (addressRoom): its
-  // own base, as in the compact layout.
-  uint64_t next = kTextSegmentStart;
-  for (StringRef kind : {"func", "global", "heap"})
-    for (Object &o : objects)
-      if (o.kind == kind) {
-        o.base = llvm::alignTo(next, o.align);
-        uint64_t end;
-        if (o.base < next ||
-            __builtin_add_overflow(o.base, addressRoom(o), &end))
-          return fail(o);
-        next = llvm::alignTo(end, o.align);
-        if (next < end)
-          return fail(o);
-      }
-  if (next > kMinStackAddr)
-    return fail(objects.back());
-  uint64_t top = kMaxStackAddr;
-  for (Object &o : objects)
-    if (o.kind == "stack") {
-      if (top < addressRoom(o))
-        return fail(o);
-      top = llvm::alignDown(top - addressRoom(o), o.align);
-      if (top < kMinStackAddr)
-        return fail(o);
-      o.base = top;
-    }
+  if (const Object *at =
+          layoutObjects(objects, seahorn, limit, /*slots=*/false)) {
+    diag::error("place.out-of-space",
+                "sea-place-static: no room for " + at->name + " (" +
+                    llvm::Twine(at->room) + " units) in a " +
+                    llvm::Twine(width) + "-bit address space",
+                at->loc);
+    return failure();
+  }
   return success();
 }
 
@@ -582,6 +667,10 @@ void PlaceStaticPass::runOnOperation() {
                       "assert or refuse");
     return signalPassFailure();
   }
+  if (slots != "none" && slots != "aligned") {
+    program.emitError("sea-place-static: slots must be none or aligned");
+    return signalPassFailure();
+  }
 
   const bool files = !placeIn.empty() || !placeOut.empty();
   if (!placeIn.empty() && !placeOut.empty()) {
@@ -631,9 +720,37 @@ void PlaceStaticPass::runOnOperation() {
         return signalPassFailure();
       }
   }
-  if (failed(placeIn.empty() ? place(program, *width, objects)
+  bool fellBack = false;
+  if (failed(placeIn.empty() ? place(program, *width, objects, fellBack)
                              : placeFromFile(program, *width, objects)))
     return signalPassFailure();
+  const bool slotted = placeIn.empty() && slots == "aligned" && !fellBack;
+  if (slotted) {
+    // postcondition: every slot is aligned to 2^s and meets no other
+    // object (slots are disjoint, each object's room is in its slot, null
+    // at 0 is in none)
+    SmallVector<const Object *> byBase;
+    for (const Object &o : objects)
+      if (o.kind != "null")
+        byBase.push_back(&o);
+    llvm::sort(byBase, [](const Object *a, const Object *b) {
+      return a->base < b->base;
+    });
+    for (unsigned i = 0; i < byBase.size(); ++i) {
+      const Object &o = *byBase[i];
+      uint64_t slot = uint64_t(1) << slotBits(o);
+      if (o.base % slot || o.base == 0 ||
+          (i + 1 < byBase.size() && byBase[i + 1]->base - o.base < slot)) {
+        (void)postconditionFailed(
+            "sea-place-static",
+            "the slot of " + o.name + " is not aligned or meets " +
+                (i + 1 < byBase.size() ? byBase[i + 1]->name
+                                       : std::string("nothing")),
+            program.getOperation());
+        return signalPassFailure();
+      }
+    }
+  }
   // postcondition: every object has its own base
   llvm::DenseMap<uint64_t, const Object *> byBase;
   for (const Object &o : objects)
@@ -787,6 +904,34 @@ void PlaceStaticPass::runOnOperation() {
         b.getDictionaryAttr(
             {b.getNamedAttr("allocs", b.getI64IntegerAttr(sizeBounds)),
              b.getNamedAttr("room", b.getI64IntegerAttr(sizeBoundRoom))}));
+
+  // what the placement did (sea-vc's place.* lines)
+  {
+    uint64_t placed = 0, overAligned = 0;
+    unsigned bitsMax = 0;
+    uint64_t lo = ~uint64_t(0), hi = 0;
+    for (const Object &o : objects) {
+      if (o.kind == "null")
+        continue;
+      ++placed;
+      bitsMax = std::max(bitsMax, slotBits(o));
+      lo = std::min(lo, o.base);
+      hi = std::max(hi, o.base + addressRoom(o));
+      // the base's own alignment (its lowest set bit) exceeds the object's
+      if (o.base && (o.base & -o.base) > o.align)
+        ++overAligned;
+    }
+    // numbers of the bases only, not the rule that made them: a place-in of
+    // a written placement makes the same program
+    program->setAttr(
+        kPlaceStatsAttr,
+        b.getDictionaryAttr(
+            {b.getNamedAttr("objects", b.getI64IntegerAttr(placed)),
+             b.getNamedAttr("slot-bits-max", b.getI64IntegerAttr(bitsMax)),
+             b.getNamedAttr("span", b.getI64IntegerAttr(placed ? hi - lo : 0)),
+             b.getNamedAttr("over-aligned",
+                            b.getI64IntegerAttr(overAligned))}));
+  }
 
   if (isAbstract(program)) {
     Operation *at = findValueOfType(program, [](Type t) {
