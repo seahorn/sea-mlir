@@ -39,6 +39,9 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -237,6 +240,82 @@ inline int worseStatus(int a, int b) {
     }
   };
   return rank(a) >= rank(b) ? a : b;
+}
+
+/// The options of every part, from the job's expanded command line (no
+/// --config, no response file): one `--name[=value]` token per option (a
+/// two-token option joined), positionals (the input) dropped, the job's
+/// own options and the lowering's dropped (a part is lowered already),
+/// file paths made absolute. An option that writes one file every part
+/// would share is refused (false, \p bad says which).
+inline bool partArguments(llvm::ArrayRef<const char *> args,
+                          std::vector<std::string> &out, std::string &bad) {
+  // the job's own options, and the lowering's: a part is lowered already
+  static const llvm::StringSet<> dropped = {"check-inb",
+                                            "check-inb-dir",
+                                            "check-inb-keep",
+                                            "check-inb-static",
+                                            "check-inb-max-time",
+                                            "program",
+                                            "format",
+                                            "vcgen-only",
+                                            "config",
+                                            "lower",
+                                            "lower-opt",
+                                            "lower-disable",
+                                            "range-fold",
+                                            "expand-memmove",
+                                            "box-all-expand",
+                                            "place-in",
+                                            "place-out",
+                                            "widen-memory",
+                                            "widen-memory-report",
+                                            "widen-memory-per-class",
+                                            "ptr-mode"};
+  // options that write one file (or stdout) every part would share
+  static const llvm::StringSet<> shared = {"smt2",           "print-lowered",
+                                           "seam-trail",     "ack-dump-pairs",
+                                           "ack-relax-smt2", "split-smt2"};
+  // options whose value is a path a part reads or appends to
+  static const llvm::StringSet<> paths = {"log-file"};
+  auto &registered = llvm::cl::getRegisteredOptions();
+  bool positional = false;
+  for (size_t i = 0; i < args.size(); ++i) {
+    llvm::StringRef a(args[i]);
+    if (positional || !a.starts_with("-") || a == "-") {
+      // the input file (or standard input)
+      continue;
+    }
+    if (a == "--") {
+      positional = true;
+      continue;
+    }
+    auto [name, value] = a.ltrim('-').split('=');
+    bool hasValue = a.contains('=');
+    std::string v = value.str();
+    auto it = registered.find(name);
+    if (!hasValue && it != registered.end() &&
+        it->second->getValueExpectedFlag() == llvm::cl::ValueRequired &&
+        i + 1 < args.size()) {
+      v = args[++i];
+      hasValue = true;
+    }
+    if (dropped.contains(name))
+      continue;
+    if (shared.contains(name)) {
+      bad = "--" + name.str() +
+            " writes one output that every part would share; run it on a "
+            "part (--check-inb-dir, the manifest's argv) instead";
+      return false;
+    }
+    if (hasValue && paths.contains(name)) {
+      llvm::SmallString<256> abs(v);
+      (void)llvm::sys::fs::make_absolute(abs);
+      v = abs.str().str();
+    }
+    out.push_back(hasValue ? "--" + name.str() + "=" + v : "--" + name.str());
+  }
+  return true;
 }
 
 /// One part as the manifest describes it: everything an outside runner
@@ -466,7 +545,42 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     out.emit(rec);
   }
 
-  // step 1: every part and the manifest, before any part runs
+  // step 1: every part, the parts' options (parts.cfg) and the manifest,
+  // before any part runs. The directory is self-contained: every path in
+  // it is relative to it, and a part runs with it as the working
+  // directory (docs/design/CheckInb.md, "The manifest").
+  const std::string partsCfg = "parts.cfg";
+  if (mlir::failed(writeFileAtomic(
+          dir + "/" + partsCfg,
+          [&](llvm::raw_ostream &os) {
+            os << "# sea-vc --check-inb: the options of every part (the "
+                  "job's command line,\n# expanded and filtered; the "
+                  "parts are lowered already)\n";
+            auto line = [&](llvm::StringRef a) {
+              // config-file syntax: a token with blanks, quotes, `#` or a
+              // backslash is quoted
+              if (a.find_first_of(" \t\"'#\\") == llvm::StringRef::npos) {
+                os << a << "\n";
+                return;
+              }
+              os << '"';
+              for (char ch : a) {
+                if (ch == '"' || ch == '\\')
+                  os << '\\';
+                os << ch;
+              }
+              os << "\"\n";
+            };
+            for (const std::string &a : o.partArgs)
+              line(a);
+            // the part is lowered: the pointer mode of the input, not of
+            // the lowered program (sea-split-wide-access makes
+            // addr.from_int)
+            line("--ptr-mode=" + o.ptrMode);
+            return mlir::success();
+          },
+          "vc.check-inb-dir", "--check-inb parts.cfg")))
+    return 1;
   std::vector<PartSpec> specs;
   for (auto [i, part] : llvm::enumerate(parts)) {
     if (trivial[i])
@@ -495,12 +609,9 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
               "vc.check-inb-dir", "--check-inb part")))
         return 1;
     }
-    sp.argv = {o.self, mlirPath};
-    for (const std::string &s : o.partArgs)
-      sp.argv.push_back(s);
-    // the part is lowered: the pointer mode of the input, not of the
-    // lowered program (sea-split-wide-access makes addr.from_int)
-    sp.argv.push_back("--ptr-mode=" + o.ptrMode);
+    // argv[0] names the tool, a runner substitutes its binary; paths are
+    // relative to the job directory, the working directory of a part
+    sp.argv = {"sea-vc", sp.mlir, "--config=" + partsCfg};
     sp.argv.push_back("--format=jsonl");
     // the last occurrence wins: a --config file or response file that
     // names --check-inb does not run the job again inside the part
@@ -532,6 +643,11 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
         {"format", "sea-vc-check-inb"},
         {"version", int64_t(kManifestVersion)},
         {"sea_vc_version", versionString()},
+        // a hint: the binary that wrote the job (argv[0] is `sea-vc`)
+        {"sea_vc", o.self},
+        // how to run a part: its argv, in the manifest's directory
+        {"cwd", "."},
+        {"config", partsCfg},
         {"source",
          llvm::json::Object{{"path", sourcePath.str()},
                             {"sha256", hash.empty()
@@ -589,13 +705,24 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     }
     std::string jsonFile = dir + "/" + sp.stdoutFile,
                 errFile = dir + "/" + sp.stderrFile;
+    // exactly the manifest's argv, argv[0] this binary, in the job
+    // directory
     std::vector<llvm::StringRef> args(sp.argv.begin(), sp.argv.end());
+    args[0] = o.self;
     std::optional<llvm::StringRef> redirects[] = {
         std::nullopt, llvm::StringRef(jsonFile), llvm::StringRef(errFile)};
     auto tp = Clock::now();
     std::string err;
-    r.status = llvm::sys::ExecuteAndWait(sp.argv[0], args, std::nullopt,
-                                         redirects, 0, 0, &err);
+    llvm::SmallString<256> cwd;
+    (void)llvm::sys::fs::current_path(cwd);
+    if (std::error_code ec = llvm::sys::fs::set_current_path(dir)) {
+      diag::error("vc.check-inb-dir",
+                  "cannot enter " + dir + ": " + ec.message());
+      return 1;
+    }
+    r.status = llvm::sys::ExecuteAndWait(o.self, args, std::nullopt, redirects,
+                                         0, 0, &err);
+    (void)llvm::sys::fs::set_current_path(cwd);
     r.seconds = secondsSince(tp);
     if (r.status < 0) {
       diag::error("vc.check-inb-part",

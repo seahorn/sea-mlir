@@ -12,9 +12,27 @@
 // RUN: test ! -e %t.d/part-0.jsonl
 // RUN: test ! -e %t.d/part-1.jsonl
 // RUN: FileCheck %s --check-prefix=MANIFEST < %t.d/manifest.json
-// A part run by hand from its manifest argv gives the job's result.
-// RUN: %python %S/Inputs/run-manifest-part.py %t.d 0 | FileCheck %s --check-prefix=HAND0
-// RUN: %python %S/Inputs/run-manifest-part.py %t.d 1 | FileCheck %s --check-prefix=HAND1
+// The directory is self-contained: moved elsewhere, a part run by hand
+// from its manifest argv (in the manifest's directory, from another cwd)
+// gives the job's result.
+// RUN: rm -rf %t.moved
+// RUN: mv %t.d %t.moved
+// RUN: cd %S && %python %S/Inputs/run-manifest-part.py %t.moved 0 %sea_vc | FileCheck %s --check-prefix=HAND0
+// RUN: cd %S && %python %S/Inputs/run-manifest-part.py %t.moved 1 %sea_vc | FileCheck %s --check-prefix=HAND1
+// The parts' options are the job's command line expanded: a profile that
+// says --lower (seam.cfg) gives parts.cfg without it, two-token options
+// joined.
+// RUN: rm -rf %t.p
+// RUN: sea-vc %s --check-inb --config=seam --ackermannize=off --timeout 30 --vcgen-only --check-inb-dir=%t.p
+// RUN: FileCheck %s --check-prefix=PARTSCFG < %t.p/parts.cfg
+// A relative --config on the job's command line is read once, into
+// parts.cfg: a part runs from anywhere.
+// RUN: rm -rf %t.rel && mkdir -p %t.rel
+// RUN: cp %S/Inputs/check-inb-rel.cfg %t.rel/rel.cfg
+// RUN: cd %t.rel && sea-vc %s --check-inb --config=rel.cfg --vcgen-only --check-inb-dir=jd
+// RUN: cd %S && %python %S/Inputs/run-manifest-part.py %t.rel/jd 1 %sea_vc | FileCheck %s --check-prefix=HAND1
+// An option that writes one file every part would share is refused.
+// RUN: not sea-vc %s --check-inb --lower --seam --ackermannize=off --print-lowered=%t.low.mlir 2>&1 | FileCheck %s --check-prefix=SHARED
 // RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=JOB
 // --check-inb-keep: the temporary directory stays, with its manifest.
 // RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off --check-inb-keep > %t.keep.txt
@@ -28,20 +46,34 @@
 // PREP-NOT: check-inb.part:
 // PREP: result: none
 
+// MANIFEST: "config": "parts.cfg"
+// MANIFEST: "cwd": "."
 // MANIFEST: "format": "sea-vc-check-inb"
 // MANIFEST: "parts": [
 // MANIFEST: "argv": [
-// MANIFEST-NEXT: "{{.*}}sea-vc"
-// MANIFEST-NEXT: "{{.*}}part-0.mlir"
+// MANIFEST-NEXT: "sea-vc",
+// MANIFEST-NEXT: "part-0.mlir",
+// MANIFEST-NEXT: "--config=parts.cfg",
 // MANIFEST-NOT: vcgen-only
 // MANIFEST: "--check-inb=false"
 // MANIFEST: "check_id": 0
 // MANIFEST: "index": 0
 // MANIFEST: "argv": [
-// MANIFEST-NEXT: "{{.*}}sea-vc"
-// MANIFEST-NEXT: "{{.*}}part-1.mlir"
+// MANIFEST-NEXT: "sea-vc",
+// MANIFEST-NEXT: "part-1.mlir",
 // MANIFEST: "index": 1
+// MANIFEST: "sea_vc": "{{.*}}sea-vc"
 // MANIFEST: "version": 1
+
+// PARTSCFG-NOT: --lower
+// PARTSCFG-NOT: --config
+// PARTSCFG: --seam
+// PARTSCFG: --ackermannize=off
+// PARTSCFG: --timeout=30
+// PARTSCFG: --ptr-mode=opaque
+// PARTSCFG-NOT: --lower
+
+// SHARED: Error: --check-inb: --print-lowered writes one output{{.*}}[check-inb.unsupported]
 
 // HAND0: part 0 result=sat status=0
 // HAND1: part 1 result=unsat status=0

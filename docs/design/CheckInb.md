@@ -103,21 +103,37 @@ stays (given, kept, or with `--vcgen-only`) is printed as
 `check-inb-dir: <path>`. With `--vcgen-only` the job writes every part
 and `manifest.json`, runs no part, and prints `check-inb.manifest:
 <path> parts=<k>` and `result: none`: another runner solves the parts
-(below). Write each option of the command line as `--name=value`: the parts get the
-command line without its input file and the job's own options, filtered
-token by token. A two-token option (`--program x`) leaves its value
-behind, and the parts then fail with status 1. The contents of
-`--config` files and `@file` response files reach the parts unfiltered;
-each part also gets `--check-inb=false` last, so a `--check-inb` there
-does not run the job again inside a part.
+(below).
+
+The parts' options are the job's command line expanded: `--config`
+files and `@file` response files read, each option one
+`--name[=value]` token (a two-token option such as `--program x`
+joined), the input file and the job's own options dropped, and so are
+`--lower` and the options that need it (a part is lowered already). Paths
+an option reads or appends to (`--log-file`) are made absolute. They go
+into `parts.cfg` in the job directory, with the pointer mode the job
+resolved on the input (`--ptr-mode`). An option that writes one output
+every part would share (`--smt2`, `--print-lowered`, `--seam-trail`,
+`--ack-dump-pairs`, `--ack-relax-smt2`, `--split-smt2`) is refused
+(`check-inb.unsupported`): run it on one part instead.
 
 ## The manifest
 
 The job runs in two steps. First it writes every part
-(`part-<i>.mlir`) and `manifest.json` into the job directory; then it
-runs the parts, from the same list it wrote to the manifest. A runner
+(`part-<i>.mlir`), the parts' options (`parts.cfg`) and `manifest.json`
+into the job directory; then it runs the parts, each with exactly the
+manifest's argv (argv[0] its own binary), in the job directory. A runner
 outside sea-vc (distributed, threaded, in one process) can take the
 directory and run the parts its own way; the manifest is enough.
+
+The directory is self-contained and can be moved: every path in the
+manifest is relative to the manifest's directory, and a part runs with
+that directory as its working directory. `--config=parts.cfg` names a
+file with an extension, which sea-vc reads from the working directory
+(only a bare name, with no `/` and no extension, is looked up in the
+profile directories). argv[0] is `sea-vc`: a runner puts its own binary
+there (`sea_vc` is a hint, the binary that wrote the job). The source
+file is provenance only; running a part does not read it.
 
 `manifest.json`, format version 1. Fields are only ever added; a reader
 ignores fields it does not know and checks `format` and `version`.
@@ -127,7 +143,10 @@ ignores fields it does not know and checks `format` and `version`.
 | `format` | `"sea-vc-check-inb"` |
 | `version` | the format version, `1` |
 | `sea_vc_version` | the `tool.version` of the sea-vc that wrote it |
-| `source` | `{path, sha256}`: the input file (absolute path) and the SHA-256 of its contents (`null` for standard input) |
+| `sea_vc` | the absolute path of that sea-vc (a hint) |
+| `cwd` | `"."`: a part runs in the manifest's directory |
+| `config` | `"parts.cfg"`: the parts' options (sea-vc config-file syntax, one option per line) |
+| `source` | `{path, sha256}`: the input file (absolute path) and the SHA-256 of its contents (`null` for standard input); provenance only |
 | `program` | the program's name |
 | `args` | the job's command line, without the binary |
 | `counters` | `{checks, static, left, zero_length}`, as on the `check-inb:` line, and `{folded, parts, trivial}`, as on `check-inb.split:` |
@@ -141,7 +160,7 @@ Each part:
 | `check_id` | the check's id (`sea.inb_check`) |
 | `at` | the check's source location (the access) |
 | `mlir` | the part's file, relative to the job directory |
-| `argv` | the exact command line that runs it: the sea-vc binary, the part's absolute path, the job's options (filtered as above, never `--vcgen-only`; without `--lower` and the options that need it: the part is lowered already), `--ptr-mode=<the mode resolved on the input>`, `--format=jsonl`, `--check-inb=false` |
+| `argv` | the command line that runs it in the job directory: `sea-vc`, the part's file, `--config=parts.cfg`, `--format=jsonl`, `--check-inb=false` (never `--vcgen-only`, which the job does not pass on) |
 | `stdout`, `stderr` | the file names (in the job directory) the job's own runner writes the part's output to; the job reads `result`, `solve-time` and the replay's `at` from the jsonl |
 
 A part's verdict is the `result` record of its jsonl and its exit status

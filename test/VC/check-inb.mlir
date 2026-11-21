@@ -17,7 +17,7 @@
 // RUN: sea-vc %s --program=prior --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=PRIOR
 // RUN: printf -- '--check-inb\n--lower\n--seam\n--ackermannize=off\n' > %t.cfg
 // RUN: sea-vc %s --program=oob --config=%t.cfg | FileCheck %s --check-prefix=CFG
-// RUN: not sea-vc %s --program=oob --check-inb --lower --seam --ackermannize=off --print-lowered=%t.nodir/x.mlir | FileCheck %s --check-prefix=PERR
+// RUN: not sea-vc %s --program=oob --check-inb --lower --seam --ackermannize=off --z3-tactic=no-such-tactic | FileCheck %s --check-prefix=PERR
 // RUN: not sea-vc %s --program=inb --check-inb --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=CONFIG
 // RUN: not sea-vc %s --program=inb --check-inb --lower --seam 2>&1 | FileCheck %s --check-prefix=CONFIG
 // RUN: not sea-vc %s --program=inb --check-inb --lower --ackermannize=off 2>&1 | FileCheck %s --check-prefix=CONFIG
@@ -150,9 +150,9 @@ sea.program @prior attributes {sea.split_assert = {count = 2 : i64, index = 1 : 
 // CFG: result: sat
 
 // A part that fails says why without --check-inb-dir.
-// PERR: check-inb.part: 0 {{.*}} result=error status=1 {{.*}}error=vc.print-lowered
-// PERR: check-inb.part-error: 0 Error: {{.*}}[vc.print-lowered]
-// PERR: check-inb.part-diags: vc.print-lowered=1
+// PERR: check-inb.part: 0 {{.*}} result=error status=1 {{.*}}error=vc.z3-tactic
+// PERR: check-inb.part-error: 0 Error: {{.*}}[vc.z3-tactic]
+// PERR: check-inb.part-diags: vc.z3-tactic=1
 // PERR: result: unknown
 
 // A check implied by an earlier one (the same span of the same pointer)

@@ -2704,9 +2704,10 @@ TYPICAL:
                                  #   an unsat discharges; unsat iff every
                                  #   part is unsat (docs/design/CheckInb.md)
   sea-vc p.mlir --check-inb ... --vcgen-only --check-inb-dir=d
-                                 # write d/part-<i>.mlir and
-                                 #   d/manifest.json (each part's argv),
-                                 #   run none: result: none
+                                 # write d/part-<i>.mlir, d/parts.cfg
+                                 #   (the expanded part options) and
+                                 #   d/manifest.json (each part's argv,
+                                 #   run in d), run none: result: none
   sea-vc p.mlir --lower --range-fold=on  # fold a sea.icmp / i1 op /
                                  #   select condition the integer ranges
                                  #   settle (InferIntRangeInterface walk,
@@ -4880,35 +4881,24 @@ int main(int argc, char **argv) {
     jo.source = inputFilename;
     for (int i = 1; i < argc; ++i)
       jo.jobArgs.push_back(argv[i]);
-    // the part's options: the command line's, without the input and the
-    // options of the job itself (each part is one program in a file)
-    bool inputDropped = false;
-    for (int i = 1; i < argc; ++i) {
-      StringRef a(argv[i]);
-      StringRef name = a.ltrim('-').split('=').first;
-      if (!inputDropped && a == inputFilename) {
-        inputDropped = true;
-        continue;
+    // the part's options: the EXPANDED command line (--config files and
+    // response files read, every option one `--name[=value]` token, paths
+    // absolute), without the input and the options of the job itself, so
+    // a part runs the same from any directory and with any profile path
+    {
+      SmallVector<const char *> expanded(args.begin(), args.end());
+      cl::ExpansionContext ectx(configAlloc, cl::TokenizeGNUCommandLine);
+      if (Error e = ectx.expandResponseFiles(expanded)) {
+        sea::diag::error("vc.config-read", toString(std::move(e)));
+        return 1;
       }
-      // the job's own options, and the lowering's: a part is lowered
-      // already (its argv has no --lower)
-      static const llvm::StringSet<> lowering = {"lower",
-                                                 "lower-opt",
-                                                 "lower-disable",
-                                                 "range-fold",
-                                                 "expand-memmove",
-                                                 "box-all-expand",
-                                                 "place-in",
-                                                 "place-out",
-                                                 "widen-memory",
-                                                 "widen-memory-report",
-                                                 "widen-memory-per-class",
-                                                 "ptr-mode"};
-      if (a.starts_with("-") &&
-          (name.starts_with("check-inb") || name == "program" ||
-           name == "format" || name == "vcgen-only" || lowering.contains(name)))
-        continue;
-      jo.partArgs.push_back(a.str());
+      std::string bad;
+      if (!sea::checkinb::partArguments(
+              ArrayRef<const char *>(expanded).drop_front(), jo.partArgs,
+              bad)) {
+        sea::diag::error("check-inb.unsupported", "--check-inb: " + bad);
+        return 1;
+      }
     }
     return sea::checkinb::runJob(*module, program, jo, *gOut);
   }
