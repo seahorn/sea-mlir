@@ -1699,26 +1699,66 @@ void Interpreter::execStruct(Operation &op) {
 
 LogicalResult Interpreter::jump(Block *dest, ValueRange operands,
                                 std::string &error) {
-  SmallVector<APInt> vals = valuesOf(operands);
-  for (auto [arg, from, val] :
-       llvm::zip_equal(dest->getArguments(), operands, vals)) {
-    if (isa<MemType>(arg.getType())) {
-      if (failed(consume(from, arg, error)))
+  // Parallel copy: every incoming value is read before any argument is bound
+  // (an edge may pass the block's own arguments back, permuted).
+  SmallVector<APInt> vals;
+  SmallVector<std::shared_ptr<Buffer>> bufs;
+  SmallVector<std::optional<Ptr>> inPtrs;
+  SmallVector<std::optional<SmallVector<Leaf>>> inStructs;
+  SmallVector<std::optional<Prov>> inProv;
+  for (Value from : operands) {
+    Type t = from.getType();
+    vals.push_back(isa<MemType, PtrType, StructType>(t) ? APInt()
+                                                        : env.lookup(from));
+    std::shared_ptr<Buffer> buf;
+    if (isa<MemType>(t)) {
+      auto it = mems.find(from);
+      assert(it != mems.end() && "memory version without a buffer");
+      buf = it->second;
+      if (buf->current != from) {
+        error = "memory version consumed twice (not the current version of "
+                "its chain); the interpreter executes memory in place";
         return failure();
+      }
+    }
+    bufs.push_back(buf);
+    std::optional<Ptr> ip;
+    if (auto it = ptrs.find(from); it != ptrs.end())
+      ip = it->second;
+    inPtrs.push_back(ip);
+    std::optional<SmallVector<Leaf>> is;
+    if (auto it = structs.find(from); it != structs.end())
+      is = it->second;
+    inStructs.push_back(std::move(is));
+    std::optional<Prov> pv;
+    if (trackProv)
+      if (auto it = prov.find(from); it != prov.end())
+        pv = it->second;
+    inProv.push_back(pv);
+  }
+  for (auto [i, arg] : llvm::enumerate(dest->getArguments())) {
+    if (isa<MemType>(arg.getType())) {
+      bufs[i]->current = arg;
+      mems[arg] = bufs[i];
       continue;
     }
     if (isa<PtrType>(arg.getType())) {
-      ptrs[arg] = ptrs.lookup(from);
+      if (inPtrs[i])
+        ptrs[arg] = *inPtrs[i];
+      else
+        ptrs.erase(arg);
       continue;
     }
     if (isa<StructType>(arg.getType())) {
-      structs[arg] = structs.lookup(from);
+      if (inStructs[i])
+        structs[arg] = std::move(*inStructs[i]);
+      else
+        structs.erase(arg);
       continue;
     }
-    define(arg, val);
-    if (trackProv)
-      if (auto it = prov.find(from); it != prov.end())
-        prov[arg] = it->second;
+    define(arg, vals[i]); // erases the argument's provenance
+    if (inProv[i])
+      prov[arg] = *inProv[i];
   }
   for (BlockArgument arg : dest->getArguments())
     afterValue(arg);
