@@ -6,10 +6,10 @@
 // RUN: rm -rf %t && split-file %s %t
 // DEFINE: %{vc} = sea-vc --lower --seam --ack-decider=false --narrow-offsets
 
-// Default (none): the heap object follows the 3-byte global at 0x08048008,
+// none (packed): the heap object follows the 3-byte global at 0x08048008,
 // not a multiple of 2^12: its 3 reads are unaligned at k = 12, the
 // global's read (k = 2, at 0x08048000) is aligned.
-// RUN: %{vc} %t/p.mlir 2>&1 | FileCheck %s --check-prefix=NONE
+// RUN: %{vc} %t/p.mlir --place-slots=none 2>&1 | FileCheck %s --check-prefix=NONE
 // NONE: place.slots: none
 // NONE: place.objects: 2
 // NONE: vc.narrow-base-aligned: 1
@@ -17,8 +17,9 @@
 // NONE: result: sat
 // NONE: validate: checked={{[0-9]+}} mismatches=0
 
-// aligned: the global's slot is 4 units, the heap object's 8192, at
+// aligned (the default): the global's slot is 4 units, the heap object's 8192, at
 // 0x0804a000; same verdict, the model replays.
+// RUN: %{vc} %t/p.mlir 2>&1 | FileCheck %s --check-prefix=ALIGNED
 // RUN: %{vc} %t/p.mlir --place-slots=aligned 2>&1 | FileCheck %s --check-prefix=ALIGNED
 // ALIGNED: place.slots: aligned
 // ALIGNED: place.objects: 2

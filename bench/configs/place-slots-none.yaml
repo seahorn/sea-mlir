@@ -1,0 +1,2 @@
+# --place-slots=none explicitly (the plain placement)
+args: [--place-slots=none]

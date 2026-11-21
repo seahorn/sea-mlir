@@ -1,3 +1,5 @@
+// --place-slots=none (compact.mlir): a memhavoc from address 0 reaches the
+// first object, at address 1, only when objects are packed.
 // sea.memhavoc of the null pointer: a no-op by default, counted and
 // warned (an open semantics decision); --memhavoc-null=error makes it a
 // memory-safety error. A non-null range outside its object stays an error.
@@ -24,12 +26,12 @@
 // (=error) the VC havocs from address 0, which is the first object in
 // the compact layout: sat, and the original program has a memory-safety
 // error there (exit 4).
-// RUN: sea-vc %t/compact.mlir --lower --replay-original | FileCheck %s --check-prefix=VCNOOP
+// RUN: sea-vc %t/compact.mlir --lower --place-slots=none --replay-original | FileCheck %s --check-prefix=VCNOOP
 // VCNOOP: assume.memhavoc-null-noop: vc sites=1
 // VCNOOP: result: unsat
-// RUN: sea-vc %t/compact.mlir --lower --seam | FileCheck %s --check-prefix=VCNOOP-SEAM
+// RUN: sea-vc %t/compact.mlir --lower --place-slots=none --seam | FileCheck %s --check-prefix=VCNOOP-SEAM
 // VCNOOP-SEAM: result: unsat
-// RUN: bash -c 'sea-vc %t/compact.mlir --lower --replay-original --memhavoc-null=error > %t.err.out 2>&1; test $? -eq 4'
+// RUN: bash -c 'sea-vc %t/compact.mlir --lower --place-slots=none --replay-original --memhavoc-null=error > %t.err.out 2>&1; test $? -eq 4'
 // RUN: FileCheck %s --check-prefix=VCERR < %t.err.out
 // VCERR-NOT: assume.memhavoc-null-noop: vc
 // VCERR: result: sat

@@ -474,8 +474,9 @@ same addresses, so their queries agree on `obj.<name>`
 Either option needs `--lower`, and a module with one program
 (`place.file-programs`).
 
-`--place-slots=aligned` (`slots=aligned`) computes another valid
-placement: each object other than null owns the slot `[base, base + 2^s)`,
+`--place-slots=aligned` (`slots=aligned`, the default) computes the
+placement; `--place-slots=none` (`slots=none`) the packed one, SeaHorn's
+(the example above). Aligned: each object other than null owns the slot `[base, base + 2^s)`,
 s the least exponent with 2^s > max(room, 1) (the one-past-the-end address
 is in the slot), base a multiple of max(2^s, align). The order and the
 windows stay: functions, globals and heap upwards from 0x08048000, stack
@@ -489,11 +490,11 @@ needs alignment reads it from the bases.
 Verdicts can differ between the two placements only for programs whose
 result depends on address bits above the objects' minimum alignment, that
 is, on one particular layout; such programs are layout-dependent under the
-default placement too. With a base aligned to at least the object's
+packed placement too. With a base aligned to at least the object's
 alignment a, the address bits below log2(a) come only from the offset in
 both placements: flags kept in low bits and alignment tests up to a behave
-the same. The bits above are constants in both: the default placement sets
-them by packing objects one after the other, slots set them otherwise.
+the same. The bits above are constants in both: the packed placement sets
+them by placing objects one after the other, slots set them otherwise.
 Both placements stay below 2^32, so high-bit tests (user vs kernel
 addresses) do not change; a program that relies on such a split must
 model it. An out-of-bounds access is the other case: it can land in the

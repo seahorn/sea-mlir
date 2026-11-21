@@ -223,13 +223,14 @@ static cl::opt<uint64_t> maxSymbolicSizeOpt(
 
 static cl::opt<std::string> placeSlotsOpt(
     "place-slots",
-    cl::desc("With --lower, an abstract program: none (default; each object "
-             "at its own align) or aligned (each object owns a power-of-two "
-             "slot 2^s > its room, its base a multiple of max(2^s, align); "
-             "same order and windows; if the slots do not fit, the plain "
-             "placement with the warning place.slots-fallback). The "
+    cl::desc("With --lower, an abstract program: aligned (default; each "
+             "object owns a power-of-two slot 2^s > its room, its base a "
+             "multiple of max(2^s, align); same order and windows; if the "
+             "slots do not fit, the plain placement with the warning "
+             "place.slots-fallback) or none (each object at its own align, "
+             "packed). Given explicitly, not with --place-in. The "
              "placement is reported as place.* lines"),
-    cl::value_desc("none|aligned"), cl::init("none"));
+    cl::value_desc("aligned|none"), cl::init("aligned"));
 
 static cl::opt<bool> addr0IsNull(
     "addr0-is-null",
@@ -2252,19 +2253,21 @@ TYPICAL:
                                  #   exceeds it is premise.failed (exit 4):
                                  #   bound the size in the harness, or
                                  #   rerun with --max-symbolic-size=<n>
-  sea-vc p.mlir --lower --place-slots=aligned  # each object owns a
-                                 #   power-of-two slot (2^s > room, base a
-                                 #   multiple of max(2^s, align)): the
-                                 #   bits above s name the object; off by
-                                 #   default. A verdict differs only if
+  sea-vc p.mlir --lower --place-slots=none  # the packed placement (each
+                                 #   object at its own align, SeaHorn's);
+                                 #   the default, aligned, gives each
+                                 #   object a power-of-two slot (2^s >
+                                 #   room, base a multiple of max(2^s,
+                                 #   align)): the bits above s name the
+                                 #   object. A verdict differs only if
                                  #   the result depends on address bits
                                  #   above the objects' alignment (one
-                                 #   particular layout; so under the
-                                 #   default placement too) or on an
-                                 #   out-of-bounds access (packed: the
-                                 #   next object; slots: padding; under
-                                 #   --seam A-INB excludes it). Not with
-                                 #   --place-in or a placed program
+                                 #   particular layout; so under either
+                                 #   placement) or on an out-of-bounds
+                                 #   access (packed: the next object;
+                                 #   slots: padding; under --seam A-INB
+                                 #   excludes it). Not with --place-in or
+                                 #   a placed program
   sea-vc p.mlir --lower --reach --reach-failures  # also each tagged
                                  #   assert's failure (reached with its
                                  #   condition false): op=sea.print

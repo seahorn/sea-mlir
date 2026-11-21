@@ -1,12 +1,13 @@
+// --place-slots=none: a + 16 = b only when objects are packed.
 // A compare is not an access. Placement makes b = a + 16, so the pointer one
 // past the end of a equals b (legal C), and the select below reads b (7) when
 // a + 16 == b. All accesses are in bounds. The plain VC is sat (the assertion
 // fails); --seam must not decide the program compare `a + 16 == b` as false
 // (A-INB is about accesses, and only the compares of read-over-write steps
 // use it).
-// RUN: sea-vc %s --lower | FileCheck %s
-// RUN: sea-vc %s --lower --seam | FileCheck %s
-// RUN: sea-vc %s --lower --seam --seam-premises=0 | FileCheck %s
+// RUN: sea-vc %s --lower --place-slots=none | FileCheck %s
+// RUN: sea-vc %s --lower --place-slots=none --seam | FileCheck %s
+// RUN: sea-vc %s --lower --place-slots=none --seam --seam-premises=0 | FileCheck %s
 // CHECK: result: sat
 // CHECK: replay: assert-failed
 !m = !sea.mem<!sea.ptr<64>, i8>

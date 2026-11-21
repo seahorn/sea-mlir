@@ -58,7 +58,8 @@
 // at the same bases (utils/cover-diff.py --level=1). With either file the
 // module must hold one program (place.file-programs).
 //
-// Slots (slots=aligned, sea-vc --place-slots=aligned; default none): every
+// Slots (slots=aligned, sea-vc --place-slots=aligned; the default; none:
+// the plain rule, each object at its own align): every
 // object but null owns one power-of-two slot. Its exponent s is
 // bitwidth(max(room, 1)), the least s with 2^s > room (strict, so the
 // one-past-the-end address base + room is in the slot too), the slot is
@@ -139,7 +140,10 @@ public:
     placeOut = files.out;
     symbolicSize = files.symbolicSize;
     maxSymbolicSize = files.maxSymbolicSize;
-    slots = files.slots;
+    // only a value other than the default counts as given (sea-vc refuses
+    // --place-slots with --place-in itself)
+    if (files.slots != "aligned")
+      slots = files.slots;
   }
 
   StringRef getArgument() const final { return "sea-place-static"; }
@@ -165,11 +169,11 @@ public:
       llvm::cl::init("auto")};
   Option<std::string> slots{
       *this, "slots",
-      llvm::cl::desc("none (each object at its own align) or aligned (each "
-                     "object owns a power-of-two slot above its room, "
-                     "aligned to it; falls back to none with a warning when "
-                     "it does not fit)"),
-      llvm::cl::init("none")};
+      llvm::cl::desc("aligned (default: each object owns a power-of-two "
+                     "slot above its room, aligned to it; falls back to none "
+                     "with a warning when it does not fit) or none (each "
+                     "object at its own align)"),
+      llvm::cl::init("aligned")};
   Option<bool> reuse{*this, "reuse",
                      llvm::cl::desc("Share space between objects with "
                                     "disjoint lifetimes (not implemented)"),
@@ -677,7 +681,9 @@ void PlaceStaticPass::runOnOperation() {
     return signalPassFailure();
   }
   // place-in takes the bases from the file: no rule to apply
-  if (slots == "aligned" && !placeIn.empty()) {
+  // (the default aligned does not apply to a file, slots=aligned given
+  // does)
+  if (slots == "aligned" && slots.hasValue() && !placeIn.empty()) {
     diag::error("place.slots-place-in",
                 "sea-place-static: slots=aligned and place-in exclude each "
                 "other (the file gives the bases)",

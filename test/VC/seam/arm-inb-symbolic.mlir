@@ -1,3 +1,5 @@
+// --place-slots=none: p - 16 lands in the adjacent object only when objects
+// are packed.
 // A-INB under ARM, symbolic offset: p + n with n = -16 (an assume) and p an
 // ite over five objects. The offset is not a number, so the access is not a
 // definite violation: it is a condition that --seam assumes and counts
@@ -7,11 +9,11 @@
 // it is sat. The runs leave sea-assume-fold out: it replaces n by -16 (the
 // assumed equality), and the offset is then a number (the FOLD run: the access is
 // out of its object on every alternative, reported).
-// RUN: sea-vc %s --lower | FileCheck %s --check-prefix=SAT
-// RUN: sea-vc %s --lower --seam --seam-premises=0 | FileCheck %s --check-prefix=SAT
-// RUN: sea-vc %s --lower --lower-disable=assume-fold --seam 2>&1 | FileCheck %s --check-prefix=COUNT
-// RUN: sea-vc %s --lower --lower-disable=assume-fold --seam --seam-arm=0 | FileCheck %s --check-prefix=SAT
-// RUN: sea-vc %s --lower --seam 2>&1 | FileCheck %s --check-prefix=FOLD
+// RUN: sea-vc %s --lower --place-slots=none | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %s --lower --place-slots=none --seam --seam-premises=0 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %s --lower --place-slots=none --lower-disable=assume-fold --seam 2>&1 | FileCheck %s --check-prefix=COUNT
+// RUN: sea-vc %s --lower --place-slots=none --lower-disable=assume-fold --seam --seam-arm=0 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %s --lower --place-slots=none --seam 2>&1 | FileCheck %s --check-prefix=FOLD
 // COUNT-NOT: seam.out-of-object
 // COUNT: seam.premises: assumed accesses=3 conditions=1
 // COUNT: result: unsat

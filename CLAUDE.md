@@ -80,7 +80,9 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   written directly); a failed write is an error of the flag's kind
 - `lib/Transforms/` — passes: `sea-place-static` (abstract pointers ->
   constant addresses; each object is a `sea.segment`, whose result, the base
-  address, replaces the object's uses: no folder, so sccp keeps it;
+  address, replaces the object's uses: no folder, so sccp keeps it; each
+  object owns a power-of-two slot by default, `slots=none` /
+  `sea-vc --place-slots=none` packs them as SeaHorn does;
   `place-out` / `place-in`: the placement written to / taken from a file,
   checked, `sea-vc --place-out` / `--place-in`), `sea-scalarize-structs`
   (register structs -> their leaves; runs first), `sea-expand-memset`

@@ -43,7 +43,7 @@ struct PlaceFiles {
   std::string in, out;
   std::string symbolicSize = "assume";
   uint64_t maxSymbolicSize = kPlaceMaxSymbolicSize;
-  std::string slots = "none";
+  std::string slots = "aligned";
 };
 std::unique_ptr<mlir::Pass> createPlaceStaticPass(const PlaceFiles &files);
 

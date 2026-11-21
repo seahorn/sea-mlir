@@ -1,0 +1,2 @@
+# --place-slots=aligned: power-of-two slots
+args: [--place-slots=aligned]

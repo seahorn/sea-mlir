@@ -1,11 +1,13 @@
+// --place-slots=none (print/replay.mlir): the checks name the bases of the
+// packed placement.
 // One object id in every jsonl record (the print notation `stack.1`):
 // `object` (id, plus symbol = the VC constant obj.<id>), print.object (id),
 // print.mem / print (obj), memread (obj + off, the cell's offset). Numbers
 // for base everywhere. A consumer joins them without string surgery.
 
-// RUN: sea-vc %S/../print/defaults.mlir --lower --seam --print-refs=strong --format=jsonl > %t.def.jsonl
+// RUN: sea-vc %S/../print/defaults.mlir --lower --place-slots=none --seam --print-refs=strong --format=jsonl > %t.def.jsonl
 // RUN: %python %S/Inputs/join-objects.py %t.def.jsonl | FileCheck %s --check-prefix=JOIN
-// RUN: sea-vc %S/../print/replay.mlir --lower --seam --print-refs=strong --format=jsonl > %t.rep.jsonl
+// RUN: sea-vc %S/../print/replay.mlir --lower --place-slots=none --seam --print-refs=strong --format=jsonl > %t.rep.jsonl
 // RUN: %python %S/Inputs/join-objects.py %t.rep.jsonl | FileCheck %s --check-prefix=JOIN
 // JOIN: join: {{[1-9][0-9]*}} references
 
