@@ -1,5 +1,8 @@
 // RUN: sea-run %s --program=abstract 2>&1 | FileCheck %s --check-prefix=MEM
 // RUN: sea-run %s --program=absover 2>&1 | FileCheck %s --check-prefix=QUIET
+// RUN: sea-run %s --program=ptrleafsel 2>&1 | FileCheck %s --check-prefix=LOAD
+// RUN: sea-run %s --program=ptrleaf 2>&1 | FileCheck %s --check-prefix=LOAD
+// RUN: sea-run %s --program=ismod 2>&1 | FileCheck %s --check-prefix=LOAD
 
 // ptr-index-use.mlir for an abstract program (kept apart: the split RUN
 // there needs placed programs). A broken GEP stored and loaded back is
@@ -7,6 +10,7 @@
 // intact pointer stored over them clears it. 2^61 * 24 breaks P1.
 // QUIET-NOT: interp.ptr-index-promise
 // QUIET: status: halted
+// LOAD: sea.ptr.index at {{.*}} the promise is broken{{.*}} this sea.load uses it{{.*}}[interp.ptr-index-promise]
 // MEM: sea.ptr.index at {{.*}} nusw: a product wraps (P1): the promise is broken (a poison pointer in LLVM), the pointer went through memory, and this sea.load uses it{{.*}}[interp.ptr-index-promise]
 
 // an abstract program: the pointer's pieces carry the mark
@@ -38,6 +42,53 @@ sea.program @absover {
   %s2 = sea.store %s1[%slot], %p inplace align 8 : !pm, !sea.ptr<64>
   %r = sea.load %s2[%slot] align 8 : !pm -> !sea.ptr<64>
   %x = sea.load %s2[%r] : !pm -> i8
+  sea.halt
+}
+
+// struct leaves: a !sea.ptr leaf; a struct select on a marked condition
+// (the intact leaves become poison)
+!pst = !sea.struct<!sea.ptr<64>, i8>
+sea.program @ptrleafsel {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !pm
+  %c64 = sea.const 64 : i64
+  %A = sea.malloc %c64 align 8 [1] : i64 -> !sea.ptr<64>
+  %big = sea.const 4611686018427387904 : i64
+  %q = sea.ptr.index %A [%big] strides [24] offset 0 inbounds : !sea.ptr<64>, i64
+  %c = sea.ptr.cmp eq, %q, %A : !sea.ptr<64>
+  %s1 = sea.struct.create %A, %z : !sea.ptr<64>, i8 -> !pst
+  %s2 = sea.struct.create %A, %z : !sea.ptr<64>, i8 -> !pst
+  %s = sea.select %c, %s1, %s2 : !pst
+  %p = sea.struct.extract %s[0] : !pst -> !sea.ptr<64>
+  %x = sea.load %m[%p] : !pm -> i8
+  sea.halt
+}
+
+sea.program @ptrleaf {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !pm
+  %c64 = sea.const 64 : i64
+  %A = sea.malloc %c64 align 8 [1] : i64 -> !sea.ptr<64>
+  %big = sea.const 4611686018427387904 : i64
+  %q = sea.ptr.index %A [%big] strides [24] offset 0 inbounds : !sea.ptr<64>, i64
+  %s1 = sea.struct.create %q, %z : !sea.ptr<64>, i8 -> !pst
+  %p = sea.struct.extract %s1[0] : !pst -> !sea.ptr<64>
+  %x = sea.load %m[%p] : !pm -> i8
+  sea.halt
+}
+
+// sea.mem.is_modified of the broken pointer: poison, and so is a select
+// on it
+sea.program @ismod {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !pm
+  %c64 = sea.const 64 : i64
+  %A = sea.malloc %c64 align 8 [1] : i64 -> !sea.ptr<64>
+  %big = sea.const 4611686018427387904 : i64
+  %q = sea.ptr.index %A [%big] strides [24] offset 0 inbounds : !sea.ptr<64>, i64
+  %mod = sea.mem.is_modified %m[%q] : !pm
+  %p = sea.select %mod, %A, %A : !sea.ptr<64>
+  %x = sea.load %m[%p] : !pm -> i8
   sea.halt
 }
 

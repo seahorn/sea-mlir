@@ -40,6 +40,10 @@
 // RUN: sea-run %s --program=branch 2>&1 | FileCheck %s --check-prefix=QUIET
 // RUN: sea-run %s --program=structbad 2>&1 | FileCheck %s --check-prefix=LOAD
 // RUN: sea-run %s --program=structok 2>&1 | FileCheck %s --check-prefix=QUIET
+// RUN: sea-run %s --program=structphi 2>&1 | FileCheck %s --check-prefix=LOAD
+// RUN: sea-run %s --program=insclear 2>&1 | FileCheck %s --check-prefix=QUIET
+// RUN: sea-run %s --program=structswap 2>&1 | FileCheck %s --check-prefix=LOAD
+// RUN: sea-run %s --program=boxall 2>&1 | FileCheck %s --check-prefix=LOAD
 // RUN: not sea-run %s --program=twosets --max-poison-sets=1 2>&1 | FileCheck %s --check-prefix=CAP
 // RUN: not sea-run %s --program=unused --max-poison-sets=65536 2>&1 | FileCheck %s --check-prefix=CAPFLAG
 
@@ -545,7 +549,7 @@ sea.program @trunc {
   sea.halt
 }
 
-// x + 8: arithmetic on poison is poison
+// x + 2: arithmetic on poison is poison
 sea.program @arith {
   %z = sea.const 0 : i8
   %m = sea.mem.const %z : !wm
@@ -556,7 +560,7 @@ sea.program @arith {
   %i = sea.const 2000 : i16
   %q = sea.ptr.index %a [%i] strides [24] offset 0 inbounds : !sea.addr<16>, i16
   %bits = sea.addr.to_bits %q : !sea.addr<16> to i16
-  %two = sea.const 8 : i16
+  %two = sea.const 2 : i16
   %add = sea.add %bits, %two : i16
   %m1 = sea.store %m[%s], %add inplace : !wm, i16
   %v = sea.load %m1[%s] : !wm -> i16
@@ -674,6 +678,85 @@ sea.program @structok {
   %x = sea.load %m[%p] : !am -> i8
   sea.halt
 }
+
+// struct leaves (more; the !sea.ptr leaves are in
+// ptr-index-use-abstract.mlir): a struct block argument; struct.insert
+// over the marked leaf clears it
+!sa = !sea.struct<!sea.addr<8>, !sea.addr<8>>
+
+
+sea.program @structphi {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !am
+  %b = sea.const 1 : i8
+  %a = sea.addr.from_int %b : i8 to !sea.addr<8>
+  %six = sea.const 6 : i8
+  %q = sea.ptr.index %a [%six] strides [24] offset 0 inbounds : !sea.addr<8>, i8
+  %st = sea.struct.create %q, %a : !sea.addr<8>, !sea.addr<8> -> !sa
+  sea.br ^j(%st : !sa)
+^j(%s : !sa):
+  %p = sea.struct.extract %s[0] : !sa -> !sea.addr<8>
+  %x = sea.load %m[%p] : !am -> i8
+  sea.halt
+}
+
+sea.program @insclear {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !am
+  %b = sea.const 1 : i8
+  %a = sea.addr.from_int %b : i8 to !sea.addr<8>
+  %six = sea.const 6 : i8
+  %q = sea.ptr.index %a [%six] strides [24] offset 0 inbounds : !sea.addr<8>, i8
+  %st = sea.struct.create %q, %a : !sea.addr<8>, !sea.addr<8> -> !sa
+  %st2 = sea.struct.insert %a, %st[0] : !sea.addr<8> into !sa
+  %p = sea.struct.extract %st2[0] : !sa -> !sea.addr<8>
+  %x = sea.load %m[%p] : !am -> i8
+  sea.halt
+}
+
+// struct block arguments swap on a back edge (a parallel copy): %s1 ends
+// as the struct of the broken GEP
+sea.program @structswap {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !am
+  %b = sea.const 1 : i8
+  %a = sea.addr.from_int %b : i8 to !sea.addr<8>
+  %six = sea.const 6 : i8
+  %q = sea.ptr.index %a [%six] strides [24] offset 0 inbounds : !sea.addr<8>, i8
+  %sq = sea.struct.create %q, %q : !sea.addr<8>, !sea.addr<8> -> !sa
+  %sa = sea.struct.create %a, %a : !sea.addr<8>, !sea.addr<8> -> !sa
+  %t = sea.const 1 : i1
+  sea.br ^h(%sq, %sa, %t : !sa, !sa, i1)
+^h(%s0 : !sa, %s1 : !sa, %first : i1):
+  %f = sea.const 0 : i1
+  sea.cond_br %first, ^h(%s1, %s0, %f : !sa, !sa, i1), ^use
+^use:
+  %p = sea.struct.extract %s1[0] : !sa -> !sea.addr<8>
+  %x = sea.load %m[%p] : !am -> i8
+  sea.halt
+}
+
+// a box.all whose body compares with the broken GEP: the conjunction is
+// poison, and so is a select on it
+sea.program @boxall {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !am
+  %b = sea.const 1 : i8
+  %a = sea.addr.from_int %b : i8 to !sea.addr<8>
+  %six = sea.const 6 : i8
+  %q = sea.ptr.index %a [%six] strides [24] offset 0 inbounds : !sea.addr<8>, i8
+  %qi = sea.addr.to_int %q : !sea.addr<8> to i8
+  %qw = sea.zext %qi : i8 to i64
+  %n = sea.const 3 : i64
+  %all = sea.box.all (%i) = (0) to (%n) {
+    %e = sea.icmp ne, %i, %qw : i64
+    sea.yield %e
+  }
+  %p = sea.select %all, %a, %a : !sea.addr<8>
+  %x = sea.load %m[%p] : !am -> i8
+  sea.halt
+}
+
 
 // two broken GEPs make two sets: past --max-poison-sets=1 the run stops
 sea.program @twosets {

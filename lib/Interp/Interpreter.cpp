@@ -880,14 +880,16 @@ private:
   /// The set `id` with every element marked as gone through memory.
   PoisonId viaMemory(PoisonId id);
   /// Sets the broken ptr.index promises `to` carries (`poison`): `gep`'s
-  /// own, if set, and those of the values in `from` (its address chain).
+  /// own, if set, and those of the values in `from` (a ptr.index's base
+  /// and indices).
   void passPoison(Value to, ValueRange from, Operation *gep = nullptr,
                   StringRef what = {});
   /// LLVM poison for an op that just defined its scalar result: the union
   /// of its operands' broken promises (a select: its condition's and the
   /// picked operand's). Every value op, pointer ops included; not an
   /// allocation (a fresh object) or ptr.index (passPoison, with its own
-  /// promise). Struct results carry marks in their leaves (execStruct).
+  /// promise). Struct results carry marks in their leaves (execStruct; a
+  /// pointer / struct select: selectPoison).
   void propagatePoison(Operation &op);
   /// Warns (interp.ptr-index-promise) for each broken promise the address
   /// `addr` of the access `op` carries: the promise is a fact only there.
@@ -1510,6 +1512,7 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
     }
     Ptr p = ptrs.lookup(im.getPtr());
     define(im.getResult(), APInt(1, buf.modified.contains(p.obj)));
+    setPoison(im.getResult(), poisonOf(im.getPtr()));
     return success();
   }
 
@@ -1916,6 +1919,7 @@ LogicalResult Interpreter::jump(Block *dest, ValueRange operands,
   SmallVector<std::optional<Ptr>> inPtrs;
   SmallVector<std::optional<SmallVector<Leaf>>> inStructs;
   SmallVector<std::optional<Prov>> inProv;
+  SmallVector<PoisonId> inPoison; // a phi passes poison on
   llvm::SmallPtrSet<Buffer *, 4> taken;
   for (Value from : operands) {
     Type t = from.getType();
@@ -1946,6 +1950,7 @@ LogicalResult Interpreter::jump(Block *dest, ValueRange operands,
       if (auto it = prov.find(from); it != prov.end())
         pv = it->second;
     inProv.push_back(pv);
+    inPoison.push_back(poisonOf(from));
   }
   for (auto [i, arg] : llvm::enumerate(dest->getArguments())) {
     if (isa<MemType>(arg.getType())) {
@@ -1953,6 +1958,7 @@ LogicalResult Interpreter::jump(Block *dest, ValueRange operands,
       mems[arg] = bufs[i];
       continue;
     }
+    setPoison(arg, inPoison[i]); // a struct's marks are in its leaves
     if (isa<PtrType>(arg.getType())) {
       if (inPtrs[i])
         ptrs[arg] = *inPtrs[i];
@@ -1970,15 +1976,6 @@ LogicalResult Interpreter::jump(Block *dest, ValueRange operands,
     define(arg, vals[i]); // erases the argument's provenance
     if (inProv[i])
       prov[arg] = *inProv[i];
-  }
-  // the broken promises an argument carries (a phi passes poison on): all
-  // read before any is set, as the arguments are bound at once
-  if (!poison.empty()) {
-    SmallVector<PoisonId> carried;
-    for (Value from : operands)
-      carried.push_back(poisonOf(from));
-    for (auto [arg, c] : llvm::zip_equal(dest->getArguments(), carried))
-      setPoison(arg, c);
   }
   for (BlockArgument arg : dest->getArguments())
     afterValue(arg);
@@ -2042,6 +2039,11 @@ LogicalResult Interpreter::execBoxAll(BoxAllOp box, std::string &error,
   Block &body = box.getBodyBlock();
   Value yielded = box.getYielded();
   bool all = true;
+  // LLVM poison: the conjunction carries every yielded value's marks and
+  // the bounds'
+  PoisonId marks = 0;
+  for (Value u : box.getUpperBounds())
+    marks = unitePoison(marks, poisonOf(u));
   // t: the trip numbers, row-major (the last dimension fastest)
   SmallVector<APInt, 2> t(n, APInt::getZero(64));
   while (!empty) {
@@ -2068,6 +2070,7 @@ LogicalResult Interpreter::execBoxAll(BoxAllOp box, std::string &error,
         return failure();
       }
     }
+    marks = unitePoison(marks, poisonOf(yielded));
     if (env.lookup(yielded).isZero() && all) {
       all = false;
       if (!result.boxAllFalse)
@@ -2086,6 +2089,7 @@ LogicalResult Interpreter::execBoxAll(BoxAllOp box, std::string &error,
     }
   }
   define(box.getResult(), APInt(1, all ? 1 : 0));
+  setPoison(box.getResult(), marks);
   return success();
 }
 

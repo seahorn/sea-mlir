@@ -836,10 +836,18 @@ made by the expansion, counts `premise.a-nowrap`.
     checks whether any value is marked and returns at once if none is.
     Past 65535 distinct sets the run stops with a limit error (`sea-run
     --max-poison-sets`, a test knob).
+    Marks mixing through all arithmetic make more distinct sets than a
+    pointer chain would, so the cap is easier to reach; reaching it stops
+    the run visibly.
+  - sea has no freeze. A front end that drops `freeze x` to x lets marks
+    pass where LLVM would stop them. SeaM sees through the dropped freeze
+    too, so the two agree; it is a stated difference from LLVM.
   - Differences from the check job:
     - it does not follow phis (check-ptr-index.phi) or loads
-      (check-ptr-index.not-followed), so the interpreter can warn at an
-      access where the job asserts nothing;
+      (check-ptr-index.not-followed), and its chain (GEP base, ptr.add /
+      addr.add, select) leaves out the arithmetic, casts and compares the
+      interpreter follows as LLVM poison does, so the interpreter can
+      warn at an access where the job asserts nothing;
     - the job asserts at a memset / memmove whatever its length; the
       interpreter is silent at a length of 0. The job is the stricter.
   - memhavoc is not an access here, as in the check job.
