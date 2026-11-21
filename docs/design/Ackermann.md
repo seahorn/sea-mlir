@@ -425,7 +425,8 @@ bitmap per group and object of at most 2^24 units (above: the sum of the
 reads' candidates, a bound, `groups-cells-bound`); filling it takes one
 pass per distinct candidate progression (reads with the same interval,
 residue and step mark once) plus the filtered small sets, so the work is
-at most that many passes times N; `cells-marked` counts the bits set.
+at most that many passes times N; `cells-marked` counts the bit writes,
+overlaps included.
 
 ## Measurements (Release, timeout 300 s)
 

@@ -14,7 +14,9 @@
 // addresses behind it (AccessOrigins), or nothing (no recorded access, a
 // shadow read, more than kMaxAddrs addresses). A read is
 //  - unknown: no map, a top map, an absolute entry (a loaded or numeric
-//    address: no provenance), or no base of nonzero size;
+//    address: no provenance), an address whose ARM provenance no A-INB
+//    condition names (Rules::armInbGap), an entry of an object of size
+//    >= 2^63, or no base of nonzero size;
 //  - known: on the bases of its map, each with an interval of offsets
 //    (arm-interval: every interval bounded; full-object: some interval top,
 //    then all the object's cells, resting on A-INB).
@@ -23,13 +25,14 @@
 //
 // Candidates of a known read on base b of size N: the offsets in
 // [0, N) ∩ I_b; for a read on one base whose index splits as b + rest (the
-// offset before narrowing for a narrowed read), also ∩ the unsigned interval
-// of rest (BvRanges) and the residue of rest's linear form (c mod 2^t, t the
-// trailing zeros common to its coefficients); the array's cells only (an
-// aligned word memory of k-unit cells: offsets 0 mod k); and, for at most
-// kDeciderFilter candidates, minus those the difference decider finds never
-// equal to rest. Exact given A-INB of the read's access (its offset is in
-// [0, N) when it executes).
+// offset before narrowing for a read narrowed in b), also ∩ the unsigned
+// interval of rest (BvRanges) and the residue of rest's linear form
+// (c mod 2^t, t the trailing zeros common to its coefficients); the
+// array's cells only (an aligned word memory of k-unit cells: offsets
+// 0 mod k when b's alignment is a multiple of k; else every unit); and,
+// for at most kDeciderFilter candidates, minus those the difference
+// decider finds never equal to rest. Exact given A-INB of the read's
+// access (its offset is in [0, N) when it executes).
 //
 // Per group G (R = its reads, U = the array's unknown reads, C = the
 // distinct candidate cells of R, arms = the sum of the candidates over R):
@@ -40,8 +43,10 @@
 //  - bit cost: keep x (aw + vw) against arms x vw (the mux) + the decoding,
 //    C x vw (the cells) + C x |U| x (aw + vw), aw / vw the index / value
 //    widths; the decoding is n x iw per distinct symbolic part of the
-//    indices (the selectors of S + c_1 and S + c_2 test S: shared, also by
-//    the arrays reading at S; counted at its first read), iw = ceil(log2 C);
+//    reads' offsets (rest's linear form; the index's for a read without
+//    rest: the selectors of S + c_1 and S + c_2 test S, shared, also by the
+//    arrays reading at S; counted at its first read), nothing for a read
+//    with at most one candidate, iw = ceil(log2 C);
 //  - converted: keep > 0 and cost < keep, by each measure (ratio 1,
 //    untuned).
 // Counts only, to decide whether the lowering is worth building.
@@ -119,7 +124,8 @@ struct CellsPlan {
   /// provenance no A-INB condition names (seam::Rules::armInbGap; set by
   /// the caller), and those touching an object the plan cannot use
   uint64_t readsInbGap = 0, readsUnusable = 0;
-  /// bits set in the cell bitmaps (the plan's own cost: one pass per
+  /// bit writes into the cell bitmaps, overlaps included (the plan's own
+  /// cost: one pass per
   /// distinct candidate progression of a group and base), groups whose C is
   /// a bound (an object over kMaxBitmap units)
   uint64_t cellsMarked = 0, groupsCellsBound = 0;

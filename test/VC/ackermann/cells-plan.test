@@ -92,6 +92,21 @@
 // GAP: vc.cells-plan-reads-inb-gap: 1
 // GAP: vc.cells-plan-groups: 1
 //
+// big: a read at b2 + i, b2 of size 2^63 (too big for the plan), and one
+// at b1 + j: the first is unknown, not planned on another base. ARM still
+// separates the pair by its bases.
+// RUN: sea-vc %t/big.mlir --ack-cells-plan --lower --seam 2>&1 | FileCheck %s --check-prefix=BIG
+// BIG: vc.cells-plan-reads-unknown: 1
+// BIG: vc.cells-plan-reads-unusable: 1
+// BIG: vc.cells-plan-arm-pairs-cross-base: 1
+// BIG: vc.cells-plan-arm-pairs-interval: 0
+//
+// two, narrowed: b's reads are narrowed. The bytes of the pointer at
+// b + 0..7 have one candidate each and cost no decoding; b + j is decoded
+// once (its offset before narrowing is the key).
+// RUN: sea-vc %t/two.mlir --ack-cells-plan --lower --seam --narrow-offsets --ack-stride=false --log=vc.cells-plan:2 2>&1 | FileCheck %s --check-prefix=TWONARROW
+// TWONARROW: log: vc.cells-plan group {{.*}}obj=heap.2 {{.*}}indices=1
+//
 // Off: without the premises, without the eager lowering; refused without
 // --seam. Without the switch: no line.
 // RUN: sea-vc %t/table.mlir --ack-cells-plan --lower --seam --seam-premises=0 2>&1 | FileCheck %s --check-prefix=NOPREM
@@ -375,6 +390,24 @@ sea.program @gap {
   %r = sea.load %m[%q] : !am -> i8
   %j = sea.nondet "j" [2] : i64
   %pj = sea.ptr.index %b2 [%j] strides [1] offset 0 : !sea.addr<64>, i64
+  %s = sea.load %m[%pj] : !am -> i8
+  %ok = sea.icmp eq, %r, %s : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- big.mlir
+!am = !sea.mem<!sea.addr<64>, i8>
+sea.program @big {
+  %b1 = sea.segment "heap.1" base -4096 : i64 size 16 : i64 align 1 kind "heap" : !sea.addr<64>
+  %b2 = sea.segment "heap.2" base 64 : i64 size -9223372036854775808 : i64 align 1 kind "heap" : !sea.addr<64>
+  %m = sea.mem.nondet "m" [0] : !am
+  %c = sea.nondet "c" [1] : i1
+  %i = sea.nondet "i" [2] : i64
+  %j = sea.nondet "j" [3] : i64
+  %p = sea.select %c, %b1, %b2 : !sea.addr<64>
+  %pi = sea.ptr.index %b2 [%i] strides [1] offset 0 : !sea.addr<64>, i64
+  %pj = sea.ptr.index %b1 [%j] strides [1] offset 0 : !sea.addr<64>, i64
+  %r = sea.load %m[%pi] : !am -> i8
   %s = sea.load %m[%pj] : !am -> i8
   %ok = sea.icmp eq, %r, %s : i8
   sea.assert %ok
