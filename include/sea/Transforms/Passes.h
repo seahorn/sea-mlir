@@ -110,7 +110,9 @@ std::unique_ptr<mlir::Pass> createExpandMemSetPass();
 /// = <K>} of i64 (K the largest; absent: none). Counted where the bound is
 /// made: one a later fold proves redundant, or whose memset the lowering
 /// erases, still counts (conservative). An under-approximation sea-vc
-/// reports as `assume.memset-bound: count=<n> bound=<K>`.
+/// reports as `assume.memset-bound: count=<n> bound=<K>`. Before, the same
+/// name was an i64 K on each such assume; sea-vc still counts those
+/// (programs lowered by an older sea-mlir).
 inline constexpr llvm::StringLiteral kMemSetBoundAttr = "sea.memset_bound";
 /// sea-expand-small-memmove: a memmove of a constant length <= maxBytes
 /// index units as loads of every source cell, then stores in address order

@@ -4871,9 +4871,6 @@ int main(int argc, char **argv) {
           .value("no reachable sea.halt")
           .note("every path is blocked; the assertion cannot fail");
   };
-  // the bounded expansions of symbolic memset / memmove lengths
-  // (sea-expand-memset, without --seam): assume(n <= K), an
-  // under-approximation the result rests on (assume.memset-bound)
   // the uses of the null object's address 0 placement made
   uint64_t nullUses = 0;
   program.walk([&](sea::SegmentOp seg) {
@@ -4982,7 +4979,12 @@ int main(int argc, char **argv) {
   uint64_t dropFreshInb = 0;
   if (auto n = program->getAttrOfType<IntegerAttr>(sea::kDropFreshInbAttr))
     dropFreshInb = n.getInt();
-  // (counted where sea-expand-memset made them)
+  // the bounded expansions of symbolic memset / memmove lengths
+  // (sea-expand-memset, without --seam): assume(n <= K), an
+  // under-approximation the result rests on (assume.memset-bound), counted
+  // where sea-expand-memset made them (the program's dictionary); a program
+  // lowered by an older sea-mlir (sea-vc without --lower) marks each assume
+  // with the i64 K instead: those count too
   uint64_t memsetBounds = 0, memsetBoundK = 0;
   if (auto d = program->getAttrOfType<DictionaryAttr>(sea::kMemSetBoundAttr)) {
     if (auto n = d.getAs<IntegerAttr>("count"))
@@ -4990,8 +4992,14 @@ int main(int argc, char **argv) {
     if (auto k = d.getAs<IntegerAttr>("bound"))
       memsetBoundK = k.getInt();
   }
-  // --sink-assumes: after the census of the assumes above (the pass erases
-  // them; the result rests on them all the same)
+  program.walk([&](sea::AssumeOp a) {
+    if (auto k = a->getAttrOfType<IntegerAttr>(sea::kMemSetBoundAttr)) {
+      ++memsetBounds;
+      memsetBoundK = std::max<uint64_t>(memsetBoundK, k.getInt());
+    }
+  });
+  // --sink-assumes: the pass erases assumes; the ledger above was counted
+  // where they were made
   unsigned sunkAssumes = 0;
   if (sinkAssumes) {
     // the chosen program only (a file may hold several)
