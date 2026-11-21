@@ -157,7 +157,8 @@ sea.program @nested {
 // The initial values of struct and pointer variables.
 // CHECK-LABEL: sea.program @initial_values
 // CHECK-DAG: sea.struct.nondet "s" [1] : !sea.struct<i8, !sea.ptr<64>>
-// CHECK-DAG: sea.ptr.nondet "p" [2] : !sea.ptr<64>
+// CHECK-DAG: sea.ptr.null : !sea.ptr<64>
+// CHECK-NOT: sea.ptr.nondet
 sea.program @initial_values {
   %s = seaimp.var "s" [1] : !seaimp.var<!sea.struct<i8, !sea.ptr<64>>>
   %p = seaimp.var "p" [2] : !seaimp.var<!sea.ptr<64>>

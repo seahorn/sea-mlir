@@ -21,7 +21,7 @@ def SeaImp_Dialect : Dialect {
   }];
   let cppNamespace = "::sea::imp";
   let useDefaultTypePrinterParser = 1;
-  // the lowering makes sea.nondet / sea.struct.nondet / sea.ptr.nondet
+  // the lowering makes sea.nondet / sea.struct.nondet / sea.ptr.null
   let dependentDialects = ["::sea::SeaDialect"];
 }
 

@@ -18,12 +18,13 @@ def SeaImp_VarOp : SeaImp_Op<"var", [
   let summary = "Declare a variable";
   let description = [{
     A variable holding one value of type `T`, read and written whole. A
-    read before any write gives the variable's initial value, one
-    nondeterministic value named by `name` and `site`: the lowering makes
-    it `sea.nondet "<name>" [<site>]` (integers), `sea.struct.nondet`
-    (structs: one bit-vector of the integer and address leaves, pointer
-    leaves null) or `sea.ptr.nondet` (pointers: never dereferenceable).
-    Every read before a write sees the same value. `site` is unique with
+    read before any write gives the variable's initial value: integers
+    start nondet, named by `name` and `site` (`sea.nondet "<name>" [<site>]`);
+    pointers start null (`sea.ptr.null`); structs are `sea.struct.nondet`
+    (one bit-vector of the integer and address leaves, pointer leaves null).
+    Programs are expected to set a variable before they get it; a pointer
+    read before it is set is not given a meaning beyond null. Every read
+    before a write sees the same value. `site` is unique with
     the program's other nondet sites.
 
     The op is in the entry block of a `sea.program`. Its result is used

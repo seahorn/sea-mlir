@@ -36,7 +36,8 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
 - `include/sea/Dialect/SeaImp/`, `lib/Dialect/SeaImp/` — `seaimp`, the
   imperative layer over sea: variables (`seaimp.var` / `get` / `set`),
   lowered to SSA values by `sea-lower-seaimp` (MLIR Mem2Reg; first in the
-  VC lowering; a read before any set = `sea.nondet "<name>" [<site>]`).
+  VC lowering; a read before any set = `sea.nondet "<name>" [<site>]` for integers,
+  `sea.ptr.null` for pointers).
   No runtime semantics, on purpose: an exception to the new-op rule below
   (no `Semantics.cpp`, no `check-semantics.py`, no interpreter tests);
   sea-run refuses seaimp ops, sea-vc lowers them first under `--lower` and

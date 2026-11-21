@@ -28,16 +28,18 @@ seaimp.set %x, %v : !seaimp.var<i32>
   refused until the region ops exist.
 - `seaimp.var "<name>" [<site>]` declares a variable. `get` reads the whole
   value, `set` replaces it.
-- A `get` that no `set` reaches reads the variable's initial value: one
-  nondeterministic value named by the variable's name and site, the same at
-  every such read (like LLVM's `freeze undef`, not `undef`; sea has no
-  undef). The lowering makes it:
+- A `get` that no `set` reaches reads the variable's initial value, the
+  same at every such read (like LLVM's `freeze undef`, not `undef`; sea has
+  no undef). The lowering makes it:
   - integers: `sea.nondet "<name>" [<site>]`;
   - structs: `sea.struct.nondet "<name>" [<site>]` (one bit-vector of the
     integer and address leaves; pointer leaves are null, as for every
     `sea.struct.nondet`);
-  - pointers: `sea.ptr.nondet "<name>" [<site>]` (a pointer to a fresh
-    object of size 0: not null, never dereferenceable).
+  - pointers: `sea.ptr.null`.
+
+  Integers start nondet; pointers start null. Programs are expected to set
+  a variable before they get it; a pointer read before it is set is not
+  given a meaning beyond null.
 - Effects: `var` allocates its result, `get` reads and `set` writes the
   handle. An unused `get` is dead to upstream DCE; CSE does not merge
   `get`s across a `set`.
@@ -68,8 +70,8 @@ any nondet: `nondet: site=<site> callee=<name> ...`.
 The site of a `seaimp.var` is unique together with the program's other
 nondet sites: `sea.program`'s verifier checks every op of the
 `NondetSiteOpInterface` (the sea nondet ops, memhavoc, allocations and
-`seaimp.var`). The lowering makes at most one nondet op per variable, with
-the variable's site, only if some `get` reads the initial value, and the
+`seaimp.var`). The lowering makes at most one nondet op per integer or struct
+variable, with the variable's site, only if some `get` reads the initial value, and the
 variable is gone afterwards: the lowered program's sites stay unique.
 
 ## Verifier: promotion cannot fail

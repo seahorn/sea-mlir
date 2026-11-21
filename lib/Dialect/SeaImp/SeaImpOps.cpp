@@ -61,10 +61,9 @@ Value VarOp::getDefaultValue(const MemorySlot &slot, OpBuilder &builder) {
     return sea::StructNondetOp::create(builder, loc, t, getNameAttr(),
                                        getSiteAttr());
   if (isa<sea::PtrType>(t))
-    return sea::PtrNondetOp::create(builder, loc, t, getNameAttr(),
-                                    getSiteAttr());
+    return sea::PtrNullOp::create(builder, loc, t);
   // VarType::verify admits only the types above
-  llvm_unreachable("seaimp.var of a type without a nondet initial value");
+  llvm_unreachable("seaimp.var of a type without a initial value");
 }
 
 void VarOp::handleBlockArgument(const MemorySlot &slot, BlockArgument argument,
