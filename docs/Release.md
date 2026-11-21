@@ -349,6 +349,11 @@ the check jobs below is run.
     address space.
 - **Bounded memset**: a symbolic-length memset is expanded up to a bound,
   with an explicit assume. It is reported as `assume.memset-bound`.
+- **Bounded symbolic allocations**: an allocation of non-constant size is
+  placed in `--max-symbolic-size` units (default 4096) with an explicit
+  assume that its size fits. It is reported as
+  `assume.symbolic-size-bound`; `--symbolic-size=assert` checks it instead
+  (`premise.failed`, exit status 4).
 - **Dropped memhavocs**: `--lower` of an abstract program removes a
   memhavoc of a fresh object (a no-op). That rests on A-SEP when an access
   of another object, or the memhavoc itself, could reach the object after
@@ -437,7 +442,6 @@ measurement and are not part of the supported configuration:
 | `--seam-pull-index` | pull a PTR_INDEX node through its first ite |
 | `--seam-resolve-ite-nodes=<N>` | resolve a loaded pointer through an ite of loaded values |
 | `--seam-pull-concat=<N>` | resolve a split pointer load through a shared ite |
-| `--seam-congruence` | decide addresses apart by divisibility |
 | `--seam-wide-ite-open` | W-ITE also for undecided ite leaf pairs (open, untuned) |
 | `--seam-leaf-split=0` | keep a read at an ite address whole (R-LEAVES off) |
 | `--seam-offset-leaves=0` | boundary byte expansion of a width term (--seam-wide) keeps a + k over an ite address (default 8 leaves, untuned) |

@@ -10,12 +10,14 @@ add_mlir_library(SeaTransforms
   PlaceStatic.cpp
   ScalarizeStructs.cpp
   SplitCriticalEdges.cpp
+  SplitAsserts.cpp
   SplitAtChecks.cpp
   ReachTarget.cpp
   MergeAsserts.cpp
   SinkAssumes.cpp
   LowerPtrIndex.cpp
   CheckAlign.cpp
+  CheckInb.cpp
   CheckPtrIndex.cpp
   WidenMemory.cpp
   ApplyTracking.cpp

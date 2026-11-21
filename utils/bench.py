@@ -60,6 +60,8 @@ COMMANDS:
 OUTPUT of run: stats.csv (job config rep wall cpu status verdict + every BRUNCH_STAT key),
   logs/<config>/<job>.<rep>.{out,err}, manifest.yaml (sea-vc sha256, git rev/dirty, configs, host, date), rows.jsonl.
   verdict: sat unsat unknown timeout memout error inb-violation (rc 4) replay-mismatch (rc 2)
+  premise-failed (rc 4 with a `premise.failed:` line: the replay failed a premise assert,
+  --symbolic-size=assert, not the property; inconclusive),
   lowering-mismatch (rc 6: --replay-original, the input program does not fail the lowered sat's assertion),
   original-memory-error (rc 4 with replay.original match=no: the input program makes a memory-safety violation),
   check-invalid (rc 5: --seam-check / --narrow-check found an invalid rewrite), check-unproven (rc 7:
@@ -101,7 +103,7 @@ SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SE
     FAILS (exit 1) on: verdict != expected (sat/unsat jobs; timeout/unknown counts), replay-mismatch (rc 2),
     lowering-mismatch (rc 6), original-memory-error (rc 4 under --replay-original) on a gated job,
     replay-impossible (a sat whose model cannot be replayed) unless the job has `replay: impossible`,
-    error / inb-violation on a gated job (unknown-ok too; memout there is allowed), sat vs unsat between two configs (DISAGREE-SAT-UNSAT),
+    error / inb-violation / premise-failed on a gated job (unknown-ok too; memout there is allowed), sat vs unsat between two configs (DISAGREE-SAT-UNSAT),
     and (`FAIL: counter ...`, counted apart as counter-failures) a solved job of config `default` whose
     counter breaks its bound or is missing from the output (--no-counters: skip). --tag T: only jobs tagged T
     (`canary`: the small cross-family set, `just bench-canary`).
@@ -458,6 +460,10 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
         # --replay-original: the input program makes a memory-safety
         # violation and fails no assertion of the lowered sat
         verdict = "original-memory-error"
+    elif rc == 4 and re.search(r'^premise\.failed:|"kind":"premise"', out, re.M):
+        # --symbolic-size=assert: the replay failed a premise assert (an
+        # allocation exceeded its room), not the property
+        verdict = "premise-failed"
     elif rc == 4:
         verdict = "inb-violation"
     elif rc == 2:
@@ -1293,6 +1299,7 @@ def cmd_gate(a):
             in (
                 "error",
                 "inb-violation",
+                "premise-failed",
                 "original-memory-error",
                 "check-invalid",
                 "check-unproven",

@@ -244,7 +244,9 @@ The gate fails (exit 1) on
 - `lowering-mismatch` (sea-vc rc 6: the program before the lowering does
   not fail the assertion of the lowered program's `sat`);
 - on an `unknown-ok` job (below the hard tier), the verdicts `error`,
-  `inb-violation`, `original-memory-error`, `check-invalid` (sea-vc rc 5:
+  `inb-violation`, `premise-failed` (sea-vc rc 4 with a `premise.failed:`
+  line: `--symbolic-size=assert`, the replay failed a premise assert, not
+  the property), `original-memory-error`, `check-invalid` (sea-vc rc 5:
   `--seam-check` / `--narrow-check` found an invalid rewrite) and
   `check-unproven` (rc 7: `--narrow-check` left a narrowed read unproven);
   on a sat / unsat job they are `unsolved`;

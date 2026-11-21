@@ -150,7 +150,7 @@ its alignment. Options:
 | `width` | 64 | address width W |
 | `reuse` | off | let objects with disjoint lifetimes share space (smaller address space; hides use-after-free, so off when checking memory safety) |
 | `max-symbolic-size` | 4096 | the room reserved for an allocation whose size is not a constant |
-| `symbolic-size` | `assume` | `assume`: insert `sea.assume(size <= max)`; `assert`: insert `sea.assert(size <= max)`; `refuse`: error |
+| `symbolic-size` | `assume` | `assume`: insert `sea.assume(size <= max)`, counted on the program, `sea.symbolic_size_bound = {allocs, room}` (sea-vc: `assume.symbolic-size-bound`; counted where it is made, so it may include bounds the answer no longer needs); `assert`: insert `sea.assert(size <= max)`, a premise assert marked `sea.premise = "symbolic-size-bound"`; `refuse`: error |
 | `layout` | `seahorn` | segment bases and stack window (SeaHorn's constants) |
 | `place-out` | none | write the placement to a file, one object per line |
 | `place-in` | none | take the bases from such a file instead of computing them |
@@ -179,6 +179,22 @@ before export, so this is an error, not a feature gap).
 the bound silently, `--horn-opsem-max-symb-alloc`). `assert` stays an
 option: in SeaHorn it was hard to insert an assertion at VC-generation
 time; in this design the placement pass can simply insert one.
+`sea-vc --symbolic-size` and `--max-symbolic-size` set both options. The
+assumption is a named one of the ledger (`assume.symbolic-size-bound:
+allocs=<n> room=<r>`); the 4096 comes from SeaHorn and is not tuned.
+
+**Premise asserts.** The assert of `symbolic-size=assert` is not a
+property of the program: it checks a premise the answer would otherwise
+rest on. It carries `sea.premise = "symbolic-size-bound"`, which
+`sea-merge-asserts` copies onto the branches it makes of the assert (as
+the assert id), canonicalize and `sea-prune-edges` drop from a branch whose
+assert held, and the check jobs (`--check-align`, `--check-ptr-index`)
+keep when they drop the program's asserts. A replay that fails it is
+`premise.failed: symbolic-size-bound size=<n> room=<r> at=<allocation>`,
+exit status 4 (inconclusive, as a `sat` that breaks the in-bounds
+premise): the counterexample says nothing about the property. A bound on
+the size in the harness passes it; so can a rerun with
+`--max-symbolic-size` $\ge n$ if placement can give that much room.
 
 **Decided: functions get proper addresses.** `sea.func_addr @f` is placed
 like a size-0 object in the text segment, as SeaHorn's `falloc` does:

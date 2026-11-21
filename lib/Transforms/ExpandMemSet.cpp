@@ -34,8 +34,9 @@
 //   Produces: no sea.memset / sea.memmove whose length is not a sea.const
 //     (checked); a
 //     sea.assume (mode=assume, default) or sea.assert (mode=assert: several
-//     asserts, not BMC form) of n <= K per expanded memset (an assume
-//     carries {sea.memset_bound = K}, kMemSetBoundAttr); new blocks
+//     asserts, not BMC form) of n <= K per expanded memset (the assumes
+//     counted on the program: {sea.memset_bound = {count, bound}},
+//     kMemSetBoundAttr); new blocks
 //     with critical edges (sea-split-critical-edges runs after).
 //
 //===----------------------------------------------------------------------===//
@@ -82,13 +83,34 @@ public:
 
 static bool isConstant(Value v) { return v.getDefiningOp<ConstOp>(); }
 
-/// The assume of a bound (mode=assume) carries the bound K as the
-/// discardable attribute sea.memset_bound: the under-approximation stays
-/// visible in the program, and sea-vc reports it (assume.memset-bound).
-static void markBound(AssumeOp a, uint64_t k) {
-  a->setAttr(kMemSetBoundAttr,
-             IntegerAttr::get(IntegerType::get(a->getContext(), 64), k));
-}
+/// The bounds of mode=assume, counted where they are made: the program
+/// attribute sea.memset_bound = {count, bound} (kMemSetBoundAttr; added to
+/// the counts already there), which sea-vc reports (assume.memset-bound).
+/// A bound a later fold proves redundant, or whose memset the lowering
+/// erases, still counts (conservative).
+struct BoundCount {
+  uint64_t count = 0, bound = 0;
+  void note(uint64_t k) {
+    ++count;
+    bound = std::max(bound, k);
+  }
+  void record(ProgramOp program) const {
+    if (!count)
+      return;
+    uint64_t n = count, k = bound;
+    if (auto d = program->getAttrOfType<DictionaryAttr>(kMemSetBoundAttr)) {
+      if (auto c = d.getAs<IntegerAttr>("count"))
+        n += c.getInt();
+      if (auto b = d.getAs<IntegerAttr>("bound"))
+        k = std::max<uint64_t>(k, b.getInt());
+    }
+    Builder b(program.getContext());
+    program->setAttr(
+        kMemSetBoundAttr,
+        b.getDictionaryAttr({b.getNamedAttr("count", b.getI64IntegerAttr(n)),
+                             b.getNamedAttr("bound", b.getI64IntegerAttr(k))}));
+  }
+};
 
 /// Block ids (kBlockIdsAttr), if the program has them: `before` keeps the
 /// ids of the expanded op's block, `join` is a piece of it; the blocks of
@@ -108,6 +130,7 @@ void ExpandMemSetPass::runOnOperation() {
     return signalPassFailure();
   }
   OpBuilder b(&getContext());
+  BoundCount bounds;
   BlockIdNamer ids(getOperation());
   SmallVector<MemSetOp> todo;
   SmallVector<MemMoveOp> moves;
@@ -167,9 +190,10 @@ void ExpandMemSetPass::runOnOperation() {
     BlockArgument result = join->addArgument(memTy, loc);
     b.setInsertionPointToEnd(before);
     Value fits = ICmpOp::create(b, loc, ICmpPredicate::ule, n, cst(k));
-    if (mode == "assume")
-      markBound(AssumeOp::create(b, loc, fits), k);
-    else
+    if (mode == "assume") {
+      AssumeOp::create(b, loc, fits);
+      bounds.note(k);
+    } else
       AssertOp::create(b, loc, fits);
 
     // The chain ^c0 .. ^cK, each with the current memory version.
@@ -245,9 +269,10 @@ void ExpandMemSetPass::runOnOperation() {
     BlockArgument result = join->addArgument(memTy, loc);
     b.setInsertionPointToEnd(before);
     Value fits = ICmpOp::create(b, loc, ICmpPredicate::ule, n, cst(k));
-    if (mode == "assume")
-      markBound(AssumeOp::create(b, loc, fits), k);
-    else
+    if (mode == "assume") {
+      AssumeOp::create(b, loc, fits);
+      bounds.note(k);
+    } else
       AssertOp::create(b, loc, fits);
     Value none = ICmpOp::create(b, loc, ICmpPredicate::eq, n, cst(0));
     Block *read = b.createBlock(join);
@@ -287,6 +312,8 @@ void ExpandMemSetPass::runOnOperation() {
     op.getResult().replaceAllUsesWith(result);
     op.erase();
   }
+
+  bounds.record(getOperation());
 
   getOperation().walk([&](MemMoveOp op) {
     if (!isConstant(op.getLen())) {

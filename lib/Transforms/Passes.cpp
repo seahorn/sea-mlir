@@ -141,6 +141,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Transforms/Passes.h"
+#include "llvm/ADT/DenseSet.h"
 
 using namespace mlir;
 
@@ -181,6 +182,52 @@ static std::optional<APInt> foldConstant(Value v, unsigned depth) {
   if (auto r = dyn_cast<Value>(folded[0]); r && r != v)
     return foldConstant(r, depth + 1); // select of an arm
   return std::nullopt;
+}
+
+/// May `p` be the null pointer? No only if every source (through ptr.add /
+/// ptr.index bases, select and block arguments) is an object: an
+/// allocation, a global, a function address.
+bool mayBeNullPointer(Value p) {
+  llvm::DenseSet<Value> seen;
+  SmallVector<Value> work{p};
+  while (!work.empty()) {
+    Value v = work.pop_back_val();
+    if (!seen.insert(v).second)
+      continue;
+    if (auto arg = dyn_cast<BlockArgument>(v)) {
+      Block *b = arg.getOwner();
+      if (b->hasNoPredecessors())
+        return true;
+      for (auto it = b->pred_begin(); it != b->pred_end(); ++it) {
+        auto br = dyn_cast<BranchOpInterface>((*it)->getTerminator());
+        Value in = br ? br.getSuccessorOperands(
+                            it.getSuccessorIndex())[arg.getArgNumber()]
+                      : Value();
+        if (!in)
+          return true;
+        work.push_back(in);
+      }
+      continue;
+    }
+    Operation *def = v.getDefiningOp();
+    if (isa<AllocaOp, MallocOp, GlobalOp, FuncAddrOp>(def))
+      continue;
+    if (auto add = dyn_cast<PtrAddOp>(def)) {
+      work.push_back(add.getPtr());
+      continue;
+    }
+    if (auto pi = dyn_cast<PtrIndexOp>(def)) {
+      work.push_back(pi.getBase());
+      continue;
+    }
+    if (auto sel = dyn_cast<SelectOp>(def)) {
+      work.push_back(sel.getTrueValue());
+      work.push_back(sel.getFalseValue());
+      continue;
+    }
+    return true; // null, a loaded or nondet pointer, anything else
+  }
+  return false;
 }
 
 std::optional<APInt> foldConstant(Value v) { return foldConstant(v, 0); }
@@ -286,6 +333,7 @@ void registerPasses() {
   registerPass([] { return createGuardNullMemHavocPass(); });
   registerPass([] { return createSplitWideAccessPass(); });
   registerPass([] { return createMergeAssertsPass(); });
+  registerPass([] { return createSplitAssertsPass(); });
   registerPass([] { return createSinkAssumesPass(); });
   registerPass([] { return createRangeFoldPass(); });
   registerPass([] { return createAssumeFoldPass(); });
@@ -294,6 +342,7 @@ void registerPasses() {
   registerPass([] { return createLowerPtrIndexPass(); });
   registerPass([] { return createCheckAlignPass(); });
   registerPass([] { return createCheckPtrIndexPass(); });
+  registerPass([] { return createCheckInbPass(); });
   registerPass([] { return createExpandIntrinsicsPass(); });
   registerPass([] { return createWrapFlagsPass(); });
   registerPass([] { return createPrintStrengthenPass(); });
@@ -323,58 +372,51 @@ void addPrintRefsPass(OpPassManager &pm, PrintRefs refs) {
     pm.nest<ProgramOp>().addPass(createPrintStrengthenPass());
 }
 
-void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
-                             bool nativeMulOverflow, bool fold,
-                             unsigned widenMemory, bool expandMemSet,
-                             bool widenReport, bool keepByteWide,
-                             bool checkAlign, unsigned checkPtrIndex, bool opt,
-                             bool memhavocNullNoop, unsigned disable,
-                             const PlaceFiles &place, RangeFoldMode rangeFold,
-                             unsigned expandMemMove, bool ptrCompanion,
-                             unsigned boxAllExpand, bool widenPerClass) {
-  const bool cse = opt && !(disable & LowerDisableCse);
-  const bool canonicalize = opt && !(disable & LowerDisableCanonicalize);
-  OpPassManager &prog = pm.nest<ProgramOp>();
+void addVCLowerPrefix(OpPassManager &prog, const VCLowerConfig &c) {
+  const bool cse = c.opt && !(c.disable & LowerDisableCse);
   prog.addPass(createApplyTrackingPass());
   // claims over index boxes, before anything else sees a region op
-  prog.addPass(createLowerBoxAllPass(boxAllExpand));
-  if (fold && !(disable & LowerDisableSccp))
+  prog.addPass(createLowerBoxAllPass(c.boxAllExpand));
+  if (c.fold && !(c.disable & LowerDisableSccp))
     prog.addPass(createSCCPPass());
   if (cse)
     prog.addPass(createCSEPass());
   prog.addPass(createScalarizeStructsPass());
-  if (abstract) {
+}
+
+void addVCLowerMemory(OpPassManager &prog, const VCLowerConfig &c) {
+  if (c.abstract) {
     // object metadata, while pointers still know their objects
-    prog.addPass(createDropFreshMemHavocPass(memhavocNullNoop));
+    prog.addPass(createDropFreshMemHavocPass(c.memhavocNullNoop));
     // memhavoc of null is a no-op (an open semantics decision, as in the
     // interpreter): explicit in the program, for every VC encoding
-    if (memhavocNullNoop)
+    if (c.memhavocNullNoop)
       prog.addPass(createGuardNullMemHavocPass());
     prog.addPass(createLowerTrackingPass());
     prog.addPass(createLowerFatPointersPass());
-    prog.addPass(createPlaceStaticPass(place));
-  } else if (!place.in.empty() || !place.out.empty()) {
+    prog.addPass(createPlaceStaticPass(c.place));
+  } else if (!c.place.in.empty() || !c.place.out.empty()) {
     // nothing to place; the file is still read (checked) or written (empty)
-    prog.addPass(createPlaceStaticPass(place));
+    prog.addPass(createPlaceStaticPass(c.place));
   }
   // the A-ALIGN discharge job: every `align` promise asserted while the
   // promises are all still there (widening relies on them, splitting drops
   // them)
-  if (checkAlign)
+  if (c.checkAlign)
     prog.addPass(createCheckAlignPass());
   // the GEP promise job: every promise asserted at the accesses that use it
-  if (checkPtrIndex)
-    prog.addPass(createCheckPtrIndexPass(checkPtrIndex == 2));
+  if (c.checkPtrIndex)
+    prog.addPass(createCheckPtrIndexPass(c.checkPtrIndex == 2));
   // after the metadata lowerings (their shadow / companion memories widen
   // too) and placement (constant addresses prove alignment)
-  if (widenMemory) {
+  if (c.widenMemory) {
     auto widen = createWidenMemoryPass();
-    if (failed(
-            widen->initializeOptions(("k=" + llvm::Twine(widenMemory) +
-                                      (widenReport ? " report=true" : "") +
-                                      (widenPerClass ? "" : " per-class=false"))
-                                         .str(),
-                                     [](const Twine &) { return failure(); })))
+    if (failed(widen->initializeOptions(
+            ("k=" + llvm::Twine(c.widenMemory) +
+             (c.widenReport ? " report=true" : "") +
+             (c.widenPerClass ? "" : " per-class=false"))
+                .str(),
+            [](const Twine &) { return failure(); })))
       llvm::report_fatal_error("sea-widen-memory: bad k");
     prog.addPass(std::move(widen));
   }
@@ -382,32 +424,52 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
   // lowerings (a keyed companion memmove is expanded only with its data
   // memmove) and widening (word layouts are kept); before
   // sea-expand-memset, which leaves constant lengths alone
-  if (expandMemMove)
-    prog.addPass(createExpandSmallMemMovePass(expandMemMove, ptrCompanion));
+  if (c.expandMemMove)
+    prog.addPass(createExpandSmallMemMovePass(c.expandMemMove, c.ptrCompanion));
   // symbolic memset / memmove lengths: a bounded expansion with an explicit
   // assume (n <= K) for the array encoding; not with memory-operation terms
   // (sea-vc --seam), which are exact for every length
-  if (expandMemSet)
+  if (c.expandMemSet)
     prog.addPass(createExpandMemSetPass());
+}
+
+void addVCAssumeFold(OpPassManager &prog, const VCLowerConfig &c) {
   // uses of i1 values that dominating assumes and asserts, or the edges
   // into a block, fix: constants, on the program's own asserts (before
   // they are merged); canonicalize folds the branches and erases the dead
   // blocks
-  if (fold && !(disable & LowerDisableAssumeFold))
+  if (c.fold && !(c.disable & LowerDisableAssumeFold))
     prog.addPass(createAssumeFoldPass());
-  // multi-assert: BMC form (one assert before the one halt)
-  prog.addPass(createMergeAssertsPass());
-  prog.addPass(createSplitWideAccessPass(keepByteWide));
-  prog.addPass(createExpandIntrinsicsPass(nativeMulOverflow));
+}
+
+void addVCOptimizeChecks(OpPassManager &prog, const VCLowerConfig &c) {
+  const bool cse = c.opt && !(c.disable & LowerDisableCse);
+  const bool canonicalize = c.opt && !(c.disable & LowerDisableCanonicalize);
+  if (c.fold && !(c.disable & LowerDisableSccp))
+    prog.addPass(createSCCPPass());
+  if (cse)
+    prog.addPass(createCSEPass());
+  addVCAssumeFold(prog, c);
+  if (canonicalize)
+    prog.addPass(createCanonicalizerPass());
+  if (cse)
+    prog.addPass(createCSEPass());
+}
+
+void addVCLowerTail(OpPassManager &prog, const VCLowerConfig &c) {
+  const bool cse = c.opt && !(c.disable & LowerDisableCse);
+  const bool canonicalize = c.opt && !(c.disable & LowerDisableCanonicalize);
+  prog.addPass(createSplitWideAccessPass(c.keepByteWide));
+  prog.addPass(createExpandIntrinsicsPass(c.nativeMulOverflow));
   // facts of dominating assumes settle comparisons: on the program every
   // lowering made (their icmps too: expanded intrinsics, fat-pointer
   // bounds), after a cse (one SSA value per computation: a fact on one
   // copy is a fact on all), before canonicalize, which then folds the
   // constants and branches it leaves
-  if (rangeFold != RangeFoldMode::Off) {
+  if (c.rangeFold != RangeFoldMode::Off) {
     if (cse)
       prog.addPass(createCSEPass());
-    prog.addPass(createRangeFoldPass(rangeFold));
+    prog.addPass(createRangeFoldPass(c.rangeFold));
   }
   if (canonicalize)
     prog.addPass(createCanonicalizerPass());
@@ -417,8 +479,8 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
   // that falsify the target's assume; targets that only block), to a
   // fixpoint with assume-fold, canonicalize and cse; after the clean-up,
   // which makes the constants and unreachable-only blocks it reads
-  if (fold && !(disable & LowerDisablePruneEdges))
-    prog.addPass(createPruneEdgesPass(!(disable & LowerDisableAssumeFold),
+  if (c.fold && !(c.disable & LowerDisablePruneEdges))
+    prog.addPass(createPruneEdgesPass(!(c.disable & LowerDisableAssumeFold),
                                       canonicalize, cse));
   // Constant-branch folding may erase the only assertion and halt. Restore
   // BMC form, including the trivially safe case, after CFG simplification.
@@ -428,6 +490,45 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
   prog.addPass(createSplitCriticalEdgesPass());
   // sea.ptr.index stays: the VC encodes it (docs/design/PtrIndex.md).
   // sea-lower-ptr-index provides a standalone arithmetic lowering.
+}
+
+void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
+                             bool nativeMulOverflow, bool fold,
+                             unsigned widenMemory, bool expandMemSet,
+                             bool widenReport, bool keepByteWide,
+                             bool checkAlign, unsigned checkPtrIndex, bool opt,
+                             bool memhavocNullNoop, unsigned disable,
+                             const PlaceFiles &place, RangeFoldMode rangeFold,
+                             unsigned expandMemMove, bool ptrCompanion,
+                             unsigned boxAllExpand, bool widenPerClass) {
+  VCLowerConfig c;
+  c.abstract = abstract;
+  c.nativeMulOverflow = nativeMulOverflow;
+  c.fold = fold;
+  c.widenMemory = widenMemory;
+  c.expandMemSet = expandMemSet;
+  c.widenReport = widenReport;
+  c.keepByteWide = keepByteWide;
+  c.checkAlign = checkAlign;
+  c.checkPtrIndex = checkPtrIndex;
+  c.opt = opt;
+  c.memhavocNullNoop = memhavocNullNoop;
+  c.disable = disable;
+  c.place = place;
+  c.rangeFold = rangeFold;
+  c.expandMemMove = expandMemMove;
+  c.ptrCompanion = ptrCompanion;
+  c.boxAllExpand = boxAllExpand;
+  c.widenPerClass = widenPerClass;
+  OpPassManager &prog = pm.nest<ProgramOp>();
+  // the stages, in order: prefix, memory lowering, the fold of facts,
+  // uniquing (merge), tail
+  addVCLowerPrefix(prog, c);
+  addVCLowerMemory(prog, c);
+  addVCAssumeFold(prog, c);
+  // multi-assert: BMC form (one assert before the one halt)
+  prog.addPass(createMergeAssertsPass());
+  addVCLowerTail(prog, c);
 }
 
 } // namespace sea

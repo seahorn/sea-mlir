@@ -11,15 +11,17 @@
 // (destination and source) with `align a`, a >= 2,
 //     sea.assert ((address as an integer) & (a - 1)) == 0
 // The program's own asserts are dropped (the job checks alignment on every
-// execution, not the functional property); sea-merge-asserts then makes the
-// BMC form. Run after placement (addresses exist) and before
+// execution, not the functional property); premise asserts (kPremiseAttr,
+// placement's symbolic-size=assert) stay: they are not the property, and
+// nothing assumes them. sea-merge-asserts then makes the BMC form. Run
+// after placement (addresses exist) and before
 // sea-widen-memory / sea-split-wide-access, which rely on or drop the
 // promises: the check sees every original promise.
 //
 // Contract.
 //   Accepts: a placed program (pointer values have addresses).
 //   Produces: one assert per promised access (counted: `checks`), no
-//     original assert.
+//     original assert but the premise asserts.
 //
 //===----------------------------------------------------------------------===//
 
@@ -54,7 +56,10 @@ void CheckAlignPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
   OpBuilder b(ctx);
   SmallVector<AssertOp> original;
-  program.walk([&](AssertOp a) { original.push_back(a); });
+  program.walk([&](AssertOp a) {
+    if (!a->hasAttr(kPremiseAttr))
+      original.push_back(a);
+  });
   auto check = [&](Operation *op, Value addr, std::optional<uint64_t> align) {
     if (!align || *align < 2)
       return;

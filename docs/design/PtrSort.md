@@ -257,14 +257,35 @@ the abstract program, only for a corpus that needs it; vcc has none).
     without failing it. The sat is confirmed (exit 0) when some guard
     fails; otherwise it is `vc.replay-no-failure` (exit 2), as for an
     assertion sat whose replay does not fail the assertion.
-- `--seam-congruence` (off by default, rule cmp.congruence in decidePair,
-  exact, no premise). Two addresses differ when their difference is
-  `sum c_k x_k + d` with 2^t dividing every c_k and not d, as in table
-  slots read a byte apart (8i + 1 vs 8j). [OBS] vcc-pi2: it fires 40,264
-  times in 11 hash jobs; queries are identical (md5) and verdicts are the
-  same. The pairs are decided later anyway (by ARM, which runs after it).
-  In the unit test (`test/VC/seam/congruence.mlir`) nothing else decides
-  them.
+- `--seam-congruence` (on by default, `--seam-congruence=false` off; rule
+  cmp.congruence in decidePair, exact, no premise). Two addresses differ
+  when their difference is `sum c_k x_k + d` with 2^t dividing every c_k
+  and not d, as in table slots read a byte apart (8i + 1 vs 8j). [OBS]
+  vcc-pi2: it fires 40,264 times in 11 hash jobs; queries are identical
+  (md5) and verdicts are the same. The pairs are decided later anyway (by
+  ARM, which runs after it). That was why it was off.
+  It is on because of table slots indexed by a loaded value: a read of
+  slot[i] over a store to slot[j], j loaded from memory, with 32-byte
+  slots and fields 12 bytes apart, compares `32i + 8` with `32j + 20`
+  (`32i - 12 = 32 zext(j)` after the base cancels). ARM gives j no
+  range, so ARM does not decide the pair. The bit-vector rule
+  bv.eq.low-zero2 also decides such compares after SeaM, once they are
+  linear (`32i - 12 = 32 zext(j)`); cmp.congruence decides them earlier,
+  in SeaM, where the store is skipped (row.store-skip). It decides them
+  exactly and without a premise, so fewer read-over-write chains and alias
+  questions reach the query and the query is smaller.
+  [OBS] firedancer step-reach-sz (`--lower --seam --widen-memory=4`): the
+  rule fires 1601 times, row.store-skip goes from 269 to 1870, open alias
+  questions from 858 to 678, and the query is 3.5% smaller. No solver
+  claim is made: over 32 seeds the CNF after bit-blasting is nearly the
+  same with and without the rule, and time differences on this job and on
+  txn-pf-legacy-reach were seed and term-order variance. One measurement
+  (32 seeds, step-reach-sz, z3 master): runs that finish in easy mode go
+  from 11/32 to 19/32 (Mann-Whitney z = 2.1), with no change from let-order
+  shuffles.
+  Tests: `test/VC/seam/congruence.mlir` (byte slots; the rule, bv.eq.low-zero2
+  and neither) and `test/VC/seam/low-zero2.mlir` (the table-slot shape,
+  reduced; default, `--seam-congruence=false`, and with `--seam-simplify=0`).
 - Census of same-object alias questions (D13). An undecided same-base
   compare is reduced by `overlap` to an integer compare of the offsets, so
   there is no pointer left to mark. The W-BYTE-IN guard `(j - i) <u w` is

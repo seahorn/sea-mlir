@@ -93,6 +93,9 @@ SeaMOptions simpOpts() {
   o.assumePremises = false;
   o.arm = false;
   o.storeMap = false;
+  // as OpSem without --seam: cmp.congruence would decide 24x = 7 before
+  // bv.eq.low-zero
+  o.congruence = false;
   return o;
 }
 
@@ -427,6 +430,52 @@ void testEq() {
                           F.nary<BMUL>({F.y, F.num(16)})),
                   F.num(4)),
            F.f, {"bv.eq.low-zero"});
+  // terms on both sides, A + d = B (bv.eq.low-zero2): false iff d is not 0
+  // mod 2^z, z = the low zero bits of both sides; each verdict checked with
+  // z3 (unsat / sat) before it was coded. Width 1 is left out: the cases
+  // need w >= 6 (coefficient 32, 2^(w-2))
+  for (unsigned w : {8u, 32u, 64u, 128u}) {
+    std::string ws = std::to_string(w);
+    Expr xw = F.var(("x" + ws).c_str(), w), yw = F.var(("y" + ws).c_str(), w);
+    auto n = [&](const mpz_class &v) {
+      return F.num_(smallarith::ref::modPow2(v, w), w);
+    };
+    auto mul = [&](const Expr &v, const mpz_class &c) {
+      return F.nary<BMUL>({v, n(c)});
+    };
+    auto add2 = [&](const Expr &a, const mpz_class &d) {
+      return F.nary<BADD>({a, n(d)});
+    };
+    auto no = [&](const std::string &name, const Expr &in) {
+      std::string id = "low-zero2-" + name + "-w" + ws;
+      F.expect(id.c_str(), in, F.f, {"bv.eq.low-zero2"});
+    };
+    auto open = [&](const std::string &name, const Expr &in) {
+      std::string id = "low-zero2-" + name + "-w" + ws;
+      RewriteStats st;
+      Expr out = F.rewrite(in, st);
+      CHECK(out != F.f, id << ": refused");
+      CHECK(st.get("bv.eq.low-zero2") == 0,
+            id << ": counter bv.eq.low-zero2 fired");
+      CHECK(F.equivalent(in, out), id << ": unsound");
+    };
+    mpz_class top = mpz_class(1L) << (w - 1);
+    mpz_class quarter = mpz_class(1L) << (w - 2);
+    no("32-20", mk<EQ>(add2(mul(xw, 32), 20), mul(yw, 32)));
+    no("8-1", mk<EQ>(add2(mul(xw, 8), 1), mul(yw, 8)));
+    no("24-4-8", mk<EQ>(add2(mul(xw, 24), 4), mul(yw, 8)));
+    // the mirror of 32-20: one of the two orientations is swapped (d = -20)
+    no("swap", mk<EQ>(add2(mul(yw, 32), 20), mul(xw, 32)));
+    // d = -12 = 2^w - 12: 20 mod 32 (the step-reach-sz shape)
+    no("minus12", mk<EQ>(add2(mul(xw, 32), -12), mul(yw, 32)));
+    // wrap: z = w - 1, d = 2^(w-2)
+    no("wrap", mk<EQ>(add2(mul(xw, top), quarter), mul(yw, top)));
+    open("32-32", mk<EQ>(add2(mul(xw, 32), 32), mul(yw, 32)));
+    open("8-4", mk<EQ>(mul(xw, 8), mul(yw, 4)));
+    open("odd", mk<EQ>(add2(mul(xw, 3), 4), mul(yw, 8)));
+    // wrap: z = w - 2, d = 2^(w-1) is 0 mod 2^z (x = 0, y = 2 is a model)
+    open("wrap-ok", mk<EQ>(add2(mul(xw, quarter), top), mul(yw, quarter)));
+  }
   // Boolean literals
   F.expect("bool-true", mk<EQ>(F.p, F.t), F.p, {"bv.eq.bool"});
   F.expect("bool-false", mk<EQ>(F.f, F.p), mk<NEG>(F.p), {"bv.eq.bool"});

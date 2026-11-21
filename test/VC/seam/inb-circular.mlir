@@ -13,6 +13,15 @@
 // RUN: sea-vc %s --lower --solver=z3 --seam 2>&1 | FileCheck %s --check-prefix=SEAM
 // RUN: %if yices %{ sea-vc %s --lower --solver=yices --seam 2>&1 | FileCheck %s --check-prefix=SEAM %}
 // RUN: sea-vc %s --lower --solver=z3 --seam --seam-simplify=0 2>&1 | FileCheck %s --check-prefix=SEAM
+// The A-INB discharge job (--check-inb) finds the out-of-bounds store: a
+// bounds check before every access, each check's part assuming the checks
+// before it, so no rewrite under A-INB of a later access hides it.
+// RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=JOB
+// RUN: %if yices %{ sea-vc %s --check-inb --lower --seam --ackermannize=off --solver=yices | FileCheck %s --check-prefix=JOB %}
+// RUN: %if bitwuzla %{ sea-vc %s --check-inb --lower --seam --ackermannize=off --solver=bitwuzla | FileCheck %s --check-prefix=JOB %}
+// JOB: check-inb.part: {{.*}}inb-circular.mlir:45:{{[0-9]+}} result=sat status=0
+// JOB: check-inb.discharges: none
+// JOB: result: sat
 // PLAIN: result: sat
 // PLAIN: replay: assert-failed
 // NOINB: seam.premises: off

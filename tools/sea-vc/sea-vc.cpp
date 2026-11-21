@@ -9,6 +9,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "ArithStats.h"
+#include "CheckInbJob.h"
 #include "EqAudit.h"
 #include "sea/Dialect/Sea/SeaDialect.h"
 #include "sea/Dialect/Sea/SeaOps.h"
@@ -61,6 +62,7 @@
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Support/Timing.h"
 #include "llvm/ADT/DenseSet.h"
@@ -197,6 +199,25 @@ static cl::opt<std::string> placeIn(
              "error (place.in-unplaced)"),
     cl::value_desc("file"));
 
+static cl::opt<std::string> symbolicSizeOpt(
+    "symbolic-size",
+    cl::desc("With --lower, an abstract program: how placement bounds an "
+             "allocation of non-constant size, which gets "
+             "--max-symbolic-size units of room: assume (default; "
+             "`assume.symbolic-size-bound: allocs=<n> room=<r>`, warning "
+             "place.symbolic-size-assume), assert (a premise assert: a run "
+             "whose size exceeds the room fails it, `premise.failed:`, "
+             "exit 4; nothing assumed) or refuse (an error, "
+             "place.symbolic-size-refused)"),
+    cl::value_desc("assume|assert|refuse"), cl::init("assume"));
+
+static cl::opt<uint64_t> maxSymbolicSizeOpt(
+    "max-symbolic-size",
+    cl::desc("With --lower, an abstract program: the units of room placement "
+             "reserves for an allocation of non-constant size (default "
+             "4096, SeaHorn's; not tuned)"),
+    cl::value_desc("N"), cl::init(sea::kPlaceMaxSymbolicSize));
+
 static cl::opt<bool> addr0IsNull(
     "addr0-is-null",
     cl::desc("The named assumption addr0-is-null (default on) in the "
@@ -332,6 +353,39 @@ static cl::opt<bool> checkAlign(
              "before widening), drop the program's own asserts; unsat = "
              "every promise holds (within the bound)"),
     cl::init(false));
+
+static cl::opt<bool> checkInb(
+    "check-inb",
+    cl::desc("With --lower, --seam and --ackermannize=off, on an abstract "
+             "program: the A-INB discharge job: a bounds check before every "
+             "access (sea-check-inb), the program's asserts dropped, one "
+             "part per check left (sea-split-asserts, the earlier checks "
+             "assumed), each part an ordinary safety query in a process of "
+             "its own; unsat = every access stays in its object (within the "
+             "bound). docs/design/CheckInb.md"),
+    cl::init(false));
+static cl::opt<std::string> checkInbDir(
+    "check-inb-dir",
+    cl::desc("With --check-inb: keep each part (part-<i>.mlir) and its "
+             "output (part-<i>.jsonl, part-<i>.err) in this directory "
+             "(default: a temporary one, removed)"),
+    cl::value_desc("dir"), cl::init(""));
+static cl::opt<bool> checkInbStatic(
+    "check-inb-static",
+    cl::desc("With --check-inb: the static discharge of checks proved with "
+             "constants (tier (a); default on; off: every check is a part)"),
+    cl::init(true));
+static cl::opt<bool> checkInbKeep(
+    "check-inb-keep",
+    cl::desc("With --check-inb: keep the temporary job directory (parts, "
+             "manifest.json, outputs) and print its path "
+             "(check-inb-dir: <path>); for debugging"),
+    cl::init(false));
+static cl::opt<unsigned> checkInbMaxTime(
+    "check-inb-max-time",
+    cl::desc("With --check-inb: start no part after this many seconds (0: "
+             "no limit); the parts not run are skipped, the verdict unknown"),
+    cl::value_desc("s"), cl::init(0));
 
 static cl::opt<bool> checkPtrIndex(
     "check-ptr-index",
@@ -891,8 +945,9 @@ static cl::opt<bool> seamCongruence(
     cl::desc("With --seam: decide two addresses apart when their "
              "difference is sum c_k x_k + d with 2^t dividing every c_k "
              "and not d (exact, no premise; rule cmp.congruence; e.g. "
-             "T + 8i + 1 vs T + 8j). Default off"),
-    cl::init(false));
+             "T + 8i + 1 vs T + 8j). Default on; "
+             "--seam-congruence=false off"),
+    cl::init(true));
 
 static cl::opt<bool> seamWideIteOpen(
     "seam-wide-ite-open",
@@ -2169,6 +2224,13 @@ TYPICAL:
                                  #   the program lacks are holes. Two
                                  #   lowerings on one file: common objects
                                  #   at the same addresses (cover-diff)
+  sea-vc p.mlir --lower --symbolic-size=assert  # assert, not assume,
+                                 #   that each allocation of non-constant
+                                 #   size fits its room: no
+                                 #   assume.symbolic-size-bound; a run that
+                                 #   exceeds it is premise.failed (exit 4):
+                                 #   bound the size in the harness, or
+                                 #   rerun with --max-symbolic-size=<n>
   sea-vc p.mlir --lower --reach --reach-failures  # also each tagged
                                  #   assert's failure (reached with its
                                  #   condition false): op=sea.print
@@ -2329,9 +2391,10 @@ TYPICAL:
   sea-vc p.mlir --lower --seam --seam-leaf-split-partial  # R-LEAVES with
                                  #   undecided leaves too: they stay one
                                  #   read at the ite of them (untuned)
-  sea-vc p.mlir --lower --seam --seam-congruence  # decide addresses
-                                 #   apart by divisibility: 8i+1 vs 8j
-                                 #   (exact; rule cmp.congruence)
+  sea-vc p.mlir --lower --seam --seam-congruence=false  # do not decide
+                                 #   addresses apart by divisibility
+                                 #   (8i+1 vs 8j; rule cmp.congruence,
+                                 #   exact, default on)
   sea-vc p.mlir --lower --seam --seam-pull-index  # pull a pointer
                                  #   node through any ite in its base or
                                  #   indices (default off: the base ite and
@@ -2656,6 +2719,24 @@ TYPICAL:
                                  #   `align` / every used GEP no-wrap
                                  #   promise, drop the program's asserts;
                                  #   unsat = they hold (one job at a time)
+  sea-vc p.mlir --check-inb --lower --seam --ackermannize=off
+                                 # the A-INB discharge job (abstract
+                                 #   program): a bounds check before
+                                 #   every access, the program's asserts
+                                 #   dropped, checks proved with
+                                 #   constants removed, one part per
+                                 #   check left (earlier checks assumed),
+                                 #   each part a sea-vc run of its own;
+                                 #   check-inb.part: per part,
+                                 #   check-inb.parts: summary,
+                                 #   check-inb.discharges: the premises
+                                 #   an unsat discharges; unsat iff every
+                                 #   part is unsat (docs/design/CheckInb.md)
+  sea-vc p.mlir --check-inb ... --vcgen-only --check-inb-dir=d
+                                 # write d/part-<i>.mlir, d/parts.cfg
+                                 #   (the expanded part options) and
+                                 #   d/manifest.json (each part's argv,
+                                 #   run in d), run none: result: none
   sea-vc p.mlir --lower --range-fold=on  # fold a sea.icmp / i1 op /
                                  #   select condition the integer ranges
                                  #   settle (InferIntRangeInterface walk,
@@ -3059,6 +3140,34 @@ OUTPUT (stdout, `key: value` lines):
                                   a path or a select), symbolic (other))
   ite.load-site: kind= loads= loc=  (per kind and location, most first, at
                                   most --ite-stats-max)
+  check-inb: checks= static= left= zero-length=
+                                  (--check-inb: the bounds checks, those
+                                  proved statically, those left, ranges of
+                                  constant length 0)
+  check-inb.split: folded= parts= trivial= to-solve=
+                                  (checks the optimize stages removed
+                                  before the split; parts; parts folded to
+                                  true in their own optimize; parts run)
+  check-inb-dir: <path>           (a kept job directory: --check-inb-dir,
+                                  --check-inb-keep, --vcgen-only)
+  check-inb.manifest: <path> parts=<k>
+                                  (--check-inb --vcgen-only: parts and
+                                  manifest written, none run)
+  check-inb.part: <i> id= at= result= status= time= [solve-time=]
+                  [fail-at=] [error=<kind>]   (one per part, as it ends)
+  check-inb.part-error: <i> <first error line>  (a part that failed)
+  premise.failed: <name> size= room= at= part=<i>   (after a part with
+                                  result=premise-failed: its run failed a
+                                  premise assert, --symbolic-size=assert;
+                                  the job then says result: sat and exits
+                                  4, also with a sat part)
+  check-inb.parts: total= unsat= sat= unknown= other= skipped= premise=
+                  median-time= max-time= solve-time= time=
+  check-inb.part-diags: none | <kind>=<parts> ...
+  check-inb.discharges: a-inb a-sep a-null [a-nowrap] | none
+                  under=<name>,... | none   (the premises an unsat
+                                  discharges; under= the assumptions the
+                                  result rests on; docs/design/CheckInb.md)
   result: sat|unsat|unknown|none  (none: --vcgen-only, --split-candidates)
   hint: split: open-aliases=<n>[ ackermann-constraints=<m>]; rerun with
                                   --split-candidates ...
@@ -3162,6 +3271,20 @@ OUTPUT (stdout, `key: value` lines):
                                   no-clobber claim (Memory.md) fails there,
                                   not the VC; exit 2, vc.replay-mismatch
                                   names the claim)
+  premise.failed: <name> [size=<n> room=<r>] at=<where>   (sat, after
+                                  validate: the replayed run fails a
+                                  premise assert, not a property assert:
+                                  --symbolic-size=assert, name
+                                  symbolic-size-bound, at the allocation
+                                  whose size n (the counterexample's;
+                                  `?`: not found) exceeds its room r; a
+                                  bound in the harness passes it, and so
+                                  may a rerun with --max-symbolic-size >= n
+                                  if placement can give that room (else
+                                  place.out-of-space: an unbounded nondet
+                                  size can be huge). Error
+                                  vc.premise-failed, exit 4;
+                                  replay: assert-op names the allocation)
   seam.ptrint-violated: <loc> addr=<q> [obj=&<o>[<off>]] bits=<b> stored=<p>
   seam.ptrint-unstored: <loc> addr=<q> [obj=&<o>[<off>]] bits=<b>
                                   (--ptr-companion=check, sat: a split
@@ -3277,10 +3400,26 @@ OUTPUT (stdout, `key: value` lines):
                                   discharges it)
   assume.memset-bound: count=<n> bound=<K>   (n > 0: --lower without --seam
                                   expanded n symbolic-length memsets /
-                                  memmoves with assume(len <= K), the
-                                  sea.assume ops marked sea.memset_bound; an
-                                  unsat holds only for lengths <= K; K the
-                                  largest bound; with --smt2 on stderr)
+                                  memmoves with assume(len <= K), counted
+                                  where sea-expand-memset made them (the
+                                  program attribute sea.memset_bound: it
+                                  may include bounds a later fold proved
+                                  redundant or whose memset the lowering
+                                  erased); an unsat holds only for lengths
+                                  <= K; K the largest bound; with --smt2 on
+                                  stderr)
+  assume.symbolic-size-bound: allocs=<n> room=<r>   (n > 0: --lower of an
+                                  abstract program placed n allocations of
+                                  non-constant size in r units of room each
+                                  (--max-symbolic-size) with assume(size
+                                  <= r), counted at placement (the program
+                                  attribute sea.symbolic_size_bound): it
+                                  may include bounds a later fold proved
+                                  redundant or whose allocation the
+                                  lowering erased; an unsat holds only
+                                  for sizes <= r (--symbolic-size=assume,
+                                  the default; =assert asserts it instead
+                                  and records nothing)
   seam.premises: assumed accesses=<n> conditions=<m>
   seam.premises: off [(fallback: an access leaves its object)]
       [(lowering: drop-fresh-memhavoc=<n> rests on A-SEP)]   (--seam:
@@ -3901,6 +4040,31 @@ Kinds and fields:
   object        id (<seg>), symbol (the VC constant obj.<seg> of the text's
                 name=), order, objkind, base, size, align
   result        value: sat|unsat|unknown|none
+  check-inb     (--check-inb) checks, static, left, zero_length
+  check-inb.split folded (checks the optimize stages removed before the
+                split), parts, trivial (folded to true in their own
+                optimize: not run), to_solve
+  check-inb-dir path (a kept job directory: --check-inb-dir,
+                --check-inb-keep, --vcgen-only)
+  check-inb.manifest path, parts (--check-inb --vcgen-only: the parts and
+                manifest.json written, none run; result: none)
+  check-inb.part part, id, at, result, status, time, [solve_time],
+                [fail_at], [error] (a failed part: its error kind, `-`
+                without one); one per part, as it ends
+  check-inb.part-error part, message (a failed part's first error line)
+  check-inb.parts total, unsat, sat, unknown, other, skipped, premise,
+                median_time, max_time, solve_time (summed over the parts),
+                time
+  check-inb.part-diags one field per diagnostic kind of the parts' stderr:
+                the number of parts that reported it
+  check-inb.discharges premises (`a-inb a-sep a-null[ a-nowrap]` or `none`;
+                a-nowrap only when every object is below 2^(w-1) units),
+                under (the assumptions the result rests on: the parts'
+                assume.* names in effect but the discharged premises,
+                addr0-is-null (the job's placement), the job's *-assume
+                warning kinds, memhavoc-null-noop when a check passed for
+                null or a memhavoc was guarded for it; comma-separated,
+                or `none`)
   split-part-start part
   split-part    part, choice, result, vc_time, solve_time, dag, alias_open,
                 alias_open_pairs, alias_open_memop, rows, ack_reads,
@@ -3945,6 +4109,8 @@ Kinds and fields:
                 for the `replay:` / `at:` / `message:` lines (text has
                 several lines)
   validate      checked, mismatches, dontcare
+  premise       status (failed), name, [size, room] (null: not found), at
+                [at_inlined] [at_name] (premise.failed), [part] (--check-inb)
   reach         id, status, op, [via, by], [reason], [replay], [inb],
                 [mismatches], [witness], time, [at] [at_inlined] [at_name],
                 [site] (--reach; reach.config, reach.summary and reach.runs are
@@ -3993,7 +4159,8 @@ vc-time, solve-time, status (the exit status; not for status 1 before the
 verdict), seam.premises (assumed|off) with seam.premises-accesses /
 seam.premises-conditions, the assume.* lines split the same way
 (assume.a-sep-seam, assume.a-sep-drop-fresh-memhavoc,
-assume.memset-bound-count / -bound, assume.addr0-is-null vc with
+assume.memset-bound-count / -bound, assume.symbolic-size-bound-allocs /
+-room, assume.addr0-is-null vc with
 assume.addr0-is-null-null-uses), with --ack-relax vc.ack-relax-stop /
 -rounds / -kept / -conflicts,
 and with --seam-stats every seam.* counter and time (also vc.*-time). With
@@ -4036,7 +4203,12 @@ index in the model (seam.narrow-inb-violation, vc.narrow-inb-spurious): a
 run that executes that load leaves its object. 7 (--narrow-check) a
 narrowed read index whose obligation is not proven (narrow-check-unknown /
 -unexpressible lines, vc.narrow-check-unproven): the narrowing is not
-discharged (takes precedence over 0 and 3).
+discharged (takes precedence over 0 and 3). 4 also
+(--symbolic-size=assert) when the replayed run fails a premise assert, not
+the property (premise.failed, vc.premise-failed): an allocation's size
+exceeds its room; inconclusive, before --replay-original (the input
+program has no premise assert). Under --check-inb a part that fails one
+makes the job's status 4, its premise.failed line on the job's output.
 Split (--split*): the status of the verdict (0 sat or unsat, 3 unknown); a
 part's status 1, 2, 4, 5 or 6 stops the split with that status; 5 also for
 a failed --split-check.
@@ -4069,6 +4241,85 @@ static void printValue(raw_ostream &os, Value v) {
     os << op->getName() << " " << op->getLoc();
   else
     os << "block-arg " << v.getLoc();
+}
+
+/// A confirmed sat whose replay fails a premise assert (kPremiseAttr) \p pa
+/// (the branch sea-merge-asserts made of it, or the assert): the
+/// `premise.failed: <name> [size=<n> room=<r>] at=<where>` line and the
+/// error vc.premise-failed. symbolic-size-bound (placement's
+/// `assert(size ule room)`): the allocation's size in the counterexample
+/// (the model's value of the icmp's left operand, which the replay
+/// validated) and its room; `?` if the condition is not that icmp any more.
+static void reportPremiseFailed(StringRef name, Operation &pa,
+                                const sea::RunResult &run,
+                                sea::solver::Model &model, sea::SeaOpSem &sem,
+                                sea::OpSemContext &ctx) {
+  Value cond;
+  if (auto cbr = dyn_cast<sea::CondBrOp>(pa))
+    cond = cbr.getCondition();
+  else if (auto a = dyn_cast<sea::AssertOp>(pa))
+    cond = a.getCond();
+  else if (isa<sea::BrOp>(pa))
+    cond = sea::prunedAssertCond(pa); // sea-prune-edges kept the failure
+  std::optional<APInt> size, room;
+  if (auto cmp = cond ? cond.getDefiningOp<sea::ICmpOp>() : sea::ICmpOp();
+      cmp && cmp.getPredicate() == sea::ICmpPredicate::ule) {
+    APInt k;
+    if (matchPattern(cmp.getRhs(), m_ConstantInt(&k)))
+      room = k;
+    unsigned w = cmp.getLhs().getType().getIntOrFloatBitWidth();
+    if (expr::Expr t = sem.solverTerm(sem.lookup(cmp.getLhs(), ctx)))
+      size = sea::numeralToAPInt(model.eval(t, /*complete=*/true), w);
+  }
+  const bool sizeBound = name == "symbolic-size-bound";
+  std::string at = run.assertLoc ? sea::formatLoc(*run.assertLoc) : "";
+  if (at.empty())
+    at = "-";
+  sea::out::Record rec("premise");
+  rec.str("status", "failed").str("name", name);
+  raw_string_ostream os(rec.text);
+  os << "premise.failed: " << name;
+  auto field = [&](StringRef key, const std::optional<APInt> &v) {
+    os << " " << key << "=";
+    if (v) {
+      v->print(os, /*isSigned=*/false);
+      rec.integer(key, *v);
+    } else {
+      os << "?";
+      rec.set(key, "null");
+    }
+  };
+  if (sizeBound) {
+    field("size", size);
+    field("room", room);
+  }
+  os << " at=" << at;
+  if (run.assertLoc)
+    sea::addLocFields(rec, "at", *run.assertLoc);
+  gOut->emit(rec);
+  gOut->flush();
+  std::string what = "sat, but the counterexample fails a premise assert (" +
+                     name.str() +
+                     "), not the property: the answer is "
+                     "inconclusive";
+  if (sizeBound) {
+    what += "; an allocation of non-constant size exceeds the room "
+            "placement reserved for it";
+    if (size && room) {
+      SmallString<24> n, r;
+      size->toStringUnsigned(n);
+      room->toStringUnsigned(r);
+      what += " (size " + n.str().str() + ", room " + r.str().str() +
+              "): bound the size in the harness, or rerun with "
+              "--max-symbolic-size=" +
+              n.str().str() +
+              " or more if placement can give that much room (else "
+              "place.out-of-space)";
+    }
+  }
+  sea::diag::error("vc.premise-failed", what,
+                   run.assertLoc ? std::optional<Location>(*run.assertLoc)
+                                 : std::nullopt);
 }
 
 /// MLIR's pass-manager options (--mlir-print-ir-*, --mlir-pass-statistics,
@@ -4439,6 +4690,13 @@ int main(int argc, char **argv) {
                 ")");
   if ((!placeIn.empty() || !placeOut.empty()) && !lower)
     return fail("--place-in and --place-out need --lower");
+  if (symbolicSizeOpt != "assume" && symbolicSizeOpt != "assert" &&
+      symbolicSizeOpt != "refuse")
+    return fail("--symbolic-size must be assume, assert or refuse");
+  if ((symbolicSizeOpt.getNumOccurrences() ||
+       maxSymbolicSizeOpt.getNumOccurrences()) &&
+      !lower)
+    return fail("--symbolic-size and --max-symbolic-size need --lower");
   if (!placeIn.empty() && !placeOut.empty())
     return fail("--place-in and --place-out exclude each other");
   if (printLowered == "-")
@@ -4524,8 +4782,8 @@ int main(int argc, char **argv) {
        !seamPruneSize0 || seamWide || seamWideIteOpen || !seamLeafSplit ||
        seamLeafSplitPartial || seamPullIndex ||
        seamOffsetLeaves.getNumOccurrences() || seamResolveIteNodes ||
-       seamPullConcat || seamCongruence || ptrCompanion != CompanionMode::Off ||
-       !seamStoreMap || !seamSimplify) &&
+       seamPullConcat || seamCongruence.getNumOccurrences() ||
+       ptrCompanion != CompanionMode::Off || !seamStoreMap || !seamSimplify) &&
       !seam)
     return fail("--seam-premises, --seam-out-of-object, --seam-row-expand, "
                 "--seam-row-group, "
@@ -4726,6 +4984,110 @@ int main(int argc, char **argv) {
   // gets the expansion (as do add / sub overflow for every solver: solvers
   // expand those eagerly anyway).
   bool nativeMulOverflow = backend != Backend::Yices;
+  // --check-inb: instrument, split, and run each part as a job of its own
+  if (checkInb) {
+    if (!program)
+      return fail(programName.empty()
+                      ? "no sea.program in input"
+                      : "no program named '" + programName + "'");
+    if (!lower || !seam || ackermannize != AckMode::Off) {
+      sea::diag::error("vc.check-inb-config",
+                       "--check-inb runs with --lower --seam "
+                       "--ackermannize=off (the premises of each check's "
+                       "part are justified by the checks before it; the "
+                       "Ackermann lowering uses A-INB itself)");
+      return 1;
+    }
+    // --ptr-companion=check replaces the property of the query (every
+    // split pointer load's guard, not the program's assertions): in a
+    // part it would drop the part's bounds check
+    if (checkAlign || checkPtrIndex || reachKind != sea::ReachKind::Off ||
+        rangeFoldOpt == sea::RangeFoldMode::Check ||
+        ptrCompanion == CompanionMode::Check) {
+      sea::diag::error("vc.check-jobs",
+                       "--check-inb is a job of its own: not with "
+                       "--check-align, --check-ptr-index, --reach, "
+                       "--range-fold=check or --ptr-companion=check");
+      return 1;
+    }
+    if (!sea::isAbstract(program)) {
+      sea::diag::error("vc.check-inb-config",
+                       "--check-inb needs an abstract program (pointers "
+                       "with their objects)",
+                       program.getLoc());
+      return 1;
+    }
+    sea::checkinb::JobOptions jo;
+    jo.self = llvm::sys::fs::getMainExecutable(
+        argv[0], reinterpret_cast<void *>(&printSolverVersions));
+    jo.dir = checkInbDir;
+    jo.staticDischarge = checkInbStatic;
+    jo.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
+    jo.maxSeconds = checkInbMaxTime;
+    jo.boxAllExpand = boxAllExpandOpt;
+    // the lowering's options, as the --lower below would take them; the
+    // job runs its stages (docs/design/CheckInb.md)
+    jo.lower.abstract = true;
+    jo.lower.nativeMulOverflow = nativeMulOverflow;
+    jo.lower.fold = true;
+    jo.lower.widenMemory = widenMemory;
+    jo.lower.expandMemSet = !seam && !lambdaMem;
+    jo.lower.widenReport = widenMemoryReport;
+    jo.lower.keepByteWide = seam && seamWide;
+    jo.lower.opt = lowerOpt;
+    jo.lower.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
+    jo.lower.disable = lowerDisableMask;
+    jo.lower.place =
+        sea::PlaceFiles{placeIn, placeOut, symbolicSizeOpt, maxSymbolicSizeOpt};
+    jo.lower.rangeFold = rangeFoldOpt;
+    jo.lower.expandMemMove = expandMemMoveOpt;
+    jo.lower.ptrCompanion = ptrCompanion != CompanionMode::Off;
+    jo.lower.boxAllExpand = boxAllExpandOpt;
+    jo.lower.widenPerClass = widenMemoryPerClass;
+    // the pointer mode of the input (the parts are lowered programs)
+    {
+      bool intToPtr = false;
+      program.walk([&](Operation *op) {
+        intToPtr |= isa<sea::PtrFromIntOp, sea::AddrFromIntOp>(op);
+      });
+      if (ptrMode == PtrMode::Opaque && intToPtr) {
+        sea::diag::error("vc.int-to-ptr",
+                         "--ptr-mode=opaque: the program converts an integer "
+                         "to a pointer (use --ptr-mode=address)");
+        return 1;
+      }
+      jo.ptrMode =
+          ptrMode == PtrMode::Address || (ptrMode == PtrMode::Auto && intToPtr)
+              ? "address"
+              : "opaque";
+    }
+    jo.keep = checkInbKeep;
+    // --vcgen-only: the parts and the manifest, no part run
+    jo.prepareOnly = vcgenOnly;
+    jo.source = inputFilename;
+    for (int i = 1; i < argc; ++i)
+      jo.jobArgs.push_back(argv[i]);
+    // the part's options: the EXPANDED command line (--config files and
+    // response files read, every option one `--name[=value]` token, paths
+    // absolute), without the input and the options of the job itself, so
+    // a part runs the same from any directory and with any profile path
+    {
+      SmallVector<const char *> expanded(args.begin(), args.end());
+      cl::ExpansionContext ectx(configAlloc, cl::TokenizeGNUCommandLine);
+      if (Error e = ectx.expandResponseFiles(expanded)) {
+        sea::diag::error("vc.config-read", toString(std::move(e)));
+        return 1;
+      }
+      std::string bad;
+      if (!sea::checkinb::partArguments(
+              ArrayRef<const char *>(expanded).drop_front(), jo.partArgs,
+              bad)) {
+        sea::diag::error("check-inb.unsupported", "--check-inb: " + bad);
+        return 1;
+      }
+    }
+    return sea::checkinb::runJob(*module, program, jo, *gOut);
+  }
   // With --seam the answer rests on the premises. A sat whose replay fails may
   // be an artifact of a program that leaves its objects; the abstract program
   // (every access checked against its object) tells, so keep a copy.
@@ -4820,9 +5182,9 @@ int main(int argc, char **argv) {
         /*keepByteWide=*/seam && seamWide, checkAlign,
         checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt,
         memhavocNull == MemhavocNull::Noop, lowerDisableMask,
-        sea::PlaceFiles{placeIn, placeOut}, rangeFoldOpt, expandMemMoveOpt,
-        ptrCompanion != CompanionMode::Off, boxAllExpandOpt,
-        widenMemoryPerClass);
+        sea::PlaceFiles{placeIn, placeOut, symbolicSizeOpt, maxSymbolicSizeOpt},
+        rangeFoldOpt, expandMemMoveOpt, ptrCompanion != CompanionMode::Off,
+        boxAllExpandOpt, widenMemoryPerClass);
     // pm keeps a reference to the phase's scope; SEA_PHASE_END resets it after
     // pm.run, and the reference is not used after that
     if (failed(configurePM(pm, lowerPhase.timing())) || failed(pm.run(*module)))
@@ -4867,9 +5229,6 @@ int main(int argc, char **argv) {
           .value("no reachable sea.halt")
           .note("every path is blocked; the assertion cannot fail");
   };
-  // the bounded expansions of symbolic memset / memmove lengths
-  // (sea-expand-memset, without --seam): assume(n <= K), an
-  // under-approximation the result rests on (assume.memset-bound)
   // the uses of the null object's address 0 placement made
   uint64_t nullUses = 0;
   program.walk([&](sea::SegmentOp seg) {
@@ -4978,15 +5337,39 @@ int main(int argc, char **argv) {
   uint64_t dropFreshInb = 0;
   if (auto n = program->getAttrOfType<IntegerAttr>(sea::kDropFreshInbAttr))
     dropFreshInb = n.getInt();
+  // the bounded expansions of symbolic memset / memmove lengths
+  // (sea-expand-memset, without --seam): assume(n <= K), an
+  // under-approximation the result rests on (assume.memset-bound), counted
+  // where sea-expand-memset made them (the program's dictionary); a program
+  // lowered by an older sea-mlir (sea-vc without --lower) marks each assume
+  // with the i64 K instead: those count too
   uint64_t memsetBounds = 0, memsetBoundK = 0;
+  if (auto d = program->getAttrOfType<DictionaryAttr>(sea::kMemSetBoundAttr)) {
+    if (auto n = d.getAs<IntegerAttr>("count"))
+      memsetBounds = n.getInt();
+    if (auto k = d.getAs<IntegerAttr>("bound"))
+      memsetBoundK = k.getInt();
+  }
   program.walk([&](sea::AssumeOp a) {
     if (auto k = a->getAttrOfType<IntegerAttr>(sea::kMemSetBoundAttr)) {
       ++memsetBounds;
       memsetBoundK = std::max<uint64_t>(memsetBoundK, k.getInt());
     }
   });
-  // --sink-assumes: after the census of the assumes above (the pass erases
-  // them; the result rests on them all the same)
+  // placement's bounds of symbolic allocation sizes (--symbolic-size=
+  // assume): assume(size <= room), counted where placement made them
+  // (assume.symbolic-size-bound; may include bounds a later fold proved
+  // redundant)
+  uint64_t sizeBounds = 0, sizeBoundRoom = 0;
+  if (auto d =
+          program->getAttrOfType<DictionaryAttr>(sea::kSymbolicSizeBoundAttr)) {
+    if (auto n = d.getAs<IntegerAttr>("allocs"))
+      sizeBounds = n.getInt();
+    if (auto r = d.getAs<IntegerAttr>("room"))
+      sizeBoundRoom = r.getInt();
+  }
+  // --sink-assumes: the pass erases assumes; the ledger above was counted
+  // where they were made
   unsigned sunkAssumes = 0;
   if (sinkAssumes) {
     // the chosen program only (a file may hold several)
@@ -6821,6 +7204,10 @@ int main(int argc, char **argv) {
         vcAssumes.site(Name::MemsetBound, "count", memsetBounds);
         vcAssumes.site(Name::MemsetBound, "bound", memsetBoundK);
       }
+      if (sizeBounds) {
+        vcAssumes.site(Name::SymbolicSizeBound, "allocs", sizeBounds);
+        vcAssumes.site(Name::SymbolicSizeBound, "room", sizeBoundRoom);
+      }
       // the premises of --seam: the rewrites that rest on each (0: the
       // answer does not), always shown when they are on
       if (inb && sem.seam()) {
@@ -8437,6 +8824,15 @@ int main(int argc, char **argv) {
     }
     if (ackModel && ackModel->inconsistent() && !ownExcused)
       return 2;
+    // a premise assert failed (kPremiseAttr; --symbolic-size=assert): the run
+    // breaks a premise the answer would otherwise rest on, not the
+    // property; inconclusive, as a sat that breaks a premise (status 4)
+    if (Operation *pa = ptrIntCheck ? nullptr : replay.run.assertOp)
+      if (auto premise = pa->getAttrOfType<StringAttr>(sea::kPremiseAttr)) {
+        reportPremiseFailed(premise.getValue(), *pa, replay.run, replayModel,
+                            sem, ctx);
+        return 4;
+      }
     if (originalModule)
       return replayOnOriginal(replayModel, sem, ctx, replay.run, ptrIntCheck);
     return 0;

@@ -8,6 +8,7 @@
 
 #include "llvm/ADT/StringMap.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <mutex>
 #include <string>
@@ -93,6 +94,16 @@ unsigned count(StringRef kind) {
   std::lock_guard<std::mutex> guard(lock());
   auto it = registry().find(kind);
   return it == registry().end() ? 0 : it->second.count;
+}
+
+std::vector<std::string> warningKinds() {
+  std::lock_guard<std::mutex> guard(lock());
+  std::vector<std::string> out;
+  for (const auto &kv : registry())
+    if (!kv.second.isError && kv.second.count)
+      out.push_back(kv.first().str());
+  std::sort(out.begin(), out.end());
+  return out;
 }
 
 void printSummary(raw_ostream &os) {

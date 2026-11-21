@@ -130,7 +130,7 @@ command and frontend versions, the `tool.version` line, the full command
 with every `vc.config`, the exit status, the `result`, the assumption lines
 (`seam.premises`, `seam.out-of-object`, `seam.ptrint`, `assume.a-sep`,
 `assume.a-null`, `assume.a-nowrap`, `assume.memset-bound`,
-`assume.addr0-is-null`), the warnings, and for a `sat` the
+`assume.symbolic-size-bound`, `assume.addr0-is-null`), the warnings, and for a `sat` the
 replay status and `assert-at`. For a timing claim: the machine, and
 whether other jobs were running.
 

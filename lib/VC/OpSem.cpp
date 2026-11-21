@@ -52,6 +52,9 @@ SeaOpSem::SeaOpSem(ExprFactory &efac, ValueNames &names, bool nativeMulOverflow,
       o.assumePremises = false;
       o.arm = false;
       o.storeMap = false;
+      // a SeaM rule (--seam-congruence needs --seam); --simplify alone
+      // keeps the plain bit-vector rules
+      o.congruence = false;
     }
     RewriteOptions ro;
     ro.maxRuleCalls = o.maxRuleCalls;

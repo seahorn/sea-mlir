@@ -7,7 +7,9 @@
 // into the second, so byte k of one address is one term and its alias
 // questions with the load's bytes are the ones the load asks: 15 open
 // questions (21 without the rule: the two forms cancel to different terms).
-// RUN: sea-vc %s --lower --seam --seam-pull-index --seam-stats 2>&1 | FileCheck %s
+// cmp.congruence (default on) decides all of them (16i + k vs 16i + l), so
+// the count is taken with --seam-congruence=false.
+// RUN: sea-vc %s --lower --seam --seam-pull-index --seam-congruence=false --seam-stats 2>&1 | FileCheck %s
 // RUN: sea-vc %s --lower --seam --seam-pull-index --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // CHECK: seam.alias.open.all: 15
 // CHECK: seam.rule.ptrindex.absorb-k: {{[1-9]}}

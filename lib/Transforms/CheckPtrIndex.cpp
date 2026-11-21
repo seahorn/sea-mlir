@@ -34,14 +34,16 @@
 // nondeterministic pointers end it silently.
 //
 // The program's own asserts are dropped (the job checks the promises on
-// every execution, not the functional property); sea-merge-asserts then
-// makes the BMC form. Run after placement (addresses are integers), before
+// every execution, not the functional property); premise asserts
+// (kPremiseAttr, placement's symbolic-size=assert) stay: they are not the
+// property, and nothing assumes them. sea-merge-asserts then makes the BMC
+// form. Run after placement (addresses are integers), before
 // sea-split-wide-access (which makes the byte addresses: followed anyway).
 //
 // Contract.
 //   Accepts: a placed program.
 //   Produces: one assert per (access, promised GEP) pair, no original
-//     assert.
+//     assert but the premise asserts.
 //
 //===----------------------------------------------------------------------===//
 
@@ -96,7 +98,10 @@ void CheckPtrIndexPass::runOnOperation() {
   MLIRContext *ctx = &getContext();
   OpBuilder b(ctx);
   SmallVector<AssertOp> original;
-  program.walk([&](AssertOp a) { original.push_back(a); });
+  program.walk([&](AssertOp a) {
+    if (!a->hasAttr(kPremiseAttr))
+      original.push_back(a);
+  });
   bool phi = false;
 
   // the flagged GEPs \p v comes from, with their guards (built before \p at)

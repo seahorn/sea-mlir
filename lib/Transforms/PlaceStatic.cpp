@@ -9,11 +9,18 @@
 // functions from the text segment start (4 units each), then globals, then
 // the heap; stack objects downwards from the stack top. An allocation whose
 // size is not a constant gets `max-symbolic-size` units and an explicit
-// sea.assume (or sea.assert) that its size fits. The placement is recorded
-// as sea.segment ops at the start of the entry block; a segment's result is
-// the object's base address, and every use of the object becomes that result
-// (plus sea.addr.add for offsets), not a numeral: the object stays visible
-// to the VC (SeaM) while the interpreter and the default VC see its base.
+// sea.assume (or sea.assert) that its size fits: symbolic-size=assume marks
+// counts it on the program (kSymbolicSizeBoundAttr: the answer rests on
+// it, sea-vc reports assume.symbolic-size-bound), symbolic-size=assert makes it
+// a premise assert (kPremiseAttr = "symbolic-size-bound": a failure is not
+// the property's, sea-vc reports premise.failed), symbolic-size=refuse is an
+// error. The object keeps its symbolic size for bounds (the fat-pointer size
+// companion); the room matters only for placement (no overlap). The
+// placement is recorded as sea.segment ops at the start of the entry block;
+// a segment's result is the object's base address, and every use of the
+// object becomes that result (plus sea.addr.add for offsets), not a
+// numeral: the object stays visible to the VC (SeaM) while the interpreter
+// and the default VC see its base.
 //
 // Contract.
 //   Accepts: abstract programs without struct values (scalarize first) and
@@ -108,6 +115,8 @@ public:
   explicit PlaceStaticPass(const PlaceFiles &files) {
     placeIn = files.in;
     placeOut = files.out;
+    symbolicSize = files.symbolicSize;
+    maxSymbolicSize = files.maxSymbolicSize;
   }
 
   StringRef getArgument() const final { return "sea-place-static"; }
@@ -119,7 +128,7 @@ public:
   Option<uint64_t> maxSymbolicSize{
       *this, "max-symbolic-size",
       llvm::cl::desc("Units reserved for an allocation of non-constant size"),
-      llvm::cl::init(4096)};
+      llvm::cl::init(kPlaceMaxSymbolicSize)};
   Option<std::string> symbolicSize{
       *this, "symbolic-size",
       llvm::cl::desc("How a non-constant size is bounded: assume, assert, "
@@ -679,6 +688,7 @@ void PlaceStaticPass::runOnOperation() {
     if (objects[i].kind == "null")
       nullIndex = i;
   bool ok = true;
+  uint64_t sizeBounds = 0, sizeBoundRoom = 0;
   SmallVector<Operation *> toErase;
   program.walk([&](Operation *op) {
     b.setInsertionPoint(op);
@@ -707,10 +717,17 @@ void PlaceStaticPass::runOnOperation() {
                    loc);
         Value fits = ICmpOp::create(b, loc, ICmpPredicate::ule, size,
                                     constant(loc, APInt(*width, o.room)));
-        if (symbolicSize == "assume")
+        // assume: the answer rests on it (counted on the program,
+        // kSymbolicSizeBoundAttr: sea-vc's assume.symbolic-size-bound);
+        // assert: a premise assert (kPremiseAttr), whose failure is not the
+        // property's
+        if (symbolicSize == "assume") {
           AssumeOp::create(b, loc, fits);
-        else
-          AssertOp::create(b, loc, fits);
+          ++sizeBounds;
+          sizeBoundRoom = std::max(sizeBoundRoom, o.room);
+        } else
+          AssertOp::create(b, loc, fits)
+              ->setAttr(kPremiseAttr, b.getStringAttr("symbolic-size-bound"));
       }
       replace(baseOf[objectOf.lookup(op)]);
     } else if (isa<GlobalOp, FuncAddrOp, PtrNondetOp>(op)) {
@@ -756,6 +773,20 @@ void PlaceStaticPass::runOnOperation() {
     op->erase();
   if (!ok)
     return signalPassFailure();
+  // added to the counts already there (a program placed in parts)
+  if (auto d = program->getAttrOfType<DictionaryAttr>(kSymbolicSizeBoundAttr);
+      d && sizeBounds) {
+    if (auto n = d.getAs<IntegerAttr>("allocs"))
+      sizeBounds += n.getInt();
+    if (auto r = d.getAs<IntegerAttr>("room"))
+      sizeBoundRoom = std::max<uint64_t>(sizeBoundRoom, r.getInt());
+  }
+  if (sizeBounds)
+    program->setAttr(
+        kSymbolicSizeBoundAttr,
+        b.getDictionaryAttr(
+            {b.getNamedAttr("allocs", b.getI64IntegerAttr(sizeBounds)),
+             b.getNamedAttr("room", b.getI64IntegerAttr(sizeBoundRoom))}));
 
   if (isAbstract(program)) {
     Operation *at = findValueOfType(program, [](Type t) {

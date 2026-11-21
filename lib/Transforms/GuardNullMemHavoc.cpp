@@ -59,57 +59,11 @@ public:
   void runOnOperation() override;
 };
 
-/// May `p` be the null pointer? No only if every source (through ptr.add /
-/// ptr.index bases, select and block arguments) is an object: an
-/// allocation, a global, a function address.
-static bool mayBeNull(Value p) {
-  llvm::DenseSet<Value> seen;
-  SmallVector<Value> work{p};
-  while (!work.empty()) {
-    Value v = work.pop_back_val();
-    if (!seen.insert(v).second)
-      continue;
-    if (auto arg = dyn_cast<BlockArgument>(v)) {
-      Block *b = arg.getOwner();
-      if (b->hasNoPredecessors())
-        return true;
-      for (auto it = b->pred_begin(); it != b->pred_end(); ++it) {
-        auto br = dyn_cast<BranchOpInterface>((*it)->getTerminator());
-        Value in = br ? br.getSuccessorOperands(
-                            it.getSuccessorIndex())[arg.getArgNumber()]
-                      : Value();
-        if (!in)
-          return true;
-        work.push_back(in);
-      }
-      continue;
-    }
-    Operation *def = v.getDefiningOp();
-    if (isa<AllocaOp, MallocOp, GlobalOp, FuncAddrOp>(def))
-      continue;
-    if (auto add = dyn_cast<PtrAddOp>(def)) {
-      work.push_back(add.getPtr());
-      continue;
-    }
-    if (auto pi = dyn_cast<PtrIndexOp>(def)) {
-      work.push_back(pi.getBase());
-      continue;
-    }
-    if (auto sel = dyn_cast<SelectOp>(def)) {
-      work.push_back(sel.getTrueValue());
-      work.push_back(sel.getFalseValue());
-      continue;
-    }
-    return true; // null, a loaded or nondet pointer, anything else
-  }
-  return false;
-}
-
 void GuardNullMemHavocPass::runOnOperation() {
   ProgramOp program = getOperation();
   SmallVector<MemHavocOp> havocs;
   program.walk([&](MemHavocOp op) {
-    if (isa<PtrType>(op.getAddr().getType()) && mayBeNull(op.getAddr()))
+    if (isa<PtrType>(op.getAddr().getType()) && mayBeNullPointer(op.getAddr()))
       havocs.push_back(op);
   });
   Region &body = program.getBody();

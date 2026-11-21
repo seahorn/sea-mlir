@@ -25,13 +25,23 @@ class ProgramOp;
 /// address) replaces the object's uses.
 std::unique_ptr<mlir::Pass> createPlaceStaticPass();
 
+/// sea-place-static's default max-symbolic-size: the units it reserves for
+/// an allocation of non-constant size (assumed or asserted to fit).
+inline constexpr uint64_t kPlaceMaxSymbolicSize = 4096;
+
 /// External placement (sea-place-static place-in / place-out; sea-vc
 /// --place-in / --place-out): `out` writes the placement the pass computed,
 /// one object per line; `in` takes every object's base from such a file
 /// instead of computing it, and checks it as placement does (an object the
 /// file does not name is an error). Empty: not used.
+/// The options of sea-place-static that sea-vc sets: `in`, `out` (above)
+/// and `symbolicSize`, `maxSymbolicSize`, the pass options symbolic-size
+/// (assume, assert, refuse) and max-symbolic-size (sea-vc --symbolic-size,
+/// --max-symbolic-size).
 struct PlaceFiles {
   std::string in, out;
+  std::string symbolicSize = "assume";
+  uint64_t maxSymbolicSize = kPlaceMaxSymbolicSize;
 };
 std::unique_ptr<mlir::Pass> createPlaceStaticPass(const PlaceFiles &files);
 
@@ -44,6 +54,14 @@ createSplitWideAccessPass(bool keepByteWide = false);
 /// reportConstFalse: warn fold.assert-false for each assert of constant 0.
 std::unique_ptr<mlir::Pass>
 createMergeAssertsPass(bool reportConstFalse = true);
+/// sea-split-asserts (a module pass): each program with k > 0 asserts ->
+/// k programs `<name>.assert<i>`, part i keeping assert i, the other
+/// asserts assumed, pruned to assert i's block and its CFG ancestors (the
+/// counterpart of sea-merge-asserts; SplitAsserts.cpp). \p program: split
+/// only that program (empty: all).
+std::unique_ptr<mlir::Pass> createSplitAssertsPass(std::string program = "");
+/// On each part of sea-split-asserts: {index = i, count = k} (i64s).
+inline constexpr llvm::StringLiteral kSplitAssertAttr = "sea.split_assert";
 /// sea-sink-assumes: every sea.assume of a BMC-form program -> one assume
 /// of the conjunction of the assumes on the path (an i1 carried along the
 /// CFG), right before the final assert (SeaHorn's UnifyAssumes; sea-vc
@@ -70,6 +88,20 @@ std::unique_ptr<mlir::Pass> createCheckAlignPass();
 /// (the paranoid job of the trusted GEP flags, docs/design/PtrIndex.md
 /// section 6).
 std::unique_ptr<mlir::Pass> createCheckPtrIndexPass(bool assumeAsserts = false);
+/// sea-check-inb: before every access of an abstract program, assert that
+/// its span lies in its pointer's object (sea.ptr.dereferenceable; the
+/// A-INB discharge job's instrumentation, docs/design/CheckInb.md); drop
+/// the program's asserts. \p staticDischarge: tier (a), no assert for a
+/// check proved with constants. \p memhavocNullNoop: a memhavoc of null is
+/// a no-op (sea-vc --memhavoc-null=noop), its check passes.
+std::unique_ptr<mlir::Pass> createCheckInbPass(bool staticDischarge = true,
+                                               bool memhavocNullNoop = true);
+/// On each assert sea-check-inb inserts: its id (an i64; the checks in
+/// program order, statically discharged ones included).
+inline constexpr llvm::StringLiteral kInbCheckAttr = "sea.inb_check";
+/// On the sea.program after sea-check-inb: its counters (a dictionary of
+/// i64 attributes: checks, static, left, zero-length).
+inline constexpr llvm::StringLiteral kCheckInbStatsAttr = "sea.check_inb";
 
 /// sea-expand-intrinsics: intrinsic ops (min/max, abs, bswap, funnel shifts,
 /// overflow bits) become core bit-vector ops; with \p keepMulOverflow,
@@ -105,10 +137,31 @@ std::unique_ptr<mlir::Pass> createScalarizeStructsPass();
 /// chain of stores (option max-length, default 16) with an explicit
 /// assume / assert of the bound.
 std::unique_ptr<mlir::Pass> createExpandMemSetPass();
-/// The discardable attribute (an i64, the bound K) sea-expand-memset puts on
-/// each sea.assume(n <= K) it adds: the bounded expansions, an
-/// under-approximation sea-vc reports (assume.memset-bound).
+/// On the sea.program after sea-expand-memset (mode=assume): the bounded
+/// expansions, each a sea.assume(n <= K), a dictionary {count = <n>, bound
+/// = <K>} of i64 (K the largest; absent: none). Counted where the bound is
+/// made: one a later fold proves redundant, or whose memset the lowering
+/// erases, still counts (conservative). An under-approximation sea-vc
+/// reports as `assume.memset-bound: count=<n> bound=<K>`. Before, the same
+/// name was an i64 K on each such assume; sea-vc still counts those
+/// (programs lowered by an older sea-mlir).
 inline constexpr llvm::StringLiteral kMemSetBoundAttr = "sea.memset_bound";
+/// On the sea.program after sea-place-static (symbolic-size=assume): the
+/// allocations of non-constant size it bounded by sea.assume(size <= R), a
+/// dictionary {allocs = <n>, room = <R>} of i64 (absent: none). Counted
+/// where the assumption is made: a bound a later fold proves redundant, or
+/// whose allocation the lowering erases, still counts (conservative).
+/// sea-vc reports it as `assume.symbolic-size-bound: allocs=<n> room=<R>`.
+inline constexpr llvm::StringLiteral kSymbolicSizeBoundAttr =
+    "sea.symbolic_size_bound";
+/// A premise assert: a sea.assert of a premise the answer would otherwise
+/// rest on, asserted instead of assumed (sea-place-static
+/// symbolic-size=assert: "symbolic-size-bound", the name of the assumption
+/// it replaces, a string). Its failure is not the property's: sea-vc
+/// reports it as `premise.failed:` (exit status 4). sea-merge-asserts copies
+/// it onto the branches it makes of the assert (as kAssertIdAttr); a branch
+/// of an assert that held drops it.
+inline constexpr llvm::StringLiteral kPremiseAttr = "sea.premise";
 /// sea-expand-small-memmove: a memmove of a constant length <= maxBytes
 /// index units as loads of every source cell, then stores in address order
 /// (exact). \p ptrCompanion: keep every memmove (sea-vc --ptr-companion).
@@ -295,6 +348,48 @@ void buildVCLoweringPipeline(
     const PlaceFiles &place = {}, RangeFoldMode rangeFold = RangeFoldMode::Off,
     unsigned expandMemMove = 0, bool ptrCompanion = false,
     unsigned boxAllExpand = kBoxAllExpandDefault, bool widenPerClass = true);
+
+/// The options of the VC lowering (buildVCLoweringPipeline's parameters,
+/// documented there), for its stages one by one.
+struct VCLowerConfig {
+  bool abstract = false;
+  bool nativeMulOverflow = false;
+  bool fold = true;
+  unsigned widenMemory = 0;
+  bool expandMemSet = true;
+  bool widenReport = false;
+  bool keepByteWide = false;
+  bool checkAlign = false;
+  unsigned checkPtrIndex = 0;
+  bool opt = true;
+  bool memhavocNullNoop = true;
+  unsigned disable = 0;
+  PlaceFiles place;
+  RangeFoldMode rangeFold = RangeFoldMode::Off;
+  unsigned expandMemMove = 0;
+  bool ptrCompanion = false;
+  unsigned boxAllExpand = kBoxAllExpandDefault;
+  bool widenPerClass = true;
+};
+/// The stages of the VC lowering, which buildVCLoweringPipeline runs in
+/// this order: prefix (sea-apply-tracking, sea-lower-box-all, sccp, cse,
+/// sea-scalarize-structs), memory (the metadata lowerings and placement of
+/// an abstract program, the check jobs, widening, the memory-operation
+/// expansions), assume-fold (sea-assume-fold), then sea-merge-asserts
+/// (assertion uniquing), then the tail (sea-split-wide-access,
+/// sea-expand-intrinsics, sea-range-fold, canonicalize, cse,
+/// sea-prune-edges, sea-merge-asserts again, sea-split-critical-edges).
+/// Each adds passes to a sea.program pass manager. A job may combine them
+/// differently (sea-vc --check-inb: docs/design/CheckInb.md).
+void addVCLowerPrefix(mlir::OpPassManager &prog, const VCLowerConfig &c);
+void addVCLowerMemory(mlir::OpPassManager &prog, const VCLowerConfig &c);
+void addVCAssumeFold(mlir::OpPassManager &prog, const VCLowerConfig &c);
+void addVCLowerTail(mlir::OpPassManager &prog, const VCLowerConfig &c);
+/// The optimize stage of a program with many asserts: sccp, cse,
+/// sea-assume-fold, canonicalize, cse (as the options enable them). Exact:
+/// a check that dominating checks or assumes imply folds to true (the
+/// first failing assert of a path is the one that counts).
+void addVCOptimizeChecks(mlir::OpPassManager &prog, const VCLowerConfig &c);
 
 /// Attaches the `lower.pass` log (one level-1 event per pass run: ops
 /// before and after, time; lib/Transforms/PassLog.cpp) to \p pm. Costs a

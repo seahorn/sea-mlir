@@ -278,7 +278,8 @@ Discharging the premises is a separate memory-safety job: instrument the
 program with a bounds check before every access (the object its pointer came
 from, as SeaHorn's `sea fpf` does), and verify the instrumented program; an
 unsat of the instrumented job (A-INB holds) together with an unsat of the
-original one gives the unconditional claim. A-NULL alone is a
+original one gives the unconditional claim. `sea-vc --check-inb` is that
+job (CheckInb.md). A-NULL alone is a
 null-dereference check when null is the only object of size 0 (zero-sized
 allocations need their own check), cheaper and more common. `--seam-check`
 states every premise firing as the in-bounds conditions of its accesses;
@@ -432,6 +433,7 @@ source and its assumptions. "Phase" is the planned order of work.
 | Compare | `ptr(b,o1) =p ptr(b,o2)  ~>  o1 = o2` | Fig 4.2 | none | 1 |
 | Compare | `ptr(b1,o1) =p ptr(b2,o2)  ~>  false`, b1 != b2, only the compare of a ROW step, objects of nonzero size | Fig 4.2, Ch 3 | A-SEP | 1 |
 | Compare | constant folding, `a - b = a - c ~> b = c` | Fig 2.2 | none | 1 |
+| Compare | `cmp.congruence`: `a = b ~> false` when `a - b` is `sum c_k x_k + d`, 2^t dividing every `c_k` and not `d` (`--seam-congruence`, default on) | SeaM rule | none | done |
 | ROW | `select(store(a,i,v), j) ~> ite(i = j, v, select(a,j))`, then HIT / SKIP when the compare resolves | Fig 4.6 | as Compare | 1 |
 | ROW | `select(ite(c, m1, m2), j) ~> ite(c, select(m1,j), select(m2,j))` | Fig 2.6 | none | 1 |
 | Compare | `ite(c,x,y) = w ~> ite(c, x = w, y = w)` (ITE-EQ), only when bounded and a leaf resolves | Fig 2.1 | as Compare | 1 |
@@ -441,7 +443,7 @@ source and its assumptions. "Phase" is the planned order of work.
 | Store-Map | R-HIT, R-MISS, R-SKIP, R-ABORT | Fig 6.5 | A-SEP (R-SKIP) | 3, done |
 | Ranged | read over memset-words / memcpy-words (+ HIT/SKIP) | Fig 4.5, 4.7 | A-SEP | 4 |
 | Bit-vector | extract of extract / concat / numeral / full width; concat: flatten, fold numerals, merge adjacent extracts of one term (byte reassembly) | z3 simplify leftovers | none | 5 |
-| Bit-vector | linear equality: cancel common addends (any term), numerals folded to one side, `a + c1 = a + c2`, `x = x`, `24 * x = 7` (low zero bits), canonical side order | SeaM normalization rules | none | 5 |
+| Bit-vector | linear equality: cancel common addends (any term), numerals folded to one side, `a + c1 = a + c2`, `x = x`, `24 * x = 7` (low zero bits), canonical side order. Under `--seam`, `cmp.congruence` decides address compares of the `24 * x = 7` kind first; this rule is the one for the general equality (planned: two-sided forms too) | SeaM normalization rules | none | 5 |
 | Bit-vector | AC normalization: flatten, sort by creation id, fold numerals, idempotence (`bvand`, `bvor`, `and`, `or`), `x ^ x = 0`, `x & !x` | SeaM normalization rules | none | 5 |
 | ite / Bool | Boolean ite to `and` / `or`, same condition in an arm, same value on two paths (`ite(c, a, ite(d, a, f)) ~> ite(c | d, a, f)`), `ite(!c, a, b) ~> ite(c, b, a)`, implication | SeaM normalization rules | none | 5 |
 

@@ -24,7 +24,11 @@ Verify under named assumptions; never drop one silently.
   (opt-in, off unless `--narrow-offsets` is given: reads narrowed under
   A-INB; `--ack-own` is no premise for unsat, a completeness-only
   assumption shown by the `vc.ackermann-own-*` counters), and also
-  `assume.memset-bound`, `assume.addr0-is-null`
+  `assume.memset-bound`, `assume.symbolic-size-bound` (allocations of
+  non-constant size fit the room placement gave them;
+  `--symbolic-size=assert` checks it instead, and a `premise.failed:`
+  line with exit status 4 is an inconclusive answer, not a property
+  failure), `assume.addr0-is-null`
   (`vc`: placement makes null address 0; `uses=<n>`: a replay relied on
   it), `seam.ptrint`, and any `seam.premises: off (fallback ...)` or
   `seam.premises: off (lowering: ...)`.
@@ -59,6 +63,9 @@ Analysis, Conditional Soundness, and Proving the Absence of Errors*, SAS
   where placement puts its objects. Reduce and report it.
 - Exit status 4 under `--seam` means that the program leaves an object on
   the model's inputs: a memory-safety error, and an inconclusive answer.
+  Exit status 4 with a `premise.failed:` line means that the replay failed
+  a premise assert, not the property (`--symbolic-size=assert`: an
+  allocation exceeded its room): also an inconclusive answer.
 
 ## Proofs need controls
 

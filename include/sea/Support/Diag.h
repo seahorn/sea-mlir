@@ -26,6 +26,8 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace sea::diag {
 
@@ -40,6 +42,9 @@ void error(llvm::StringRef kind, const llvm::Twine &msg,
 
 /// How many times `kind` was reported (warnings and errors).
 unsigned count(llvm::StringRef kind);
+
+/// The kinds of the warnings reported so far, sorted.
+std::vector<std::string> warningKinds();
 
 /// Prints one line per warning kind that occurred more than once. Call at
 /// tool exit.
