@@ -8,6 +8,7 @@
 
 include "sea/Dialect/Sea/SeaDialect.td"
 include "sea/Dialect/Sea/SeaTypes.td"
+include "sea/Dialect/Sea/SeaInterfaces.td"
 include "mlir/IR/BuiltinAttributeInterfaces.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/SymbolInterfaces.td"
@@ -150,7 +151,7 @@ def Sea_AssertOp : Sea_Op<"assert"> {
   let assemblyFormat = "$cond attr-dict";
 }
 
-def Sea_NondetOp : Sea_Op<"nondet"> {
+def Sea_NondetOp : Sea_Op<"nondet", [Sea_NondetSiteOpInterface]> {
   let summary = "A nondeterministic bit-vector";
   let description = [{
     Exported 1:1 from a call to a nondet function (`nondet_u32()`, the `nd_*`
@@ -451,7 +452,8 @@ def Sea_StructCreateOp : Sea_Op<"struct.create", [Pure]> {
   let hasVerifier = 1;
 }
 
-def Sea_StructNondetOp : Sea_Op<"struct.nondet"> {
+def Sea_StructNondetOp : Sea_Op<"struct.nondet",
+    [Sea_NondetSiteOpInterface]> {
   let summary = "A struct with nondeterministic fields";
   let description = [{
     The explicit nondet initialization of a struct (LLVM's `insertvalue
@@ -628,7 +630,7 @@ def Sea_MemConstOp : Sea_Op<"mem.const", [
       "$value (`shadow` $shadow^)? attr-dict `:` qualified(type($result))";
 }
 
-def Sea_MemNondetOp : Sea_Op<"mem.nondet"> {
+def Sea_MemNondetOp : Sea_Op<"mem.nondet", [Sea_NondetSiteOpInterface]> {
   let summary = "Unconstrained initial contents of a memory region";
   let description = [{
     `site` is the replay key, unique per program together with the sites of
@@ -740,7 +742,8 @@ def Sea_MemMoveOp : Sea_MemUpdateOp<"memmove", [
   let hasVerifier = 1;
 }
 
-def Sea_MemHavocOp : Sea_MemUpdateOp<"memhavoc", [Sea_LenOf<"mem", "len">]> {
+def Sea_MemHavocOp : Sea_MemUpdateOp<"memhavoc",
+    [Sea_LenOf<"mem", "len">, Sea_NondetSiteOpInterface]> {
   let summary = "Make `len` cells from `addr` nondeterministic";
   let description = [{
     Only the range changes. `site` is the replay key (shared with the other
@@ -803,7 +806,8 @@ def Sea_TrackingOffOp : Sea_Op<"tracking_off"> {
 // Abstract pointers and allocation (docs/design/Memory-Step2.md)
 //===----------------------------------------------------------------------===//
 
-class Sea_AllocOp<string mnemonic, string what> : Sea_Op<mnemonic> {
+class Sea_AllocOp<string mnemonic, string what>
+    : Sea_Op<mnemonic, [Sea_NondetSiteOpInterface]> {
   let summary = "Allocate a new " # what # " object";
   let description = [{
     Each execution creates a new object of `size` units, aligned to
@@ -978,7 +982,7 @@ def Sea_PtrDereferenceableOp : Sea_Op<"ptr.dereferenceable", [Pure]> {
   let hasVerifier = 1;
 }
 
-def Sea_PtrNondetOp : Sea_Op<"ptr.nondet"> {
+def Sea_PtrNondetOp : Sea_Op<"ptr.nondet", [Sea_NondetSiteOpInterface]> {
   let summary = "A pointer value that can never be dereferenced";
   let description = [{
     Each execution makes a fresh opaque object of size 0 (named

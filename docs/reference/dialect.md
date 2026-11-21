@@ -357,6 +357,8 @@ producer's name for the object: a source variable, "malloc at
 foo.c:12") is shown in the counterexample object table
 (docs/design/Print.md); sea-place-static copies it to the segment.
 
+Interfaces: `Sea_NondetSiteOpInterface`
+
 #### Attributes:
 
 <table>
@@ -1104,6 +1106,8 @@ producer's name for the object: a source variable, "malloc at
 foo.c:12") is shown in the counterexample object table
 (docs/design/Print.md); sea-place-static copies it to the segment.
 
+Interfaces: `Sea_NondetSiteOpInterface`
+
 #### Attributes:
 
 <table>
@@ -1228,6 +1232,8 @@ operation ::= `sea.mem.nondet` $name ` ` `[` $site `]` attr-dict `:` qualified(t
 %m = sea.mem.nondet "heap" [4] : !sea.mem<!sea.addr<64>, i8>
 ```
 
+Interfaces: `Sea_NondetSiteOpInterface`
+
 #### Attributes:
 
 <table>
@@ -1293,7 +1299,7 @@ operation ::= `sea.memhavoc` $mem `[` $addr `]` `,` $len ` ` `[` $site `]` (`inp
 Only the range changes. `site` is the replay key (shared with the other
 nondet sites).
 
-Interfaces: `InferTypeOpInterface`
+Interfaces: `InferTypeOpInterface`, `Sea_NondetSiteOpInterface`
 
 #### Attributes:
 
@@ -1498,6 +1504,8 @@ the VC names its constant by it and replay looks it up in the model.
 ```mlir
 %x = sea.nondet "nondet_u32" [3] : i32
 ```
+
+Interfaces: `Sea_NondetSiteOpInterface`
 
 #### Attributes:
 
@@ -2031,6 +2039,8 @@ pointers, and no access through it is in bounds
 (sea.ptr.dereferenceable is 0). Harnesses use it to mark fields that
 must never be dereferenced (SeaHorn's nd_* functions returning
 pointers). `site` is unique with the other nondet sites.
+
+Interfaces: `Sea_NondetSiteOpInterface`
 
 #### Attributes:
 
@@ -2723,6 +2733,8 @@ the VC constant `nd.<site>`.
 ```mlir
 %s = sea.struct.nondet "undef" [4] : !sea.struct<i16, i32>
 ```
+
+Interfaces: `Sea_NondetSiteOpInterface`
 
 #### Attributes:
 

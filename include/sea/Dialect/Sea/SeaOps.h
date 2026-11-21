@@ -19,6 +19,8 @@
 #include "sea/Dialect/Sea/SeaDialect.h"
 #include "sea/Dialect/Sea/SeaTypes.h"
 
+#include "sea/Dialect/Sea/SeaInterfaces.h.inc"
+
 namespace sea {
 /// The side effect of print ops (sea.print*): an output stream, so prints
 /// are not dead and keep their order; no program state.

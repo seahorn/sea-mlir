@@ -19,6 +19,8 @@ using namespace sea;
 
 #include "sea/Dialect/Sea/SeaEnums.cpp.inc"
 
+#include "sea/Dialect/Sea/SeaInterfaces.cpp.inc"
+
 #define GET_OP_CLASSES
 #include "sea/Dialect/Sea/SeaOps.cpp.inc"
 
@@ -34,31 +36,15 @@ LogicalResult ProgramOp::verifyRegions() {
     return emitOpError("entry block must have no arguments");
 
   // Nondet sites name the program's inputs (scalars, initial memories,
-  // havocked ranges); they must be unique.
+  // havocked ranges, objects; the variables of dialects lowered to sea);
+  // they must be unique.
   llvm::DenseMap<uint64_t, Operation *> sites;
-  WalkResult res = body.walk([&](Operation *op) {
-    std::optional<uint64_t> site;
-    if (auto nd = dyn_cast<NondetOp>(op))
-      site = nd.getSite();
-    else if (auto sn = dyn_cast<StructNondetOp>(op))
-      site = sn.getSite();
-    else if (auto mn = dyn_cast<MemNondetOp>(op))
-      site = mn.getSite();
-    else if (auto mh = dyn_cast<MemHavocOp>(op))
-      site = mh.getSite();
-    else if (auto al = dyn_cast<AllocaOp>(op))
-      site = al.getSite();
-    else if (auto ml = dyn_cast<MallocOp>(op))
-      site = ml.getSite();
-    else if (auto pn = dyn_cast<PtrNondetOp>(op))
-      site = pn.getSite();
-    if (!site)
-      return WalkResult::advance();
-    auto [it, inserted] = sites.try_emplace(*site, op);
+  WalkResult res = body.walk([&](NondetSiteOpInterface op) {
+    uint64_t site = op.getSite();
+    auto [it, inserted] = sites.try_emplace(site, op);
     if (inserted)
       return WalkResult::advance();
-    InFlightDiagnostic diag = op->emitOpError("duplicate nondet site ")
-                              << *site;
+    InFlightDiagnostic diag = op->emitOpError("duplicate nondet site ") << site;
     diag.attachNote(it->second->getLoc()) << "previous use here";
     return WalkResult::interrupt();
   });
