@@ -149,6 +149,41 @@ sea.program @int_to_ptr {
   sea.halt
 }
 
+// 32-bit pointers: tier (a) at the pointer width. a + 12 (4 of 16 bytes)
+// is removed; a + 0xfffffffc, -4 modulo 2^32, is kept.
+// CHECK-LABEL: sea.program @narrow
+// CHECK-SAME: sea.check_inb = {checks = 2 : i64, left = 1 : i64, static = 1 : i64
+// CHECK: sea.load
+// CHECK-NEXT: sea.const -4 : i32
+// CHECK-NEXT: %[[NEG:.*]] = sea.ptr.add %{{.*}}, %{{.*}} : !sea.ptr<32>, i32
+// CHECK-NEXT: sea.const 4 : i32
+// CHECK-NEXT: sea.ptr.dereferenceable %[[NEG]]
+!m32 = !sea.mem<!sea.ptr<32>, i8>
+sea.program @narrow {
+  %m0 = sea.mem.nondet "m" [0] : !m32
+  %c16 = sea.const 16 : i32
+  %a = sea.alloca %c16 align 8 [1] : i32 -> !sea.ptr<32>
+  %c12 = sea.const 12 : i32
+  %p = sea.ptr.add %a, %c12 : !sea.ptr<32>, i32
+  %x = sea.load %m0[%p] : !m32 -> i32
+  %cm4 = sea.const -4 : i32
+  %q = sea.ptr.add %a, %cm4 : !sea.ptr<32>, i32
+  %y = sea.load %m0[%q] : !m32 -> i32
+  sea.halt
+}
+
+// A global of size 0: no access of positive length is in it; kept.
+// CHECK-LABEL: sea.program @size0_global
+// CHECK-SAME: left = 1 : i64, static = 0 : i64
+// CHECK: sea.ptr.dereferenceable
+// CHECK: sea.assert
+sea.program @size0_global {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %g = sea.global @empty size 0 align 1 : !sea.ptr<64>
+  %x = sea.load %m0[%g] : !m -> i8
+  sea.halt
+}
+
 // The interpreter runs the instrumented program: a + n, n = 16, fails its
 // check; n = 15 passes.
 // RUN-OOB: status: assert-failed

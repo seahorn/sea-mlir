@@ -35,10 +35,10 @@
 //     assert must not lie on a CFG cycle (error split-asserts.cycle).
 //   Produces: in place of each split program with k > 0 asserts, its k
 //     parts, right after where it was; each part has exactly one assert,
-//     followed by sea.halt in its block, and no other halt (checked). The
-//     parts are not in BMC form yet: sea-merge-asserts (a no-op on them
-//     but for the halts it already finds alone) and the usual lowering
-//     follow.
+//     followed by sea.halt in its block, and no other halt (checked). A
+//     part is in BMC form but for critical edges and repeated cond_br
+//     targets, which the usual lowering removes (sea-merge-asserts leaves
+//     it as it is).
 //
 //===----------------------------------------------------------------------===//
 
