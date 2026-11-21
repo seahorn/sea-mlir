@@ -47,6 +47,7 @@
 #include "sea/Transforms/RangeFold.h"
 
 #include "mlir/Pass/PassManager.h"
+#include "sea/VC/FoldTopEqs.h"
 #include "sea/VC/Reach.h"
 #include "sea/VC/Replay.h"
 #include "sea/VC/Split.h"
@@ -79,6 +80,7 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/StringSaver.h"
 #include "llvm/Support/raw_ostream.h"
@@ -822,6 +824,34 @@ static cl::opt<RoArrays> roArrays(
     cl::values(clEnumValN(RoArrays::Array, "array", "arrays (default)"),
                clEnumValN(RoArrays::Uf, "uf", "uninterpreted functions")),
     cl::init(RoArrays::Array));
+
+static cl::opt<bool> vcFoldTopEqs(
+    "vc-fold-top-eqs",
+    cl::desc("Substitute the top-level facts of the query after the "
+             "rewriting (T = c, the parts of concat(a, b) = c, Boolean "
+             "constants; the defining conjunct stays), then simplify again, "
+             "to a fixpoint, before the solver boundary and the Ackermann "
+             "lowering; after the lowering, eliminate the top-level "
+             "definitions x = c of constants (the Ackermann reads among "
+             "them) into a model trail that extends the solver's model. "
+             "Exact; needs --simplify (on under --seam); not with --reach "
+             "or --ack-relax; counted vc.fold-top-eqs, vc.model-trail. Off "
+             "by default (docs/design/FoldTopEqs.md)"),
+    cl::init(false));
+
+static cl::opt<bool> modelTrailPlantSkip(
+    "x-model-trail-plant-skip", cl::Hidden,
+    cl::desc("Test only: with --vc-fold-top-eqs, the model is not extended "
+             "by the trail (a replay that needs it diverges)"),
+    cl::init(false));
+
+static cl::opt<std::string> modelTrailOut(
+    "model-trail-out",
+    cl::desc("With --vc-fold-top-eqs: write the model trail to this file, "
+             "JSON lines, one elimination per line in order, terms in "
+             "SMT-LIB over the symbols of the query (--smt2) "
+             "(docs/design/FoldTopEqs.md, \"Model trail\")"),
+    cl::value_desc("file"));
 
 enum class VcDefs { Inline, Nest, Eq, Hidden };
 static cl::opt<VcDefs> vcDefs(
@@ -2632,6 +2662,16 @@ TYPICAL:
                                  #   the model's arrays are rebuilt as for
                                  #   the lowering. A no-op when the lowering
                                  #   runs. Default array.
+  sea-vc p.mlir --seam --vc-fold-top-eqs  # the query's top-level facts
+                                 #   T = c substituted (concat facts by part,
+                                 #   Boolean constants), simplified again to
+                                 #   a fixpoint; after Ackermann the
+                                 #   definitions x = c of constants leave
+                                 #   the query for a model trail that
+                                 #   extends the model (exact; not with
+                                 #   --reach or --ack-relax; off by default;
+                                 #   --model-trail-out=<file>: the trail as
+                                 #   JSON lines, docs/design/FoldTopEqs.md)
   sea-vc p.mlir --seam --vc-defs=hidden  # named address sums, after
                                  #   Ackermann: index sums that share a
                                  #   prefix (a parser cursor) become fresh
@@ -3192,6 +3232,21 @@ OUTPUT (stdout, `key: value` lines):
   vc.ack-relax-mode: incremental  (--ack-relax-mode=incremental only)
   vc.ack-relax-time: <s>          (--ack-relax-mode=incremental only: the
                                   rounds, the fallback and the assertions)
+  vc.fold-top-eqs: facts=<n> term=<n> split=<n> bool=<n> uses=<n>
+      rounds=<n> concat-ite=<n> skipped-masked=<n> skipped-untyped=<n>
+                                  (--vc-fold-top-eqs: keys substituted, by
+                                  kind (T = c, concat parts, Boolean
+                                  constants); operand uses replaced; rounds
+                                  that changed the query; concats of ites
+                                  on one condition made ites; facts not
+                                  used: bvand(x, m) = c, a concat part of
+                                  unknown width; warning
+                                  vc.fold-top-eqs-rounds: the round bound
+                                  stopped it)
+  vc.model-trail: cells=<n> defs=<n> rounds=<n>  (--vc-fold-top-eqs:
+                                  constants eliminated after Ackermann into
+                                  the model trail: Ackermann reads (cells)
+                                  and other constants (defs))
   vc.defs: inline|nest|eq|hidden  (--vc-defs; not inline: vc.defs-sums /
                                   -index-sums / -names / -atoms / -rewritten:
                                   distinct sums of the query, those at an
@@ -4934,6 +4989,11 @@ int main(int argc, char **argv) {
   if (reach && (smt2 || vcgenOnly))
     return fail("--reach runs its own queries: not with --smt2 or "
                 "--vcgen-only");
+  if (vcFoldTopEqs && reach)
+    return fail("--vc-fold-top-eqs: not with --reach (its targets are "
+                "block guards the trail may eliminate)");
+  if (!modelTrailOut.empty() && !vcFoldTopEqs)
+    return fail("--model-trail-out needs --vc-fold-top-eqs");
   if (reach && sinkAssumes)
     return fail("--reach: --sink-assumes moves every assume before the "
                 "assertion, which changes what reaches a target");
@@ -5151,6 +5211,9 @@ int main(int argc, char **argv) {
                 "--split-leaves or --split-auto (each part is an encoding)");
   if (!iteStats && iteStatsMax.getNumOccurrences())
     return fail("--ite-stats-max needs --ite-stats");
+  if (vcFoldTopEqs && relaxSel)
+    return fail("--vc-fold-top-eqs: not with --ack-relax (its rounds "
+                "rebuild the lowered query)");
   if ((splitOn || splitCandidatesOpt) && relaxSel)
     return fail("--ack-relax: not with --split, --split-leaves, --split-auto "
                 "or --split-candidates");
@@ -6303,6 +6366,28 @@ int main(int argc, char **argv) {
         return r;
       });
     }
+    // --vc-fold-top-eqs: the top-level facts substituted
+    // (docs/design/FoldTopEqs.md)
+    std::optional<sea::FoldTopEqsStats> foldTopEqsStats;
+    // its second step, after the Ackermann lowering; the model trail
+    sea::TopConstEliminator trailElim;
+    if (vcFoldTopEqs) {
+      if (!sem.simplifies())
+        return fail("--vc-fold-top-eqs needs --simplify (on under --seam): "
+                    "the substituted query is simplified again");
+      sem.setTrailContext("fold-top-eqs");
+      sea::TopEqFolder folder([&](expr::Expr e) { return sem.simplify(e); });
+      query = folder.fold(query);
+      if (originsOn)
+        origins = origins.through(
+            [&](const expr::Expr &n) { return folder.image(n); });
+      foldTopEqsStats = folder.stats();
+      if (foldTopEqsStats->roundCap)
+        sea::diag::warn("vc.fold-top-eqs-rounds",
+                        "--vc-fold-top-eqs: stopped at its round bound, "
+                        "before a fixpoint (exact; facts may be left)");
+      lap("fold-top-eqs");
+    }
     // the unknown hint counts its open alias questions (only then: a DAG
     // walk after the solver); a reference, the nodes are hash-consed
     expr::Expr hintQuery;
@@ -7251,6 +7336,52 @@ int main(int argc, char **argv) {
         .kv("arrays", ack.stats().lowered)
         .kv("pairs", ack.stats().pairs)
         .kv("nodes-made", efac.nodesMade());
+    // --vc-fold-top-eqs, second step: the top-level definitions x = c of
+    // constants (the Ackermann reads of the facts among them) leave the
+    // query for the model trail (docs/design/FoldTopEqs.md, "Model trail")
+    uint64_t trailCells = 0, trailDefs = 0;
+    if (vcFoldTopEqs) {
+      query = trailElim.eliminate(query);
+      if (originsOn)
+        origins = origins.through(
+            [&](const expr::Expr &n) { return trailElim.image(n); });
+      // the eliminated Ackermann reads: cells of their arrays
+      std::unordered_map<expr::ENode *, std::pair<size_t, size_t>> readOf;
+      if (lowered)
+        for (size_t a = 0; a < ack.arrays().size(); ++a)
+          for (size_t k = 0; k < ack.arrays()[a].reads.size(); ++k)
+            readOf.emplace(ack.arrays()[a].reads[k].value.get(),
+                           std::make_pair(a, k));
+      for (const sea::TrailEntry &t : trailElim.trail())
+        ++(readOf.count(t.var.get()) ? trailCells : trailDefs);
+      if (!modelTrailOut.empty()) {
+        auto body = [&](llvm::raw_ostream &os) {
+          sea::EZ3 tz3(efac);
+          auto smt = [&](const expr::Expr &e) {
+            return sea::z3_to_smtlib(tz3, trailElim.image(e));
+          };
+          for (const sea::TrailEntry &t : trailElim.trail()) {
+            llvm::json::Object o;
+            auto it = readOf.find(t.var.get());
+            o["kind"] = it != readOf.end() ? "cell" : "def";
+            o["var"] = sea::z3_to_smtlib(tz3, t.var);
+            if (it != readOf.end()) {
+              const auto &arr = ack.arrays()[it->second.first];
+              o["array"] = sea::z3_to_smtlib(tz3, arr.array);
+              o["index"] = smt(arr.reads[it->second.second].index);
+            }
+            o["value"] = sea::z3_to_smtlib(tz3, t.value);
+            os << llvm::json::Value(std::move(o)) << "\n";
+          }
+          return success();
+        };
+        if (failed(sea::writeFileAtomic(modelTrailOut, body,
+                                        "vc.model-trail-out",
+                                        "--model-trail-out")))
+          return 1;
+      }
+      lap("model-trail");
+    }
     // --ack-relax: the parts of the solver's query (after --vc-defs) a
     // round's query is made of: the lowered body, each candidate's conjunct,
     // the definitions of named sums (all of them: the names are made once,
@@ -7570,6 +7701,23 @@ int main(int argc, char **argv) {
         lstats.report(r, "lambda.", lambdaFinalSimplify);
       if (words)
         words->report(r, "words.");
+      if (foldTopEqsStats) {
+        const sea::FoldTopEqsStats &f = *foldTopEqsStats;
+        r.line("vc.fold-top-eqs")
+            .kv("facts", f.facts)
+            .kv("term", f.termFacts)
+            .kv("split", f.splitFacts)
+            .kv("bool", f.boolFacts)
+            .kv("uses", f.uses)
+            .kv("rounds", f.rounds)
+            .kv("concat-ite", f.hoisted)
+            .kv("skipped-masked", f.skippedMasked)
+            .kv("skipped-untyped", f.skippedUntyped);
+        r.line("vc.model-trail")
+            .kv("cells", trailCells)
+            .kv("defs", trailDefs)
+            .kv("rounds", trailElim.rounds());
+      }
       {
         using Stride = expr::Ackermannizer::Stats::Stride;
         r.line("vc.ackermann").value(ackOn ? "on" : "off");
@@ -8818,8 +8966,9 @@ int main(int argc, char **argv) {
     // eagerly: AckermannModel)
     uint64_t strideBroken = 0;
     if (ackOn && strideOn && ack.stats().stridePairs) {
-      auto probeInner = solver->get_model();
-      expr::AckermannModel probe(*probeInner, ack);
+      auto probeSolver = solver->get_model();
+      sea::TrailModel probeInner(*probeSolver, trailElim);
+      expr::AckermannModel probe(probeInner, ack);
       for (size_t a = 0; a < ack.arrays().size(); ++a)
         (void)probe.function(a);
       {
@@ -8858,9 +9007,14 @@ int main(int argc, char **argv) {
     }
 
     auto solverModel = solver->get_model();
+    // --vc-fold-top-eqs: the model extended by the trail (a model of the
+    // query before the eliminations)
+    sea::TopConstEliminator noTrail;
+    sea::TrailModel trailModel(*solverModel,
+                               modelTrailPlantSkip ? noTrail : trailElim);
     // the cells of the solver's arrays no constraint reads: defaults
     // (`..` in prints, docs/design/Print.md)
-    expr::ReadCellsModel model(*solverModel, query);
+    expr::ReadCellsModel model(trailModel, query);
     // with the lowering, the arrays are rebuilt from the model of the lowered
     // query: every evaluation (replay, validation) reads them through it
     std::unique_ptr<expr::AckermannModel> ackModel;

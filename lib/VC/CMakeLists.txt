@@ -3,6 +3,7 @@
 
 add_mlir_library(SeaVC
   JoinCases.cpp
+  FoldTopEqs.cpp
   Names.cpp
   OpSem.cpp
   Origins.cpp
