@@ -773,6 +773,14 @@ void PlaceStaticPass::runOnOperation() {
     op->erase();
   if (!ok)
     return signalPassFailure();
+  // added to the counts already there (a program placed in parts)
+  if (auto d = program->getAttrOfType<DictionaryAttr>(kSymbolicSizeBoundAttr);
+      d && sizeBounds) {
+    if (auto n = d.getAs<IntegerAttr>("allocs"))
+      sizeBounds += n.getInt();
+    if (auto r = d.getAs<IntegerAttr>("room"))
+      sizeBoundRoom = std::max<uint64_t>(sizeBoundRoom, r.getInt());
+  }
   if (sizeBounds)
     program->setAttr(
         kSymbolicSizeBoundAttr,
