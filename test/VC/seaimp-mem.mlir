@@ -3,6 +3,9 @@
 // RUN: sea-vc %s --lower --program=imp_bug | FileCheck %s --check-prefix=SAT
 // RUN: sea-vc %s --lower --program=sea_bug | FileCheck %s --check-prefix=SAT
 // RUN: sea-vc %s --lower --program=imp_bug --replay-original | FileCheck %s --check-prefix=ORIG
+// sea-erase-mem-ssa on the plain sea programs: the same verdicts.
+// RUN: sea-opt %s --sea-erase-mem-ssa | sea-vc - --lower --program=sea_safe | FileCheck %s --check-prefix=UNSAT
+// RUN: sea-opt %s --sea-erase-mem-ssa | sea-vc - --lower --program=sea_bug | FileCheck %s --check-prefix=SAT
 
 // A region (a memory variable) gives the verdicts of the same program
 // written with explicit memory SSA (docs/design/SeaImp.md).

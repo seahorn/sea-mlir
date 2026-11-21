@@ -340,6 +340,7 @@ void registerPasses() {
   registerPass([] { return createPruneEdgesPass(); });
   registerPass([] { return createLowerBoxAllPass(); });
   registerPass([] { return createLowerSeaImpPass(); });
+  registerPass([] { return createEraseMemSsaPass(); });
   registerPass([] { return createLowerPtrIndexPass(); });
   registerPass([] { return createCheckAlignPass(); });
   registerPass([] { return createCheckPtrIndexPass(); });

@@ -33,6 +33,7 @@ add_mlir_library(SeaTransforms
   PruneEdges.cpp
   LowerBoxAll.cpp
   LowerSeaImp.cpp
+  EraseMemSsa.cpp
   TestInsertPrints.cpp
 
   ADDITIONAL_HEADER_DIRS

@@ -81,6 +81,10 @@ inline constexpr llvm::StringLiteral kAssertIdAttr = "sea.assert_id";
 /// read before any write is the variable's nondet initial value
 /// (docs/design/SeaImp.md). First in the VC lowering.
 std::unique_ptr<mlir::Pass> createLowerSeaImpPass();
+/// sea-erase-mem-ssa: the Mem-SSA chain of a program's one memory -> a
+/// seaimp memory variable and region accesses (sea -> seaimp; the inverse
+/// of the region part of sea-lower-seaimp; docs/design/SeaImp.md).
+std::unique_ptr<mlir::Pass> createEraseMemSsaPass();
 /// sea-lower-ptr-index: sea.ptr.index -> mul / add / ptr.add (the no-wrap
 /// flags dropped; docs/design/PtrIndex.md).
 std::unique_ptr<mlir::Pass> createLowerPtrIndexPass();
