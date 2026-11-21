@@ -214,14 +214,51 @@ off without A-INB.
   fact only where its access executes (rev 3, section 1). A sat model
   that puts two dropped-pair reads at one index, with different cells,
   breaks one only if both reads execute in it (the guard of a block of
-  each read's loads is true). Such a pair is found before the result
-  (AckermannModel::strideBroken, the arrays built eagerly;
-  `vc.ackermann-stride-broken`), and sea-vc reruns without the rule
-  (`vc.ackermann-stride: fallback`). A pair with a read that does not
-  execute is counted `vc.ackermann-stride-idle` and causes no rerun. The
-  array keeps an executed read's cell, also for pairs the ownership drop
-  dropped (Ackermann.md).
-- Eligibility avoids spurious reruns; it is not a soundness condition.
+  each read's loads is true). sea-vc counts such pairs before the result
+  (`vc.ackermann-stride-broken`, AckermannModel::strideBroken, the arrays
+  built eagerly) and answers sat with that model; it does not run again
+  without the rule. A pair with a read that does not execute is counted
+  `vc.ackermann-stride-idle` and breaks nothing. The array keeps an
+  executed read's cell, also for pairs the ownership drop dropped
+  (Ackermann.md).
+  - If the replay fails, take the first read of the run whose value
+    differs from the model. An earlier read of the run is at the same
+    address with a constraint the rule dropped. Their offsets are never
+    equal as integers, so one of their GEPs breaks its nusw / nuw promise,
+    and the poison reaches the address of one of the two reads, both
+    executed; the interpreter reports the break at that access
+    (`interp.ptr-index-promise`, section 6; also when the pointer went
+    through memory).
+  - The promises are trusted front-end facts, so this run is a valid
+    answer: sat, but the run breaks a promise instead of confirming the
+    answer (failing an assertion, or under `--ptr-companion=check` a
+    guard). sea-vc reports it with status 4, as it reports a run that
+    leaves its object (`vc.seam-inb-spurious`): error
+    `vc.ack-stride-promise-broken`, with the lines
+    `vc.ack-stride-promise-broken:` (the promise, how many times the
+    run's accesses broke one, and whether the pointer went through
+    memory), `vc.ack-stride-promise-broken-at:` (the GEP) and
+    `vc.ack-stride-promise-broken-access:` (the access). The GEP named is
+    the one broken at the first access of the run whose address carries a
+    broken promise; it need not be one of the colliding pair's. Any
+    broken promise at an access gives status 4: the result is not ok.
+  - A user who wants a counterexample that keeps the promises removes the
+    promise of that GEP, or strips all promises, and checks again. There
+    may be none, and it may be hard to find.
+  - A replay that confirms the answer is status 0 as usual: no read of the
+    run differs from the model, so the colliding reads do not both
+    execute (a read whose execution condition is unknown counts as
+    executed, Ackermann.md) or their values are not compared.
+  - A pair dropped under A-NOWRAP or A-NULL (a K or size-0 firing) can
+    collide without a broken GEP promise: then the run leaves its object,
+    and the A-INB check reports it (`vc.seam-inb-spurious`, status 4). A
+    failed replay with neither ends in the other replay errors;
+    `vc.replay-mismatch` says how many colliding pairs the model has
+    (status 2).
+  - `--reach` still reruns every query without the rule (warning
+    `vc.ack-stride-reach-retry`, `vc.ackermann-stride: fallback`).
+- Eligibility avoids spurious promise-broken answers; it is not a soundness
+  condition.
 - So the Ackermann case needs no PremPtrIndex obligation. The premise and
   --seam-check formulas of section 5 are needed when the rule enters SeaM
   (W-SKIP / ROW).
@@ -234,8 +271,10 @@ off without A-INB.
   promised node (or an ite of them) is that node with K = k, k signed. The
   copy-hit source `s + k` is the same (copySource).
   - These K writers go beyond "the bytes of an access at the node".
-  - That is safe here (for Ackermann lowering): in the Ackermann case a firing never
-    changes the verdict, only the rerun rate (0 on vcc-pi).
+  - That is safe here (for Ackermann lowering): unsat needs no premise,
+    and a sat whose model a firing breaks is reported as such (status 4,
+    section 5 above). Before that answer existed, sea-vc reran without the
+    rule; the rerun rate was 0 on vcc-pi.
 - view() reads the shallow flat form. Its offset keeps the nodes of the
   loads in it, because rules build terms from it. A deep view (old())
   turned those loads into flat-address reads, which the record could not
@@ -256,7 +295,8 @@ off without A-INB.
 - Additional coverage:
   - tests: not-eligible, nuw, negative stride, mixed operators;
   - --eq-audit of the dropped pairs;
-  - greedier firing, with the rerun rate as the metric.
+  - greedier firing, with the rate of promise-broken answers as the
+    metric.
 - Chains, which today count as other-base.
 
 ## 0c. R-STRIDE in SeaM (store-map R-ABORT), as implemented

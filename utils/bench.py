@@ -109,9 +109,11 @@ SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SE
     (`canary`: the small cross-family set, `just bench-canary`).
     premise-class B / C jobs pass a sat whose replay failed in a way a premise violation explains: rc 2 with
     `replay: assert-failed`, a `seam.inb-violation:` line and error vc.replay-mismatch (`premise-unconfirmed:
-    <job> ... log=... rerun: ...`) or rc 4 (`premise-inb-violation:`); a run with `replay: no-clobber-violated:`
-    is never explained. Unsat fails on B, passes on C. A confirmed sat whose original-program run left its
-    object (replay.original status=memory-error) counts as left-object. On C a sat needs one of these signals:
+    <job> ... log=... rerun: ...`) or rc 4 (`premise-inb-violation:`: an access outside an object, or a run that
+    breaks a GEP promise the stride rule trusts, vc.ack-stride-promise-broken); a run with
+    `replay: no-clobber-violated:` is never explained. Unsat fails on B, passes on C. A confirmed sat whose
+    original-program run left its object (replay.original status=memory-error) counts as left-object. On C a
+    sat needs one of these signals:
     a clean sat fails (`misclassified`, declare B), and DISAGREE-SAT-UNSAT is waived only when every sat run
     of the job has a signal. Undeclared jobs are
     judged as before; a run with one of these signals gets `premise may fail on this job: declare it` (on its
@@ -1037,7 +1039,8 @@ def premise_signal(r):
     the replay whose original-program run left its object: replay.original status=memory-error),
     `unconfirmed` (rc 2: the replay reached the failing assertion, the values differ, and the A-INB
     fallback check ran: found or undetermined; the vc.replay-mismatch error, not vc.replay-no-failure),
-    `inb-violation` (rc 4: the check found an access outside an object), else None. A run whose replay
+    `inb-violation` (rc 4: the check found an access outside an object, or a run that breaks a GEP promise the
+    stride rule trusts, vc.ack-stride-promise-broken), else None. A run whose replay
     reports a violated Mem-SSA no-clobber claim (`replay: no-clobber-violated:`) shows none."""
     if r.get("replay_no_clobber"):
         return None
@@ -1060,7 +1063,7 @@ def premise_hint(r, sig):
     what = {
         "left-object": "replay.original status=memory-error",
         "unconfirmed": f"replay: assert-failed, seam.inb-violation: {r.get('seam_inb')}",
-        "inb-violation": "seam.inb-violation (rc 4)",
+        "inb-violation": "seam.inb-violation or vc.ack-stride-promise-broken (rc 4)",
     }[sig]
     return f"{what}: premise may fail on this job: declare it (premise-class, {PREMISE_DOC})"
 

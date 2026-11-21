@@ -42,17 +42,20 @@
 // promise is a fact only at an access the run performs: a model that puts two
 // such reads at one index with different cells breaks one only if both reads
 // execute in it (Read::exec, their loads' block guards). Such a pair is
-// detected (AckermannModel::strideBroken) before the result, and sea-vc reruns
-// without the rule; a pair with a read that does not execute is counted
-// (strideIdle) and breaks nothing. One more, off by default (sea-vc --ack-own):
-// the ownership drop, a pair of reads of two different objects (every address
-// of each index a pointer into its object: a load's read or a select the
-// boundary made for a memory operation), resting on A-INB of the access behind
-// one read and A-OWN (no access through one object touches another object's
-// cells, reads included); a sat model that puts two such reads at one index
-// with different cells is counted as inconsistent (AckermannModel::ownBroken).
-// Otherwise no pair is dropped. An array is lowered only if every use of it is
-// the array operand of a select: no store over it, no equality, no ite, no
+// counted (AckermannModel::strideBroken); the promises are trusted front-end
+// facts, so sea-vc answers sat with that model, and a replay that breaks a
+// promise at an access instead of confirming the answer is reported as such
+// (--reach reruns without the rule). A pair with a read that does not execute
+// is counted (strideIdle) and breaks nothing. One more, off by default
+// (sea-vc --ack-own): the ownership drop, a pair of reads of two different
+// objects (every address of each index a pointer into its object: a load's
+// read or a select the boundary made for a memory operation), resting on
+// A-INB of the access behind one read and A-OWN (no access through one object
+// touches another object's cells, reads included); a sat model that puts two
+// such reads at one index with different cells is counted as inconsistent
+// (AckermannModel::ownBroken). Otherwise no pair is dropped. An array is
+// lowered only if every use of it is the array operand of a select: no store
+// over it, no equality, no ite, no
 // other operator (then it is kept as it is, `kept` counts it). Indices of reads
 // may contain reads (of the same or other arrays): they are lowered first
 // (bottom-up).
@@ -445,7 +448,7 @@ public:
 
     /// What report() says of the stride rule: not asked (no line), used
     /// (its counters), asked but not used by this lowering (`stride:
-    /// fallback`).
+    /// fallback`: the --reach rerun).
     enum class Stride { Off, On, Fallback };
     /// The `<prefix><counter>: <n>` lines of a lowering (sea-vc
     /// `vc.ackermann-`): arrays (= lowered), kept, reads, pairs, the
@@ -1332,7 +1335,8 @@ public:
   /// the stride rule dropped, both reads executed in the model (executed()):
   /// the model breaks a trusted GEP promise at an access the run performs
   /// (a wrapping offset; poison, UB in LLVM). Not a lowering bug: sea-vc
-  /// reruns without the rule (--ack-stride).
+  /// answers sat with the model (--ack-stride; --reach reruns without the
+  /// rule).
   uint64_t strideBroken() const { return m_strideBroken; }
   /// Such pairs with a read that does not execute in the model: no promise
   /// is a fact at its address (PtrIndex.md, "Where the promise is a fact"),

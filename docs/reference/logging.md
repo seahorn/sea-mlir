@@ -112,10 +112,10 @@ from `getrusage`. The phases, in order:
 factory's count, freed terms included): a measure of the work and an upper
 bound on the size of the query, read in constant time; it is not the
 query's DAG size (`--dag-stats`). A run that starts again (a fallback,
-`--ack-stride`'s retry) repeats the phases from `encode`, whose start event
-numbers the runs: `run=1`, `run=2`, ... A phase that fails or is killed has a start and no end: the last
-start line names the phase a killed run was in. Every event is flushed as
-it is written.
+`--ack-stride`'s retry under `--reach`) repeats the phases from `encode`,
+whose start event numbers the runs: `run=1`, `run=2`, ... A phase that
+fails or is killed has a start and no end: the last start line names the
+phase a killed run was in. Every event is flushed as it is written.
 
 `progress phase=encode`: inside `encode`, one event every
 `--progress-interval` seconds (default 10, not tuned; checked before each

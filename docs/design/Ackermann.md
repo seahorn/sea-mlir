@@ -166,10 +166,12 @@ at an access the run performs (PtrIndex.md, "Where the promise is a
 fact"). So a model that puts two such reads at one index with different
 cells breaks a promise only when both reads execute in it: the guard of
 the block of one of each read's loads is true. AckermannModel::strideBroken
-counts those pairs before the result (`vc.ackermann-stride-broken`), and
-sea-vc reruns without the rule. A pair with a read that does not execute
-breaks nothing: its index is free. It is counted
-`vc.ackermann-stride-idle`, and the run goes on.
+counts those pairs before the result (`vc.ackermann-stride-broken`).
+sea-vc answers sat with that model; a replay that breaks a promise at an
+access instead of confirming the answer is status 4
+(`vc.ack-stride-promise-broken`, docs/design/PtrIndex.md section 5). A
+pair with a read that does not execute breaks nothing: its index is free.
+It is counted `vc.ackermann-stride-idle`.
 
 Execution conditions come from OpSem: each load records its block's guard
 with the selects it leaves at its own address (`Rules::noteOwnReads`), and
@@ -177,7 +179,8 @@ the boundary's record (`AccessOrigins`) carries them to the reads. A read
 whose condition is unknown counts as executed: a select made elsewhere (a
 memory operation's source read, the boundary's translations), a shared
 one, an index with more than 16 conditions, or a guard without a Boolean
-value in the model. That direction only adds reruns. Two counters show
+value in the model. That direction only adds stride-broken pairs, which
+the replay then judges. Two counters show
 the fallback: `vc.ackermann-stride-exec-unknown: 1` when a load's walk
 of its reads stopped at its node bound (then every read counts as
 executed), and `vc.ackermann-stride-exec-overflow`, the indices with more
@@ -672,15 +675,14 @@ Not tuned; a bounded number per round is an alternative.
 Bound: `--ack-relax-rounds=<n>`, default 50 (untuned). After n relaxed
 solves without an answer the whole query is solved on the run's solver
 (warning `vc.ack-relax-fallback`, `vc.ack-relax-stop: rounds`, a
-`vc.ack-relax-round: fallback` line), as the stride rule's retry solves
-without the rule. Incremental: the candidates not yet asserted are
-asserted into the rounds' solver, which checks again.
+`vc.ack-relax-round: fallback` line). Incremental: the candidates not yet
+asserted are asserted into the rounds' solver, which checks again.
 
 Model check. After a `consistent` stop every candidate holds in the model,
 so `AckermannModel` finds what it finds under the eager lowering:
 `inconsistent` can come only from pairs the stride rule or the ownership
-drop removed, and those are handled as above (the stride retry, which
-starts the rounds again; `own-broken`, `own-excused`).
+drop removed, and those are handled as above (`stride-broken`: a sat
+answer, PtrIndex.md section 5; `own-broken`, `own-excused`).
 
 Backends: z3, Yices and Bitwuzla (Bitwuzla with `--ackermannize=on`, as
 for the lowering itself). Conflicts and the resource count per round are

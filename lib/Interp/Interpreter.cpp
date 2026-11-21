@@ -1290,7 +1290,17 @@ void Interpreter::checkPromise(Operation &op, Value addr) {
   PoisonId id = poisonOf(addr);
   if (!id)
     return;
-  // poisonSets[id] is in the stable order (stableBefore)
+  // poisonSets[id] is in the stable order (stableBefore): its first element
+  // is the one RunResult::ptrIndexBroken names for the run's first such
+  // access, as the first warning below
+  if (!result.ptrIndexBroken) {
+    const BrokenPromise &first = poisonSets[id].front();
+    result.ptrIndexBrokenAt = first.gep;
+    result.ptrIndexBrokenWhat = first.what.str();
+    result.ptrIndexBrokenViaMemory = first.viaMemory;
+    result.ptrIndexBrokenAccess = &op;
+  }
+  result.ptrIndexBroken += poisonSets[id].size();
   for (const BrokenPromise &b : poisonSets[id]) {
     std::string gep;
     llvm::raw_string_ostream os(gep);

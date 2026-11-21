@@ -1,6 +1,7 @@
 // RUN: sea-vc %s --program=idle --lower --seam --ack-stride 2>&1 | FileCheck %s --check-prefix=IDLE
 // RUN: sea-vc %s --program=mixed --lower --seam --ack-stride 2>&1 | FileCheck %s --check-prefix=MIXED
-// RUN: sea-vc %s --program=three --lower --seam --ack-stride 2>&1 | FileCheck %s --check-prefix=THREE
+// RUN: bash -c 'sea-vc %s --program=three --lower --seam --ack-stride --log=vc.phase > %t.three 2>&1; test $? -eq 4'
+// RUN: FileCheck %s --check-prefix=THREE < %t.three
 // RUN: sea-vc %s --program=own --ack-own --lower --seam --ack-stride 2>&1 | FileCheck %s --check-prefix=OWN
 // The stride rule's model check counts a dropped pair as broken only when
 // both reads execute in the model (docs/design/PtrIndex.md section 5): a
@@ -110,11 +111,19 @@ sea.program @mixed {
 // @three: a read in ^rd (does not execute) comes first, then two executed
 // reads in ^join at the same index (5 and 7). The executed pair breaks a
 // promise: it must be compared directly, not only each read with the
-// unexecuted one. The model is rejected, and the run without the rule
-// answers unsat (one cell cannot be both 5 and 7).
+// unexecuted one. The model is the answer, with no rerun: sat, and the
+// replay (one cell cannot be both 5 and 7) breaks the promise at one of
+// the two loads: status 4 (without the rule the answer is unsat).
+// THREE: vc.phase start phase=encode run=1
+// THREE-NOT: run=2
 // THREE: vc.ackermann-stride-broken: 1
-// THREE: vc.ackermann-stride: fallback
-// THREE: result: unsat
+// THREE-NOT: fallback
+// THREE: result: sat
+// THREE: vc.ack-stride-promise-broken: sea.ptr.index
+// THREE-NEXT: vc.ack-stride-promise-broken-at:
+// THREE-NEXT: vc.ack-stride-promise-broken-access: sea.load
+// THREE: [vc.ack-stride-promise-broken]
+// THREE-NOT: run=2
 sea.program @three {
   %m0 = sea.mem.nondet "m" [0] : !pm
   %n = sea.const 96 : i64

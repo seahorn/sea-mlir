@@ -311,6 +311,16 @@ struct RunResult {
     llvm::SmallVector<llvm::APInt, 2> index;
   };
   std::optional<BoxAllFalse> boxAllFalse;
+  /// Broken sea.ptr.index promises at the accesses the run executed (each
+  /// a warning interp.ptr-index-promise; docs/design/PtrIndex.md section
+  /// 6): how many (an access counts each mark its address carries), and of
+  /// the first such access: the GEP, which promise it broke, whether the
+  /// pointer went through memory, and the access.
+  uint64_t ptrIndexBroken = 0;
+  mlir::Operation *ptrIndexBrokenAt = nullptr;
+  std::string ptrIndexBrokenWhat;
+  bool ptrIndexBrokenViaMemory = false;
+  mlir::Operation *ptrIndexBrokenAccess = nullptr;
 };
 
 /// The file location in `loc` (directly, or inside a name / fused /

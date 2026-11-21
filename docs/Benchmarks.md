@@ -96,7 +96,9 @@ A replay failure a premise violation explains is one of
   given), with the error `vc.replay-mismatch` (not `vc.replay-no-failure`
   of `--ptr-companion=check`): `premise-unconfirmed: <job> ... log=<path>
   rerun: <command>`;
-- rc 4 (`vc.seam-inb-spurious`: the run accesses memory outside an object):
+- rc 4 (`vc.seam-inb-spurious`: the run accesses memory outside an object;
+  or `vc.ack-stride-promise-broken`: the run breaks a front-end GEP promise
+  the stride rule trusts, [PtrIndex](design/PtrIndex.md) section 5):
   `premise-inb-violation: ...`.
 
 A run whose replay prints `replay: no-clobber-violated:` (a load of an
