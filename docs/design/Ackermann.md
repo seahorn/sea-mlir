@@ -341,50 +341,78 @@ indices differ in their symbolic parts).
 Status: the plan only, a count; no lowering uses it yet, and the query is
 unchanged (byte-identical with and without the switch). Off by default.
 
-The idea, not implemented: the reads of one object o of array A that sit at
-a small set of offsets need no pairwise constraints. Each offset `off` of o
-becomes one read, a cell (index `o + off`), and a read at `o + rest` becomes
-a case split over its candidate offsets (one arm each). Cells of one object
-never meet (one symbolic part, different numerals); against another object's
-reads A-OWN drops the pair; against a read in no known object (a loaded
-pointer) each cell keeps one constraint. Under A-INB of the read's access its
-offset is in [0, N), so a complete candidate set needs that premise, as the
-ownership drop and narrowed offsets do.
+The idea, not implemented: a read whose address is on a fixed set of
+objects needs no pairwise constraints. Each cell of those objects becomes one
+read (index `o + off`), and the read becomes a case split over its candidate
+cells (one arm each). Cells never meet (one symbolic part, different
+numerals); against another object's reads A-SEP / A-OWN separate the pair;
+against a read in no known object (a loaded address) each cell keeps one
+constraint.
 
-The plan says where that would pay. A second lowering, configured as the
-real one plus the own table (the reads' objects, as `--ack-own` builds it)
-and recording its constrained pairs, runs after the real lowering; its query
-is discarded. For each lowered array A and object o of size N:
+The objects come from ARM (`AddrRangeMap.hh`), not from the shape of the
+index: the join of the ARM maps of the access addresses behind the read's
+selects (`AccessOrigins`, recorded at the boundary). A read is unknown when
+it has no record (more than 8 addresses, a shadow read), a top map, or an
+absolute entry (a loaded or numeric address: no provenance); otherwise it is
+on the bases of its map (objects of size 0 dropped), each with an interval
+(arm-interval when every interval is bounded, full-object when one is top).
+Bases read together by one read form a group, converted as a whole.
 
-- R: the reads of A in o; U: the reads of A in no known object.
-- Candidates of a read: its offset `rest` (`index = o + rest`, the offset
-  before narrowing for a narrowed read) as a linear form with constant c,
-  t = the trailing zeros common to its coefficients (w for a numeral): the
-  offsets in [0, N) congruent to c modulo 2^t, at most 64; minus those the
-  difference decider (without the layout values: the base cancels) finds
-  never equal to `rest`; at most 16 left. Both bounds are first guesses.
-- Eligible: every read of R splits as `o + rest` and has a candidate set
-  (else skip-shape, skip-enum, skip-arms).
-- keep: the constrained pairs with both reads in R or one in R and one in U.
-  cost: the arms (sum of the candidates over R) + C + C x |U|, C the distinct
-  candidate offsets of R.
-- Converted: eligible, keep > 0 and cost < keep (ratio 1). Arms and pairs
-  are not the same size of term (an arm is a compare with a numeral, a pair
-  an equality of two indices and of two cells); the ratio is not tuned.
+Candidates of a read on base b of size N: the offsets in [0, N) ∩ I_b;
+for a read on one base whose index splits as `b + rest` (the offset before
+narrowing for a narrowed read), also ∩ the unsigned interval of rest
+(`BvRanges`) and its residue (c mod 2^t, t the trailing zeros common to the
+coefficients of its linear form); only the array's cells (an array whose
+value width is that of aligned word memories only, k-unit words: offsets
+0 mod k, which `sea-widen-memory` proved); and, for at most 64 candidates
+(a cost bound, untuned), minus those the difference decider finds never
+equal to rest (leaf by leaf through an ite offset). Under A-INB of the
+read's access the set holds every offset it can have; a read whose interval
+is not inside its object rests on A-INB (counted, `reads-a-inb`). A read
+with no candidate (every offset ruled out: it cannot execute in bounds)
+costs no arm here; the lowering will still need a value for it, since the
+case split of B.5 ends in an unconditional arm: one cell of the object, or
+a fresh constant.
+
+The plan runs a second lowering, configured as the real one, recording its
+constrained pairs and the selects of each read, after the real lowering;
+its query is discarded. For each group G of a lowered array (R its reads,
+U the array's unknown reads, C the distinct candidate cells, arms the sum
+of the candidates over R):
+
+- keep: the constrained pairs with both reads in R or one in R and one in
+  U; the pairs with a read of another group are counted apart.
+- count cost: arms + C + C x |U|.
+- bit cost, against keep x (aw + vw) (a pair: the index compare and the
+  guarded equality; aw, vw the index and value widths): arms x vw (the
+  mux), the decoding n x iw per distinct symbolic part S of the indices
+  (iw = ceil(log2 C); the selectors of `S + c1` and `S + c2`, two fields of
+  one slot, test S: shared, also across arrays; counted at its first
+  read), C x vw (the cells), C x |U| x (aw + vw).
+- converted: keep > 0 and cost < keep, by each measure (ratio 1, untuned).
+
+There is no bound on the candidate sets: the cost decides.
 
 Reported with the switch: `vc.cells-plan: on | off-no-premises |
-off-no-ackermann | off-seam-words` (needs `--seam` with its premises and the
-eager lowering; the words path records no access origins), then
-`vc.cells-plan-*`: objects, eligible, skip-shape / -enum / -arms / -keep (keep
-= 0) / -cost, converted; reads (of the lowered arrays), reads-own,
-reads-unknown, reads-converted, reads-kept; arms, cells, unknown-constraints
-(C x |U|) of the converted objects; keep and cost summed over the eligible
-objects, keep-skipped (keep of the objects not eligible); removed and added (keep and cost of the converted ones: the
-constraints a cell mode would remove and the terms it would add);
-other-object-pairs (pairs of a converted object's read with a read of
-another known object: a cell mode drops them by A-OWN; with `--ack-own` the
-lowering has dropped them already). Per object, `--log=vc.cells-plan:2`.
-The second lowering costs about as much as the first.
+off-no-ackermann | off-seam-words` (needs `--seam` with its premises and
+the eager lowering), then `vc.cells-plan-*`: reads, reads-arm-interval,
+reads-full-object, reads-unknown, reads-multi-base, reads-a-inb; groups,
+cells, arms, decider-dropped (candidates the decider removed),
+unknown-constraints (C x |U|), keep (all groups); pairs (the constrained
+ones), arm-pairs-cross-base / arm-pairs-interval (of them, the pairs ARM
+separates for plain Ackermann: different bases under A-SEP, or disjoint
+intervals of one base); by count: converted, reads-converted, removed,
+added, other-object-pairs (pairs of a converted group with another group);
+by bits: bits-converted, bits-reads-converted, bits-removed, bits-keep,
+bits-cost, bits-other-object-pairs. Per group, `--log=vc.cells-plan:2`:
+objects, sizes, reads by source, cells, arms, keep, both costs
+(`keep-bits=`, `cost-bits=`) and both modes.
+
+Cost: the second lowering costs about as much as the first in time, and
+holds the image of every node of the query (`keepImages`, to reach the
+reads' selects) while the plan runs; it keeps the ownership drop's pair
+set only when `--ack-own` is on, as the real one does. Per object of at
+most 2^24 units a bitmap of its cells.
 
 ## Measurements (Release, timeout 300 s)
 

@@ -3,34 +3,51 @@
 
 #pragma once
 // The cells plan (docs/design/Ackermann.md, "Cell representatives: the
-// plan"): a dry run that says, per (lowered array, known object), whether
-// reading the object through its cells would cost fewer terms than the
-// Ackermann constraints the lowering keeps for its reads. It changes nothing:
-// the input is a lowering made only for the plan (Ackermannizer with
-// recordPairs and setOwn), whose query is discarded.
+// plan"): a dry run that says, per group of objects of a lowered array,
+// whether reading them through their cells would cost less than the
+// Ackermann constraints the lowering keeps for their reads. It changes
+// nothing: the input is a lowering made only for the plan (Ackermannizer
+// with recordPairs and keepImages), whose query is discarded.
 //
-// For an array A and an object o of size N (the own table's object of a read
-// index; Read::obase):
-//  - R = the reads of A in o, U = the reads of A in no known object;
-//  - a read's candidates: its offset rest (index = o + rest at w bits; for a
-//    narrowed read the offset before narrowing) as a linear form with
-//    constant c and t = the trailing zeros common to its coefficients (w for
-//    a numeral): the offsets off in [0, N) with off = c (mod 2^t), at most
-//    maxEnum of them, minus those DiffDecider (no layout values: the base
-//    cancels) finds never equal to rest; at most maxArms remain. Under A-INB
-//    (the read's offset is in [0, N) when its load executes) the set holds
-//    every offset the read can have;
-//  - eligible: every read of R splits as o + rest and has a candidate set;
-//  - keep = the constrained pairs of the lowering with both reads in R or
-//    one in R and one in U (the pairs with a read of another known object
-//    are not counted: a cell mode would drop them by A-OWN, own-pairs);
-//  - cost = sum over R of its candidates (the arms of its case split) + C +
-//    C x |U|, C = the distinct candidate offsets of R (one cell read each,
-//    and one constraint per cell and unknown read);
-//  - converted: eligible, keep > 0 and cost < keep (ratio 1, untuned).
-// Counts only: what the conversion would remove (keep) against what it adds
-// (cost), to decide whether the lowering is worth building.
+// Objects come from ARM (AddrRangeMap.hh), not from the index's structure:
+// the caller gives, per read, the join of the ARM maps of the access
+// addresses behind it (AccessOrigins), or nothing (no recorded access, a
+// shadow read, more than kMaxAddrs addresses). A read is
+//  - unknown: no map, a top map, an absolute entry (a loaded or numeric
+//    address: no provenance), or no base of nonzero size;
+//  - known: on the bases of its map, each with an interval of offsets
+//    (arm-interval: every interval bounded; full-object: some interval top,
+//    then all the object's cells, resting on A-INB).
+// Bases read together by one read form one group (a read on two objects is
+// a case split over the cells of both); a group is converted as a whole.
+//
+// Candidates of a known read on base b of size N: the offsets in
+// [0, N) ∩ I_b; for a read on one base whose index splits as b + rest (the
+// offset before narrowing for a narrowed read), also ∩ the unsigned interval
+// of rest (BvRanges) and the residue of rest's linear form (c mod 2^t, t the
+// trailing zeros common to its coefficients); the array's cells only (an
+// aligned word memory of k-unit cells: offsets 0 mod k); and, for at most
+// kDeciderFilter candidates, minus those the difference decider finds never
+// equal to rest. Exact given A-INB of the read's access (its offset is in
+// [0, N) when it executes).
+//
+// Per group G (R = its reads, U = the array's unknown reads, C = the
+// distinct candidate cells of R, arms = the sum of the candidates over R):
+//  - keep = the constrained pairs with both reads in R or one in R and one
+//    in U; the pairs with a read of another group are counted apart (a cell
+//    mode drops them by A-SEP / A-OWN);
+//  - count cost = arms + C + C x |U| (the rule as first stated);
+//  - bit cost: keep x (aw + vw) against arms x vw (the mux) + the decoding,
+//    C x vw (the cells) + C x |U| x (aw + vw), aw / vw the index / value
+//    widths; the decoding is n x iw per distinct symbolic part of the
+//    indices (the selectors of S + c_1 and S + c_2 test S: shared, also by
+//    the arrays reading at S; counted at its first read), iw = ceil(log2 C);
+//  - converted: keep > 0 and cost < keep, by each measure (ratio 1,
+//    untuned).
+// Counts only, to decide whether the lowering is worth building.
 #include "sea/Expr/Ackermann.hh"
+#include "sea/Expr/AddrRangeMap.hh"
+#include "sea/Expr/BvRange.hh"
 #include "sea/Expr/DiffDecider.hh"
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/LinearForms.hh"
@@ -41,314 +58,410 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
-#include <set>
+#include <numeric>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace expr {
 
-/// The bounds of the candidate sets (first guesses, untuned).
-struct CellsPlanOptions {
-  /// at most this many offsets by the residue enumeration per read
-  uint64_t maxEnum = 64;
-  /// at most this many candidates per read after the decider's filter
-  uint64_t maxArms = 16;
+/// An object of the plan, by ObjectBase::order: its base as the query has
+/// it (erased), its size in address units (0: no cells, or not usable), its
+/// name (the log).
+struct CellsObjectInfo {
+  Expr base;
+  uint64_t size = 0;
+  std::string name;
 };
 
 struct CellsPlan {
-  /// Why an object is not eligible: a read whose index is not o + rest
-  /// (shape), more than maxEnum offsets (enum) or maxArms candidates (arms).
-  enum class Skip { None, Shape, Enum, Arms };
-  struct Object {
-    size_t array = 0;
-    Expr base;        ///< the object constant (erased, as the own table)
-    std::string name; ///< for the log
-    uint64_t size = 0;
-    uint64_t reads = 0;   ///< |R|
-    uint64_t unknown = 0; ///< |U| (the array's reads in no known object)
-    uint64_t arms = 0;    ///< sum of the candidates of R
-    uint64_t cells = 0;   ///< C, the distinct candidate offsets
-    uint64_t keep = 0;    ///< constrained pairs a cell mode removes
-    uint64_t cost = 0;    ///< arms + C + C x |U|
-    /// constrained pairs with a read of another known object (none if the
-    /// lowering had the ownership drop on: then they are in ownDropped)
-    uint64_t otherObject = 0;
-    /// pairs the ownership drop dropped with a read in this object
-    uint64_t ownDropped = 0;
-    /// the largest residue enumeration of a read looked at (the log: how
-    /// far over maxEnum a skipped object is)
-    uint64_t enumMax = 0;
-    /// the reads that failed: shape, over maxEnum, over maxArms
-    uint64_t readsShape = 0, readsEnum = 0, readsArms = 0;
-    /// the first read over maxEnum: the trailing zeros t of its offset's
-    /// coefficients, its number of atoms, the atom with the fewest
-    /// trailing zeros (the log: why the residues do not bound it)
-    unsigned enumT = 0;
-    uint64_t enumAtoms = 0;
-    Expr enumAtom;
-    Skip skip = Skip::None;
-    bool converted = false;
-  };
-  /// in the order of the lowering's arrays, then of the objects' first reads
-  std::vector<Object> objects;
-  /// reads of the lowered arrays: in a known object, in none
-  uint64_t reads = 0, ownReads = 0, unknownReads = 0;
-  /// pairs of reads of two known objects, at least one converted: a cell
-  /// mode drops them by A-OWN (the ownership drop of --ack-own, which may
-  /// have dropped them already)
-  uint64_t otherObjectPairs = 0;
+  /// at most this many cells per object are tracked one by one (C is exact
+  /// below it; above, the sum of the reads' candidates, cellsBound)
+  static constexpr uint64_t kMaxBitmap = uint64_t(1) << 24;
+  /// a read with at most this many candidates is filtered by the difference
+  /// decider (a cost bound on the plan, untuned; not a gate)
+  static constexpr uint64_t kDeciderFilter = 64;
 
-  /// The `<prefix><counter>: <n>` lines (sea-vc `vc.cells-plan-`).
+  struct Group {
+    size_t array = 0;
+    std::vector<unsigned> objects; ///< ObjectBase::order, increasing
+    uint64_t reads = 0, readsInterval = 0, readsFull = 0;
+    uint64_t unknown = 0; ///< |U|
+    /// distinct symbolic parts of the indices decoded here (the selectors
+    /// of reads S + c_1, S + c_2 test S: shared)
+    uint64_t indices = 0;
+    uint64_t arms = 0, cells = 0;
+    bool cellsBound = false;
+    unsigned aw = 0, vw = 0, iw = 0;
+    uint64_t keep = 0, other = 0;
+    uint64_t cost = 0, keepBits = 0, costBits = 0;
+    bool convCount = false, convBits = false;
+  };
+  std::vector<Group> groups;
+  /// reads of the lowered arrays by source; of the known ones, those on more
+  /// than one base and those whose candidates rest on A-INB (an interval not
+  /// inside the object)
+  uint64_t reads = 0, readsInterval = 0, readsFull = 0, readsUnknown = 0,
+           readsMulti = 0, readsInb = 0;
+  /// constrained pairs of the lowering; of them those ARM separates (the
+  /// maps of both reads disjoint): by different bases (A-SEP), by intervals
+  /// of one base (exact)
+  uint64_t pairs = 0, armCrossBase = 0, armInterval = 0;
+  /// constrained pairs of two groups, one of them converted (count, bits)
+  uint64_t otherCount = 0, otherBits = 0;
+  /// candidates the difference decider dropped (kDeciderFilter)
+  uint64_t deciderDropped = 0;
+
   void report(sea::stats::Report &r, llvm::StringRef prefix) const {
     auto line = [&](const llvm::Twine &k) -> sea::stats::Line & {
       return r.line((prefix + k).str());
     };
-    uint64_t eligible = 0, skipShape = 0, skipEnum = 0, skipArms = 0,
-             skipKeep = 0, skipCost = 0, converted = 0;
-    uint64_t readsConv = 0, arms = 0, cells = 0, cost = 0, keep = 0,
-             unknownCons = 0, eligKeep = 0, eligCost = 0, skippedKeep = 0;
-    for (const Object &o : objects) {
-      if (o.skip != Skip::None)
-        skippedKeep += o.keep;
-      switch (o.skip) {
-      case Skip::Shape:
-        ++skipShape;
-        continue;
-      case Skip::Enum:
-        ++skipEnum;
-        continue;
-      case Skip::Arms:
-        ++skipArms;
-        continue;
-      case Skip::None:
-        break;
+    uint64_t keep = 0, cells = 0, arms = 0, unk = 0;
+    uint64_t cConv = 0, cReads = 0, cRemoved = 0, cAdded = 0;
+    uint64_t bConv = 0, bReads = 0, bRemoved = 0, bKeep = 0, bCost = 0;
+    for (const Group &g : groups) {
+      keep += g.keep;
+      cells += g.cells;
+      arms += g.arms;
+      unk += g.cells * g.unknown;
+      if (g.convCount) {
+        ++cConv;
+        cReads += g.reads;
+        cRemoved += g.keep;
+        cAdded += g.cost;
       }
-      ++eligible;
-      eligKeep += o.keep;
-      eligCost += o.cost;
-      if (!o.converted) {
-        ++(o.keep == 0 ? skipKeep : skipCost);
-        continue;
+      if (g.convBits) {
+        ++bConv;
+        bReads += g.reads;
+        bRemoved += g.keep;
+        bKeep += g.keepBits;
+        bCost += g.costBits;
       }
-      ++converted;
-      readsConv += o.reads;
-      arms += o.arms;
-      cells += o.cells;
-      cost += o.cost;
-      keep += o.keep;
-      unknownCons += o.cells * o.unknown;
     }
-    line("objects").value(objects.size());
-    line("eligible").value(eligible);
-    line("skip-shape").value(skipShape);
-    line("skip-enum").value(skipEnum);
-    line("skip-arms").value(skipArms);
-    line("skip-keep").value(skipKeep);
-    line("skip-cost").value(skipCost);
-    line("converted").value(converted);
     line("reads").value(reads);
-    line("reads-own").value(ownReads);
-    line("reads-unknown").value(unknownReads);
-    line("reads-converted").value(readsConv);
-    line("reads-kept").value(reads - readsConv);
-    line("arms").value(arms);
+    line("reads-arm-interval").value(readsInterval);
+    line("reads-full-object").value(readsFull);
+    line("reads-unknown").value(readsUnknown);
+    line("reads-multi-base").value(readsMulti);
+    line("reads-a-inb").value(readsInb);
+    line("groups").value(groups.size());
     line("cells").value(cells);
-    line("unknown-constraints").value(unknownCons);
-    line("keep").value(eligKeep);
-    line("keep-skipped").value(skippedKeep);
-    line("cost").value(eligCost);
-    line("removed").value(keep);
-    line("added").value(cost);
-    line("other-object-pairs").value(otherObjectPairs);
+    line("arms").value(arms);
+    line("decider-dropped").value(deciderDropped);
+    line("unknown-constraints").value(unk);
+    line("keep").value(keep);
+    line("pairs").value(pairs);
+    line("arm-pairs-cross-base").value(armCrossBase);
+    line("arm-pairs-interval").value(armInterval);
+    line("converted").value(cConv);
+    line("reads-converted").value(cReads);
+    line("removed").value(cRemoved);
+    line("added").value(cAdded);
+    line("other-object-pairs").value(otherCount);
+    line("bits-converted").value(bConv);
+    line("bits-reads-converted").value(bReads);
+    line("bits-removed").value(bRemoved);
+    line("bits-keep").value(bKeep);
+    line("bits-cost").value(bCost);
+    line("bits-other-object-pairs").value(otherBits);
   }
 };
 
 namespace cells_plan_detail {
-/// The candidate offsets of \p rest in an object of \p size units, at
-/// width \p w (sorted): false if there are more than opt.maxEnum by the
-/// residue enumeration (\p skip = Enum) or opt.maxArms after the filter
-/// (\p skip = Arms).
-inline bool candidates(const Expr &rest, uint64_t size, unsigned w,
-                       ackermann_detail::LinearForms &lf, DiffDecider &dd,
-                       const CellsPlanOptions &opt, std::vector<uint64_t> &out,
-                       CellsPlan::Skip &skip, uint64_t &enumMax,
-                       CellsPlan::Object *o = nullptr) {
-  out.clear();
-  const ackermann_detail::Linear &lin = lf.of(rest.get());
-  unsigned t = w;
-  ENode *low = nullptr;
-  for (const auto &[atom, coef] : lin.coef) {
-    unsigned z = Ackermannizer::trailingZeros(coef, w);
-    if (z < t || !low)
-      low = atom;
-    t = std::min(t, z);
+/// Offsets x in [lo, hi] with x = f (mod 2^t) (t >= 64: x = f).
+inline uint64_t progression(uint64_t lo, uint64_t hi, uint64_t f, unsigned t,
+                            uint64_t &first) {
+  if (lo > hi)
+    return 0;
+  if (t >= 64) {
+    first = f;
+    return f >= lo && f <= hi ? 1 : 0;
   }
-  // offsets off in [0, size) with off = c (mod 2^t); size < 2^63
-  mpz_class step(1UL), first;
-  mpz_mul_2exp(step.get_mpz_t(), step.get_mpz_t(), t);
-  mpz_fdiv_r(first.get_mpz_t(), lin.c.get_mpz_t(), step.get_mpz_t());
-  if (mpz_cmp_ui(first.get_mpz_t(), size) >= 0)
-    return true; // no offset in the object
-  const uint64_t f = mpz_get_ui(first.get_mpz_t());
-  const uint64_t count = t >= 63 ? 1 : (size - f + (uint64_t(1) << t) - 1) >> t;
-  enumMax = std::max(enumMax, count);
-  if (count > opt.maxEnum) {
-    if (o && !o->enumAtom && low) {
-      o->enumT = t;
-      o->enumAtoms = lin.coef.size();
-      o->enumAtom = Expr(low);
-    }
-    skip = CellsPlan::Skip::Enum;
-    return false;
+  const uint64_t step = uint64_t(1) << t, mask = step - 1;
+  // the least x >= lo with x = f (mod step)
+  uint64_t x = (lo & ~mask) | (f & mask);
+  if (x < lo) {
+    if (x > UINT64_MAX - step)
+      return 0;
+    x += step;
   }
-  ExprFactory &efac = rest->efac();
-  for (uint64_t i = 0; i < count; ++i) {
-    uint64_t off = f + (t >= 63 ? 0 : i << t);
-    Expr num = op::bv::bvnum(mpz_class((unsigned long)off), w, efac);
-    if (dd.decide(rest.get(), num.get()).verdict == DiffDecider::Verdict::Never)
-      continue;
-    out.push_back(off);
-  }
-  if (out.size() > opt.maxArms) {
-    skip = CellsPlan::Skip::Arms;
-    return false;
-  }
-  return true;
+  if (x > hi)
+    return 0;
+  first = x;
+  return (hi - x) / step + 1;
+}
+
+inline unsigned ceilLog2(uint64_t n) {
+  unsigned b = 0;
+  while (b < 64 && (uint64_t(1) << b) < n)
+    ++b;
+  return std::max(1u, b);
 }
 } // namespace cells_plan_detail
 
-/// The plan over \p ack, a lowering made with recordPairs(true) and setOwn
-/// (else every read is in no known object). \p sizes: object base (as in
-/// the own table) -> size in address units and name; an object missing from
-/// it is not eligible (shape).
-struct CellsObjectInfo {
-  uint64_t size = 0;
-  std::string name;
-};
-inline CellsPlan
-planCells(const Ackermannizer &ack,
-          const std::unordered_map<ENode *, CellsObjectInfo> &info,
-          CellsPlanOptions opt = CellsPlanOptions()) {
+/// The plan over \p ack, a lowering made with recordPairs and keepImages.
+/// \p readMap(a, k): the ARM map of read k of lowered array a (nullopt: no
+/// recorded access). \p objs: by ObjectBase::order. \p cellUnits(a): the
+/// cells of array a are at offsets 0 mod this (a power of two: the word of
+/// an aligned word memory, whose layout pass proved it; 1 otherwise).
+inline CellsPlan planCells(
+    const Ackermannizer &ack,
+    const std::function<std::optional<AddrRangeMap>(size_t, size_t)> &readMap,
+    const std::vector<CellsObjectInfo> &objs,
+    const std::function<unsigned(size_t)> &cellUnits) {
   using namespace cells_plan_detail;
   CellsPlan plan;
   const auto &arrs = ack.arrays();
-  // per array: obase -> object number in plan.objects
-  std::vector<std::unordered_map<ENode *, size_t>> objOf(arrs.size());
-  std::map<unsigned, std::unique_ptr<ackermann_detail::LinearForms>> forms;
+  auto known = [&](unsigned key) {
+    return key != AddrRangeMap::kAbs && key < objs.size() &&
+           objs[key].size != 0;
+  };
+  // per array, per read: its map (or none) and its group (-1: unknown)
+  std::vector<std::vector<std::optional<AddrRangeMap>>> maps(arrs.size());
+  std::vector<std::vector<long>> groupOf(arrs.size());
+  std::unordered_set<size_t> decoded; // symbolic parts (Read::group)
   std::map<unsigned, std::unique_ptr<DiffDecider>> deciders;
+  std::map<unsigned, std::unique_ptr<ackermann_detail::LinearForms>> forms;
+  BvRanges ranges;
   for (size_t a = 0; a < arrs.size(); ++a) {
     const auto &rs = arrs[a].reads;
-    unsigned w = op::bv::width(
-        sort::arrayIndexTy(op::bind::declaredSort(arrs[a].array)));
+    const Expr sort = op::bind::declaredSort(arrs[a].array);
+    const unsigned w = op::bv::width(sort::arrayIndexTy(sort));
+    const unsigned vw = op::bv::width(sort::arrayValTy(sort));
     auto &lf = forms[w];
     if (!lf)
       lf = std::make_unique<ackermann_detail::LinearForms>(w);
-    auto &dd = deciders[w];
-    if (!dd)
-      dd = std::make_unique<DiffDecider>(w, nullptr);
-    uint64_t unknown = 0;
-    for (const auto &rd : rs)
-      unknown += rd.obase ? 0 : 1;
+    maps[a].resize(rs.size());
+    groupOf[a].assign(rs.size(), -1);
     plan.reads += rs.size();
-    plan.unknownReads += unknown;
-    plan.ownReads += rs.size() - unknown;
-    // per object of this array: the distinct candidate offsets
-    const size_t firstObj = plan.objects.size();
-    std::vector<std::set<uint64_t>> cellSets;
-    std::vector<uint64_t> cand;
-    for (const auto &rd : rs) {
-      if (!rd.obase)
+    // the known reads' bases; union-find over the bases read together
+    std::vector<std::vector<unsigned>> bases(rs.size());
+    std::unordered_map<unsigned, unsigned> parent;
+    std::function<unsigned(unsigned)> find = [&](unsigned x) {
+      unsigned p = parent.at(x);
+      if (p == x)
+        return x;
+      return parent[x] = find(p);
+    };
+    uint64_t unknown = 0;
+    for (size_t k = 0; k < rs.size(); ++k) {
+      maps[a][k] = readMap(a, k);
+      const auto &m = maps[a][k];
+      bool ok = m && !m->isTop() && !m->hasAbs();
+      if (ok)
+        for (const AddrRangeMap::Entry &e : m->entries())
+          if (known(e.first))
+            bases[k].push_back(e.first);
+      if (!ok || bases[k].empty()) {
+        bases[k].clear();
+        ++unknown;
         continue;
-      auto [it, fresh] = objOf[a].emplace(rd.obase.get(), plan.objects.size());
+      }
+      for (unsigned b : bases[k])
+        parent.emplace(b, b);
+      for (unsigned b : bases[k])
+        parent[find(b)] = find(bases[k][0]);
+    }
+    plan.readsUnknown += unknown;
+    // the groups of this array
+    std::map<unsigned, size_t> groupNo; // root -> plan.groups index
+    for (size_t k = 0; k < rs.size(); ++k) {
+      if (bases[k].empty())
+        continue;
+      unsigned root = find(bases[k][0]);
+      auto [it, fresh] = groupNo.emplace(root, plan.groups.size());
       if (fresh) {
-        CellsPlan::Object o;
-        o.array = a;
-        o.base = rd.obase;
-        o.unknown = unknown;
-        auto in = info.find(rd.obase.get());
-        if (in == info.end()) {
-          o.skip = CellsPlan::Skip::Shape;
-        } else {
-          o.size = in->second.size;
-          o.name = in->second.name;
-        }
-        plan.objects.push_back(std::move(o));
-        cellSets.emplace_back();
+        CellsPlan::Group g;
+        g.array = a;
+        g.unknown = unknown;
+        g.aw = w;
+        g.vw = vw;
+        plan.groups.push_back(g);
       }
-      CellsPlan::Object &o = plan.objects[it->second];
-      std::set<uint64_t> &cells = cellSets[it->second - firstObj];
-      ++o.reads;
-      if (o.size == 0)
-        continue; // not in info
-      // every read is looked at (the log counts the reads that fail); the
-      // object takes the first failure
-      CellsPlan::Skip why = CellsPlan::Skip::None;
-      Expr rest = rd.rest;
-      if (!rest && !Ackermannizer::splitBase(rd.index, rd.obase, w, rest))
-        why = CellsPlan::Skip::Shape;
-      else
-        candidates(rest, o.size, w, *lf, *dd, opt, cand, why, o.enumMax, &o);
-      if (why != CellsPlan::Skip::None) {
-        ++(why == CellsPlan::Skip::Shape  ? o.readsShape
-           : why == CellsPlan::Skip::Enum ? o.readsEnum
-                                          : o.readsArms);
-        if (o.skip == CellsPlan::Skip::None)
-          o.skip = why;
+      groupOf[a][k] = long(it->second);
+    }
+    for (auto &[b, p] : parent)
+      plan.groups[groupNo.at(find(b))].objects.push_back(b);
+    for (const auto &[root, gi] : groupNo)
+      std::sort(plan.groups[gi].objects.begin(), plan.groups[gi].objects.end());
+    // per group and base: the cells (a bitmap; empty above kMaxBitmap)
+    std::map<std::pair<size_t, unsigned>, std::vector<bool>> cellMap;
+    std::vector<std::vector<std::pair<uint64_t, size_t>>> perRead(
+        plan.groups.size());
+    for (size_t k = 0; k < rs.size(); ++k) {
+      if (groupOf[a][k] < 0)
         continue;
+      CellsPlan::Group &g = plan.groups[groupOf[a][k]];
+      const Ackermannizer::Read &rd = rs[k];
+      ++g.reads;
+      bool full = false, inb = false;
+      uint64_t n = 0;
+      if (bases[k].size() > 1)
+        ++plan.readsMulti;
+      for (unsigned b : bases[k]) {
+        const CellsObjectInfo &o = objs[b];
+        const AddrRange *r = maps[a][k]->find(b);
+        // [lo, hi] = [0, N) ∩ I
+        uint64_t lo = 0, hi = o.size - 1;
+        if (!r || !r->isRange()) {
+          full = true;
+          inb = true;
+        } else {
+          if (r->lo().isNegative() || r->hi().sge(o.size))
+            inb = true;
+          if (r->hi().isNegative())
+            continue;
+          if (!r->lo().isNegative())
+            lo = std::max(lo, r->lo().getZExtValue());
+          if (r->hi().getActiveBits() <= 64)
+            hi = std::min(hi, r->hi().getZExtValue());
+        }
+        // one base: the index's offset, its range and residue
+        uint64_t f = 0;
+        unsigned t = 0;
+        Expr rest = rd.rest;
+        if (bases[k].size() == 1 &&
+            (rest || Ackermannizer::splitBase(rd.index, o.base, w, rest))) {
+          BvInterval ri = ranges.unsignedRange(rest);
+          if (ri.known) {
+            if (mpz_cmp_ui(ri.lo.get_mpz_t(), lo) > 0)
+              lo = mpz_fits_ulong_p(ri.lo.get_mpz_t())
+                       ? mpz_get_ui(ri.lo.get_mpz_t())
+                       : hi + 1;
+            if (mpz_cmp_ui(ri.hi.get_mpz_t(), hi) < 0)
+              hi = mpz_get_ui(ri.hi.get_mpz_t());
+          }
+          const ackermann_detail::Linear &lin = lf->of(rest.get());
+          t = w;
+          for (const auto &[atom, coef] : lin.coef)
+            t = std::min(t, Ackermannizer::trailingZeros(coef, w));
+          if (t < 64) {
+            mpz_class step(1UL), c;
+            mpz_mul_2exp(step.get_mpz_t(), step.get_mpz_t(), t);
+            mpz_fdiv_r(c.get_mpz_t(), lin.c.get_mpz_t(), step.get_mpz_t());
+            f = mpz_get_ui(c.get_mpz_t());
+          } else {
+            if (!mpz_fits_ulong_p(lin.c.get_mpz_t()))
+              continue;
+            f = mpz_get_ui(lin.c.get_mpz_t());
+          }
+        }
+        // the array's cells: offsets 0 mod u (u = 2^tu)
+        const unsigned u = cellUnits(a);
+        unsigned tu = 0;
+        while (tu < 63 && (uint64_t(1) << tu) < u)
+          ++tu;
+        bool none = false;
+        if (t < tu) {
+          none = (f & ((uint64_t(1) << t) - 1)) != 0;
+          t = tu;
+          f = 0;
+        } else if (tu && (f & ((uint64_t(1) << tu) - 1)) != 0) {
+          none = true;
+        }
+        uint64_t first = 0;
+        uint64_t nb = none ? 0 : progression(lo, hi, f, t, first);
+        const uint64_t step = t >= 64 ? 1 : uint64_t(1) << t;
+        // a small set: drop the offsets the difference decider finds never
+        // equal to rest (leaf by leaf through an ite offset; exact)
+        std::vector<uint64_t> kept;
+        const bool filter = rest && nb && nb <= CellsPlan::kDeciderFilter;
+        if (filter) {
+          auto &dd = deciders[w];
+          if (!dd)
+            dd = std::make_unique<DiffDecider>(w, nullptr);
+          ExprFactory &efac = rest->efac();
+          for (uint64_t i = 0, x = first; i < nb; ++i, x += step) {
+            Expr num = op::bv::bvnum(mpz_class((unsigned long)x), w, efac);
+            if (dd->decide(rest.get(), num.get()).verdict !=
+                DiffDecider::Verdict::Never)
+              kept.push_back(x);
+          }
+          plan.deciderDropped += nb - kept.size();
+          nb = kept.size();
+        }
+        n += nb;
+        if (o.size <= CellsPlan::kMaxBitmap && nb) {
+          std::vector<bool> &bm = cellMap[{size_t(groupOf[a][k]), b}];
+          if (bm.empty())
+            bm.assign(o.size, false);
+          if (filter)
+            for (uint64_t x : kept)
+              bm[x] = true;
+          else
+            for (uint64_t i = 0, x = first; i < nb; ++i, x += step)
+              bm[x] = true;
+        } else if (nb) {
+          g.cellsBound = true;
+          g.cells += nb; // a bound
+        }
       }
-      o.arms += cand.size();
-      cells.insert(cand.begin(), cand.end());
+      ++(full ? g.readsFull : g.readsInterval);
+      ++(full ? plan.readsFull : plan.readsInterval);
+      plan.readsInb += inb;
+      g.arms += n;
+      perRead[groupOf[a][k]].push_back({n, rd.group});
     }
-    for (size_t i = 0; i < cellSets.size(); ++i)
-      plan.objects[firstObj + i].cells = cellSets[i].size();
+    for (const auto &[key, bm] : cellMap)
+      plan.groups[key.first].cells +=
+          uint64_t(std::count(bm.begin(), bm.end(), true));
+    // the decoding, once per distinct index term (all arrays)
+    for (const auto &[root, gi] : groupNo) {
+      CellsPlan::Group &g = plan.groups[gi];
+      g.iw = ceilLog2(g.cells);
+      uint64_t decode = 0;
+      for (const auto &[n, sym] : perRead[gi])
+        if (sym != 0 && decoded.insert(sym).second) {
+          ++g.indices;
+          decode += n * g.iw;
+        }
+      g.costBits =
+          g.arms * vw + decode + g.cells * vw + g.cells * g.unknown * (w + vw);
+      g.cost = g.arms + g.cells + g.cells * g.unknown;
+    }
   }
-  // the read's object number in plan.objects (-1: in no known object)
-  auto objNo = [&](size_t a, size_t k) -> long {
-    const Expr &b = arrs[a].reads[k].obase;
-    return b ? long(objOf[a].at(b.get())) : -1;
+  // the constrained pairs: by group, and what ARM separates
+  auto nonZero = [&](unsigned key) {
+    return key < objs.size() && objs[key].size != 0;
   };
-  // the constrained pairs by object
+  std::vector<std::pair<long, long>> cross;
   for (const auto &p : ack.constrainedPairs()) {
-    long ok = objNo(p.array, p.k), ol = objNo(p.array, p.l);
-    if (ok == ol) {
-      if (ok >= 0)
-        ++plan.objects[ok].keep;
+    ++plan.pairs;
+    const auto &mk = maps[p.array][p.k], &ml = maps[p.array][p.l];
+    if (mk && ml) {
+      bool usedCross = false;
+      if (AddrRangeMap::disjoint(*mk, *ml, true, nonZero, &usedCross))
+        ++(usedCross ? plan.armCrossBase : plan.armInterval);
+    }
+    long gk = groupOf[p.array][p.k], gl = groupOf[p.array][p.l];
+    if (gk == gl) {
+      if (gk >= 0)
+        ++plan.groups[gk].keep;
       continue;
     }
-    if (ok < 0 || ol < 0) {
-      ++plan.objects[ok < 0 ? ol : ok].keep;
+    if (gk < 0 || gl < 0) {
+      ++plan.groups[gk < 0 ? gl : gk].keep;
       continue;
     }
-    ++plan.objects[ok].otherObject;
-    ++plan.objects[ol].otherObject;
+    ++plan.groups[gk].other;
+    ++plan.groups[gl].other;
+    cross.push_back({gk, gl});
   }
-  for (size_t a = 0; a < arrs.size(); ++a)
-    ack.forEachOwnDropped(a, [&](size_t k, size_t l) {
-      ++plan.objects[objNo(a, k)].ownDropped;
-      ++plan.objects[objNo(a, l)].ownDropped;
-    });
-  for (CellsPlan::Object &o : plan.objects) {
-    if (o.skip != CellsPlan::Skip::None)
-      continue;
-    o.cost = o.arms + o.cells + o.cells * o.unknown;
-    o.converted = o.keep > 0 && o.cost < o.keep;
+  for (CellsPlan::Group &g : plan.groups) {
+    g.keepBits = g.keep * (g.aw + g.vw);
+    g.convCount = g.keep > 0 && g.cost < g.keep;
+    g.convBits = g.keep > 0 && g.costBits < g.keepBits;
   }
-  // the pairs of two known objects, one of them converted (each once)
-  auto conv = [&](long o) { return o >= 0 && plan.objects[o].converted; };
-  for (const auto &p : ack.constrainedPairs()) {
-    long ok = objNo(p.array, p.k), ol = objNo(p.array, p.l);
-    if (ok >= 0 && ol >= 0 && ok != ol && (conv(ok) || conv(ol)))
-      ++plan.otherObjectPairs;
+  for (const auto &[x, y] : cross) {
+    plan.otherCount += plan.groups[x].convCount || plan.groups[y].convCount;
+    plan.otherBits += plan.groups[x].convBits || plan.groups[y].convBits;
   }
-  for (size_t a = 0; a < arrs.size(); ++a)
-    ack.forEachOwnDropped(a, [&](size_t k, size_t l) {
-      if (conv(objNo(a, k)) || conv(objNo(a, l)))
-        ++plan.otherObjectPairs;
-    });
   return plan;
 }
 

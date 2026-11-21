@@ -932,16 +932,6 @@ public:
       std::swap(k, l);
     return m_ownDropped[a].count(ownKey(k, l, m_arrays[a].reads.size()));
   }
-  /// \p fn(k, l) on every pair k < l of reads of lowered array \p a whose
-  /// constraint the ownership drop dropped (in no particular order).
-  template <typename Fn>
-  void forEachOwnDropped(size_t a, Fn fn) const {
-    if (a >= m_ownDropped.size())
-      return;
-    const uint64_t n = m_arrays[a].reads.size();
-    for (uint64_t key : m_ownDropped[a])
-      fn(size_t(key / n), size_t(key % n));
-  }
   /// Did the stride rule drop the constraint of reads \p a and \p b?
   bool strideDropped(const Read &a, const Read &b) const {
     return strideApart(a, b);

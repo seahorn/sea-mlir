@@ -1,63 +1,65 @@
 // The cells plan (--ack-cells-plan, docs/design/Ackermann.md, "Cell
-// representatives: the plan"): per (array, object), the constraints a cell
-// mode would remove (keep) against what it would add (cost = arms + cells +
-// cells x unknown reads). Counts only: the query is unchanged.
+// representatives: the plan"): per group of objects (from ARM over the
+// reads' access addresses), the constraints a cell mode would remove (keep)
+// against what it would add, counted and bit-weighted. Counts only: the
+// query is unchanged.
 // RUN: split-file %s %t
 //
-// table: six reads of a slot field, a + 8 * i_k + 4, in a 16-byte object:
-// two candidate cells (4, 12) per read. keep = 15 pairs, cost = 12 arms + 2
-// cells = 14: converted.
+// table: six reads of a slot field, a + 8 * i_k + 4, in a 16-byte object.
+// ARM gives a with no interval (full object); the offset's residue leaves
+// two cells (4, 12). keep = 15 pairs, cost = 12 arms + 2 cells = 14:
+// converted by both measures.
 // RUN: sea-vc %t/table.mlir --ack-cells-plan --lower --seam 2>&1 | FileCheck %s --check-prefix=TABLE
 // TABLE: vc.cells-plan: on
-// TABLE: vc.cells-plan-objects: 1
-// TABLE: vc.cells-plan-eligible: 1
-// TABLE: vc.cells-plan-converted: 1
-// TABLE: vc.cells-plan-reads-converted: 6
-// TABLE: vc.cells-plan-arms: 12
+// TABLE: vc.cells-plan-reads-full-object: 6
+// TABLE: vc.cells-plan-reads-a-inb: 6
+// TABLE: vc.cells-plan-groups: 1
 // TABLE: vc.cells-plan-cells: 2
+// TABLE: vc.cells-plan-arms: 12
 // TABLE: vc.cells-plan-keep: 15
-// TABLE: vc.cells-plan-cost: 14
+// TABLE: vc.cells-plan-converted: 1
 // TABLE: vc.cells-plan-removed: 15
 // TABLE: vc.cells-plan-added: 14
+// TABLE: vc.cells-plan-bits-converted: 1
 // The query is byte-identical with and without the plan.
 // RUN: sea-vc %t/table.mlir --lower --seam --smt2 > %t/off.smt2 2>/dev/null
 // RUN: sea-vc %t/table.mlir --ack-cells-plan --lower --seam --smt2 > %t/on.smt2 2>/dev/null
 // RUN: cmp %t/off.smt2 %t/on.smt2
+// The same with narrowed offsets and without the stride rule (the second
+// lowering takes the real one's configuration).
+// RUN: sea-vc %t/table.mlir --lower --seam --narrow-offsets --ack-stride=false --smt2 > %t/off2.smt2 2>/dev/null
+// RUN: sea-vc %t/table.mlir --ack-cells-plan --lower --seam --narrow-offsets --ack-stride=false --smt2 > %t/on2.smt2 2>/dev/null
+// RUN: cmp %t/off2.smt2 %t/on2.smt2
 //
-// symsize: the same stride in an object of symbolic size (placed with the
-// symbolic room, 4096 units): 512 offsets by the residue enumeration, over
-// the bound: not eligible.
+// symsize: stride 8 in an object of symbolic size (placed with the symbolic
+// room, 4096 units): 512 cells for 3 pairs, not converted.
 // RUN: sea-vc %t/symsize.mlir --ack-cells-plan --lower --seam 2>&1 | FileCheck %s --check-prefix=SYM
-// SYM: vc.cells-plan-objects: 1
-// SYM: vc.cells-plan-eligible: 0
-// SYM: vc.cells-plan-skip-enum: 1
+// SYM: vc.cells-plan-cells: 512
+// SYM: vc.cells-plan-keep: 3
 // SYM: vc.cells-plan-converted: 0
-// SYM: vc.cells-plan-keep-skipped: 3
-// SYM: vc.cells-plan-removed: 0
+// SYM: vc.cells-plan-bits-converted: 0
 //
-// mixed: the table and one read at a + j (any of the 16 offsets): eligible,
-// but 28 arms + 16 cells cost more than the 21 pairs: not converted.
+// mixed: the table and one read at a + j (any of the 16 cells): 28 arms +
+// 16 cells cost more than the 21 pairs by count, less by bits (a pair
+// compares two 64-bit indices).
 // RUN: sea-vc %t/mixed.mlir --ack-cells-plan --lower --seam --log=vc.cells-plan:2 2>&1 | FileCheck %s --check-prefix=MIXED
-// MIXED: log: vc.cells-plan object {{.*}}reads=7 unknown=0 arms=28 cells=16 enum-max=16 {{.*}}keep=21 cost=44 {{.*}}skip=none converted=0
-// MIXED: vc.cells-plan-eligible: 1
-// MIXED: vc.cells-plan-skip-cost: 1
+// MIXED: log: vc.cells-plan group {{.*}}reads=7 {{.*}}cells=16 {{.*}}arms=28 keep=21 {{.*}}cost=44 {{.*}}mode-count=address mode-bits=cells
 // MIXED: vc.cells-plan-converted: 0
-// MIXED: vc.cells-plan-keep: 21
-// MIXED: vc.cells-plan-cost: 44
-// MIXED: vc.cells-plan-removed: 0
+// MIXED: vc.cells-plan-bits-converted: 1
+// MIXED: vc.cells-plan-bits-removed: 21
 //
-// two: the table in a, a second object b read at b + j and as a pointer, and
-// a read through the loaded pointer (in no known object). The table pays one
-// constraint per cell and unknown read (2) and stays converted; b does not.
-// The pairs of a against b are counted apart (a cell mode drops them by
-// A-OWN).
+// two: the table in a, a second object b read at b + j and as a pointer
+// (eight bytes at numeral offsets: ARM intervals), and a read through the
+// loaded pointer (unknown). The table pays one constraint per cell and
+// unknown read and stays converted; b does not. ARM separates the pairs of
+// a against b by their bases.
 // RUN: sea-vc %t/two.mlir --ack-cells-plan --lower --seam 2>&1 | FileCheck %s --check-prefix=TWO
-// TWO: vc.cells-plan-objects: 2
-// TWO: vc.cells-plan-skip-cost: 1
-// TWO: vc.cells-plan-converted: 1
+// TWO: vc.cells-plan-reads-arm-interval: 8
+// TWO: vc.cells-plan-reads-full-object: 7
 // TWO: vc.cells-plan-reads-unknown: 1
-// TWO: vc.cells-plan-reads-converted: 6
-// TWO: vc.cells-plan-unknown-constraints: 2
+// TWO: vc.cells-plan-groups: 2
+// TWO: vc.cells-plan-arm-pairs-cross-base: 12
+// TWO: vc.cells-plan-converted: 1
 // TWO: vc.cells-plan-removed: 21
 // TWO: vc.cells-plan-added: 16
 // TWO: vc.cells-plan-other-object-pairs: 12

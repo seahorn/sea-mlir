@@ -18,6 +18,7 @@
 #include "sea/Expr/AckRelax.hh"
 #include "sea/Expr/Ackermann.hh"
 #include "sea/Expr/ExprAPInt.hh"
+#include "sea/Expr/ExprMlir.hh"
 #include "sea/Expr/InitialWords.hh"
 #include "sea/Expr/ReadCells.hh"
 #include "sea/Expr/SeaMRules.hh"
@@ -652,11 +653,12 @@ static cl::opt<bool> ackCellsPlan(
     "ack-cells-plan",
     cl::desc("Cell representatives, the plan only (with --seam and the "
              "Ackermann lowering): a second lowering made for the plan, "
-             "discarded, counts per (array, object) the constraints a cell "
-             "mode would remove (keep) against what it would add (cost: the "
-             "arms of the reads' case splits, the cells, a constraint per "
-             "cell and read in no known object); vc.cells-plan-*, one line "
-             "per object with --log=vc.cells-plan:2. The query is unchanged. "
+             "discarded, counts per group of objects (ARM over the reads' "
+             "access addresses) the constraints a cell mode would remove "
+             "(keep) against what it would add (the arms of the reads' case "
+             "splits, the cells, a constraint per cell and read in no known "
+             "object), by count and by bits; vc.cells-plan-*, one line per "
+             "group with --log=vc.cells-plan:2. The query is unchanged. "
              "Off by default (docs/design/Ackermann.md, \"Cell "
              "representatives: the plan\")"),
     cl::init(false));
@@ -664,8 +666,8 @@ static cl::opt<bool> ackCellsPlan(
 // --ack-cells-plan: one event per (array, object) of the plan
 static sea::log::Tag logCellsPlan(
     "vc.cells-plan", 2,
-    "--ack-cells-plan: per (array, object): reads, unknown reads, arms, "
-    "cells, keep, cost, whether eligible and converted");
+    "--ack-cells-plan: per group of objects: reads by source, unknown "
+    "reads, cells, arms, keep, both costs and both modes");
 
 static cl::opt<std::string> ackRelax(
     "ack-relax",
@@ -2741,13 +2743,14 @@ TYPICAL:
                                  #   (else vc.ack-own: off-...).
                                  #   docs/design/Ackermann.md
   sea-vc p.mlir --seam --ack-cells-plan  # (off by default) the cells
-                                 #   plan, counts only: per (array, object),
+                                 #   plan, counts only: per group of objects
+                                 #   (ARM over the reads' access addresses),
                                  #   the constraints a cell mode would remove
-                                 #   (keep) against what it would add (cost:
-                                 #   arms + cells + cells x unknown reads),
-                                 #   from a second lowering, discarded; the
-                                 #   query is unchanged. vc.cells-plan-*;
-                                 #   per object --log=vc.cells-plan:2.
+                                 #   against what it would add, by count and
+                                 #   by bits, from a second lowering,
+                                 #   discarded; the query is unchanged.
+                                 #   vc.cells-plan-*; per group
+                                 #   --log=vc.cells-plan:2.
                                  #   docs/design/Ackermann.md
   sea-vc p.mlir --seam --ack-stride=false   # (default on) the stride rule in the Ackermann
                                  #   lowering: reads at sea.ptr.index nodes
@@ -3072,19 +3075,19 @@ OUTPUT (stdout, `key: value` lines):
                                   vc.ackermann-own-*)
   vc.cells-plan: on|off-no-premises|off-no-ackermann|off-seam-words
                                   (--ack-cells-plan; on: vc.cells-plan-
-                                  objects / -eligible / -skip-shape /
-                                  -skip-enum / -skip-arms / -skip-keep /
-                                  -skip-cost / -converted, -reads / -reads-
-                                  own / -reads-unknown / -reads-converted /
-                                  -reads-kept, -arms / -cells / -unknown-
-                                  constraints (converted objects), -keep /
-                                  -cost (eligible objects), -keep-skipped
-                                  (keep of the objects not eligible),
-                                  -removed /
-                                  -added (converted: pairs removed, terms
-                                  added), -other-object-pairs (a converted
-                                  object's pairs with another known object,
-                                  dropped by A-OWN))
+                                  reads / -reads-arm-interval / -reads-full-
+                                  object / -reads-unknown / -reads-multi-
+                                  base / -reads-a-inb (reads by ARM source),
+                                  -groups / -cells / -arms / -decider-
+                                  dropped / -unknown-constraints / -keep,
+                                  -pairs / -arm-pairs-cross-base / -arm-
+                                  pairs-interval (the constrained pairs,
+                                  those ARM separates),
+                                  by count: -converted / -reads-converted /
+                                  -removed / -added / -other-object-pairs,
+                                  by bits: -bits-converted / -bits-reads-
+                                  converted / -bits-removed / -bits-keep /
+                                  -bits-cost / -bits-other-object-pairs)
   vc.narrow: on|off-no-premises|off-no-ackermann   (--narrow-offsets; on:
                                   vc.narrow-indices / -eligible / -skip-not-
                                   own / -skip-shared-boundary / -skip-no-
@@ -6642,11 +6645,10 @@ int main(int argc, char **argv) {
     const bool narrowOn = narrowOffsets && inb && sem.seamRewriter();
     // --ack-own: the same premises
     const bool ownOn = ackOwn && inb && sem.seamRewriter();
-    // --ack-cells-plan: the own table (its objects), the same premises; not
-    // on the words path (it records no access origins)
+    // --ack-cells-plan: the same premises (A-INB, A-SEP); not on the words
+    // path (it records no access origins)
     const bool cellsPlanOn = ackCellsPlan && inb && sem.seamRewriter() &&
                              seamWords == WordsMode::Off;
-    const bool ownTableOn = ownOn || cellsPlanOn;
     if (seamWords != WordsMode::Off)
       words = std::make_unique<expr::InitialWords>(
           8,
@@ -6750,7 +6752,7 @@ int main(int argc, char **argv) {
     } else {
       // the stride rule's record: the address each read had before the
       // nodes were expanded (the query only); also --narrow-offsets'
-      if ((strideOn || narrowOn || ownTableOn) && sem.seamRewriter())
+      if ((strideOn || narrowOn || ownOn || cellsPlanOn) && sem.seamRewriter())
         sem.seamRewriter()->recordAccesses(&accessOrigins);
       query = sem.solverTerm(query);
       if (sem.seamRewriter())
@@ -6828,7 +6830,7 @@ int main(int argc, char **argv) {
     // 2^k (read from the placement's numeral, BaseRegistry::alignedTo):
     // bvadd(base, zext(low_k)) is carry-free in the first case
     uint64_t narrowBaseAligned = 0, narrowBaseUnaligned = 0;
-    if (narrowOn || ownTableOn) {
+    if (narrowOn || ownOn) {
       const auto &rules = sem.seamRewriter()->rules();
       const expr::BaseRegistry &reg = vcgen.baseRegistry();
       // in a deterministic order (the check's lines)
@@ -6859,7 +6861,7 @@ int main(int argc, char **argv) {
           ++narrowSkip.notOwn;
           narrowOk = false;
         }
-        if (!narrowOk && !ownTableOn)
+        if (!narrowOk && !ownOn)
           continue;
         expr::Expr base;
         const expr::ObjectBase *obj = nullptr;
@@ -6909,7 +6911,7 @@ int main(int argc, char **argv) {
         site.key = e->key;
         site.base = rules.erase(base);
         site.k = k;
-        if (ownTableOn) {
+        if (ownOn) {
           ownTable.byIndex.emplace(e->key.get(),
                                    expr::NarrowTable::Entry{site.base, k});
           ownBoundaryIndices += !narrowOk;
@@ -6994,10 +6996,10 @@ int main(int argc, char **argv) {
     expr::Expr preLowerQuery = cellsPlanOn && ackOn ? query : expr::Expr();
     if (lowered)
       query = ack.lower(query);
-    // --ack-cells-plan: a lowering configured as the real one, plus the
-    // ownership table (its drop removes no pair the plan counts in keep)
-    // and the constrained pairs, made after the real one (the query is
-    // built first and stays as it is) and discarded
+    // --ack-cells-plan: a lowering configured as the real one, recording
+    // its constrained pairs and the selects of each read, made after the
+    // real one (the query is built first and stays as it is) and discarded;
+    // the reads' objects from ARM over their access addresses
     std::optional<expr::CellsPlan> cellsPlan;
     if (cellsPlanOn && ackOn && !ufOn) {
       expr::Ackermannizer dry;
@@ -7005,7 +7007,8 @@ int main(int argc, char **argv) {
       dry.setDecider(ackDecider, deciderOpt);
       if (narrowOn)
         dry.setNarrow(&narrowTable);
-      dry.setOwn(&ownTable);
+      if (ownOn)
+        dry.setOwn(&ownTable);
       if (strideOn && !accessOrigins.byIndex.empty()) {
         dry.setAccessOrigins(&accessOrigins);
         std::unordered_set<expr::ENode *> size0;
@@ -7016,42 +7019,82 @@ int main(int argc, char **argv) {
         dry.setAssumePremises(inb);
       }
       dry.recordPairs(true);
+      dry.keepImages(true);
       (void)dry.lower(preLowerQuery);
-      std::unordered_map<expr::ENode *, expr::CellsObjectInfo> info;
+      const expr::BaseRegistry &reg = vcgen.baseRegistry();
       const auto &rules = sem.seamRewriter()->rules();
-      for (const expr::ObjectBase &o : vcgen.baseRegistry().objects())
-        if (!o.size.isZero() && o.size.getActiveBits() <= 63)
-          info.emplace(rules.erase(o.constant).get(),
-                       expr::CellsObjectInfo{o.size.getZExtValue(), o.name});
-      cellsPlan = expr::planCells(dry, info);
-      for (const expr::CellsPlan::Object &o : cellsPlan->objects)
+      std::vector<expr::CellsObjectInfo> objs(reg.size());
+      for (const expr::ObjectBase &o : reg.objects())
+        if (o.order < objs.size())
+          objs[o.order] = expr::CellsObjectInfo{
+              rules.erase(o.constant),
+              o.size.getActiveBits() <= 63 ? o.size.getZExtValue() : 0, o.name};
+      expr::AddrRangeAnalysis arm(reg);
+      // the join of the ARM maps of the access addresses of every select
+      // merged into the read; none if one has no usable record
+      auto readMap = [&](size_t a,
+                         size_t k) -> std::optional<expr::AddrRangeMap> {
+        const auto &rd = dry.arrays()[a].reads[k];
+        std::optional<expr::AddrRangeMap> m;
+        for (const expr::Expr &sel : rd.selects) {
+          auto it = accessOrigins.byIndex.find(sel->arg(1));
+          if (it == accessOrigins.byIndex.end() || it->second.many ||
+              it->second.shadow || it->second.addrs.empty())
+            return std::nullopt;
+          for (const expr::Expr &ad : it->second.addrs) {
+            const expr::AddrRangeMap &x = arm.alpha(ad);
+            m = m ? m->join(x) : x;
+          }
+        }
+        return m;
+      };
+      // the cells of an array: its memory value is the name of its
+      // constant (the havoc's variant of the register of a sea value); an
+      // aligned word memory has its cells at offsets 0 mod k (the pass that
+      // chose the layout proved it), any other memory at every unit
+      auto cellUnits = [&](size_t a) -> unsigned {
+        expr::Expr n =
+            expr::op::bind::fname(expr::op::bind::fname(dry.arrays()[a].array));
+        for (unsigned i = 0; i < 8 && (expr::isOpX<expr::VARIANT>(n) ||
+                                       expr::isOpX<expr::TAG>(n));
+             ++i)
+          n = n->right();
+        if (!expr::isOpX<expr::MLIR_VALUE>(n))
+          return 1;
+        auto m = mlir::dyn_cast<sea::MemType>(
+            expr::getTerm<sea::ValueRef>(n).value.getType());
+        return m && m.getLayout() == sea::MemLayout::aligned ? m.getCellUnits()
+                                                             : 1;
+      };
+      cellsPlan = expr::planCells(dry, readMap, objs, cellUnits);
+      for (const expr::CellsPlan::Group &g : cellsPlan->groups) {
+        std::string names, sizes;
+        for (unsigned b : g.objects) {
+          names += (names.empty() ? "" : "+") + objs[b].name;
+          sizes += (sizes.empty() ? "" : "+") + std::to_string(objs[b].size);
+        }
         SEA_LOG(logCellsPlan, sea::log::Object)
-            .msg("object")
+            .msg("group")
             .kv("array",
-                *expr::op::bind::fname(dry.arrays()[o.array].array->first()))
-            .kv("obj", o.name.empty() ? std::string("-") : o.name)
-            .kv("size", o.size)
-            .kv("reads", o.reads)
-            .kv("unknown", o.unknown)
-            .kv("arms", o.arms)
-            .kv("cells", o.cells)
-            .kv("enum-max", o.enumMax)
-            .kv("reads-shape", o.readsShape)
-            .kv("reads-enum", o.readsEnum)
-            .kv("reads-arms", o.readsArms)
-            .kv("enum-t", o.enumT)
-            .kv("enum-atoms", o.enumAtoms)
-            .kv("enum-atom-op", o.enumAtom
-                                    ? std::string(o.enumAtom->op().name())
-                                    : std::string("-"))
-            .kv("keep", o.keep)
-            .kv("cost", o.cost)
-            .kv("other-object", o.otherObject + o.ownDropped)
-            .kv("skip", o.skip == expr::CellsPlan::Skip::None    ? "none"
-                        : o.skip == expr::CellsPlan::Skip::Shape ? "shape"
-                        : o.skip == expr::CellsPlan::Skip::Enum  ? "enum"
-                                                                 : "arms")
-            .kv("converted", o.converted ? 1 : 0);
+                *expr::op::bind::fname(dry.arrays()[g.array].array->first()))
+            .kv("obj", names)
+            .kv("size", sizes)
+            .kv("reads", g.reads)
+            .kv("arm-interval", g.readsInterval)
+            .kv("full-object", g.readsFull)
+            .kv("unknown", g.unknown)
+            .kv("indices", g.indices)
+            .kv("cells", g.cells)
+            .kv("cells-bound", g.cellsBound ? 1 : 0)
+            .kv("arms", g.arms)
+            .kv("keep", g.keep)
+            .kv("other", g.other)
+            .kv("cost", g.cost)
+            .kv("keep-bits", g.keepBits)
+            .kv("cost-bits", g.costBits)
+            .kv("mode-count", g.convCount ? "cells" : "address")
+            .kv("mode-bits", g.convBits ? "cells" : "address");
+      }
     }
     if (lowered && originsOn) {
       preAckOrigins = origins;
