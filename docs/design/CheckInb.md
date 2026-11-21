@@ -61,7 +61,7 @@ result: sat
   runs (processes, parsing and encoding included).
 - `id`: the check's id (`sea.inb_check`, program order, statically
   discharged checks included); `at`: the access; `fail-at`: the failing
-  check of a replayed counterexample; `status`: the part's exit status.
+  check of a replayed counterexample (the replay's `assert-op`); `status`: the part's exit status.
 - `check-inb.part-diags`: the warning and error kinds on the parts'
   stderr, each with the number of parts that reported it. A part's
   warnings name approximations and assumptions its answer rests on; its

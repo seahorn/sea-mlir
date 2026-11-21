@@ -173,7 +173,12 @@ inline void readPartOutput(llvm::StringRef path, PartRun &r) {
           r.assumes.push_back(name);
       }
     } else if (*kind == "replay") {
-      if (auto s = o->getString("at"))
+      // the failing assert itself (assert-op): the check's access. Not
+      // `at` (assert-at, where the condition is computed), which for a
+      // condition folded to a constant names an unrelated op
+      if (auto s = o->getString("op"))
+        r.failAt = s->str();
+      else if (auto s = o->getString("at"))
         r.failAt = s->str();
     }
   }

@@ -180,6 +180,7 @@ sea.program @implied {
 // MHNULL: check-inb.discharges: {{.*}} under=addr0-is-null,memhavoc-null-noop
 // MHNULL: result: unsat
 // MHERR: Warning: {{.*}}[check-inb.size0-object]
+// MHERR: check-inb.part: 0 id=0 at={{.*}}check-inb.mlir:[[LOC:[0-9]+:[0-9]+]] {{.*}}fail-at={{.*}}check-inb.mlir:[[LOC]]{{$}}
 // MHERR: result: sat
 sea.program @mhnull {
   %m0 = sea.mem.nondet "m" [0] : !m
