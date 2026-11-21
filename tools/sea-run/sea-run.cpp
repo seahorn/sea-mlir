@@ -80,6 +80,14 @@ static cl::opt<uint64_t>
 static cl::opt<uint64_t> maxSteps("max-steps", cl::desc("Step limit"),
                                   cl::init(1'000'000));
 
+// a test knob: the cap on distinct sets of broken ptr.index promises
+// (RunOptions::maxPoisonSets), lowered to reach its Limit error cheaply
+static cl::opt<uint64_t> maxPoisonSets(
+    "max-poison-sets",
+    cl::desc("Most distinct sets of broken ptr.index promises a run "
+             "tracks (at most 65535; past it: a limit error)"),
+    cl::init(65535), cl::Hidden);
+
 static cl::opt<bool> trace("trace", cl::desc("Print every computed value"),
                            cl::init(false));
 
@@ -1611,6 +1619,8 @@ static int runFuzz(sea::ProgramOp program) {
     sea::addAssignments(source, f.input);
     sea::RunOptions options;
     options.maxSteps = maxSteps;
+    options.maxPoisonSets = maxPoisonSets;
+    options.maxPoisonSets = maxPoisonSets;
     options.deferMemoryErrors = deferMemoryErrors;
     options.addr0IsNull = addr0IsNull;
     options.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
@@ -2140,6 +2150,7 @@ int main(int argc, char **argv) {
 
   sea::RunOptions options;
   options.maxSteps = maxSteps;
+  options.maxPoisonSets = maxPoisonSets;
   options.prints = printMode != sea::PrintMode::Off;
   options.printLimit = printLimit;
   options.deferMemoryErrors = deferMemoryErrors;

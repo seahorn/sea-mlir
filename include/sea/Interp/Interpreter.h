@@ -21,7 +21,9 @@
 // Front-end promises are warnings, never stops. A sea.ptr.index whose
 // no-wrap promise breaks is poison in LLVM, UB only when it is used: the
 // interpreter remembers it and warns (interp.ptr-index-promise) at an
-// executed access whose address comes from it (docs/design/PtrIndex.md
+// executed access whose address comes from it, also through memory: a
+// store marks the cells it writes, a load picks the marks up, memmove
+// copies them, memset and memhavoc clear them (docs/design/PtrIndex.md
 // section 6).
 //
 //===----------------------------------------------------------------------===//
@@ -414,6 +416,10 @@ struct RunOptions {
   std::optional<ProgramFacts> facts;
   /// Largest memset / memmove length (in cells) the interpreter executes.
   uint64_t maxMemOpCells = 1 << 20;
+  /// Most distinct sets of broken ptr.index promises a run builds (marks
+  /// on values and memory cells, at most 65535: 16-bit ids); past it the
+  /// run stops with a Limit error.
+  uint64_t maxPoisonSets = 65535;
   /// Called with each value the run computes: op results and block arguments
   /// (bound on entry to their block). Memory versions are not reported.
   std::function<void(mlir::Value, const llvm::APInt &)> onValue;

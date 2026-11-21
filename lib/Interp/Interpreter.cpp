@@ -13,6 +13,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 
+#include <map>
 #include <memory>
 
 using namespace mlir;
@@ -464,12 +465,31 @@ struct Prov {
   unsigned bit = 0;
 };
 
+/// The id of a set of broken ptr.index promises (Interpreter::poisonSets);
+/// 0 is the empty set.
+using PoisonId = uint16_t;
+
+/// A ptr.index whose promise a run broke (`what`: the part broken, a
+/// static string of brokenPtrIndexPromise), and whether the pointer went
+/// through memory to get where it is.
+struct BrokenPromise {
+  Operation *gep;
+  StringRef what;
+  bool viaMemory = false;
+  auto key() const { return std::make_tuple(gep, what.data(), viaMemory); }
+  bool operator<(const BrokenPromise &o) const { return key() < o.key(); }
+  bool operator==(const BrokenPromise &o) const { return key() == o.key(); }
+};
+
 /// A cell's content: bits, or (abstract level) piece `piece` of a pointer
-/// that spans several cells; `prov`: placed address bits.
+/// that spans several cells; `prov`: placed address bits; `poison`: the
+/// broken ptr.index promises the stored value carried (docs/design/
+/// PtrIndex.md section 6), read back by a load.
 struct CellValue {
   APInt bits;
   std::optional<Ptr> ptr;
-  unsigned piece = 0;
+  uint16_t piece = 0; // < pointer width / cell width <= 64
+  PoisonId poison = 0;
   std::optional<Prov> prov = std::nullopt;
 };
 
@@ -487,6 +507,9 @@ struct Buffer {
     uint64_t seq;
     bool dflt = false; // read from a source that left it unconstrained
   };
+  // the poison mark fits in what `piece` gave up: no cell grows
+  static_assert(sizeof(CellValue) == 64 && sizeof(Cell) == 80,
+                "a memory cell grew");
   struct Layer {
     Operation *siteOp; // the sea.memhavoc
     APInt start, len;  // keys
@@ -819,12 +842,33 @@ private:
   /// placement) its object is less aligned, so placement may break it.
   void checkAlign(Operation &op, Value idx, std::optional<uint64_t> align,
                   StringRef name = "align");
+  /// The set of broken promises `v` carries (0: none).
+  PoisonId poisonOf(Value v) const {
+    return poison.empty() ? 0 : poison.lookup(v);
+  }
+  /// Binds `v` to the set `id` (0 erases it).
+  void setPoison(Value v, PoisonId id) {
+    if (id)
+      poison[v] = id;
+    else if (!poison.empty())
+      poison.erase(v);
+  }
+  /// The interned set of `elems` (any order, repeats allowed); 0 if past
+  /// RunOptions::maxPoisonSets (poisonOverflow).
+  PoisonId internPoison(SmallVector<BrokenPromise, 2> elems);
+  PoisonId unitePoison(PoisonId a, PoisonId b);
+  /// The set `id` with every element marked as gone through memory.
+  PoisonId viaMemory(PoisonId id);
   /// Sets the broken ptr.index promises `to` carries (`poison`): `gep`'s
   /// own, if set, and those of the values in `from` (its address chain).
   void passPoison(Value to, ArrayRef<Value> from, Operation *gep = nullptr,
                   StringRef what = {});
-  /// passPoison for a pure op that just defined its result: addr.add (its
-  /// base) and select (the selected operand); others carry none.
+  /// passPoison for a pure op that just defined its result: the ops that
+  /// move a pointer's bits (addr.add's base, select's picked operand,
+  /// addr.to_bits / from_bits, extract, trunc, concat) and an arithmetic op
+  /// whose other operand is its unit at run time (x | 0, x ^ 0, x + 0,
+  /// x - 0, x & ~0, x * 1: the VC's rewriter drops such units, so a pointer
+  /// it resolves through memory can pass them); others carry none.
   void propagatePoison(Operation &op);
   /// Warns (interp.ptr-index-promise) for each broken promise the address
   /// `addr` of the access `op` carries: the promise is a fact only there.
@@ -840,13 +884,14 @@ private:
   /// Cell `i` of value `v` (an integer, address or pointer), little-endian.
   CellValue cellOf(Value v, unsigned i, unsigned cellWidth) {
     if (isa<PtrType>(v.getType()))
-      return {APInt::getZero(cellWidth), ptrs.lookup(v), i};
+      return {APInt::getZero(cellWidth), ptrs.lookup(v), uint16_t(i),
+              poisonOf(v)};
     std::optional<Prov> p;
     if (trackProv)
       if (auto it = prov.find(v); it != prov.end())
         p = Prov{it->second.obj, it->second.bit + i * cellWidth};
     return {env.lookup(v).extractBits(cellWidth, i * cellWidth), std::nullopt,
-            0, p};
+            0, poisonOf(v), p};
   }
 
   /// Hands the buffer of version `from` over to version `to`. Fails unless
@@ -976,17 +1021,23 @@ private:
   llvm::DenseMap<Value, Prov> prov;
   /// docs/design/PtrIndex.md, "Where the promise is a fact": a broken
   /// no-wrap promise is poison in LLVM, UB only when the pointer is the
-  /// address of an access. A value's entry lists the flagged sea.ptr.index
-  /// ops it comes from whose promise this run broke, each once, with the
+  /// address of an access. A value's entry is the set of flagged
+  /// sea.ptr.index ops it comes from whose promise this run broke, with the
   /// part broken. It comes from them through sea-check-ptr-index's chain
   /// (the GEP, a GEP's base, a ptr.add / addr.add base, the selected
-  /// operand of a select) and, unlike that static walk, through block
-  /// arguments. Not through memory or integer conversions.
-  struct BrokenPromise {
-    Operation *gep;
-    StringRef what;
-  };
-  llvm::DenseMap<Value, SmallVector<BrokenPromise, 1>> poison;
+  /// operand of a select), and, unlike that static walk, through block
+  /// arguments, memory (CellValue::poison: stores mark cells, loads take
+  /// the union) and the ops that move a pointer's bits (propagatePoison).
+  /// Not through arithmetic or integer conversions. The set is an id into
+  /// `poisonSets`, interned (`poisonIds`) so that a cell carries it in 16
+  /// bits.
+  llvm::DenseMap<Value, PoisonId> poison;
+  std::vector<SmallVector<BrokenPromise, 1>> poisonSets{1}; // 0: empty
+  std::map<SmallVector<BrokenPromise, 2>, PoisonId> poisonIds;
+  llvm::DenseMap<uint32_t, PoisonId> poisonUnions, poisonViaMemory;
+  /// More distinct sets than RunOptions::maxPoisonSets: the run stops
+  /// (a Limit error), never drops a mark.
+  bool poisonOverflow = false;
   llvm::DenseMap<Operation *, unsigned> segmentObject;
   /// RunResult::earlierVersionLoads, as a set
   llvm::DenseSet<Operation *> earlierVersionSeen;
@@ -1091,50 +1142,116 @@ void Interpreter::checkAlign(Operation &op, Value idx,
                op.getLoc());
 }
 
+PoisonId Interpreter::internPoison(SmallVector<BrokenPromise, 2> elems) {
+  llvm::sort(elems);
+  elems.erase(std::unique(elems.begin(), elems.end()), elems.end());
+  if (elems.empty())
+    return 0;
+  if (auto it = poisonIds.find(elems); it != poisonIds.end())
+    return it->second;
+  // id 0 is the empty set; 16-bit ids
+  if (poisonSets.size() - 1 >=
+      std::min<uint64_t>(options.maxPoisonSets, UINT16_MAX)) {
+    poisonOverflow = true;
+    return 0;
+  }
+  PoisonId id = PoisonId(poisonSets.size());
+  poisonSets.emplace_back(elems.begin(), elems.end());
+  poisonIds.emplace(std::move(elems), id);
+  return id;
+}
+
+PoisonId Interpreter::unitePoison(PoisonId a, PoisonId b) {
+  if (!a || a == b)
+    return b;
+  if (!b)
+    return a;
+  uint32_t key = a < b ? (uint32_t(a) << 16 | b) : (uint32_t(b) << 16 | a);
+  if (auto it = poisonUnions.find(key); it != poisonUnions.end())
+    return it->second;
+  SmallVector<BrokenPromise, 2> elems(poisonSets[a].begin(),
+                                      poisonSets[a].end());
+  elems.append(poisonSets[b].begin(), poisonSets[b].end());
+  PoisonId id = internPoison(std::move(elems));
+  if (id)
+    poisonUnions[key] = id;
+  return id;
+}
+
+PoisonId Interpreter::viaMemory(PoisonId id) {
+  if (!id)
+    return 0;
+  if (auto it = poisonViaMemory.find(id); it != poisonViaMemory.end())
+    return it->second;
+  SmallVector<BrokenPromise, 2> elems(poisonSets[id].begin(),
+                                      poisonSets[id].end());
+  for (BrokenPromise &b : elems)
+    b.viaMemory = true;
+  PoisonId r = internPoison(std::move(elems));
+  if (r)
+    poisonViaMemory[id] = r;
+  return r;
+}
+
 void Interpreter::passPoison(Value to, ArrayRef<Value> from, Operation *gep,
                              StringRef what) {
-  SmallVector<BrokenPromise, 1> out;
-  auto add = [&](const BrokenPromise &b) {
-    if (llvm::none_of(out,
-                      [&](const BrokenPromise &o) { return o.gep == b.gep; }))
-      out.push_back(b);
-  };
-  if (gep)
-    add({gep, what});
+  if (!gep && poison.empty())
+    return; // nothing to pass on, no stale entry
+  PoisonId id = gep ? internPoison({{gep, what}}) : 0;
   for (Value v : from)
-    if (auto it = poison.find(v); it != poison.end())
-      for (const BrokenPromise &b : it->second)
-        add(b);
-  if (out.empty())
-    poison.erase(to);
-  else
-    poison[to] = std::move(out);
+    id = unitePoison(id, poisonOf(v));
+  setPoison(to, id);
 }
 
 void Interpreter::propagatePoison(Operation &op) {
   if (poison.empty())
     return; // nothing to pass on, no stale entry
-  if (auto aa = dyn_cast<AddrAddOp>(op))
-    passPoison(aa.getResult(), {aa.getOperand(0)});
-  else if (auto sel = dyn_cast<SelectOp>(op))
-    passPoison(sel.getResult(),
-               {env.lookup(sel.getCondition()).isOne() ? sel.getTrueValue()
-                                                       : sel.getFalseValue()});
+  if (op.getNumResults() != 1 || op.getNumOperands() == 0)
+    return;
+  Value r = op.getResult(0);
+  if (isa<AddrAddOp, AddrToBitsOp, AddrFromBitsOp, ExtractOp, TruncOp>(op)) {
+    setPoison(r, poisonOf(op.getOperand(0)));
+  } else if (auto sel = dyn_cast<SelectOp>(op)) {
+    setPoison(r, poisonOf(env.lookup(sel.getCondition()).isOne()
+                              ? sel.getTrueValue()
+                              : sel.getFalseValue()));
+  } else if (isa<ConcatOp>(op)) {
+    setPoison(
+        r, unitePoison(poisonOf(op.getOperand(0)), poisonOf(op.getOperand(1))));
+  } else if (isa<OrOp, XorOp, AddOp, SubOp, AndOp, MulOp>(op)) {
+    // the identities x op unit = x (a unit on the right only for sub)
+    auto unit = [&](Value u) {
+      const APInt &v = env.lookup(u);
+      if (isa<AndOp>(op))
+        return v.isAllOnes();
+      if (isa<MulOp>(op))
+        return v.isOne();
+      return v.isZero();
+    };
+    Value a = op.getOperand(0), b = op.getOperand(1);
+    PoisonId id = 0;
+    if (unit(b))
+      id = poisonOf(a);
+    if (!isa<SubOp>(op) && unit(a))
+      id = unitePoison(id, poisonOf(b));
+    setPoison(r, id);
+  }
 }
 
 void Interpreter::checkPromise(Operation &op, Value addr) {
-  auto it = poison.find(addr);
-  if (it == poison.end())
+  PoisonId id = poisonOf(addr);
+  if (!id)
     return;
-  for (const BrokenPromise &b : it->second) {
+  for (const BrokenPromise &b : poisonSets[id]) {
     std::string gep;
     llvm::raw_string_ostream os(gep);
     os << b.gep->getLoc();
     diag::warn("interp.ptr-index-promise",
                "sea.ptr.index at " + gep + " " + b.what +
-                   ": the promise is broken (a poison pointer in LLVM), and "
-                   "this " +
-                   op.getName().getStringRef() + " uses it as its address",
+                   ": the promise is broken (a poison pointer in LLVM), " +
+                   (b.viaMemory ? "the pointer went through memory, " : "") +
+                   "and this " + op.getName().getStringRef() +
+                   " uses it as its address",
                op.getLoc());
   }
 }
@@ -1296,6 +1413,7 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
         if (!deferViolation(op, error))
           return failure();
         // the substitute: 0, or the null pointer
+        setPoison(ld.getResult(), 0);
         if (isa<PtrType>(ld.getType()))
           ptrs[ld.getResult()] = Ptr{0, APInt(width, 0)};
         else
@@ -1307,6 +1425,13 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
         return failure();
       cells.push_back(*v);
     }
+    // the broken promises of the stored values, gone through memory: any
+    // marked cell marks the whole value (a poison byte in LLVM)
+    PoisonId loaded = 0;
+    for (const CellValue &c : cells)
+      if (LLVM_UNLIKELY(c.poison))
+        loaded = unitePoison(loaded, c.poison);
+    setPoison(ld.getResult(), viaMemory(loaded));
     if (isa<PtrType>(ld.getType())) {
       // addr0-is-null (RunOptions::addr0IsNull): all-zero integer bytes are
       // the null pointer
@@ -1847,14 +1972,11 @@ LogicalResult Interpreter::jump(Block *dest, ValueRange operands,
   // the broken promises an argument carries (a phi passes poison on): all
   // read before any is set, as the arguments are bound at once
   if (!poison.empty()) {
-    SmallVector<SmallVector<BrokenPromise, 1>> carried;
+    SmallVector<PoisonId> carried;
     for (Value from : operands)
-      carried.push_back(poison.lookup(from));
+      carried.push_back(poisonOf(from));
     for (auto [arg, c] : llvm::zip_equal(dest->getArguments(), carried))
-      if (c.empty())
-        poison.erase(arg);
-      else
-        poison[arg] = std::move(c);
+      setPoison(arg, c);
   }
   for (BlockArgument arg : dest->getArguments())
     afterValue(arg);
@@ -1975,6 +2097,11 @@ RunResult Interpreter::run() {
         noteOp(*prevOp);
         for (Value r : prevOp->getResults())
           afterValue(r);
+        if (LLVM_UNLIKELY(poisonOverflow))
+          return finish(RunStatus::Error, prevOp,
+                        "more than " + std::to_string(options.maxPoisonSets) +
+                            " distinct sets of broken ptr.index promises "
+                            "(--max-poison-sets, RunOptions::maxPoisonSets)");
       }
       prevOp = &op;
       if (options.onOp)

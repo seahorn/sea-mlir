@@ -411,6 +411,13 @@ execute that access. It is not a fact for a value only compared (ptr.cmp,
 under the flag is sound because the term is read only on those paths, as
 for A-INB (OpSem.cpp:289-291).
 
+The pointer may get to the access through memory: stored, loaded back,
+then used as an address. In LLVM it is still poison (a load of a poison
+byte is poison), and SeaM sees the GEP there too: `ptr.load-resolve`
+rewrites `from_bits(to_bits(p))` to p across the store, also when
+sea-split-wide-access moved p as cells (to_bits, extract; concat,
+from_bits). So the promise is a fact at that access as well.
+
 ptr.add stays (one offset, no structure). ptr.to_int / ptr.from_int (and
 the addr forms) remain the only places where a pointer becomes a number,
 so they mark provenance loss.
@@ -801,17 +808,40 @@ made by the expansion, counts `premise.a-nowrap`.
     on a path that does not run.
   - "Comes from" is the chain of sea-check-ptr-index, taken dynamically:
     the ptr.index itself, a ptr.index's base, a ptr.add / addr.add base,
-    and the operand the run's select picked.
-  - Two differences from the check job:
-    - Block arguments (phis) pass a broken promise on. The job does not
-      follow them (check-ptr-index.phi), so the interpreter can warn at
-      an access where the job asserts nothing.
-    - The job asserts at a memset / memmove whatever its length; the
+    and the operand the run's select picked. Block arguments (phis) pass
+    a broken promise on.
+  - Memory passes it on too (rev 3: through `ptr.load-resolve`):
+    - a store marks the cells it writes with the stored value's broken
+      promises, and clears them for an intact value;
+    - a load takes the union over the cells it reads: one marked byte
+      marks the whole value;
+    - memmove copies the marks with the bytes; memset and memhavoc
+      clear them;
+    - the memory value carries them through block arguments (the
+      interpreter runs memory in place).
+  - Between a pointer and memory the bits may move as integers. The
+    marks follow addr.to_bits / from_bits, extract, trunc, concat and
+    select, and an arithmetic op whose other operand is its unit at run
+    time (x | 0, x ^ 0, x + 0, x - 0, x & ~0, x * 1). Under `sea-vc
+    --lower-opt=false` SeaM drops such a unit (bv.ac.or, add.normalize)
+    and resolves the load through it. Other arithmetic, zext / sext and
+    to_int / from_int are not followed: SeaM keeps
+    `from_int(to_int(p))` apart from p.
+  - An integer read from marked cells carries the marks silently. A
+    warning comes only if it becomes an address.
+  - Cost: a mark is a 16-bit id of an interned set in each memory cell
+    (no cell grows), checked once per store and load. Past 65535
+    distinct sets the run stops with a limit error (`sea-run
+    --max-poison-sets`, a test knob).
+  - Differences from the check job:
+    - it does not follow phis (check-ptr-index.phi) or loads
+      (check-ptr-index.not-followed), so the interpreter can warn at an
+      access where the job asserts nothing;
+    - the job asserts at a memset / memmove whatever its length; the
       interpreter is silent at a length of 0. The job is the stricter.
-  - Neither follows memory (a pointer stored and loaded back) or the
-    integer conversions.
   - memhavoc is not an access here, as in the check job.
-  - The warning is at the access and names the ptr.index.
+  - The warning is at the access and names the ptr.index; it says when
+    the pointer went through memory.
 
 ## 7. Front end
 
