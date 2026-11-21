@@ -44,6 +44,14 @@ createSplitWideAccessPass(bool keepByteWide = false);
 /// reportConstFalse: warn fold.assert-false for each assert of constant 0.
 std::unique_ptr<mlir::Pass>
 createMergeAssertsPass(bool reportConstFalse = true);
+/// sea-split-asserts (a module pass): each program with k > 0 asserts ->
+/// k programs `<name>.assert<i>`, part i keeping assert i, the other
+/// asserts assumed, pruned to assert i's block and its CFG ancestors (the
+/// counterpart of sea-merge-asserts; SplitAsserts.cpp). \p program: split
+/// only that program (empty: all).
+std::unique_ptr<mlir::Pass> createSplitAssertsPass(std::string program = "");
+/// On each part of sea-split-asserts: {index = i, count = k} (i64s).
+inline constexpr llvm::StringLiteral kSplitAssertAttr = "sea.split_assert";
 /// sea-sink-assumes: every sea.assume of a BMC-form program -> one assume
 /// of the conjunction of the assumes on the path (an i1 carried along the
 /// CFG), right before the final assert (SeaHorn's UnifyAssumes; sea-vc

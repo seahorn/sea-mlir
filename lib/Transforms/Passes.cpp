@@ -286,6 +286,7 @@ void registerPasses() {
   registerPass([] { return createGuardNullMemHavocPass(); });
   registerPass([] { return createSplitWideAccessPass(); });
   registerPass([] { return createMergeAssertsPass(); });
+  registerPass([] { return createSplitAssertsPass(); });
   registerPass([] { return createSinkAssumesPass(); });
   registerPass([] { return createRangeFoldPass(); });
   registerPass([] { return createAssumeFoldPass(); });
