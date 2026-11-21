@@ -1,7 +1,7 @@
 // RUN: sea-vc %s --program=bounded --lower --check-ptr-index | FileCheck %s --check-prefix=HOLDS
 // RUN: sea-vc %s --program=bounded --lower --check-ptr-index --seam | FileCheck %s --check-prefix=HOLDS
 // RUN: sea-vc %s --program=unbounded --lower --check-ptr-index 2>&1 | FileCheck %s --check-prefix=BROKEN
-// RUN: sea-vc %s --program=unbounded --lower --check-ptr-index --lower-opt=false 2>&1 | FileCheck %s --check-prefixes=BROKEN,WARN
+// RUN: sea-vc %s --program=unbounded --lower --check-ptr-index --lower-opt=false 2>&1 | FileCheck %s --check-prefix=BROKEN
 // RUN: sea-vc %s --program=guarded --lower --check-ptr-index | FileCheck %s --check-prefix=HOLDS
 // RUN: sea-vc %s --program=split --lower --check-ptr-index --seam | FileCheck %s --check-prefix=HOLDS
 // RUN: not sea-vc %s --program=bounded --lower --check-ptr-index --check-align 2>&1 | FileCheck %s --check-prefix=BOTH
@@ -11,14 +11,14 @@
 // inbounds / nuw sea.ptr.index asserts that GEP's promise (P1-P3); the
 // program's own asserts are dropped. @bounded: i < 3 in a 96-byte object,
 // the promise holds (unsat). @unbounded: any i, a product wraps (sat; the
-// interpreter warns the same at replay, when the lowering keeps the GEP: the
-// job drops the program's assert, so the load and the GEP are dead and
-// --lower-opt erases them). @guarded: a select of two GEPs, one
+// replay stops at the job's assert, before the load, so the interpreter,
+// which reports a broken promise only at an executed access, does not warn;
+// --lower-opt=false keeps the GEP and the load, which are dead once the job
+// drops the program's assert). @guarded: a select of two GEPs, one
 // with an index that may wrap, but only selected when it is small. @split:
 // an 8-byte load, split into bytes (ptr.add of a constant to the GEP: still
 // checked), bounded.
 // HOLDS: result: unsat
-// WARN: interp.ptr-index-promise
 // BROKEN: result: sat
 // BROKEN: validate: checked={{[0-9]+}} mismatches=0
 // BOTH: vc.check-jobs

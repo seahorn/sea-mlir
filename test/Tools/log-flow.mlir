@@ -41,13 +41,15 @@
 // BZLA: log: vc.solve backend=bitwuzla result=sat
 
 // Several programs are lowered in parallel: each event names its program.
-// A VC run that starts again (here the --ack-stride retry) numbers its
-// encode: run=2.
-// RUN: sea-vc %S/../VC/seam/ack-stride.mlir --program=wrap --lower --seam --ack-stride '--log=vc.phase,lower.pass' 2>&1 >/dev/null | FileCheck %s --check-prefix=MULTI
+// RUN: sea-vc %S/../VC/seam/ack-stride.mlir --program=apart --lower --seam '--log=vc.phase,lower.pass' 2>&1 >/dev/null | FileCheck %s --check-prefix=MULTI
 // MULTI-DAG: log: lower.pass pass=sccp on=sea.program program=@wrap ops-before=
 // MULTI-DAG: log: lower.pass pass=sccp on=sea.program program=@apart ops-before=
 // MULTI: log: vc.phase start phase=encode run=1{{$}}
-// MULTI: log: vc.phase start phase=encode run=2{{$}}
+// A VC run that starts again (here --seam-out-of-object=fallback) numbers
+// its encode: run=2.
+// RUN: sea-vc %S/../VC/seam/inb-static.mlir --lower --seam --seam-out-of-object=fallback --log=vc.phase 2>&1 >/dev/null | FileCheck %s --check-prefix=AGAIN
+// AGAIN: log: vc.phase start phase=encode run=1{{$}}
+// AGAIN: log: vc.phase start phase=encode run=2{{$}}
 
 // *:1 is the whole flow; the stdout records do not change.
 // RUN: sea-vc %s --lower '--log=*:1' 2>&1 >/dev/null | FileCheck %s --check-prefix=ALL

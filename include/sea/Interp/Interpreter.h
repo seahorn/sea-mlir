@@ -18,6 +18,14 @@
 // errors). Pointers have no address: ptr.to_int, ptr.from_int of a non-zero
 // value, and reading a pointer cell as an integer stop the run.
 //
+// Front-end promises are warnings, never stops. A sea.ptr.index whose
+// no-wrap promise breaks is poison in LLVM, UB only when it is used: the
+// interpreter follows LLVM poison (every value op passes its operands'
+// marks on; a store marks the cells it writes, a load picks the marks up,
+// memmove copies them, memset and memhavoc clear them) and warns
+// (interp.ptr-index-promise) only at an executed access whose address
+// carries a mark (docs/design/PtrIndex.md section 6).
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef SEA_INTERP_INTERPRETER_H
@@ -303,6 +311,16 @@ struct RunResult {
     llvm::SmallVector<llvm::APInt, 2> index;
   };
   std::optional<BoxAllFalse> boxAllFalse;
+  /// Broken sea.ptr.index promises at the accesses the run executed (each
+  /// a warning interp.ptr-index-promise; docs/design/PtrIndex.md section
+  /// 6): how many (an access counts each mark its address carries), and of
+  /// the first such access: the GEP, which promise it broke, whether the
+  /// pointer went through memory, and the access.
+  uint64_t ptrIndexBroken = 0;
+  mlir::Operation *ptrIndexBrokenAt = nullptr;
+  std::string ptrIndexBrokenWhat;
+  bool ptrIndexBrokenViaMemory = false;
+  mlir::Operation *ptrIndexBrokenAccess = nullptr;
 };
 
 /// The file location in `loc` (directly, or inside a name / fused /
@@ -408,6 +426,10 @@ struct RunOptions {
   std::optional<ProgramFacts> facts;
   /// Largest memset / memmove length (in cells) the interpreter executes.
   uint64_t maxMemOpCells = 1 << 20;
+  /// Most distinct sets of broken ptr.index promises a run builds (marks
+  /// on values and memory cells, at most 65535: 16-bit ids); past it the
+  /// run stops with a Limit error.
+  uint64_t maxPoisonSets = 65535;
   /// Called with each value the run computes: op results and block arguments
   /// (bound on entry to their block). Memory versions are not reported.
   std::function<void(mlir::Value, const llvm::APInt &)> onValue;

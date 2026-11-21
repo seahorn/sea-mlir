@@ -2694,9 +2694,10 @@ TYPICAL:
                                  #   not eligible. A dropped constraint only
                                  #   weakens the query: unsat is sound with
                                  #   no premise; a sat model that breaks a
-                                 #   promise is detected before the result
-                                 #   and the run repeated without the rule
-                                 #   (vc.ackermann-stride: fallback). Also
+                                 #   promise is an answer: its run breaks
+                                 #   the promise instead of failing an
+                                 #   assertion (status 4,
+                                 #   vc.ack-stride-promise-broken). Also
                                  #   turns on the K writers in SeaM: a byte
                                  #   of a wide access at a promised node is
                                  #   that node with K = k (needs A-NOWRAP).
@@ -3045,6 +3046,25 @@ OUTPUT (stdout, `key: value` lines):
                                   definition atoms
                                   asserted, bvadd nodes replaced; with
                                   vc-time, stderr with --smt2)
+  vc.ackermann-stride-broken: <n>  (sat, --ack-stride with stride pairs:
+  vc.ackermann-stride-idle: <n>    pairs the rule dropped that the model
+                                  puts at one index with different cells;
+                                  broken: both reads execute (a GEP promise
+                                  broken at an access the run performs;
+                                  printed before the result, the answer is
+                                  sat and the replay judges it: status 4
+                                  with vc.ack-stride-promise-broken if it
+                                  fails; --reach: warning
+                                  vc.ack-stride-reach-retry, run again
+                                  without the rule); idle: a read of the
+                                  pair does not execute (its block's guard
+                                  is false; no promise there))
+  vc.ackermann-stride-exec-unknown: 0|1  (with stride-idle: 1 if a load's
+  vc.ackermann-stride-exec-overflow: <n>  walk of its reads stopped at its
+                                  node bound, so every read counts as
+                                  executed; overflow: read indices with
+                                  more than 16 execution conditions,
+                                  counted as executed)
   vc.ackermann-model: defaulted=<n> inconsistent=<n> [stride-broken=<n>]
       [own-broken=<n> own-excused=<n>]   (sat, lowering on: reads at indices the
                                   query does not read (cell 0; any value
@@ -3059,7 +3079,32 @@ OUTPUT (stdout, `key: value` lines):
                                   all of them, when inconsistent =
                                   own-broken and the replay fails the
                                   assertion with mismatches=0: sat, status
-                                  0, warning vc.ack-own-collision-excused)
+                                  0, warning vc.ack-own-collision-excused;
+                                  stride-broken: pairs --ack-stride
+                                  dropped at one index with different
+                                  cells, also the line
+                                  vc.ackermann-stride-broken: <n> before
+                                  the result: the model breaks a GEP
+                                  promise; if its replay fails, status 4)
+  vc.ack-stride-promise-broken: <gep file:line:col> promise=P1|P2|P3
+      what=nusw|nuw|inbounds breaks=<n> via-memory=0|1
+  vc.ack-stride-promise-broken-access: <op> <file:line:col>
+                                  (sat, stride-broken > 0, the replay
+                                  fails: the first access of the run whose
+                                  address carries a broken GEP promise
+                                  (interp.ptr-index-promise) and that GEP:
+                                  the part of the promise broken, the
+                                  flag, how many (access, broken promise)
+                                  pairs the run has, whether the pointer
+                                  went through memory; error
+                                  vc.ack-stride-promise-broken, status 4,
+                                  also with replay: no-clobber-violated.
+                                  Any such access counts, not only the
+                                  colliding reads'. No such access in the
+                                  run: the other replay errors
+                                  (vc.replay-mismatch /
+                                  vc.replay-no-failure name the colliding
+                                  pairs))
   words.<counter>: <n>            (--seam-words: candidates, eligible,
                                   chosen, translated, word-reads,
                                   aligned-proved, aligned-by-annotation,
@@ -3702,7 +3747,7 @@ stderr, or the log file; each line flushed as it is written):
 phases: lower, encode, simplify (with the rewriter's normalization),
 solver-term, ackermann, solve, replay (sat only). A killed run's last
 start line names the phase it was in. A run that restarts (the
---seam-out-of-object=fallback, the --ack-stride retry) repeats them from
+--seam-out-of-object=fallback, the --ack-stride retry of --reach) repeats them from
 encode. <memory>: rss-mb vm-mb (now; Linux only, else omitted)
 peak-rss-mb (so far), in MB; vm-mb is what --mem-limit bounds.
 Inside encode, every --progress-interval=<s> seconds (default 10,
@@ -3756,7 +3801,8 @@ the query of a target is check-sat-assuming that block's guard (an assume
 before the target holds, one after it does not count). Not with --smt2,
 --vcgen-only, --sink-assumes, --ptr-companion=assume|check. A model that
 breaks a promise of the stride rule (--ack-stride) reruns every query
-without it, as for a counterexample. The records are printed after the
+without it (warning vc.ack-stride-reach-retry; a counterexample does
+not rerun). The records are printed after the
 last query (--log=vc.reach:2 shows each as it is answered). Ids: file:line:col of the op (a block: of its first
 located op), call sites appended with @ (inlined-at), a position in the
 .mlir file by its basename, `unlocated#<k>` without a position, `#<n>` on a
@@ -4193,7 +4239,13 @@ reads no nondet memory cell is the model's execution: otherwise
 `seam.inb-violation: undetermined (...)` and the replay's own status);
 with --replay-original also: the original program's run went past a
 memory-safety violation and did not fail the same assertion
-(vc.replay-original-memory-error). 6 (--replay-original) sat confirmed on
+(vc.replay-original-memory-error); with --ack-stride also: the model
+puts reads whose constraint the stride rule dropped at one index, and
+the replayed run does not confirm the answer and breaks a GEP promise at
+an access, any access of the run (vc.ack-stride-promise-broken: the
+answer is that run; remove the promise and check again for a
+counterexample that keeps it; also when replay: no-clobber-violated is
+printed; as for A-INB, such a run can hide a VC bug). 6 (--replay-original) sat confirmed on
 the lowered program, but the original program on the same inputs does not
 fail the same assertion (vc.replay-original-mismatch): the lowering changed
 what the program does, a bug in a pass, or a program whose behavior depends
@@ -5540,8 +5592,9 @@ int main(int argc, char **argv) {
   // One run of the VC and the solver. Returns kRetryWithoutPremises when an
   // access leaves its object statically and --seam-out-of-object=fallback.
   constexpr int kRetryWithoutPremises = -1;
-  // a sat model that breaks a GEP promise the stride rule relied on: rerun
-  // without the rule (PtrIndex.md section 5)
+  // --reach: a model that breaks a GEP promise the stride rule relied on
+  // reruns every query without the rule (a counterexample does not: it is
+  // an answer, PtrIndex.md section 5)
   constexpr int kRetryWithoutStride = -2;
   // a sat answer under A-PTRINT: rerun with the exact companion (the
   // counterexample may rest on the premise)
@@ -5756,7 +5809,9 @@ int main(int argc, char **argv) {
     seamOpts.expandUnknownRow = seamRowExpand;
     seamOpts.groupSameValueRow = seamRowGroup;
     seamOpts.checkInbPremise = seamCheckInbPremise;
-    seamOpts.trackOwnReads = narrowOffsets || ackOwn;
+    // own reads with their loads' execution conditions: also for the
+    // stride rule's model check (AckermannModel::strideBroken)
+    seamOpts.trackOwnReads = narrowOffsets || ackOwn || ackStride;
     seamOpts.layoutDecide = seamLayout;
     seamOpts.pruneSize0 = seamPruneSize0;
     seamOpts.wideAccess = seamWide;
@@ -7917,15 +7972,15 @@ int main(int argc, char **argv) {
           [&](sea::solver::Solver &s,
               llvm::function_ref<void(sea::solver::Model &)> use) -> int {
         auto inner = s.get_model();
-        // as for a counterexample: a model that puts two reads whose
-        // constraint the stride rule dropped at one index breaks a GEP
-        // promise; every query is run again without the rule
+        // a model that puts two reads whose constraint the stride rule
+        // dropped at one index breaks a GEP promise; under --reach every
+        // query is run again without the rule (a counterexample is not)
         if (ackOn && strideOn && ack.stats().stridePairs) {
           expr::AckermannModel probe(*inner, ack);
           for (size_t a = 0; a < ack.arrays().size(); ++a)
             (void)probe.function(a);
           if (probe.strideBroken()) {
-            sea::diag::warn("vc.ack-stride-promise-broken",
+            sea::diag::warn("vc.ack-stride-reach-retry",
                             "the model breaks a GEP promise the stride rule "
                             "relied on (a wrapping offset: UB in LLVM); "
                             "running again without --ack-stride");
@@ -8338,26 +8393,34 @@ int main(int argc, char **argv) {
       return 3;
     }
     // the stride rule: a model that puts two reads whose constraint it
-    // dropped at one index breaks a GEP promise (or a wide access's A-NOWRAP);
-    // decided before any result is printed, the run is repeated without
-    // the rule (the arrays are built eagerly: AckermannModel)
+    // dropped at one index breaks a GEP promise (or a wide access's
+    // A-NOWRAP). The promises are trusted front-end facts, so the model is
+    // an answer: sat, judged by its replay below (docs/design/PtrIndex.md
+    // section 5). Counted here, before the result (the arrays are built
+    // eagerly: AckermannModel)
+    uint64_t strideBroken = 0;
     if (ackOn && strideOn && ack.stats().stridePairs) {
       auto probeInner = solver->get_model();
       expr::AckermannModel probe(*probeInner, ack);
       for (size_t a = 0; a < ack.arrays().size(); ++a)
         (void)probe.function(a);
-      if (probe.strideBroken()) {
+      {
         sea::stats::Report r;
-        r.line("vc.ackermann-stride-broken").value(probe.strideBroken());
-        r.line("vc.ackermann-stride-retry-solve-time")
-            .seconds(solveSec)
-            .brunch(sea::stats::Brunch::Value);
+        r.line("vc.ackermann-stride-idle").value(probe.strideIdle());
+        // reads taken as executed for want of conditions: everywhere (a
+        // load's walk stopped) / at indices with too many conditions
+        r.line("vc.ackermann-stride-exec-unknown")
+            .value(uint64_t(sem.seamRewriter() &&
+                            sem.seamRewriter()->rules().ownExecIncomplete()));
+        r.line("vc.ackermann-stride-exec-overflow")
+            .value(accessOrigins.execOverflow);
         r.print(vout(), brunchStats);
-        sea::diag::warn("vc.ack-stride-promise-broken",
-                        "the model breaks a GEP promise the stride rule "
-                        "relied on (a wrapping offset: UB in LLVM); running "
-                        "again without --ack-stride");
-        return kRetryWithoutStride;
+      }
+      strideBroken = probe.strideBroken();
+      if (strideBroken) {
+        sea::stats::Report r;
+        r.line("vc.ackermann-stride-broken").value(strideBroken);
+        r.print(vout(), brunchStats);
       }
     }
     if (sem.companionAssumed()) {
@@ -8426,10 +8489,6 @@ int main(int argc, char **argv) {
         vout() << " own-broken=" << ackModel->ownBroken()
                << " own-excused=" << ownExcused;
       vout() << "\n";
-      // decided before the result (above); here a bug
-      if (ackModel->strideBroken())
-        sea::diag::error("vc.ackermann-inconsistent",
-                         "a stride-rule collision found after the result");
       if (ownExcused)
         sea::diag::warn("vc.ack-own-collision-excused",
                         Twine(ownExcused) +
@@ -8662,6 +8721,72 @@ int main(int argc, char **argv) {
     // premises is a separate memory-safety check's work.
     bool replayFailed = replay.run.status == sea::RunStatus::Error ||
                         !replay.mismatches.empty() || !claimSeen;
+    // --ack-stride: a failed replay of a model that puts two executed reads
+    // whose constraint the stride rule dropped at one index. The solver gave
+    // them different cells; the model of the arrays (AckermannModel) keeps
+    // one cell per index, the first executed read's, and the run reads that
+    // cell at both. So the run does not follow the solver's path: the
+    // assertion holds (replay: halted) or an assume that needed the other
+    // value blocks (validate: mismatches=0 in both). Their offsets are never
+    // equal as integers, so one of their GEPs breaks its nusw / nuw promise,
+    // and its poison reaches the address of one of the two reads (directly
+    // or through memory); the interpreter reports the break at that access
+    // (RunResult::ptrIndexBroken). The promises are trusted: the answer is
+    // sat on a run that breaks one (docs/design/PtrIndex.md section 5).
+    // Any promise the run breaks at an access gives that answer, also one
+    // that is not at either read of a colliding pair: a broken premise is
+    // the answer. The classification does not tie the break to the failed
+    // replay, so (as for A-INB, vc.seam-inb-spurious) status 4 can hide a VC
+    // bug on such a run. It also wins over the Mem-SSA no-clobber
+    // explanation of a mismatch (replay: no-clobber-violated, printed above,
+    // status 2 otherwise). The access reported is the run's first.
+    if (replayFailed && strideBroken) {
+      if (Operation *gep = replay.run.ptrIndexBrokenAt) {
+        auto locText = [](Location l) {
+          std::string at = sea::formatLoc(l);
+          if (at.empty()) {
+            raw_string_ostream ls(at);
+            ls << l;
+          }
+          return at;
+        };
+        std::string at = locText(gep->getLoc());
+        Operation *access = replay.run.ptrIndexBrokenAccess;
+        std::string accessAt = locText(access->getLoc());
+        std::string accessName = access->getName().getStringRef().str();
+        const bool viaMem = replay.run.ptrIndexBrokenViaMemory;
+        // brokenPtrIndexPromise's text: "<nusw|nuw>: <what> (P<k>)"; an
+        // inbounds GEP breaks its nusw part
+        StringRef text = replay.run.ptrIndexBrokenWhat;
+        StringRef flag = text.split(':').first;
+        if (flag == "nusw")
+          if (auto pi = dyn_cast<sea::PtrIndexOp>(gep); pi && pi.getInbounds())
+            flag = "inbounds";
+        StringRef part = text.rsplit('(').second.rtrim(')');
+        vout() << "vc.ack-stride-promise-broken: " << at << " promise=" << part
+               << " what=" << flag << " breaks=" << replay.run.ptrIndexBroken
+               << " via-memory=" << (viaMem ? 1 : 0) << "\n";
+        vout() << "vc.ack-stride-promise-broken-access: " << accessName << " "
+               << accessAt << "\n";
+        gOut->flush();
+        sea::diag::error(
+            "vc.ack-stride-promise-broken",
+            "sat, but the model's run does not confirm the answer, and it "
+            "breaks the front-end promise of the GEP at " +
+                at + " (sea.ptr.index " + text + "): the " + accessName +
+                " at " + accessAt + " uses its pointer as its address" +
+                (viaMem ? " (the pointer went through memory)" : "") +
+                ". It is the first access of this run whose address carries "
+                "a broken promise; the stride rule (--ack-stride) trusts GEP "
+                "promises, so this run is the answer. For a counterexample "
+                "that keeps the promises, remove the promise of that GEP from "
+                "the input, or strip all GEP promises, and check again",
+            gep->getLoc());
+        return 4;
+      }
+      // no GEP promise broken in the run: a premise of the rule's K or
+      // size-0 firings (A-INB, checked below), else the replay errors below
+    }
     // --narrow-offsets: a failed replay of a model in which a narrowed read's
     // index i differs from its narrowed index i' (the model reads the cell
     // at i', a run at i). If that read executes, its load leaves its object
@@ -8784,6 +8909,13 @@ int main(int argc, char **argv) {
     };
     if (!replay.mismatches.empty() || !claimSeen)
       noteWordsAlign();
+    // --ack-stride: colliding pairs, but the run breaks no GEP promise
+    const std::string strideNote =
+        strideBroken ? " (" + std::to_string(strideBroken) +
+                           " read pair(s) the stride rule dropped are at one "
+                           "index in the model; the run breaks no GEP "
+                           "promise)"
+                     : "";
     if (!replay.mismatches.empty()) {
       if (!noClobber.empty())
         sea::diag::error(
@@ -8802,7 +8934,8 @@ int main(int argc, char **argv) {
                              " value(s) differ between the model and the "
                              "interpreter: a VC or interpreter bug, or a load "
                              "of an earlier memory version whose cell was "
-                             "clobbered");
+                             "clobbered" +
+                             strideNote);
       return 2;
     }
     if (ptrIntCheck && !claimSeen) {
@@ -8811,7 +8944,7 @@ int main(int argc, char **argv) {
                        "load of the replayed run fails its A-PTRINT guard "
                        "(status: " +
                            sea::stringifyRunStatus(replay.run.status) +
-                           "): a VC or interpreter bug");
+                           "): a VC or interpreter bug" + strideNote);
       return 2;
     }
     if (!ptrIntCheck && replay.run.status != sea::RunStatus::AssertFailed) {
@@ -8819,7 +8952,7 @@ int main(int argc, char **argv) {
                        "sat, but the replayed run does not fail the "
                        "assertion (status: " +
                            sea::stringifyRunStatus(replay.run.status) +
-                           "): a VC or interpreter bug");
+                           "): a VC or interpreter bug" + strideNote);
       return 2;
     }
     if (ackModel && ackModel->inconsistent() && !ownExcused)

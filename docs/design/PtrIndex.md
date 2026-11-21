@@ -210,11 +210,55 @@ off without A-INB.
 - Unsat: dropping a functional-consistency constraint only weakens the
   lowered query, so unsat is sound with no premise.
 - Sat: the promises (and A-INB for K and size-0) make the dropped
-  constraints vacuous, so they are needed only for sat. A sat model that
-  puts two dropped-pair reads at one index breaks one. It is found before
-  the result (AckermannModel::strideBroken, the arrays built eagerly), and
-  sea-vc reruns without the rule (`vc.ackermann-stride: fallback`).
-- Eligibility avoids spurious reruns; it is not a soundness condition.
+  constraints vacuous, so they are needed only for sat. A promise is a
+  fact only where its access executes (rev 3, section 1). A sat model
+  that puts two dropped-pair reads at one index, with different cells,
+  breaks one only if both reads execute in it (the guard of a block of
+  each read's loads is true). sea-vc counts such pairs before the result
+  (`vc.ackermann-stride-broken`, AckermannModel::strideBroken, the arrays
+  built eagerly) and answers sat with that model; it does not run again
+  without the rule. A pair with a read that does not execute is counted
+  `vc.ackermann-stride-idle` and breaks nothing. The array keeps an
+  executed read's cell, also for pairs the ownership drop dropped
+  (Ackermann.md).
+  - If the replay fails, take the first read of the run whose value
+    differs from the model. An earlier read of the run is at the same
+    address with a constraint the rule dropped. Their offsets are never
+    equal as integers, so one of their GEPs breaks its nusw / nuw promise,
+    and the poison reaches the address of one of the two reads, both
+    executed; the interpreter reports the break at that access
+    (`interp.ptr-index-promise`, section 6; also when the pointer went
+    through memory).
+  - The promises are trusted front-end facts, so this run is a valid
+    answer: sat, but the run breaks a promise instead of confirming the
+    answer (failing an assertion, or under `--ptr-companion=check` a
+    guard). sea-vc reports it with status 4, as it reports a run that
+    leaves its object (`vc.seam-inb-spurious`): error
+    `vc.ack-stride-promise-broken`, with the lines
+    `vc.ack-stride-promise-broken:` (the promise, how many times the
+    run's accesses broke one, and whether the pointer went through
+    memory), `vc.ack-stride-promise-broken-at:` (the GEP) and
+    `vc.ack-stride-promise-broken-access:` (the access). The GEP named is
+    the one broken at the first access of the run whose address carries a
+    broken promise; it need not be one of the colliding pair's. Any
+    broken promise at an access gives status 4: the result is not ok.
+  - A user who wants a counterexample that keeps the promises removes the
+    promise of that GEP, or strips all promises, and checks again. There
+    may be none, and it may be hard to find.
+  - A replay that confirms the answer is status 0 as usual: no read of the
+    run differs from the model, so the colliding reads do not both
+    execute (a read whose execution condition is unknown counts as
+    executed, Ackermann.md) or their values are not compared.
+  - A pair dropped under A-NOWRAP or A-NULL (a K or size-0 firing) can
+    collide without a broken GEP promise: then the run leaves its object,
+    and the A-INB check reports it (`vc.seam-inb-spurious`, status 4). A
+    failed replay with neither ends in the other replay errors;
+    `vc.replay-mismatch` says how many colliding pairs the model has
+    (status 2).
+  - `--reach` still reruns every query without the rule (warning
+    `vc.ack-stride-reach-retry`, `vc.ackermann-stride: fallback`).
+- Eligibility avoids spurious promise-broken answers; it is not a soundness
+  condition.
 - So the Ackermann case needs no PremPtrIndex obligation. The premise and
   --seam-check formulas of section 5 are needed when the rule enters SeaM
   (W-SKIP / ROW).
@@ -227,8 +271,10 @@ off without A-INB.
   promised node (or an ite of them) is that node with K = k, k signed. The
   copy-hit source `s + k` is the same (copySource).
   - These K writers go beyond "the bytes of an access at the node".
-  - That is safe here (for Ackermann lowering): in the Ackermann case a firing never
-    changes the verdict, only the rerun rate (0 on vcc-pi).
+  - That is safe here (for Ackermann lowering): unsat needs no premise,
+    and a sat whose model a firing breaks is reported as such (status 4,
+    section 5 above). Before that answer existed, sea-vc reran without the
+    rule; the rerun rate was 0 on vcc-pi.
 - view() reads the shallow flat form. Its offset keeps the nodes of the
   loads in it, because rules build terms from it. A deep view (old())
   turned those loads into flat-address reads, which the record could not
@@ -249,7 +295,8 @@ off without A-INB.
 - Additional coverage:
   - tests: not-eligible, nuw, negative stride, mixed operators;
   - --eq-audit of the dropped pairs;
-  - greedier firing, with the rerun rate as the metric.
+  - greedier firing, with the rate of promise-broken answers as the
+    metric.
 - Chains, which today count as other-base.
 
 ## 0c. R-STRIDE in SeaM (store-map R-ABORT), as implemented
@@ -403,6 +450,16 @@ execute that access. It is not a fact for a value only compared (ptr.cmp,
 `eq()` in SeaM) or computed speculatively. Rewriting an access's read term
 under the flag is sound because the term is read only on those paths, as
 for A-INB (OpSem.cpp:289-291).
+
+The pointer may get to the access through memory: stored, loaded back,
+then used as an address. In LLVM it is still poison (a load of a poison
+byte is poison), and SeaM sees the GEP there too: `ptr.load-resolve`
+rewrites `from_bits(to_bits(p))` to p across the store, also when
+sea-split-wide-access moved p as cells (to_bits, extract; concat,
+from_bits). So the promise is a fact at that access as well. The VC's
+rewriter can also see the GEP through bit operations it simplifies away
+(x | 0, `(x ^ k) ^ k`), so the interpreter follows LLVM poison through
+every value op (section 6).
 
 ptr.add stays (one offset, no structure). ptr.to_int / ptr.from_int (and
 the addr forms) remain the only places where a pointer becomes a number,
@@ -679,7 +736,9 @@ made by the expansion, counts `premise.a-nowrap`.
   compares (section 1).
 - Ackermann: the pair loop, after the residue test. Counted in
   `Ackermannizer::Stats` as `stride` and `stride-a-null` / `stride-a-nowrap` pairs, printed as
-  `vc.ackermann-stride-pairs` / `vc.ackermann-stride-a-null-pairs` / `-a-nowrap-pairs`. The
+  `vc.ackermann-stride-pairs` / `vc.ackermann-stride-a-null-pairs` / `-a-nowrap-pairs`.
+  A sat model is checked on the dropped pairs whose reads both execute
+  (section 0b, Soundness). The
   Ackermann header's "no A-INB" (Ackermann.hh:26-27) becomes "A-INB only
   for the stride rule, reported".
 
@@ -785,6 +844,64 @@ made by the expansion, counts `premise.a-nowrap`.
 - The interpreter warns `interp.ptr-index-promise` once per kind (a
   diagnostic, as interp.align-promise). It does not stop: a broken promise
   on a never-used pointer is a legal program.
+  - It warns where the promise is a fact (rev 3, section 1): at an
+    executed load, store, or memset / memmove of nonzero length whose
+    address comes from a ptr.index whose promise broke. Computing,
+    comparing or storing such a pointer is silent, and so is an access
+    on a path that does not run.
+  - "Comes from" is LLVM poison, taken at run time: the ptr.index
+    itself, and every value op passes the union of its operands' broken
+    promises to its result (bitwise and arithmetic ops, compares, zext /
+    sext / trunc, extract / concat, addr.to_bits / from_bits, to_int /
+    from_int, the pointer ops, a ptr.index's base and indices). A select
+    takes its condition's and the picked operand's. Block arguments
+    (phis) pass them on. A struct's leaves carry their own, through
+    struct.create / extract / insert. Allocations make fresh objects,
+    with no marks.
+  - Memory passes them on too (rev 3: through `ptr.load-resolve`):
+    - a store marks the cells it writes with the stored value's broken
+      promises, and clears them for an intact value;
+    - a load takes the union over the cells it reads: one marked byte
+      marks the whole value;
+    - memmove copies the marks with the bytes; memset and memhavoc
+      clear them;
+    - the memory value carries them through block arguments (the
+      interpreter runs memory in place).
+  - Only an access reports. A marked value used in arithmetic, in an
+    assert, assume or branch condition, or stored is silent. A branch on
+    poison is UB in LLVM; it is not reported here (no report kind for
+    it): the promise is a fact only at an access.
+  - Cost: a mark is a 16-bit id of an interned set in each memory cell
+    (no cell grows), set at a store and read at a load. Every value op
+    checks whether any value is marked and returns at once if none is.
+    Past 65535 distinct sets the run stops with a limit error (`sea-run
+    --max-poison-sets`, a test knob).
+    Marks mixing through all arithmetic make more distinct sets than a
+    pointer chain would, so the cap is easier to reach; reaching it stops
+    the run visibly.
+  - sea has no freeze. A front end that drops `freeze x` to x lets marks
+    pass where LLVM would stop them. SeaM sees through the dropped freeze
+    too, so the two agree; it is a stated difference from LLVM.
+  - Differences from the check job:
+    - it does not follow phis (check-ptr-index.phi) or loads
+      (check-ptr-index.not-followed), and its chain (GEP base, ptr.add /
+      addr.add, select) leaves out the arithmetic, casts and compares the
+      interpreter follows as LLVM poison does, so the interpreter can
+      warn at an access where the job asserts nothing;
+    - the job asserts at a memset / memmove whatever its length; the
+      interpreter is silent at a length of 0. The job is the stricter.
+  - memhavoc is not an access here, as in the check job.
+  - Known gaps:
+    - A load of an earlier memory version reads the current contents
+      (the in-place interpreter, warning interp.load-earlier-version);
+      its marks inherit that approximation.
+    - [HYP] Under `--ptr-companion`, the VC's reloaded-pointer guard
+      (`ite(to_bits(c) == bits, c, from_bits(bits))`, in Expr only, no
+      program memory) may identify a reloaded pointer that is only
+      value-equal to a stored GEP with that GEP, and so rely on its
+      promise where the interpreter sees no mark. Unconfirmed.
+  - The warning is at the access and names the ptr.index; it says when
+    the pointer went through memory.
 
 ## 7. Front end
 

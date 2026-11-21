@@ -80,6 +80,14 @@ static cl::opt<uint64_t>
 static cl::opt<uint64_t> maxSteps("max-steps", cl::desc("Step limit"),
                                   cl::init(1'000'000));
 
+// a test knob: the cap on distinct sets of broken ptr.index promises
+// (RunOptions::maxPoisonSets), lowered to reach its Limit error cheaply
+static cl::opt<uint64_t> maxPoisonSets(
+    "max-poison-sets",
+    cl::desc("Most distinct sets of broken ptr.index promises a run "
+             "tracks (at most 65535; past it: a limit error)"),
+    cl::init(65535), cl::Hidden);
+
 static cl::opt<bool> trace("trace", cl::desc("Print every computed value"),
                            cl::init(false));
 
@@ -1009,7 +1017,11 @@ the server goes on. At EOF: {"kind":"summary","requests","errors",
 DIAGNOSTICS (stderr): "Warning: ... [kind]" (yellow), once per kind, with a
 summary of repeats at exit (--log=warn.<kind>:2 prints each); "Error: ...
 [kind]" (red) when the run stops with status: error. Logs: --log, SEA_LOG
-(docs/reference/logging.md).
+(docs/reference/logging.md). interp.ptr-index-promise: a warning at an
+executed access whose address carries the poison of a sea.ptr.index whose
+no-wrap promise broke (LLVM poison: through every value op and through
+memory; other uses are silent); more than 65535 distinct sets of such
+promises in one run is status: error (a limit).
 
 STATUS CODES: 0 the run ended (any status but error or memory-error); 4
 memory-error (--defer-memory-errors: a memory-safety violation on a run
@@ -1611,6 +1623,7 @@ static int runFuzz(sea::ProgramOp program) {
     sea::addAssignments(source, f.input);
     sea::RunOptions options;
     options.maxSteps = maxSteps;
+    options.maxPoisonSets = maxPoisonSets;
     options.deferMemoryErrors = deferMemoryErrors;
     options.addr0IsNull = addr0IsNull;
     options.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
@@ -2055,6 +2068,8 @@ int main(int argc, char **argv) {
     return fail("--fuzz-mcmc-beta must not be negative");
   if (!(fuzzMcmcShare >= 0 && fuzzMcmcShare <= 1))
     return fail("--fuzz-mcmc-share must be in [0, 1]");
+  if (maxPoisonSets > 65535)
+    return fail("--max-poison-sets must be at most 65535 (16-bit set ids)");
 
   if (fuzzSites &&
       (fuzzTrials || fuzzTime > 0 || !inputs.empty() || !inputFile.empty() ||
@@ -2140,6 +2155,7 @@ int main(int argc, char **argv) {
 
   sea::RunOptions options;
   options.maxSteps = maxSteps;
+  options.maxPoisonSets = maxPoisonSets;
   options.prints = printMode != sea::PrintMode::Off;
   options.printLimit = printLimit;
   options.deferMemoryErrors = deferMemoryErrors;

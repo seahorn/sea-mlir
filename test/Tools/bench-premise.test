@@ -2,15 +2,18 @@
 // (Inputs/fake-sea-vc.py; each job file scripts what it prints and how it
 // ends). A premise-class B / C job passes a sat whose replay failed in a way
 // a premise violation explains (rc 2 with `replay: assert-failed` and a
-// `seam.inb-violation:` line, or rc 4); B fails on unsat, C passes it. An
+// `seam.inb-violation:` line, or rc 4: verdict inb-violation, or
+// promise-broken with a `vc.ack-stride-promise-broken:` line); B fails on
+// unsat, C passes it. An
 // undeclared job is judged as before, its failure line names the cause.
 // RUN: rm -rf %t && mkdir -p %t/s/fam %t/home/bench/configs
 // RUN: cp %S/Inputs/bench-premise/* %t/s/fam/
 // RUN: echo 'args: [--alt]' > %t/home/bench/configs/alt.yaml
 // RUN: env SEA_BENCH_SUITES=%t/s SEA_BENCH_HOME=%t/home not python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %S/Inputs/fake-sea-vc.py --min-free-gb 0 --no-record --jobs '^s/fam/[abc]-(?!dis)' | FileCheck %s --check-prefix=GATE
 // Undeclared: judged as before, the cause named; a no-clobber mismatch gets no hint.
-// GATE: FAIL: unsolved s.fam.a-inb config=default verdict=inb-violation expected=sat -- {{.*}}premise may fail on this job: declare it
+// GATE: FAIL: unsolved s.fam.a-inb config=default verdict=inb-violation expected=sat -- seam.inb-violation (rc 4): premise may fail on this job: declare it
 // GATE-NEXT: FAIL: replay-mismatch s.fam.a-noclob config=default expected=sat{{$}}
+// GATE-NEXT: FAIL: unsolved s.fam.a-prom config=default verdict=promise-broken expected=sat -- vc.ack-stride-promise-broken (rc 4): premise may fail on this job: declare it
 // GATE-NEXT: FAIL: replay-mismatch s.fam.a-unconf config=default expected=sat -- {{.*}}premise may fail on this job: declare it
 // Declared B: replay failures no premise violation explains still fail (no
 // inb line; a no-clobber violation; vc.replay-no-failure instead of
@@ -28,10 +31,11 @@
 // GATE: premise-unconfirmed: s.fam.b-unconf config=default class=B log={{.*}}/s.fam.b-unconf.0.out rerun: python3 utils/bench.py gate smoke --jobs '^s/fam/b-unconf$' --no-record
 // GATE-NEXT: premise-unconfirmed: s.fam.c-unconf config=default class=C
 // GATE-NEXT: premise-inb-violation: s.fam.b-inb config=default class=B
+// GATE-NEXT: premise-inb-violation: s.fam.b-prom config=default class=B
 // GATE-NEXT: premise-hint: s.fam.a-left config=default replay.original status=memory-error: premise may fail on this job: declare it
 // GATE-NOT: premise-hint:
-// GATE: premises: declared-runs=14 left-object=2 unconfirmed=2 inb-violation=1 unsat-c=1 hints=1
-// GATE: failures: 11
+// GATE: premises: declared-runs=15 left-object=2 unconfirmed=2 inb-violation=2 unsat-c=1 hints=1
+// GATE: failures: 12
 // GATE: gate: fail
 // Two configurations: DISAGREE-SAT-UNSAT fires on a class B job and on a class
 // C job whose sat has no premise signal; it is waived on a class C job whose

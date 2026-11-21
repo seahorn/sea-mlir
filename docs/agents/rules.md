@@ -65,7 +65,12 @@ Analysis, Conditional Soundness, and Proving the Absence of Errors*, SAS
   the model's inputs: a memory-safety error, and an inconclusive answer.
   Exit status 4 with a `premise.failed:` line means that the replay failed
   a premise assert, not the property (`--symbolic-size=assert`: an
-  allocation exceeded its room): also an inconclusive answer.
+  allocation exceeded its room): also an inconclusive answer. Exit
+  status 4 with `vc.ack-stride-promise-broken` means that the replay on
+  the model's inputs breaks a front-end GEP promise (nusw / nuw /
+  inbounds) at an access, which the stride rule trusts: the answer is that
+  run. Remove that promise, or all of them, for a counterexample that
+  keeps the promises.
 
 ## Proofs need controls
 

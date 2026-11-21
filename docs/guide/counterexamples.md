@@ -60,7 +60,7 @@ a concrete execution of the original library.
 The model gives a value to every input site and to every cell of an input
 memory that the run reads. The interpreter runs the program on
 those values and compares every value it computes with the model. There
-are three outcomes.
+are four outcomes.
 
 - The run fails the assertion and every compared value agrees:
   `replay: assert-failed` and `validate: ... mismatches=0`. Exit status 0.
@@ -73,6 +73,14 @@ are three outcomes.
   A-SEP or A-NULL may not). The program has a
   memory-safety error, and the answer about the assertion is
   inconclusive.
+- With `--seam` (the stride rule, `--ack-stride`), the run breaks a
+  front-end GEP promise (nusw, nuw or inbounds: a wrapping offset) at an
+  access, and does not confirm the answer. Exit status 4, with a
+  `vc.ack-stride-promise-broken:` line naming the GEP and a
+  `vc.ack-stride-promise-broken-access:` line naming the access. The
+  promises are trusted, so this run is the answer; for a counterexample
+  that keeps them, remove the promise of that GEP (or all of them) and
+  check again.
 
 `validate: checked=<n> mismatches=<m> dontcare=<d>` counts the compared
 values. `dontcare` counts values the model leaves unconstrained; they are
