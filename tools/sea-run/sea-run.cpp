@@ -1017,7 +1017,10 @@ the server goes on. At EOF: {"kind":"summary","requests","errors",
 DIAGNOSTICS (stderr): "Warning: ... [kind]" (yellow), once per kind, with a
 summary of repeats at exit (--log=warn.<kind>:2 prints each); "Error: ...
 [kind]" (red) when the run stops with status: error. Logs: --log, SEA_LOG
-(docs/reference/logging.md).
+(docs/reference/logging.md). interp.ptr-index-promise: a warning at an
+executed access whose address comes from a sea.ptr.index whose no-wrap
+promise broke, also through memory (stored and loaded back); more than
+65535 distinct sets of such promises in one run is status: error (a limit).
 
 STATUS CODES: 0 the run ended (any status but error or memory-error); 4
 memory-error (--defer-memory-errors: a memory-safety violation on a run
@@ -1620,7 +1623,6 @@ static int runFuzz(sea::ProgramOp program) {
     sea::RunOptions options;
     options.maxSteps = maxSteps;
     options.maxPoisonSets = maxPoisonSets;
-    options.maxPoisonSets = maxPoisonSets;
     options.deferMemoryErrors = deferMemoryErrors;
     options.addr0IsNull = addr0IsNull;
     options.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
@@ -2065,6 +2067,8 @@ int main(int argc, char **argv) {
     return fail("--fuzz-mcmc-beta must not be negative");
   if (!(fuzzMcmcShare >= 0 && fuzzMcmcShare <= 1))
     return fail("--fuzz-mcmc-share must be in [0, 1]");
+  if (maxPoisonSets > 65535)
+    return fail("--max-poison-sets must be at most 65535 (16-bit set ids)");
 
   if (fuzzSites &&
       (fuzzTrials || fuzzTime > 0 || !inputs.empty() || !inputFile.empty() ||

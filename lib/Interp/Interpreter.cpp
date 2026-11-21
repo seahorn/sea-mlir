@@ -865,10 +865,11 @@ private:
                   StringRef what = {});
   /// passPoison for a pure op that just defined its result: the ops that
   /// move a pointer's bits (addr.add's base, select's picked operand,
-  /// addr.to_bits / from_bits, extract, trunc, concat) and an arithmetic op
-  /// whose other operand is its unit at run time (x | 0, x ^ 0, x + 0,
-  /// x - 0, x & ~0, x * 1: the VC's rewriter drops such units, so a pointer
-  /// it resolves through memory can pass them); others carry none.
+  /// addr.to_bits / from_bits, extract, trunc, concat), x | x and x & x,
+  /// and an arithmetic op whose other operand is its unit at run time
+  /// (x | 0, x ^ 0, x + 0, x - 0, x & ~0, x * 1: the VC's rewriter drops
+  /// such units and duplicates, so a pointer it resolves through memory
+  /// can pass them); others carry none.
   void propagatePoison(Operation &op);
   /// Warns (interp.ptr-index-promise) for each broken promise the address
   /// `addr` of the access `op` carries: the promise is a fact only there.
@@ -1230,7 +1231,10 @@ void Interpreter::propagatePoison(Operation &op) {
     };
     Value a = op.getOperand(0), b = op.getOperand(1);
     PoisonId id = 0;
-    if (unit(b))
+    // x | x = x & x = x (the VC's rewriter drops the duplicate)
+    if (a == b && isa<OrOp, AndOp>(op))
+      id = poisonOf(a);
+    else if (unit(b))
       id = poisonOf(a);
     if (!isa<SubOp>(op) && unit(a))
       id = unitePoison(id, poisonOf(b));
@@ -2099,7 +2103,9 @@ RunResult Interpreter::run() {
           afterValue(r);
         if (LLVM_UNLIKELY(poisonOverflow))
           return finish(RunStatus::Error, prevOp,
-                        "more than " + std::to_string(options.maxPoisonSets) +
+                        "more than " +
+                            std::to_string(std::min<uint64_t>(
+                                options.maxPoisonSets, UINT16_MAX)) +
                             " distinct sets of broken ptr.index promises "
                             "(--max-poison-sets, RunOptions::maxPoisonSets)");
       }

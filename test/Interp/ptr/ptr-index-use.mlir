@@ -26,8 +26,16 @@
 // RUN: sea-run %s --program=intonly 2>&1 | FileCheck %s --check-prefix=QUIET
 // RUN: sea-run %s --program=memphi 2>&1 | FileCheck %s --check-prefix=MEM
 // RUN: sea-run %s --program=identity 2>&1 | FileCheck %s --check-prefix=MEM
+// RUN: sea-run %s --program=idsub 2>&1 | FileCheck %s --check-prefix=MEM
+// RUN: sea-run %s --program=subleft 2>&1 | FileCheck %s --check-prefix=QUIET
+// RUN: sea-run %s --program=idxor 2>&1 | FileCheck %s --check-prefix=MEM
+// RUN: sea-run %s --program=idand 2>&1 | FileCheck %s --check-prefix=MEM
+// RUN: sea-run %s --program=idmul 2>&1 | FileCheck %s --check-prefix=MEM
+// RUN: sea-run %s --program=andself 2>&1 | FileCheck %s --check-prefix=MEM
+// RUN: sea-run %s --program=trunc 2>&1 | FileCheck %s --check-prefix=MEM
 // RUN: sea-run %s --program=arith 2>&1 | FileCheck %s --check-prefix=QUIET
 // RUN: not sea-run %s --program=twosets --max-poison-sets=1 2>&1 | FileCheck %s --check-prefix=CAP
+// RUN: not sea-run %s --program=unused --max-poison-sets=65536 2>&1 | FileCheck %s --check-prefix=CAPFLAG
 
 // A broken ptr.index promise is poison in LLVM, UB only when the pointer is
 // the address of an access (docs/design/PtrIndex.md, "Where the promise is
@@ -43,6 +51,7 @@
 // MEM: sea.ptr.index at {{.*}} nusw: a product wraps (P1): the promise is broken (a poison pointer in LLVM), the pointer went through memory, and this sea.load uses it{{.*}}[interp.ptr-index-promise]
 // CAP: status: error
 // CAP: message: more than 1 distinct sets of broken ptr.index promises
+// CAPFLAG: --max-poison-sets must be at most 65535
 !am = !sea.mem<!sea.addr<8>, i8>
 
 // computed, never used
@@ -390,6 +399,146 @@ sea.program @identity {
   %x = sea.load %m1[%r] : !wm -> i8
   sea.halt
 }
+// @identity with x - 0
+sea.program @idsub {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !wm
+  %b = sea.const 1 : i16
+  %a = sea.addr.from_int %b : i16 to !sea.addr<16>
+  %sb = sea.const 100 : i16
+  %s = sea.addr.from_int %sb : i16 to !sea.addr<16>
+  %i = sea.const 2000 : i16
+  %q = sea.ptr.index %a [%i] strides [24] offset 0 inbounds : !sea.addr<16>, i16
+  %bits = sea.addr.to_bits %q : !sea.addr<16> to i16
+  %z16 = sea.const 0 : i16
+  %or = sea.sub %bits, %z16 : i16
+  %m1 = sea.store %m[%s], %or inplace : !wm, i16
+  %v = sea.load %m1[%s] : !wm -> i16
+  %r = sea.addr.from_bits %v : i16 to !sea.addr<16>
+  %x = sea.load %m1[%r] : !wm -> i8
+  sea.halt
+}
+
+// @identity with 0 - x: a left 0 is not a unit of sub
+sea.program @subleft {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !wm
+  %b = sea.const 1 : i16
+  %a = sea.addr.from_int %b : i16 to !sea.addr<16>
+  %sb = sea.const 100 : i16
+  %s = sea.addr.from_int %sb : i16 to !sea.addr<16>
+  %i = sea.const 2000 : i16
+  %q = sea.ptr.index %a [%i] strides [24] offset 0 inbounds : !sea.addr<16>, i16
+  %bits = sea.addr.to_bits %q : !sea.addr<16> to i16
+  %z16 = sea.const 0 : i16
+  %or = sea.sub %z16, %bits : i16
+  %m1 = sea.store %m[%s], %or inplace : !wm, i16
+  %v = sea.load %m1[%s] : !wm -> i16
+  %r = sea.addr.from_bits %v : i16 to !sea.addr<16>
+  %x = sea.load %m1[%r] : !wm -> i8
+  sea.halt
+}
+
+// @identity with x ^ 0
+sea.program @idxor {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !wm
+  %b = sea.const 1 : i16
+  %a = sea.addr.from_int %b : i16 to !sea.addr<16>
+  %sb = sea.const 100 : i16
+  %s = sea.addr.from_int %sb : i16 to !sea.addr<16>
+  %i = sea.const 2000 : i16
+  %q = sea.ptr.index %a [%i] strides [24] offset 0 inbounds : !sea.addr<16>, i16
+  %bits = sea.addr.to_bits %q : !sea.addr<16> to i16
+  %z16 = sea.const 0 : i16
+  %or = sea.xor %bits, %z16 : i16
+  %m1 = sea.store %m[%s], %or inplace : !wm, i16
+  %v = sea.load %m1[%s] : !wm -> i16
+  %r = sea.addr.from_bits %v : i16 to !sea.addr<16>
+  %x = sea.load %m1[%r] : !wm -> i8
+  sea.halt
+}
+
+// @identity with x & ~0
+sea.program @idand {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !wm
+  %b = sea.const 1 : i16
+  %a = sea.addr.from_int %b : i16 to !sea.addr<16>
+  %sb = sea.const 100 : i16
+  %s = sea.addr.from_int %sb : i16 to !sea.addr<16>
+  %i = sea.const 2000 : i16
+  %q = sea.ptr.index %a [%i] strides [24] offset 0 inbounds : !sea.addr<16>, i16
+  %bits = sea.addr.to_bits %q : !sea.addr<16> to i16
+  %ones = sea.const -1 : i16
+  %or = sea.and %bits, %ones : i16
+  %m1 = sea.store %m[%s], %or inplace : !wm, i16
+  %v = sea.load %m1[%s] : !wm -> i16
+  %r = sea.addr.from_bits %v : i16 to !sea.addr<16>
+  %x = sea.load %m1[%r] : !wm -> i8
+  sea.halt
+}
+
+// @identity with x * 1
+sea.program @idmul {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !wm
+  %b = sea.const 1 : i16
+  %a = sea.addr.from_int %b : i16 to !sea.addr<16>
+  %sb = sea.const 100 : i16
+  %s = sea.addr.from_int %sb : i16 to !sea.addr<16>
+  %i = sea.const 2000 : i16
+  %q = sea.ptr.index %a [%i] strides [24] offset 0 inbounds : !sea.addr<16>, i16
+  %bits = sea.addr.to_bits %q : !sea.addr<16> to i16
+  %c1 = sea.const 1 : i16
+  %or = sea.mul %bits, %c1 : i16
+  %m1 = sea.store %m[%s], %or inplace : !wm, i16
+  %v = sea.load %m1[%s] : !wm -> i16
+  %r = sea.addr.from_bits %v : i16 to !sea.addr<16>
+  %x = sea.load %m1[%r] : !wm -> i8
+  sea.halt
+}
+
+// @identity with x & x
+sea.program @andself {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !wm
+  %b = sea.const 1 : i16
+  %a = sea.addr.from_int %b : i16 to !sea.addr<16>
+  %sb = sea.const 100 : i16
+  %s = sea.addr.from_int %sb : i16 to !sea.addr<16>
+  %i = sea.const 2000 : i16
+  %q = sea.ptr.index %a [%i] strides [24] offset 0 inbounds : !sea.addr<16>, i16
+  %bits = sea.addr.to_bits %q : !sea.addr<16> to i16
+  %or = sea.and %bits, %bits : i16
+  %m1 = sea.store %m[%s], %or inplace : !wm, i16
+  %v = sea.load %m1[%s] : !wm -> i16
+  %r = sea.addr.from_bits %v : i16 to !sea.addr<16>
+  %x = sea.load %m1[%r] : !wm -> i8
+  sea.halt
+}
+
+// @identity with the low half of concat(0, x), by trunc
+sea.program @trunc {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !wm
+  %b = sea.const 1 : i16
+  %a = sea.addr.from_int %b : i16 to !sea.addr<16>
+  %sb = sea.const 100 : i16
+  %s = sea.addr.from_int %sb : i16 to !sea.addr<16>
+  %i = sea.const 2000 : i16
+  %q = sea.ptr.index %a [%i] strides [24] offset 0 inbounds : !sea.addr<16>, i16
+  %bits = sea.addr.to_bits %q : !sea.addr<16> to i16
+  %z16 = sea.const 0 : i16
+  %w = sea.concat %z16, %bits : i16, i16 -> i32
+  %or = sea.trunc %w : i32 to i16
+  %m1 = sea.store %m[%s], %or inplace : !wm, i16
+  %v = sea.load %m1[%s] : !wm -> i16
+  %r = sea.addr.from_bits %v : i16 to !sea.addr<16>
+  %x = sea.load %m1[%r] : !wm -> i8
+  sea.halt
+}
+
 sea.program @arith {
   %z = sea.const 0 : i8
   %m = sea.mem.const %z : !wm

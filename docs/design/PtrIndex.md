@@ -840,6 +840,18 @@ made by the expansion, counts `premise.a-nowrap`.
     - the job asserts at a memset / memmove whatever its length; the
       interpreter is silent at a length of 0. The job is the stricter.
   - memhavoc is not an access here, as in the check job.
+  - Known gaps:
+    - Pointer leaves of a struct (`!sea.struct`) are not followed, in
+      programs sea-run runs unscalarized. The VC and its replay always
+      run scalarized programs, so they agree.
+    - A load of an earlier memory version reads the current contents
+      (the in-place interpreter, warning interp.load-earlier-version);
+      its marks inherit that approximation.
+    - [HYP] Under `--ptr-companion`, the VC's reloaded-pointer guard
+      (`ite(to_bits(c) == bits, c, from_bits(bits))`, in Expr only, no
+      program memory) may identify a reloaded pointer that is only
+      value-equal to a stored GEP with that GEP, and so rely on its
+      promise where the interpreter sees no mark. Unconfirmed.
   - The warning is at the access and names the ptr.index; it says when
     the pointer went through memory.
 
