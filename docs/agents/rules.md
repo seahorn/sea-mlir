@@ -63,6 +63,9 @@ Analysis, Conditional Soundness, and Proving the Absence of Errors*, SAS
   where placement puts its objects. Reduce and report it.
 - Exit status 4 under `--seam` means that the program leaves an object on
   the model's inputs: a memory-safety error, and an inconclusive answer.
+  Exit status 4 with a `premise.failed:` line means that the replay failed
+  a premise assert, not the property (`--symbolic-size=assert`: an
+  allocation exceeded its room): also an inconclusive answer.
 
 ## Proofs need controls
 

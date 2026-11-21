@@ -4,6 +4,9 @@
 // assert, nothing assumed; a run that exceeds the room is a premise failure
 // (exit 4), not a property failure. =refuse: an error.
 //
+// @free: the property (size <= 8192) holds only under the bound, so its
+// unsat rests on the assumption.
+//
 // assume: the ledger line, with the allocations and the room
 // RUN: sea-vc %s --program=free --lower 2>&1 | FileCheck %s --check-prefix=ASSUME
 // ASSUME: Warning: {{.*}}[place.symbolic-size-assume]
@@ -29,12 +32,30 @@
 // FREE: BRUNCH_STAT status 4
 // FREE-ERR: Error: sat, but the counterexample fails a premise assert (symbolic-size-bound), not the property{{.*}}[vc.premise-failed]
 //
+// the same as one jsonl record
+// RUN: not sea-vc %s --program=free --lower --symbolic-size=assert --format=jsonl | FileCheck %s --check-prefix=JSONL
+// JSONL: {"kind":"premise","status":"failed","name":"symbolic-size-bound","size":{{"?[0-9]+"?}},"room":4096,"at":"a.c:3:7",
+//
+// sea-prune-edges keeps only the failing side of the premise (the
+// continuation blocks): `assume (xor c, 1); br` carries the mark, and the
+// size and room still come from c
+// RUN: not sea-vc %s --program=pruned --lower --symbolic-size=assert | FileCheck %s --check-prefix=PRUNED
+// PRUNED: premise.failed: symbolic-size-bound size={{[0-9]+}} room=4096 at=a.c:3:7
+//
+// assert, the premise bounded by an earlier assume and a property that
+// fails: the property's failure, no premise failure, exit 0
+// RUN: sea-vc %s --program=prop --lower --symbolic-size=assert | FileCheck %s --check-prefix=PROP
+// PROP-NOT: premise.failed
+// PROP: replay: assert-op: a.c:9:3
+// PROP-NOT: premise.failed
+//
 // the room bounds the premise too: with --max-symbolic-size the size found
 // exceeds that room
 // RUN: not sea-vc %s --program=free --lower --symbolic-size=assert --max-symbolic-size=64 | FileCheck %s --check-prefix=FREE64
 // FREE64: premise.failed: symbolic-size-bound size={{[0-9]+}} room=64 at=a.c:3:7
 //
-// the interpreter on the placed program agrees: a size above the room fails
+// interpreter agreement (behaviour placement's assert mode had before
+// sea-vc exposed it): on the placed program, a size above the room fails
 // the premise assert at the allocation, one within it halts
 // RUN: sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-place-static{symbolic-size=assert}))' -mlir-print-debuginfo 2>/dev/null > %t.placed.mlir
 // RUN: sea-run %t.placed.mlir --program=free --input=1=4097 | FileCheck %s --check-prefix=RUN-OVER
@@ -64,10 +85,8 @@ sea.program @free {
   %m0 = sea.mem.nondet "m" [0] : !m
   %k = sea.nondet "k" [1] : i64
   %h = sea.malloc %k align 8 [2] : i64 -> !sea.ptr<64> loc("a.c":3:7)
-  %c5 = sea.const 5 : i8
-  %m1 = sea.store %m0[%h], %c5 inplace : !m, i8
-  %x = sea.load %m1[%h] : !m -> i8
-  %ok = sea.icmp eq, %x, %c5 : i8
+  %c8192 = sea.const 8192 : i64
+  %ok = sea.icmp ule, %k, %c8192 : i64
   sea.assert %ok loc("a.c":9:3)
   sea.halt
 }
@@ -81,6 +100,27 @@ sea.program @bounded {
   %c5 = sea.const 5 : i8
   %m1 = sea.store %m0[%h], %c5 inplace : !m, i8
   %x = sea.load %m1[%h] : !m -> i8
+  %ok = sea.icmp eq, %x, %c5 : i8
+  sea.assert %ok loc("a.c":9:3)
+  sea.halt
+}
+
+sea.program @pruned {
+  %k = sea.nondet "k" [1] : i64
+  %h = sea.malloc %k align 8 [2] : i64 -> !sea.ptr<64> loc("a.c":3:7)
+  %f = sea.const 0 : i1
+  sea.assume %f
+  sea.halt
+}
+sea.program @prop {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %k = sea.nondet "k" [1] : i64
+  %c100 = sea.const 100 : i64
+  %b = sea.icmp ule, %k, %c100 : i64
+  sea.assume %b
+  %h = sea.malloc %k align 8 [2] : i64 -> !sea.ptr<64> loc("a.c":3:7)
+  %x = sea.load %m0[%h] : !m -> i8
+  %c5 = sea.const 5 : i8
   %ok = sea.icmp eq, %x, %c5 : i8
   sea.assert %ok loc("a.c":9:3)
   sea.halt

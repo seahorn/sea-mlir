@@ -245,6 +245,22 @@ std::optional<FileLineColLoc> fileLocOf(Location loc) {
   return p.front();
 }
 
+Value prunedAssertCond(Operation &br) {
+  Operation *prev = br.getPrevNode();
+  while (prev && isPrintOp(prev))
+    prev = prev->getPrevNode();
+  auto as = dyn_cast_if_present<AssumeOp>(prev);
+  auto x = as ? as.getCond().getDefiningOp<XorOp>() : XorOp();
+  if (!x)
+    return {};
+  APInt k;
+  if (matchPattern(x.getRhs(), m_ConstantInt(&k)) && k.isOne())
+    return x.getLhs();
+  if (matchPattern(x.getLhs(), m_ConstantInt(&k)) && k.isOne())
+    return x.getRhs();
+  return {};
+}
+
 std::optional<std::string> locNameOf(Location loc) {
   auto of = [](Location l) -> std::optional<std::string> {
     if (auto n = dyn_cast<NameLoc>(l)) {
@@ -658,26 +674,6 @@ private:
       lastNamedLoc = op.getLoc();
   }
 
-  /// The condition P of a merged assert whose cond_br sea-prune-edges
-  /// made `sea.assume (xor P, 1); sea.br ^land` (its continuation was
-  /// dead): the op right before the marked br, prints aside, is that
-  /// assume. Only this shape (PruneEdges.cpp); else null.
-  static Value prunedAssertCond(Operation &br) {
-    Operation *prev = br.getPrevNode();
-    while (prev && isPrintOp(prev))
-      prev = prev->getPrevNode();
-    auto as = dyn_cast_if_present<AssumeOp>(prev);
-    auto x = as ? as.getCond().getDefiningOp<XorOp>() : XorOp();
-    if (!x)
-      return {};
-    APInt k;
-    if (matchPattern(x.getRhs(), m_ConstantInt(&k)) && k.isOne())
-      return x.getLhs();
-    if (matchPattern(x.getLhs(), m_ConstantInt(&k)) && k.isOne())
-      return x.getRhs();
-    return {};
-  }
-
   /// Records an executed branch with a file location (consecutive repeats
   /// once; a bounded window, so a long loop does not grow it). A cond_br
   /// without a source location is recorded at decisionSourceOf's, if any.
@@ -716,7 +712,7 @@ private:
           cbr && env.lookup(cbr.getCondition()).isZero())
         mergedCond = cbr.getCondition();
       else if (isa<BrOp>(op))
-        mergedCond = prunedAssertCond(op);
+        mergedCond = sea::prunedAssertCond(op);
       return;
     }
     mergedAssertLoc.reset();

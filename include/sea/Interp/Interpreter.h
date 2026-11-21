@@ -331,6 +331,12 @@ std::optional<mlir::Location> stopLocOf(const RunResult &result);
 /// (a failing assert: RunResult::assertLoc), else none.
 std::optional<mlir::Location> reachedLocOf(const RunResult &result);
 
+/// The condition P of a merged assert whose cond_br sea-prune-edges made
+/// `sea.assume (xor P, 1); sea.br ^land` (its continuation was dead), from
+/// that marked br: the op right before it, prints aside, is that assume.
+/// Only this shape (PruneEdges.cpp); else null.
+mlir::Value prunedAssertCond(mlir::Operation &br);
+
 /// The name of a NameLoc at the top of `loc` (directly, or one of a fused
 /// location's; the marker sea-merge-asserts puts on branches is looked
 /// through): `claim.x` of loc("claim.x"), also of loc("claim.x"("a.py":3:1)).

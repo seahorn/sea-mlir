@@ -192,8 +192,9 @@ assert held, and the check jobs (`--check-align`, `--check-ptr-index`)
 keep when they drop the program's asserts. A replay that fails it is
 `premise.failed: symbolic-size-bound size=<n> room=<r> at=<allocation>`,
 exit status 4 (inconclusive, as a `sat` that breaks the in-bounds
-premise): the counterexample says nothing about the property; a rerun
-with `--max-symbolic-size` $\ge n$ can pass it.
+premise): the counterexample says nothing about the property. A bound on
+the size in the harness passes it; so can a rerun with
+`--max-symbolic-size` $\ge n$ if placement can give that much room.
 
 **Decided: functions get proper addresses.** `sea.func_addr @f` is placed
 like a size-0 object in the text segment, as SeaHorn's `falloc` does:

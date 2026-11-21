@@ -2227,7 +2227,8 @@ TYPICAL:
                                  #   that each allocation of non-constant
                                  #   size fits its room: no
                                  #   assume.symbolic-size-bound; a run that
-                                 #   exceeds it is premise.failed (exit 4);
+                                 #   exceeds it is premise.failed (exit 4):
+                                 #   bound the size in the harness, or
                                  #   rerun with --max-symbolic-size=<n>
   sea-vc p.mlir --lower --reach --reach-failures  # also each tagged
                                  #   assert's failure (reached with its
@@ -3270,8 +3271,12 @@ OUTPUT (stdout, `key: value` lines):
                                   symbolic-size-bound, at the allocation
                                   whose size n (the counterexample's;
                                   `?`: not found) exceeds its room r; a
-                                  rerun with --max-symbolic-size >= n may
-                                  pass it. Error vc.premise-failed, exit 4;
+                                  bound in the harness passes it, and so
+                                  may a rerun with --max-symbolic-size >= n
+                                  if placement can give that room (else
+                                  place.out-of-space: an unbounded nondet
+                                  size can be huge). Error
+                                  vc.premise-failed, exit 4;
                                   replay: assert-op names the allocation)
   seam.ptrint-violated: <loc> addr=<q> [obj=&<o>[<off>]] bits=<b> stored=<p>
   seam.ptrint-unstored: <loc> addr=<q> [obj=&<o>[<off>]] bits=<b>
@@ -4244,6 +4249,8 @@ static void reportPremiseFailed(StringRef name, Operation &pa,
     cond = cbr.getCondition();
   else if (auto a = dyn_cast<sea::AssertOp>(pa))
     cond = a.getCond();
+  else if (isa<sea::BrOp>(pa))
+    cond = sea::prunedAssertCond(pa); // sea-prune-edges kept the failure
   std::optional<APInt> size, room;
   if (auto cmp = cond ? cond.getDefiningOp<sea::ICmpOp>() : sea::ICmpOp();
       cmp && cmp.getPredicate() == sea::ICmpPredicate::ule) {
@@ -4293,7 +4300,11 @@ static void reportPremiseFailed(StringRef name, Operation &pa,
       size->toStringUnsigned(n);
       room->toStringUnsigned(r);
       what += " (size " + n.str().str() + ", room " + r.str().str() +
-              "): rerun with --max-symbolic-size=" + n.str().str() + " or more";
+              "): bound the size in the harness, or rerun with "
+              "--max-symbolic-size=" +
+              n.str().str() +
+              " or more if placement can give that much room (else "
+              "place.out-of-space)";
     }
   }
   sea::diag::error("vc.premise-failed", what,

@@ -29,13 +29,13 @@ std::unique_ptr<mlir::Pass> createPlaceStaticPass();
 /// an allocation of non-constant size (assumed or asserted to fit).
 inline constexpr uint64_t kPlaceMaxSymbolicSize = 4096;
 
-/// The options of sea-place-static that sea-vc sets.
 /// External placement (sea-place-static place-in / place-out; sea-vc
 /// --place-in / --place-out): `out` writes the placement the pass computed,
 /// one object per line; `in` takes every object's base from such a file
 /// instead of computing it, and checks it as placement does (an object the
 /// file does not name is an error). Empty: not used.
-/// `symbolicSize`, `maxSymbolicSize`: the pass options symbolic-size
+/// The options of sea-place-static that sea-vc sets: `in`, `out` (above)
+/// and `symbolicSize`, `maxSymbolicSize`, the pass options symbolic-size
 /// (assume, assert, refuse) and max-symbolic-size (sea-vc --symbolic-size,
 /// --max-symbolic-size).
 struct PlaceFiles {

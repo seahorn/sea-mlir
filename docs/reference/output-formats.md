@@ -57,7 +57,7 @@ The main lines of `sea-vc`:
 | `replay: assert-path: <where> <- <where> ...` | up to five branch locations on the way, most recent first |
 | `print: <path> = <value>` | a print operation evaluated in the replay ([notation](print.md)) |
 | `validate: checked= mismatches= dontcare=` | values compared between the model and the replay |
-| `premise.failed: <name> [size=<n> room=<r>] at=<where>` | the replayed run fails a premise assert, not a property assert: the answer is inconclusive (exit status 4, error `vc.premise-failed`). `--symbolic-size=assert`: name `symbolic-size-bound`, at the allocation whose size $n$ in the counterexample exceeds its room $r$ (`?`: not found); a rerun with `--max-symbolic-size` $\ge n$ can pass it |
+| `premise.failed: <name> [size=<n> room=<r>] at=<where>` | the replayed run fails a premise assert, not a property assert: the answer is inconclusive (exit status 4, error `vc.premise-failed`). `--symbolic-size=assert`: name `symbolic-size-bound`, at the allocation whose size $n$ in the counterexample exceeds its room $r$ (`?`: not found). A bound on the size in the harness passes it; so can a rerun with `--max-symbolic-size` $\ge n$, if placement can give that much room (an unbounded nondet size can be far larger: `place.out-of-space`) |
 | `interp.earlier-version-loads: <n>` | loads of an earlier memory version in the replay; `validate` checks their values |
 | `mismatch: ...` | one value where they differ (then exit status 2) |
 | `seam.rule.<rule>: <n>` | how often a SeaM rule fired (`--seam-stats`) |
