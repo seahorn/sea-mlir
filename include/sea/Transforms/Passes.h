@@ -146,10 +146,12 @@ std::unique_ptr<mlir::Pass> createExpandMemSetPass();
 /// name was an i64 K on each such assume; sea-vc still counts those
 /// (programs lowered by an older sea-mlir).
 inline constexpr llvm::StringLiteral kMemSetBoundAttr = "sea.memset_bound";
-/// The discardable attribute (an i64, the room R) sea-place-static
-/// (symbolic-size=assume) puts on each sea.assume(size <= R) it adds for an
-/// allocation of non-constant size: sea-vc reports them
-/// (assume.symbolic-size-bound).
+/// On the sea.program after sea-place-static (symbolic-size=assume): the
+/// allocations of non-constant size it bounded by sea.assume(size <= R), a
+/// dictionary {allocs = <n>, room = <R>} of i64 (absent: none). Counted
+/// where the assumption is made: a bound a later fold proves redundant, or
+/// whose allocation the lowering erases, still counts (conservative).
+/// sea-vc reports it as `assume.symbolic-size-bound: allocs=<n> room=<R>`.
 inline constexpr llvm::StringLiteral kSymbolicSizeBoundAttr =
     "sea.symbolic_size_bound";
 /// A premise assert: a sea.assert of a premise the answer would otherwise

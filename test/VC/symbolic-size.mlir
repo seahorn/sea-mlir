@@ -13,6 +13,13 @@
 // ASSUME: assume.symbolic-size-bound: allocs=1 room=4096
 // ASSUME: result: unsat
 //
+// counted where placement makes the bound: the size (5000 or 6000) never
+// fits, the lowering blocks every path and erases the allocation, and the
+// unsat still rests on the bound
+// RUN: sea-vc %s --program=phi --lower 2>&1 | FileCheck %s --check-prefix=PHI
+// PHI: assume.symbolic-size-bound: allocs=1 room=4096
+// PHI: result: unsat
+//
 // --max-symbolic-size sets the room (and the line)
 // RUN: sea-vc %s --program=free --lower --max-symbolic-size=64 2>&1 | FileCheck %s --check-prefix=ROOM
 // ROOM: assume.symbolic-size-bound: allocs=1 room=64
@@ -123,6 +130,21 @@ sea.program @prop {
   %c5 = sea.const 5 : i8
   %ok = sea.icmp eq, %x, %c5 : i8
   sea.assert %ok loc("a.c":9:3)
+  sea.halt
+}
+sea.program @phi {
+  %c = sea.nondet "c" [1] : i1
+  %a = sea.const 5000 : i64
+  %b = sea.const 6000 : i64
+  sea.cond_br %c, ^l(%a : i64), ^r(%b : i64)
+^l(%x : i64):
+  sea.br ^j(%x : i64)
+^r(%y : i64):
+  sea.br ^j(%y : i64)
+^j(%s : i64):
+  %h = sea.malloc %s align 8 [2] : i64 -> !sea.ptr<64> loc("a.c":3:7)
+  %f = sea.const 0 : i1
+  sea.assert %f loc("a.c":9:3)
   sea.halt
 }
 

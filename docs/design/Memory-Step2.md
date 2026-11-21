@@ -150,7 +150,7 @@ its alignment. Options:
 | `width` | 64 | address width W |
 | `reuse` | off | let objects with disjoint lifetimes share space (smaller address space; hides use-after-free, so off when checking memory safety) |
 | `max-symbolic-size` | 4096 | the room reserved for an allocation whose size is not a constant |
-| `symbolic-size` | `assume` | `assume`: insert `sea.assume(size <= max)`, marked `sea.symbolic_size_bound = max` (sea-vc: `assume.symbolic-size-bound`); `assert`: insert `sea.assert(size <= max)`, a premise assert marked `sea.premise = "symbolic-size-bound"`; `refuse`: error |
+| `symbolic-size` | `assume` | `assume`: insert `sea.assume(size <= max)`, counted on the program, `sea.symbolic_size_bound = {allocs, room}` (sea-vc: `assume.symbolic-size-bound`; counted where it is made, so it may include bounds the answer no longer needs); `assert`: insert `sea.assert(size <= max)`, a premise assert marked `sea.premise = "symbolic-size-bound"`; `refuse`: error |
 | `layout` | `seahorn` | segment bases and stack window (SeaHorn's constants) |
 | `place-out` | none | write the placement to a file, one object per line |
 | `place-in` | none | take the bases from such a file instead of computing them |

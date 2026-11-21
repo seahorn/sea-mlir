@@ -10,8 +10,8 @@
 // the heap; stack objects downwards from the stack top. An allocation whose
 // size is not a constant gets `max-symbolic-size` units and an explicit
 // sea.assume (or sea.assert) that its size fits: symbolic-size=assume marks
-// the assume with the room (kSymbolicSizeBoundAttr: the answer rests on it,
-// sea-vc reports assume.symbolic-size-bound), symbolic-size=assert makes it
+// counts it on the program (kSymbolicSizeBoundAttr: the answer rests on
+// it, sea-vc reports assume.symbolic-size-bound), symbolic-size=assert makes it
 // a premise assert (kPremiseAttr = "symbolic-size-bound": a failure is not
 // the property's, sea-vc reports premise.failed), symbolic-size=refuse is an
 // error. The object keeps its symbolic size for bounds (the fat-pointer size
@@ -688,6 +688,7 @@ void PlaceStaticPass::runOnOperation() {
     if (objects[i].kind == "null")
       nullIndex = i;
   bool ok = true;
+  uint64_t sizeBounds = 0, sizeBoundRoom = 0;
   SmallVector<Operation *> toErase;
   program.walk([&](Operation *op) {
     b.setInsertionPoint(op);
@@ -716,14 +717,15 @@ void PlaceStaticPass::runOnOperation() {
                    loc);
         Value fits = ICmpOp::create(b, loc, ICmpPredicate::ule, size,
                                     constant(loc, APInt(*width, o.room)));
-        // assume: the answer rests on it (kSymbolicSizeBoundAttr, the room:
-        // sea-vc's assume.symbolic-size-bound); assert: a premise assert
-        // (kPremiseAttr), whose failure is not the property's
-        if (symbolicSize == "assume")
-          AssumeOp::create(b, loc, fits)
-              ->setAttr(kSymbolicSizeBoundAttr,
-                        IntegerAttr::get(i64, APInt(64, o.room)));
-        else
+        // assume: the answer rests on it (counted on the program,
+        // kSymbolicSizeBoundAttr: sea-vc's assume.symbolic-size-bound);
+        // assert: a premise assert (kPremiseAttr), whose failure is not the
+        // property's
+        if (symbolicSize == "assume") {
+          AssumeOp::create(b, loc, fits);
+          ++sizeBounds;
+          sizeBoundRoom = std::max(sizeBoundRoom, o.room);
+        } else
           AssertOp::create(b, loc, fits)
               ->setAttr(kPremiseAttr, b.getStringAttr("symbolic-size-bound"));
       }
@@ -771,6 +773,12 @@ void PlaceStaticPass::runOnOperation() {
     op->erase();
   if (!ok)
     return signalPassFailure();
+  if (sizeBounds)
+    program->setAttr(
+        kSymbolicSizeBoundAttr,
+        b.getDictionaryAttr(
+            {b.getNamedAttr("allocs", b.getI64IntegerAttr(sizeBounds)),
+             b.getNamedAttr("room", b.getI64IntegerAttr(sizeBoundRoom))}));
 
   if (isAbstract(program)) {
     Operation *at = findValueOfType(program, [](Type t) {

@@ -3405,10 +3405,11 @@ OUTPUT (stdout, `key: value` lines):
                                   abstract program placed n allocations of
                                   non-constant size in r units of room each
                                   (--max-symbolic-size) with assume(size
-                                  <= r), the sea.assume ops marked
-                                  sea.symbolic_size_bound left in the
-                                  program the VC encodes (allocations of
-                                  one size share one); an unsat holds only
+                                  <= r), counted at placement (the program
+                                  attribute sea.symbolic_size_bound): it
+                                  may include bounds a later fold proved
+                                  redundant or whose allocation the
+                                  lowering erased; an unsat holds only
                                   for sizes <= r (--symbolic-size=assume,
                                   the default; =assert asserts it instead
                                   and records nothing)
@@ -5339,21 +5340,24 @@ int main(int argc, char **argv) {
     if (auto k = d.getAs<IntegerAttr>("bound"))
       memsetBoundK = k.getInt();
   }
-  // and placement's bounds of symbolic allocation sizes
-  // (--symbolic-size=assume): assume(size <= room), the room reserved
-  // (assume.symbolic-size-bound); those of allocations the lowering erased
-  // or settled are not counted
-  uint64_t sizeBounds = 0, sizeBoundRoom = 0;
   program.walk([&](sea::AssumeOp a) {
     if (auto k = a->getAttrOfType<IntegerAttr>(sea::kMemSetBoundAttr)) {
       ++memsetBounds;
       memsetBoundK = std::max<uint64_t>(memsetBoundK, k.getInt());
     }
-    if (auto r = a->getAttrOfType<IntegerAttr>(sea::kSymbolicSizeBoundAttr)) {
-      ++sizeBounds;
-      sizeBoundRoom = std::max<uint64_t>(sizeBoundRoom, r.getInt());
-    }
   });
+  // placement's bounds of symbolic allocation sizes (--symbolic-size=
+  // assume): assume(size <= room), counted where placement made them
+  // (assume.symbolic-size-bound; may include bounds a later fold proved
+  // redundant)
+  uint64_t sizeBounds = 0, sizeBoundRoom = 0;
+  if (auto d =
+          program->getAttrOfType<DictionaryAttr>(sea::kSymbolicSizeBoundAttr)) {
+    if (auto n = d.getAs<IntegerAttr>("allocs"))
+      sizeBounds = n.getInt();
+    if (auto r = d.getAs<IntegerAttr>("room"))
+      sizeBoundRoom = r.getInt();
+  }
   // --sink-assumes: the pass erases assumes; the ledger above was counted
   // where they were made
   unsigned sunkAssumes = 0;
