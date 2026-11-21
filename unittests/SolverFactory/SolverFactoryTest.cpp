@@ -17,6 +17,13 @@
 //              <prefix>solver-unavailable; when built, a solver, rlimit
 //              warns (limit-unsupported); Yices' bad logic / param: null
 //              and <prefix>yices-config / <prefix>yices-param
+//  bitwuzla    cores: without SolverConfig::unsatCores a solver still
+//              decides check / check_with_assumptions; with it,
+//              unsat_core gives a subset of the assumptions holding the
+//              one that conflicts. `bitwuzla-core-without-option` (an
+//              argument): unsat_core on a solver built without it, which
+//              must fail with bitwuzla.unsat-core (a fatal error: its own
+//              process)
 //
 //===----------------------------------------------------------------------===//
 
@@ -196,13 +203,75 @@ void testOptional(Terms &T, Backend b) {
   llvm::outs() << name << ": ok\n";
 }
 
+void testBitwuzlaCores(Terms &T) {
+  if (!sea::solver::available(Backend::Bitwuzla)) {
+    llvm::outs() << "bitwuzla cores: ok\n";
+    return;
+  }
+  Expr x = T.var("cx", 8), y = T.var("cy", 8);
+  Expr fact = mk<EQ>(x, T.num(1, 8));
+  Expr conflict = mk<EQ>(x, T.num(2, 8)), free = mk<EQ>(y, T.num(0, 8));
+  ExprVector unsatLits{conflict, free}, satLits{free};
+  auto range = [](const ExprVector &v) {
+    return llvm::make_range(v.cbegin(), v.cend());
+  };
+  {
+    // no core option: the checks (also with assumptions) still work
+    auto s = sea::solver::makeSolver(T.efac, Backend::Bitwuzla);
+    CHECK(s && s->add(fact), "bitwuzla no-core add");
+    CHECK(s->check() == SolverResult::SAT, "bitwuzla no-core check");
+    CHECK(s->check_with_assumptions(range(unsatLits)) == SolverResult::UNSAT,
+          "bitwuzla no-core assumptions unsat");
+    CHECK(s->check_with_assumptions(range(satLits)) == SolverResult::SAT,
+          "bitwuzla no-core assumptions sat");
+  }
+  {
+    SolverConfig c;
+    c.unsatCores = true;
+    auto s = sea::solver::makeSolver(T.efac, Backend::Bitwuzla, Limits(), c);
+    CHECK(s && s->add(fact), "bitwuzla core add");
+    CHECK(s->check_with_assumptions(range(unsatLits)) == SolverResult::UNSAT,
+          "bitwuzla core assumptions unsat");
+    ExprVector core;
+    s->unsat_core(core);
+    bool subset = true, hasConflict = false;
+    for (Expr e : core) {
+      subset &= e == conflict || e == free;
+      hasConflict |= e == conflict;
+    }
+    CHECK(subset && hasConflict, "bitwuzla core: subset with the conflict");
+  }
+  llvm::outs() << "bitwuzla cores: ok\n";
+}
+
+/// unsat_core on a Bitwuzla solver built without the core option: does not
+/// return
+int bitwuzlaCoreWithoutOption(Terms &T) {
+  auto s = sea::solver::makeSolver(T.efac, Backend::Bitwuzla);
+  if (!s)
+    return 1;
+  Expr x = T.var("cx", 8);
+  ExprVector lits{mk<EQ>(x, T.num(2, 8))};
+  s->add(mk<EQ>(x, T.num(1, 8)));
+  if (s->check_with_assumptions(llvm::make_range(lits.cbegin(), lits.cend())) !=
+      SolverResult::UNSAT)
+    return 1;
+  ExprVector core;
+  s->unsat_core(core);
+  llvm::outs() << "core size: " << core.size() << "\n";
+  return 0;
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
   Terms T;
+  if (argc > 1 && std::string(argv[1]) == "bitwuzla-core-without-option")
+    return bitwuzlaCoreWithoutOption(T);
   testZ3(T);
   testOptional(T, Backend::Yices);
   testOptional(T, Backend::Bitwuzla);
+  testBitwuzlaCores(T);
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

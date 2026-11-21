@@ -23,12 +23,14 @@ namespace solver {
 
 void bitwuzla_solver_impl::new_instance() {
   bitwuzla::Options options;
-  // -- models for get_model; unsat assumptions for unsat_core (as for Yices,
-  // -- the core is a subset of the assumptions of check_with_assumptions)
+  // -- models for get_model. Unsat assumptions (for unsat_core) only when the
+  // -- caller asks (option produce-unsat-assumptions): Bitwuzla turns on unsat
+  // -- cores with them, which disables preprocessing passes and makes every
+  // -- assertion a SAT assumption (much slower checks)
   options.set(bitwuzla::Option::PRODUCE_MODELS, true);
-  options.set(bitwuzla::Option::PRODUCE_UNSAT_ASSUMPTIONS, true);
   for (auto &kv : d_opts)
     options.set(kv.first, kv.second);
+  d_unsatCores = options.get(bitwuzla::Option::PRODUCE_UNSAT_ASSUMPTIONS);
   d_bzla = std::make_unique<bitwuzla::Bitwuzla>(d_tm, options);
 }
 
@@ -130,6 +132,13 @@ bitwuzla_solver_impl::check_with_assumptions(const expr_const_it_range &lits) {
 
 /** Return an unsatisfiable core */
 void bitwuzla_solver_impl::unsat_core(ExprVector &out) {
+  if (!d_unsatCores) {
+    diag::error("bitwuzla.unsat-core",
+                "this solver was built without unsat cores: set the Bitwuzla "
+                "option produce-unsat-assumptions at construction "
+                "(SolverConfig::unsatCores)");
+    llvm::report_fatal_error("bitwuzla_solver_impl::unsat_core failed");
+  }
   try {
     for (const bitwuzla::Term &t : d_bzla->get_unsat_assumptions()) {
       auto it = d_last_assumptions.find(t);
