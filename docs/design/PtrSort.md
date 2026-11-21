@@ -268,11 +268,15 @@ the abstract program, only for a corpus that needs it; vcc has none).
   slot[i] over a store to slot[j], j loaded from memory, with 32-byte
   slots and fields 12 bytes apart, compares `32i + 8` with `32j + 20`
   (`32i - 12 = 32 zext(j)` after the base cancels). ARM gives j no range,
-  so only this rule decides the pair. [OBS] firedancer step-reach-sz
-  (`--lower --seam --widen-memory=4`): without the rule 180 such compares
-  stay in the query; with it the rule fires 1601 times, row.store-skip
-  goes from 269 to 1870 and the query is 3.5% smaller; z3, seeds 0-7:
-  median time about 30 s to 4.5 s, conflicts 62k-214k to 2k-6k.
+  so only this rule decides the pair. Its value is in SeaM: it decides
+  such compares exactly and without a premise, so fewer read-over-write
+  chains and alias questions reach the query and the query is smaller.
+  [OBS] firedancer step-reach-sz (`--lower --seam --widen-memory=4`): the
+  rule fires 1601 times, row.store-skip goes from 269 to 1870, open alias
+  questions from 858 to 678, and the query is 3.5% smaller. No solver
+  speedup is claimed: over 32 seeds the CNF after bit-blasting is nearly
+  the same with and without the rule, and time differences on this job
+  and on txn-pf-legacy-reach were seed and term-order variance.
   Tests: `test/VC/seam/congruence.mlir` (byte slots, nothing else decides
   them) and `test/VC/seam/congruence-table-slots.mlir` (the table-slot
   shape, reduced).
