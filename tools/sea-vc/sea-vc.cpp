@@ -4610,6 +4610,7 @@ int main(int argc, char **argv) {
     jo.staticDischarge = checkInbStatic;
     jo.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
     jo.maxSeconds = checkInbMaxTime;
+    jo.boxAllExpand = boxAllExpandOpt;
     // the part's options: the command line's, without the input and the
     // options of the job itself (each part is one program in a file)
     bool inputDropped = false;

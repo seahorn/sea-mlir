@@ -65,6 +65,8 @@ struct JobOptions {
   /// stop starting parts after this many seconds (0: no limit); the parts
   /// not run are `skipped` and the verdict is unknown
   unsigned maxSeconds = 0;
+  /// sea-lower-box-all's expand-max (sea-vc --box-all-expand)
+  unsigned boxAllExpand = kBoxAllExpandDefault;
 };
 
 /// What one part's run said.
@@ -211,9 +213,16 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
       p.erase();
   std::string name = program.getSymName().str();
   {
+    // boxes first, as the lowering does (tracking markers, then boxes):
+    // the loads of a box's body become ordinary loads at the box's place,
+    // which sea-check-inb checks; a box not in assert polarity is refused
+    // here as in --lower. In each part's own --lower both passes are then
+    // no-ops (no marker, no box left).
     mlir::PassManager pm(ctx);
-    pm.nest<ProgramOp>().addPass(
-        createCheckInbPass(o.staticDischarge, o.memhavocNullNoop));
+    mlir::OpPassManager &prog = pm.nest<ProgramOp>();
+    prog.addPass(createApplyTrackingPass());
+    prog.addPass(createLowerBoxAllPass(o.boxAllExpand));
+    prog.addPass(createCheckInbPass(o.staticDischarge, o.memhavocNullNoop));
     if (mlir::failed(pm.run(module)))
       return 1;
   }

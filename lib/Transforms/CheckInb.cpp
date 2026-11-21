@@ -44,13 +44,18 @@
 // The program's own asserts are dropped: the job checks memory safety on
 // every execution, not the program's property; its assumes stay. A tagged
 // assert (sea-vc --reach) leaves its reach-site marker, as in
-// sea-check-align. Accesses inside a region (the body of a sea.box.all) are
-// part of a claim, which an assert uses: they are dropped with it, not
-// checked. Every inserted assert carries kInbCheckAttr, its id (0, 1, ...
-// in program order of the checks, statically discharged ones included).
-// sea-merge-asserts then makes the BMC form, in which each check's
-// continuation starts with `assume` of it: an access after a check runs
-// only with the check true.
+// sea-check-align. A sea.box.all must be lowered first (sea-lower-box-all,
+// as sea-vc --check-inb does): its body's loads then sit at the box's
+// place as ordinary loads at an arbitrary index of the box (or at every
+// index, expanded), and each gets a check. That is stricter than checking
+// at the claim's assert (a read is checked even when an earlier conjunct
+// of the claim already fails), which a discharge check may be. A box that
+// reaches this pass is an error (check-inb.unsupported): its loads would go
+// unchecked while --seam rests on A-SEP for them. Every inserted assert carries
+// kInbCheckAttr, its id (0, 1, ... in program order of the checks, statically
+// discharged ones included). sea-merge-asserts then makes the BMC form, in
+// which each check's continuation starts with `assume` of it: an access after a
+// check runs only with the check true.
 //
 // Run on the abstract program (pointers still know their objects), before
 // sea-lower-fat-pointers, which lowers the checks to the offset and size
@@ -60,7 +65,8 @@
 //
 // Contract.
 //   Accepts: an abstract program; every access in the program body has a
-//     pointer address (!sea.ptr); otherwise error check-inb.unsupported.
+//     pointer address (!sea.ptr), and no sea.box.all is left (lowered
+//     first); otherwise error check-inb.unsupported.
 //   Produces: one assert per access span not discharged statically, no
 //     original assert, and the counters on the program
 //     (kCheckInbStatsAttr): checks (spans checked, discharged ones
@@ -265,6 +271,18 @@ void CheckInbPass::runOnOperation() {
       return {Value(), c};
     return {len, std::nullopt};
   };
+
+  // the loads of a box's body are checked only once the box is lowered
+  WalkResult boxes = program.walk([&](BoxAllOp box) {
+    diag::error("check-inb.unsupported",
+                "sea-check-inb: a sea.box.all is left; lower it first "
+                "(sea-lower-box-all), so that the loads of its body are "
+                "checked",
+                box.getLoc());
+    return WalkResult::interrupt();
+  });
+  if (boxes.wasInterrupted())
+    return signalPassFailure();
 
   for (Block &block : program.getBody()) {
     for (Operation &opRef : llvm::make_early_inc_range(block)) {

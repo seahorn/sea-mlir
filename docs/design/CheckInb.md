@@ -130,8 +130,21 @@ integer cannot be discharged this way. The pass warns
 op through `ptr.add` and `ptr.index`.
 
 The program's own asserts are dropped: the job checks memory safety, not
-the program's property. Its assumes stay. Accesses in the body of a
-`sea.box.all` belong to a claim of an assert and go with it.
+the program's property. Its assumes stay.
+
+The job lowers boxes first: `sea-apply-tracking`, then `sea-lower-box-all`
+(with `--box-all-expand`), as `--lower` starts. The loads of a
+`sea.box.all` body then sit at the box's place, at one arbitrary index of
+the box (a nondet `t` with `assume t <u N`), or at every index for an
+expanded box, and each gets an ordinary check: a part is sat iff some
+index of the box reads out of bounds. A box that may be empty runs its
+body only when it is not. The claim's own assert is dropped like any
+other. A check at the box's place is stricter than one at the assert: a
+read is checked even where an earlier conjunct of the claim already
+fails. A discharge check may be stricter. The pass alone refuses a box
+that is still there (`check-inb.unsupported`): its loads would go
+unchecked while `--seam` rests on A-SEP for them. A box not in assert
+polarity is refused by `sea-lower-box-all`, as in `--lower`.
 
 The pass runs on the abstract program before the lowering, so
 `sea-drop-fresh-memhavoc` and `sea-guard-null-memhavoc` see the checks and
