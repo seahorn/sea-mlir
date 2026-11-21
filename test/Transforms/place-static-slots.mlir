@@ -1,5 +1,5 @@
 // RUN: sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-place-static{slots=aligned}))' -split-input-file 2>/dev/null | FileCheck %s
-// RUN: sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-place-static{slots=aligned}))' -split-input-file 2>&1 >/dev/null | FileCheck %s --check-prefix=DIAG
+// RUN: sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-place-static{slots=aligned}))' -split-input-file --log=warn.place.slots-fallback:2 2>&1 >/dev/null | FileCheck %s --check-prefix=DIAG
 // RUN: not sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-place-static{slots=wide}))' -split-input-file 2>&1 | FileCheck %s --check-prefix=BAD
 
 // slots=aligned: each object owns [base, base + 2^s), 2^s > max(room, 1),
@@ -7,7 +7,9 @@
 // slots (func, global, heap up from 0x08048000; stack down from
 // 0xC0000000); null at 0.
 // CHECK-LABEL: sea.program @sizes
-// CHECK-SAME: sea.place_stats = {objects = 12 : i64, "over-aligned" = {{[0-9]+}} : i64, "slot-bits-max" = 21 : i64, span = {{[0-9]+}} : i64}
+// span-up: 0x08048000 to the end of nondet.6; span-stack: stack.8 to the end
+// of stack.1
+// CHECK-SAME: sea.place_stats = {objects = 12 : i64, "over-aligned" = {{[0-9]+}} : i64, "slot-bits-max" = 21 : i64, "span-stack" = 4194296 : i64, "span-up" = 16385 : i64}
 // CHECK-DAG: sea.segment "null" base 0 : i64 size 0 : i64
 // room 4 -> s 3: 0x08048000
 // CHECK-DAG: sea.segment "func.main" base 134512640 : i64 size 4 : i64 align 4 kind "func"
@@ -80,13 +82,29 @@ sea.program @stack_window {
 
 // -----
 
+// The upward objects reach into the stack window: 1.5 GiB takes a 2 GiB
+// slot at 0x80000000. The warning names the object that does not fit (not
+// the last object of the program).
+// CHECK-LABEL: sea.program @up_window
+// CHECK-DAG: sea.segment "heap.1" base 134512640 : i64 size 1610612736 : i64 align 1 kind "heap"
+// DIAG: Warning: sea-place-static: no aligned slot for heap.1 (1610612736 units, align 1) in the seahorn layout
+sea.program @up_window {
+  %a = sea.const 1610612736 : i64
+  %n8 = sea.const 8 : i64
+  %h1 = sea.malloc %a align 1 [1] : i64 -> !sea.ptr<64>
+  %s2 = sea.alloca %n8 align 8 [2] : i64 -> !sea.ptr<64>
+  sea.halt
+}
+
+// -----
+
 // 8-bit pointers (compact layout, upwards from 1): 100 units take a slot of
 // 128 at 128, and 50 more do not fit below 256. Without slots: 1 and 101.
 // CHECK-LABEL: sea.program @narrow_width
 // CHECK-DAG: sea.segment "heap.1" base 1 : i8 size 100 : i8 align 1 kind "heap"
 // CHECK-DAG: sea.segment "heap.2" base 101 : i8 size 50 : i8 align 1 kind "heap"
-// (the second fallback of this file: in the warning's summary)
-// DIAG: Warning: [place.slots-fallback] occurred 2 times
+// DIAG: Warning: sea-place-static: no aligned slot for heap.2 (50 units, align 1) in the compact layout of a 8-bit address space; placing every object without slots
+// DIAG-SAME: [place.slots-fallback]
 sea.program @narrow_width {
   %a = sea.const 100 : i8
   %b = sea.const 50 : i8

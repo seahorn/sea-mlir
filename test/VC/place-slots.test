@@ -23,7 +23,8 @@
 // ALIGNED: place.slots: aligned
 // ALIGNED: place.objects: 2
 // ALIGNED: place.slot-bits-max: 13
-// ALIGNED: place.span: 12288
+// ALIGNED: place.span-up: 12288
+// ALIGNED: place.span-stack: 0
 // ALIGNED: place.over-aligned: 2
 // ALIGNED: vc.narrow-base-aligned: 4
 // ALIGNED: vc.narrow-base-unaligned: 0
@@ -54,6 +55,22 @@
 // FALLBACK: [place.slots-fallback]
 // FALLBACK: place.slots: fallback
 
+// Refused: --place-slots with --place-in (the file gives the bases), also
+// in the pass; --place-slots on a program placed already. A placed
+// program's recorded numbers are not reported as this run's placement.
+// RUN: not sea-vc %t/p.mlir --lower --place-slots=aligned --place-in=%t/a.place 2>&1 | FileCheck %s --check-prefix=PLACEIN
+// PLACEIN: --place-slots and --place-in exclude each other
+// RUN: not sea-opt %t/p.mlir --pass-pipeline='builtin.module(sea.program(sea-place-static{slots=aligned place-in=%t/a.place}))' 2>&1 | FileCheck %s --check-prefix=PASSING
+// PASSING: [place.slots-place-in]
+// RUN: %{vc} %t/p.mlir --place-slots=aligned --vcgen-only --print-lowered=%t/low.mlir > /dev/null 2>&1
+// RUN: not sea-vc %t/low.mlir --lower --place-slots=aligned 2>&1 | FileCheck %s --check-prefix=PLACED
+// PLACED: --place-slots needs an abstract program; this one is placed already
+// PLACED-SAME: [vc.place-slots-placed]
+// A program without pointers: nothing to place, accepted.
+// RUN: sea-vc %t/plain.mlir --lower --place-slots=aligned --vcgen-only
+// RUN: sea-vc %t/low.mlir --lower --vcgen-only 2>&1 | FileCheck %s --check-prefix=STALE
+// STALE-NOT: place.
+
 // Refused: another mode; without --lower.
 // RUN: not sea-vc %t/p.mlir --lower --place-slots=wide 2>&1 | FileCheck %s --check-prefix=BAD
 // BAD: --place-slots must be none or aligned
@@ -70,6 +87,15 @@ sea.program @big {
   %x = sea.load %m[%s2] : !sea.mem<!sea.ptr<64>, i8> -> i8
   %y = sea.load %m[%s1] : !sea.mem<!sea.ptr<64>, i8> -> i8
   %ok = sea.icmp eq, %x, %y : i8
+  sea.assert %ok
+  sea.halt
+}
+
+//--- plain.mlir
+sea.program @plain {
+  %x = sea.nondet "x" [0] : i8
+  %c = sea.const 7 : i8
+  %ok = sea.icmp ne, %x, %c : i8
   sea.assert %ok
   sea.halt
 }

@@ -28,7 +28,7 @@ The main lines of `sea-vc`:
 | `assume.memset-bound: count=<n> bound=<K>` | $n$ symbolic-length memsets were bounded by $K$; counted where `sea-expand-memset` made the bounds, so it may include bounds the answer no longer needs (a later fold proved one redundant, or the lowering erased its memset) |
 | `assume.symbolic-size-bound: allocs=<n> room=<r>` | `--lower` of an abstract program: $n$ allocations of non-constant size got $r$ units of room each (`--max-symbolic-size`, default 4096) and `assume(size <= r)` (`--symbolic-size=assume`, the default; warning `place.symbolic-size-assume`); $n$ is counted at placement, so it may include bounds the answer no longer needs (a later fold proved one redundant, or the lowering erased its allocation). An `unsat` holds only for sizes up to $r$. Not with `--symbolic-size=assert`, which asserts the bound instead |
 | `place.slots: none\|aligned\|fallback\|file` | `--lower` of an abstract program: the placement's rule (`--place-slots`; `fallback`: the aligned slots did not fit, warning `place.slots-fallback`; `file`: `--place-in`) |
-| `place.objects: <n>`, `place.slot-bits-max: <s>`, `place.span: <bytes>`, `place.over-aligned: <n>` | the placed objects except null; the largest slot exponent, s = bitwidth(max(room, 1)); the bytes from the lowest base to the highest end; the objects whose base is a multiple of a power of two larger than their align, read from the bases in every layout (where to look when a verdict differs between placements: such a program depends on address bits above its objects' alignment, [Placement files](#placement-files)). BRUNCH_STAT `place.*` |
+| `place.objects: <n>`, `place.slot-bits-max: <s>`, `place.span-up: <bytes>`, `place.span-stack: <bytes>`, `place.over-aligned: <n>` | the placed objects except null; the largest slot exponent, s = bitwidth(max(room, 1)); the bytes from the lowest base to the highest end (base + max(room, 1)) of the objects other than stack ones (the upward window) and of the stack objects (the stack window; 0: none); the objects whose base is a multiple of a power of two larger than their align, read from the bases. `place.over-aligned` is not 0 under `--place-slots=none` either (0x08048000 is a multiple of 2^15): compare two runs, not the number alone (where to look when a verdict differs between placements, [Placement files](#placement-files)). These numeric lines are BRUNCH_STAT `place.<key>`; `place.slots` is not |
 | `solve-time: <s>` | the solver's check |
 | `solver.z3-tactic: <t>`, `solver.z3-logic: <logic>` | z3 only: `--z3-tactic` when not the default, `--z3-logic` when given |
 | `result: sat|unsat|unknown|none` | the verdict (`none`: `--vcgen-only`, `--split-candidates`) |
@@ -496,7 +496,15 @@ the same. The bits above are constants in both: the default placement sets
 them by packing objects one after the other, slots set them otherwise.
 Both placements stay below 2^32, so high-bit tests (user vs kernel
 addresses) do not change; a program that relies on such a split must
-model it.
+model it. An out-of-bounds access is the other case: it can land in the
+next object under the packed placement and in the padding of its own slot
+under slots (`test/VC/place-slots-oob.mlir`). Under `--seam` such an
+access breaks A-INB (and with it A-SEP), the premises the answer rests on;
+the A-INB check (`--check-inb`) finds it.
+
+`--place-slots=aligned` with `--place-in` is an error (the file gives the
+bases; `place.slots-place-in` in the pass), and so is `--place-slots` on a
+program that is placed already (`vc.place-slots-placed`).
 
 ## JSONL
 

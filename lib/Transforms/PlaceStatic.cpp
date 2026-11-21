@@ -77,7 +77,8 @@
 // bases (sea-vc's place.* lines), not the rule: a place-in of the file a
 // placement wrote makes the same program.
 // place-in and the file format do not change: a file of an aligned
-// placement is a file like any other.
+// placement is a file like any other; slots=aligned with place-in is an
+// error (place.slots-place-in).
 //
 //===----------------------------------------------------------------------===//
 
@@ -467,6 +468,7 @@ static const Object *layoutObjects(SmallVector<Object> &objects, bool seahorn,
   // An object of size 0 gets one unit of address space (addressRoom): its
   // own base, as in the compact layout.
   uint64_t next = kTextSegmentStart;
+  const Object *last = nullptr; // the last object placed upwards
   for (StringRef kind : {"func", "global", "heap"})
     for (Object &o : objects)
       if (o.kind == kind) {
@@ -480,9 +482,12 @@ static const Object *layoutObjects(SmallVector<Object> &objects, bool seahorn,
         next = llvm::alignTo(end, o.align);
         if (next < end)
           return &o;
+        last = &o;
       }
+  // the upward objects reach into the stack window: the last one placed
+  // is the one that does not fit
   if (next > kMinStackAddr)
-    return &objects.back();
+    return last ? last : &objects.back();
   uint64_t top = kMaxStackAddr;
   for (Object &o : objects)
     if (o.kind == "stack") {
@@ -669,6 +674,14 @@ void PlaceStaticPass::runOnOperation() {
   }
   if (slots != "none" && slots != "aligned") {
     program.emitError("sea-place-static: slots must be none or aligned");
+    return signalPassFailure();
+  }
+  // place-in takes the bases from the file: no rule to apply
+  if (slots == "aligned" && !placeIn.empty()) {
+    diag::error("place.slots-place-in",
+                "sea-place-static: slots=aligned and place-in exclude each "
+                "other (the file gives the bases)",
+                program.getLoc());
     return signalPassFailure();
   }
 
@@ -909,14 +922,17 @@ void PlaceStaticPass::runOnOperation() {
   {
     uint64_t placed = 0, overAligned = 0;
     unsigned bitsMax = 0;
-    uint64_t lo = ~uint64_t(0), hi = 0;
+    // [lo, hi) of the stack objects and of the others (in the seahorn
+    // layout the stack window and the upward one)
+    uint64_t lo[2] = {~uint64_t(0), ~uint64_t(0)}, hi[2] = {0, 0};
     for (const Object &o : objects) {
       if (o.kind == "null")
         continue;
       ++placed;
       bitsMax = std::max(bitsMax, slotBits(o));
-      lo = std::min(lo, o.base);
-      hi = std::max(hi, o.base + addressRoom(o));
+      unsigned w = o.kind == "stack";
+      lo[w] = std::min(lo[w], o.base);
+      hi[w] = std::max(hi[w], o.base + addressRoom(o));
       // the base's own alignment (its lowest set bit) exceeds the object's
       if (o.base && (o.base & -o.base) > o.align)
         ++overAligned;
@@ -928,7 +944,10 @@ void PlaceStaticPass::runOnOperation() {
         b.getDictionaryAttr(
             {b.getNamedAttr("objects", b.getI64IntegerAttr(placed)),
              b.getNamedAttr("slot-bits-max", b.getI64IntegerAttr(bitsMax)),
-             b.getNamedAttr("span", b.getI64IntegerAttr(placed ? hi - lo : 0)),
+             b.getNamedAttr("span-up",
+                            b.getI64IntegerAttr(hi[0] ? hi[0] - lo[0] : 0)),
+             b.getNamedAttr("span-stack",
+                            b.getI64IntegerAttr(hi[1] ? hi[1] - lo[1] : 0)),
              b.getNamedAttr("over-aligned",
                             b.getI64IntegerAttr(overAligned))}));
   }

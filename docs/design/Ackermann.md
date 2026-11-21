@@ -533,7 +533,8 @@ n-ary regrouping of the index into `base + S` (its ite case is proved).
   base is / is not a multiple of 2^k, read from the placement's numeral
   (`BaseRegistry::alignedTo`). Aligned, `base + zext(low_k)` has no carry
   and z3 reads it as a concatenation; `--place-slots=aligned` makes every
-  base aligned at the k of its object.
+  base aligned at the k of its object (unless it falls back,
+  `place.slots: fallback`).
 - `--seam-check` / `--narrow-check`: what is checked per run and what
   rests on a lemma are split.
   - Per run, for each narrowed index i = base + S (the lowering's record of

@@ -2260,7 +2260,11 @@ TYPICAL:
                                  #   the result depends on address bits
                                  #   above the objects' alignment (one
                                  #   particular layout; so under the
-                                 #   default placement too)
+                                 #   default placement too) or on an
+                                 #   out-of-bounds access (packed: the
+                                 #   next object; slots: padding; under
+                                 #   --seam A-INB excludes it). Not with
+                                 #   --place-in or a placed program
   sea-vc p.mlir --lower --reach --reach-failures  # also each tagged
                                  #   assert's failure (reached with its
                                  #   condition false): op=sea.print
@@ -2916,16 +2920,18 @@ OUTPUT (stdout, `key: value` lines):
                                   --place-slots=aligned did not fit,
                                   warning place.slots-fallback; file:
                                   --place-in)
-  place.objects: <n>  place.slot-bits-max: <s>  place.span: <bytes>
-  place.over-aligned: <n>         (the objects placed but null; the largest
-                                  slot exponent s = bitwidth(max(room, 1));
-                                  lowest base to highest end; objects whose
-                                  base is a multiple of a power of two
-                                  above their align, from the numerals:
-                                  look here when a verdict differs between
-                                  placements (the program depends on bits
-                                  above its objects' alignment);
-                                  BRUNCH_STAT place.*)
+  place.objects: <n>  place.slot-bits-max: <s>  place.span-up: <bytes>
+  place.span-stack: <bytes>  place.over-aligned: <n>   (the objects placed
+                                  but null; the largest slot exponent s =
+                                  bitwidth(max(room, 1)); lowest base to
+                                  highest end of the non-stack objects and
+                                  of the stack objects; objects whose base
+                                  is a multiple of a power of two above
+                                  their align, from the numerals, not 0
+                                  under none either: compare two runs, when
+                                  a verdict differs between placements;
+                                  these numeric lines are BRUNCH_STAT
+                                  place.<key>, place.slots is not)
   vc.box-all: dead=<n> empty=<n> expand-max=<K> expanded=<n> guarded=<n>
       lowered=<n> nondets=<n>     (--lower, a program with sea.box.all:
                                   ops erased unused, constant empty boxes
@@ -4802,6 +4808,9 @@ int main(int argc, char **argv) {
     return fail("--place-slots must be none or aligned");
   if (placeSlotsOpt.getNumOccurrences() && !lower)
     return fail("--place-slots needs --lower");
+  if (placeSlotsOpt.getNumOccurrences() && !placeIn.empty())
+    return fail("--place-slots and --place-in exclude each other (the file "
+                "gives the bases)");
   if (!placeIn.empty() && !placeOut.empty())
     return fail("--place-in and --place-out exclude each other");
   if (printLowered == "-")
@@ -5109,6 +5118,18 @@ int main(int argc, char **argv) {
     return fail(programName.empty() ? "no sea.program in input"
                                     : "no program named '" + programName + "'");
   bool abstract = sea::isAbstract(program);
+  // --place-slots places objects: a placed program (its sea.segment ops
+  // fix the bases) has none left; a program without pointers has nothing
+  // to place either way
+  if (placeSlotsOpt.getNumOccurrences() && !abstract &&
+      program.walk([](sea::SegmentOp) { return WalkResult::interrupt(); })
+          .wasInterrupted()) {
+    sea::diag::error("vc.place-slots-placed",
+                     "--place-slots needs an abstract program; this one is "
+                     "placed already (its segments fix the bases)",
+                     program.getLoc());
+    return 1;
+  }
   // z3 and Bitwuzla have mul overflow predicates (Bitwuzla's bvumulo /
   // bvsmulo, checked against z3's by check-semantics.py --bitwuzla); Yices
   // gets the expansion (as do add / sub overflow for every solver: solvers
@@ -5459,8 +5480,12 @@ int main(int argc, char **argv) {
         l.kv(a.getName().getValue(), i.getInt());
   }
   // sea-place-static's placement (a program placed by this lowering):
-  // the mode and the numbers the slots change (BRUNCH_STAT place.*)
-  if (auto d = program->getAttrOfType<DictionaryAttr>(sea::kPlaceStatsAttr)) {
+  // the rule and the numbers the slots change (BRUNCH_STAT place.<key>
+  // for the numbers)
+  // (only when this run placed it: a printed lowered program keeps the
+  // attribute)
+  if (auto d = program->getAttrOfType<DictionaryAttr>(sea::kPlaceStatsAttr);
+      d && lower && abstract) {
     using sea::stats::Brunch;
     // the rule is this run's option (the program records only numbers)
     std::string rule = !placeIn.empty() ? std::string("file")
@@ -5468,7 +5493,8 @@ int main(int argc, char **argv) {
                            ? std::string("fallback")
                            : std::string(placeSlotsOpt);
     lowerStats.line("place.slots").value(rule);
-    for (StringRef key : {"objects", "slot-bits-max", "span", "over-aligned"})
+    for (StringRef key :
+         {"objects", "slot-bits-max", "span-up", "span-stack", "over-aligned"})
       if (auto i = d.getAs<IntegerAttr>(key))
         lowerStats.line(("place." + key).str())
             .value(uint64_t(i.getInt()))

@@ -172,10 +172,12 @@ inline constexpr llvm::StringLiteral kSymbolicSizeBoundAttr =
 /// On the sea.program after sea-place-static: numbers of the placement, read
 /// from the bases (not the rule that made them, so a place-in of a written
 /// placement makes the same program), a dictionary {objects, slot-bits-max,
-/// span, over-aligned} of i64. objects: the placed
+/// span-up, span-stack, over-aligned} of i64. objects: the placed
 /// objects but null; slot-bits-max: the largest slot exponent s =
-/// bitwidth(max(room, 1)) of them; span: the bytes from the lowest base to
-/// the highest end (base + max(room, 1)); over-aligned: the objects whose
+/// bitwidth(max(room, 1)) of them; span-up / span-stack: the bytes from the
+/// lowest base to the highest end (base + max(room, 1)) of the objects
+/// other than stack ones / of the stack objects (0: none); over-aligned:
+/// the objects whose
 /// base is a multiple of a power of two larger than their align (read from
 /// the numerals, in every layout). sea-vc reports it as place.* lines.
 inline constexpr llvm::StringLiteral kPlaceStatsAttr = "sea.place_stats";
