@@ -28,7 +28,7 @@
 // INB: check-inb: checks=3
 // INB-NOT: result=sat
 // INB: check-inb.parts: total={{[1-9]}} unsat={{[1-9]}} sat=0 unknown=0 other=0 skipped=0
-// INB: check-inb.discharges: a-inb a-sep a-null a-nowrap
+// INB: check-inb.discharges: a-inb a-sep a-null a-nowrap under={{[a-z0-9.,-]+}}
 // INB: result: unsat
 sea.program @inb {
   %m0 = sea.mem.nondet "m" [0] : !m
@@ -113,6 +113,8 @@ sea.program @ag_alone {
 // A part's warnings are on its own stderr; the job counts the parts that
 // reported each kind. Here placement assumes the symbolic size fits.
 // DIAG: check-inb.part-diags: {{.*}}place.symbolic-size-assume=1
+// The verdict rests on that assumption: it is on the discharges line.
+// DIAG: check-inb.discharges: {{.*}} under={{.*}}place.symbolic-size-assume
 sea.program @diag {
   %m0 = sea.mem.nondet "m" [0] : !m
   %n = sea.nondet "n" [1] : i64

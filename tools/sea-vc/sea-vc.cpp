@@ -3956,7 +3956,10 @@ Kinds and fields:
   check-inb.part-diags one field per diagnostic kind of the parts' stderr:
                 the number of parts that reported it
   check-inb.discharges premises (`a-inb a-sep a-null[ a-nowrap]` or `none`;
-                a-nowrap only when every object is below 2^(w-1) units)
+                a-nowrap only when every object is below 2^(w-1) units),
+                under (the assumptions the result rests on: the parts'
+                assume.* names in effect but the discharged premises, and
+                their *-assume warning kinds; comma-separated, or `none`)
   split-part-start part
   split-part    part, choice, result, vc_time, solve_time, dag, alias_open,
                 alias_open_pairs, alias_open_memop, rows, ack_reads,

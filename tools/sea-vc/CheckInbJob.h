@@ -48,6 +48,7 @@
 #include <algorithm>
 #include <chrono>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -84,6 +85,9 @@ struct PartRun {
   /// and whether the part printed its objects at all
   llvm::APInt maxObjectSize = llvm::APInt(128, 0);
   bool sawObjects = false;
+  /// the named assumptions its answer rests on: the `assume.<name>` lines
+  /// that are in effect (a field not 0, or the state word `vc`)
+  std::vector<std::string> assumes;
   /// the kinds of the warnings and errors on its stderr (`... [kind]`)
   std::vector<std::string> diagKinds;
   /// the first error line of its stderr (`Error: ...` or an MLIR
@@ -135,6 +139,22 @@ inline void readPartOutput(llvm::StringRef path, PartRun &r) {
           if (!s->getAsDouble(x))
             r.solveSeconds = x;
         }
+      }
+      // a named assumption in effect: a nonzero count or `vc`
+      if (key && key->starts_with("assume.")) {
+        bool active = false;
+        for (const auto &[k, val] : *o) {
+          if (k == "kind" || k == "key" || k == "text")
+            continue;
+          if (auto n = val.getAsNumber())
+            active |= *n != 0;
+          else if (auto s = val.getAsString())
+            active |= !s->empty() && *s != "0";
+        }
+        std::string name =
+            key->drop_front(llvm::StringRef("assume.").size()).str();
+        if (active && !llvm::is_contained(r.assumes, name))
+          r.assumes.push_back(name);
       }
     } else if (*kind == "replay") {
       if (auto s = o->getString("at"))
@@ -547,9 +567,28 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
                        llvm::Twine(ptrWidth) + "): " + whyNot +
                        "; a-nowrap is not discharged");
     }
+    // what the result rests on: the parts' named assumptions in effect
+    // (their assume.* lines), but the premises the job discharges, and the
+    // assumptions their placement made explicit (warnings `<kind>-assume`,
+    // as place.symbolic-size-assume: an allocation of symbolic size is
+    // assumed to fit its room); sorted, `none` without any
+    std::set<std::string> under;
+    for (const PartRun &r : runs) {
+      for (const std::string &a : r.assumes)
+        // a part's use of A-NOWRAP is discharged only with it listed
+        if (a != "a-sep" && a != "a-null" &&
+            (a != "a-nowrap" ||
+             llvm::StringRef(what).find("a-nowrap") == llvm::StringRef::npos))
+          under.insert(a);
+      for (const std::string &k : r.diagKinds)
+        if (llvm::StringRef(k).ends_with("-assume"))
+          under.insert(k);
+    }
+    std::string underText =
+        under.empty() ? "none" : llvm::join(under.begin(), under.end(), ",");
     out::Record rec("check-inb.discharges");
-    rec.str("premises", what);
-    rec.text = "check-inb.discharges: " + what;
+    rec.str("premises", what).str("under", underText);
+    rec.text = "check-inb.discharges: " + what + " under=" + underText;
     out.emit(rec);
   }
   {

@@ -45,7 +45,7 @@ check-inb.part: 0 id=1 at=p.mlir:50:9 result=unsat status=0 time=0.024 solve-tim
 check-inb.part: 1 id=3 at=p.mlir:53:9 result=sat status=0 time=0.035 solve-time=0.000 fail-at=p.mlir:53:9
 check-inb.parts: total=2 unsat=1 sat=1 unknown=0 other=0 skipped=0 median-time=0.029 max-time=0.035 time=0.061
 check-inb.part-diags: none
-check-inb.discharges: none
+check-inb.discharges: none under=addr0-is-null
 result: sat
 ```
 
@@ -72,7 +72,15 @@ result: sat
 - `check-inb.discharges: a-inb a-sep a-null a-nowrap` comes with
   `result: unsat`: every access of every execution within the bound stays
   in its object, so the premises of `--seam` hold. `a-nowrap` is listed
-  only when every object is smaller than 2^(w-1) units (below). A premise ledger can record them as "discharged by
+  only when every object is smaller than 2^(w-1) units (below).
+  `under=` names the assumptions the result itself rests on, sorted, or
+  `none`: the union over the parts of their `assume.*` lines in effect
+  (a nonzero count or `vc`), without the premises the job discharges,
+  and of their warnings of a kind ending in `-assume` (an assumption made
+  explicit in the program, such as `place.symbolic-size-assume`: an
+  allocation of symbolic size is assumed to fit its room). A part's use
+  of A-NOWRAP stays in `under=` when `a-nowrap` is not discharged. A
+  premise ledger reads it as "discharged by `--check-inb` under ...". A premise ledger can record them as "discharged by
   `--check-inb`". After any other verdict the line says `none`.
 
 `--check-inb` requires `--lower`, `--seam` and `--ackermannize=off`. The

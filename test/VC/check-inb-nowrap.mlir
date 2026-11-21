@@ -8,7 +8,7 @@
 // RUN: sea-vc %s --program=small --check-inb --lower --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=SMALL
 
 // BIG: Warning: {{.*}}2^31{{.*}}[check-inb.nowrap-not-implied]
-// BIG: check-inb.discharges: a-inb a-sep a-null{{$}}
+// BIG: check-inb.discharges: a-inb a-sep a-null under=
 // BIG: result: unsat
 // SMALL-NOT: check-inb.nowrap-not-implied
 // SMALL: check-inb.discharges: a-inb a-sep a-null a-nowrap
