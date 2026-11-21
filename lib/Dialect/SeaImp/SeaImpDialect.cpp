@@ -26,19 +26,15 @@ LogicalResult VarType::verify(function_ref<InFlightDiagnostic()> emitError,
                          << valueType;
     return success();
   }
-  if (isa<sea::PtrType, sea::StructType>(valueType))
+  if (isa<sea::PtrType, sea::StructType, sea::MemType>(valueType))
     return success();
-  if (isa<sea::MemType>(valueType))
-    return emitError() << "memory variables are not supported yet (they "
-                          "come with the region accesses), got "
-                       << valueType;
   if (isa<sea::AddrType>(valueType))
     return emitError() << "address variables are not supported (no nondet "
                           "initial value for !sea.addr; use !sea.ptr or an "
                           "integer), got "
                        << valueType;
-  return emitError() << "a variable holds a signless integer, a !sea.ptr or "
-                        "a !sea.struct, got "
+  return emitError() << "a variable holds a signless integer, a !sea.ptr, "
+                        "a !sea.struct or a !sea.mem, got "
                      << valueType;
 }
 

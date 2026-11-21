@@ -3,13 +3,16 @@
 
 //===- SeaImpOps.cpp - seaimp dialect operations ----------------*- C++ -*-===//
 //
-// The verifier rules and the Mem2Reg interfaces of seaimp.var / get / set
-// (docs/design/SeaImp.md). Upstream Mem2Reg (tryToPromoteMemorySlots)
-// refuses a slot silently; the verifier admits only variables it promotes:
-// the handle is used only as the variable operand of get / set, in the
-// variable's own region (a CFG region of sea.br / sea.cond_br, which are
-// BranchOpInterface), and the variable is in the entry block (its default
-// value, made at the start of that block, dominates every use).
+// The verifier rules and the Mem2Reg interfaces of seaimp.var / get / set,
+// and the verifiers of the region accesses (docs/design/SeaImp.md).
+// Upstream Mem2Reg (tryToPromoteMemorySlots) refuses a slot silently; the
+// verifier admits only variables it promotes: the handle is used only as
+// the variable operand of seaimp ops, in the variable's own region (a CFG
+// region of sea.br / sea.cond_br, which are BranchOpInterface), and the
+// variable is in the entry block (its default value, made at the start of
+// that block, dominates every use). The region accesses are expanded into
+// get / sea op / set before Mem2Reg runs (sea-lower-seaimp), so Mem2Reg
+// sees only get and set.
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,6 +23,34 @@
 
 using namespace mlir;
 using namespace sea::imp;
+
+//===----------------------------------------------------------------------===//
+// Region types
+//===----------------------------------------------------------------------===//
+
+static sea::MemType regionOf(Type varType) {
+  if (auto v = dyn_cast<VarType>(varType))
+    return dyn_cast<sea::MemType>(v.getValueType());
+  return {};
+}
+
+Type sea::imp::regionIndexType(Type varType) {
+  if (sea::MemType m = regionOf(varType))
+    return m.getIndex();
+  return NoneType::get(varType.getContext());
+}
+
+Type sea::imp::regionLenType(Type varType) {
+  if (sea::MemType m = regionOf(varType))
+    return IntegerType::get(varType.getContext(), m.getIndexWidth());
+  return NoneType::get(varType.getContext());
+}
+
+Type sea::imp::regionUnitType(Type varType) {
+  if (sea::MemType m = regionOf(varType))
+    return m.getUnitType();
+  return NoneType::get(varType.getContext());
+}
 
 #define GET_OP_CLASSES
 #include "sea/Dialect/SeaImp/SeaImpOps.cpp.inc"
@@ -35,12 +66,16 @@ LogicalResult VarOp::verify() {
     return emitOpError("must be in the entry block of its sea.program");
   for (OpOperand &use : getResult().getUses()) {
     Operation *user = use.getOwner();
-    bool ok = (isa<GetOp>(user) && use.getOperandNumber() == 0) ||
-              (isa<SetOp>(user) && use.getOperandNumber() == 0);
+    // every operand of a seaimp access that may hold a handle is a
+    // variable operand (the others are typed as sea values), except set's
+    // stored value
+    bool ok =
+        isa<GetOp, LoadOp, StoreOp, MemSetOp, MemMoveOp, MemHavocOp>(user) ||
+        (isa<SetOp>(user) && use.getOperandNumber() == 0);
     if (!ok) {
       InFlightDiagnostic diag =
           emitOpError("the variable handle may be used only as the variable "
-                      "operand of seaimp.get / seaimp.set");
+                      "operand of seaimp ops");
       diag.attachNote(user->getLoc()) << "used here by " << user->getName();
       return diag;
     }
@@ -62,6 +97,9 @@ Value VarOp::getDefaultValue(const MemorySlot &slot, OpBuilder &builder) {
                                        getSiteAttr());
   if (isa<sea::PtrType>(t))
     return sea::PtrNullOp::create(builder, loc, t);
+  if (isa<sea::MemType>(t))
+    return sea::MemNondetOp::create(builder, loc, t, getNameAttr(),
+                                    getSiteAttr());
   // VarType::verify admits only the types above
   llvm_unreachable("seaimp.var of a type without a initial value");
 }
@@ -152,3 +190,57 @@ SetOp::removeBlockingUses(const MemorySlot &slot,
                           const DataLayout &dataLayout) {
   return DeletionKind::Delete;
 }
+
+//===----------------------------------------------------------------------===//
+// Region accesses
+//===----------------------------------------------------------------------===//
+
+/// `align` (bytes, as LLVM's) is a power of two.
+static LogicalResult verifyAlign(Operation *op, std::optional<uint64_t> align,
+                                 StringRef name = "align") {
+  if (align && !llvm::isPowerOf2_64(*align))
+    return op->emitOpError()
+           << name << " must be a power of two, got " << *align;
+  return success();
+}
+
+/// A value loaded or stored spans whole cells (as sea.load / sea.store).
+static LogicalResult verifyCellValue(Operation *op, Value var, Type t,
+                                     StringRef what) {
+  sea::MemType mem = regionOf(var.getType());
+  unsigned cell = mem.getCell().getWidth();
+  if (sea::bitWidthOf(t) % cell == 0)
+    return success();
+  return op->emitOpError() << what << " type " << t << " does not fit cells "
+                           << mem.getCell();
+}
+
+LogicalResult LoadOp::verify() {
+  if (failed(verifyAccess(*this, getVar())) ||
+      failed(verifyAlign(*this, getAlign())))
+    return failure();
+  return verifyCellValue(*this, getVar(), getResult().getType(), "result");
+}
+
+LogicalResult StoreOp::verify() {
+  if (failed(verifyAccess(*this, getVar())) ||
+      failed(verifyAlign(*this, getAlign())))
+    return failure();
+  return verifyCellValue(*this, getVar(), getValue().getType(), "value");
+}
+
+LogicalResult MemSetOp::verify() {
+  if (failed(verifyAccess(*this, getVar())))
+    return failure();
+  return verifyAlign(*this, getAlign());
+}
+
+LogicalResult MemMoveOp::verify() {
+  if (failed(verifyAccess(*this, getVar())) ||
+      failed(verifyAccess(*this, getSrc())) ||
+      failed(verifyAlign(*this, getAlign())))
+    return failure();
+  return verifyAlign(*this, getSrcAlign(), "src_align");
+}
+
+LogicalResult MemHavocOp::verify() { return verifyAccess(*this, getVar()); }

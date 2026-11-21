@@ -1,0 +1,148 @@
+// RUN: sea-opt %s --sea-lower-seaimp | FileCheck %s
+// RUN: sea-opt %s --sea-lower-seaimp | FileCheck %s --check-prefix=NOIMP
+// RUN: sea-opt %s --sea-vc-lower | FileCheck %s --check-prefix=NOIMP
+
+// sea-lower-seaimp on memory variables (regions): each region access is
+// get / the sea op inplace / set, then Mem2Reg builds the Mem-SSA chain
+// (docs/design/SeaImp.md).
+// NOIMP-NOT: seaimp.
+
+!m = !sea.mem<!sea.ptr<64>, i8>
+
+// Section 10, example 2: one store on each path, a load at the join. The
+// region starts as sea.mem.nondet with the variable's name and site; the
+// join gets a memory block argument.
+// CHECK-LABEL: sea.program @ptr
+// CHECK-NEXT: %[[M0:.*]] = sea.mem.nondet "mem" [0] : !sea.mem<!sea.ptr<64>, i8>
+// CHECK: %[[P:.*]] = sea.alloca
+// CHECK: %[[M1:.*]] = sea.store %[[M0]][%[[P]]], %{{.*}} inplace align 4 : !sea.mem<!sea.ptr<64>, i8>, i32
+// CHECK: sea.cond_br %{{.*}}, ^[[T:.*]], ^[[J:.*]](%[[M1]] : !sea.mem<!sea.ptr<64>, i8>)
+// CHECK: ^[[T]]:
+// CHECK: %[[M2:.*]] = sea.store %[[M1]][%[[P]]], %{{.*}} inplace align 4
+// CHECK-NEXT: sea.br ^[[J]](%[[M2]] : !sea.mem<!sea.ptr<64>, i8>)
+// CHECK: ^[[J]](%[[M3:.*]]: !sea.mem<!sea.ptr<64>, i8>):
+// CHECK-NEXT: sea.load %[[M3]][%[[P]]] align 4 : !sea.mem<!sea.ptr<64>, i8> -> i32
+sea.program @ptr {
+  %mem = seaimp.var "mem" [0] : !seaimp.var<!m>
+  %c4  = sea.const 4 : i64
+  %p   = sea.alloca %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %v5  = sea.const 5 : i32
+  seaimp.store %mem[%p], %v5 align 4 : !seaimp.var<!m>, i32
+  %c   = sea.nondet "nd_bool" [2] : i1
+  sea.cond_br %c, ^bb1, ^bb2
+^bb1:
+  %v7 = sea.const 7 : i32
+  seaimp.store %mem[%p], %v7 align 4 : !seaimp.var<!m>, i32
+  sea.br ^bb2
+^bb2:
+  %x  = seaimp.load %mem[%p] align 4 : !seaimp.var<!m> -> i32
+  %ok = sea.icmp sge, %x, %v5 : i32
+  sea.assert %ok
+  sea.halt
+}
+
+// Section 10, example 3: bulk ops form a linear chain; memmove reads and
+// writes the same version; memhavoc keeps its site.
+// CHECK-LABEL: sea.program @bulk
+// CHECK-NEXT: %[[M0:.*]] = sea.mem.nondet "mem" [0]
+// CHECK: %[[M1:.*]] = sea.memset %[[M0]][%[[BUF:.*]]], %{{.*}}, %{{.*}} inplace : !sea.mem<!sea.ptr<64>, i8>
+// CHECK-NEXT: %[[M2:.*]] = sea.memmove %[[M1]][%[[DST:.*]]], %[[M1]][%[[BUF]]], %{{.*}} inplace align 8 src_align 8 : !sea.mem<!sea.ptr<64>, i8>
+// CHECK-NEXT: %[[M3:.*]] = sea.memhavoc %[[M2]][%[[BUF]]], %{{.*}} [5] inplace : !sea.mem<!sea.ptr<64>, i8>
+// CHECK-NEXT: sea.load %[[M3]][%[[DST]]] : !sea.mem<!sea.ptr<64>, i8> -> i64
+sea.program @bulk {
+  %mem = seaimp.var "mem" [0] : !seaimp.var<!m>
+  %c16 = sea.const 16 : i64
+  %c8 = sea.const 8 : i64
+  %z8 = sea.const 0 : i8
+  %buf = sea.alloca %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %dst = sea.alloca %c8 align 8 [2] : i64 -> !sea.ptr<64>
+  seaimp.memset %mem[%buf], %z8, %c16 : !seaimp.var<!m>
+  seaimp.memmove %mem[%dst], %mem[%buf], %c8 align 8 src_align 8 : !seaimp.var<!m>
+  seaimp.memhavoc %mem[%buf], %c16 [5] : !seaimp.var<!m>
+  %x = seaimp.load %mem[%dst] : !seaimp.var<!m> -> i64
+  %z64 = sea.const 0 : i64
+  %ok = sea.icmp eq, %x, %z64 : i64
+  sea.assert %ok
+  sea.halt
+}
+
+// Section 10, example 4: a memmove across two regions reads the source's
+// version and updates the destination's chain only.
+// CHECK-LABEL: sea.program @two_regions
+// CHECK-DAG: %[[H0:.*]] = sea.mem.nondet "heap" [0]
+// CHECK-DAG: %[[S0:.*]] = sea.mem.nondet "stack" [1]
+// CHECK: %[[H1:.*]] = sea.memmove %[[H0]][%{{.*}}], %[[S0]][%{{.*}}], %{{.*}} inplace
+// CHECK-NEXT: sea.load %[[H1]]
+// CHECK-NEXT: sea.load %[[S0]]
+sea.program @two_regions {
+  %heap  = seaimp.var "heap"  [0] : !seaimp.var<!m>
+  %stack = seaimp.var "stack" [1] : !seaimp.var<!m>
+  %c8 = sea.const 8 : i64
+  %buf = sea.alloca %c8 align 8 [2] : i64 -> !sea.ptr<64>
+  %dst = sea.malloc %c8 align 8 [3] : i64 -> !sea.ptr<64>
+  seaimp.memmove %heap[%dst], %stack[%buf], %c8 : !seaimp.var<!m>
+  %x = seaimp.load %heap[%dst] : !seaimp.var<!m> -> i64
+  %y = seaimp.load %stack[%buf] : !seaimp.var<!m> -> i64
+  %ok = sea.icmp eq, %x, %y : i64
+  sea.assert %ok
+  sea.halt
+}
+
+// A store in a loop: the header gets a memory block argument fed by the
+// entry and the back edge; the exit reads it.
+// CHECK-LABEL: sea.program @loop
+// CHECK: %[[M0:.*]] = sea.mem.nondet "mem" [0]
+// CHECK: sea.br ^[[H:bb[0-9]+]]({{.*}}%[[M0]]{{.*}})
+// CHECK: ^[[H]]({{.*}}%[[MH:[0-9]+]]: !sea.mem<!sea.ptr<64>, i8>{{.*}}):
+// CHECK: %[[MB:.*]] = sea.store %[[MH]][%{{.*}}], %{{.*}} inplace
+// CHECK: sea.br ^[[H]]({{.*}}%[[MB]]{{.*}})
+// CHECK: sea.load %[[MH]]
+sea.program @loop {
+  %mem = seaimp.var "mem" [0] : !seaimp.var<!m>
+  %i = seaimp.var "i" [1] : !seaimp.var<i64>
+  %c4 = sea.const 4 : i64
+  %a = sea.alloca %c4 align 1 [2] : i64 -> !sea.ptr<64>
+  %z = sea.const 0 : i64
+  seaimp.set %i, %z : !seaimp.var<i64>
+  sea.br ^head
+^head:
+  %iv = seaimp.get %i : !seaimp.var<i64>
+  %lt = sea.icmp ult, %iv, %c4 : i64
+  sea.cond_br %lt, ^body, ^exit
+^body:
+  %q = sea.ptr.add %a, %iv : !sea.ptr<64>, i64
+  %b = sea.const 1 : i8
+  seaimp.store %mem[%q], %b : !seaimp.var<!m>, i8
+  %one = sea.const 1 : i64
+  %n = sea.add %iv, %one : i64
+  seaimp.set %i, %n : !seaimp.var<i64>
+  sea.br ^head
+^exit:
+  %x = seaimp.load %mem[%a] : !seaimp.var<!m> -> i8
+  %one8 = sea.const 1 : i8
+  %ok = sea.icmp eq, %x, %one8 : i8
+  sea.assert %ok
+  sea.halt
+}
+
+// get / set of a whole memory: b starts as a copy of a's initial
+// contents; a is not used again, so the chain stays linear.
+// CHECK-LABEL: sea.program @whole
+// CHECK: %[[M0:.*]] = sea.mem.nondet "a" [0]
+// CHECK-NOT: sea.mem.nondet
+// CHECK: %[[M1:.*]] = sea.store %[[M0]][%{{.*}}], %{{.*}} inplace
+// CHECK-NEXT: sea.load %[[M1]]
+sea.program @whole {
+  %a = seaimp.var "a" [0] : !seaimp.var<!m>
+  %b = seaimp.var "b" [1] : !seaimp.var<!m>
+  %p = sea.ptr.nondet "p" [2] : !sea.ptr<64>
+  %old = seaimp.get %a : !seaimp.var<!m>
+  seaimp.set %b, %old : !seaimp.var<!m>
+  %v = sea.const 1 : i8
+  seaimp.store %b[%p], %v : !seaimp.var<!m>, i8
+  %x = seaimp.load %b[%p] : !seaimp.var<!m> -> i8
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

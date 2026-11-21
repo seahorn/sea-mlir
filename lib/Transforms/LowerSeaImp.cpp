@@ -3,16 +3,19 @@
 
 //===- LowerSeaImp.cpp - seaimp variables -> SSA values ------------------===//
 //
-// docs/design/SeaImp.md. Every seaimp.var becomes SSA values by MLIR's
-// Mem2Reg (tryToPromoteMemorySlots, mlir/lib/Transforms/Mem2Reg.cpp): a
-// seaimp.get is replaced by the value of the last seaimp.set on its path,
-// joins get block arguments (the iterated dominance frontier of the sets),
-// and a get that no set reaches reads the variable's initial value, one
-// nondet op made at the start of the entry block from the variable's name
-// and site (sea.nondet / sea.struct.nondet / sea.ptr.nondet). The variable
-// owned the site (unique per program, sea.program's verifier): the nondet
-// op takes it over, made once per variable and only if some get reads it,
-// so the lowered program's sites stay unique.
+// docs/design/SeaImp.md. Two steps. First, every region access is
+// expanded in place: `get` the memory, apply the sea op `inplace`, `set`
+// the result (seaimp.load: `get` and load). Then every seaimp.var becomes
+// SSA values by MLIR's Mem2Reg (tryToPromoteMemorySlots,
+// mlir/lib/Transforms/Mem2Reg.cpp): a seaimp.get is replaced by the value of
+// the last seaimp.set on its path, joins get block arguments (the iterated
+// dominance frontier of the sets), and a get that no set reaches reads the
+// variable's initial value, one nondet op made at the start of the entry block
+// from the variable's name and site (sea.nondet / sea.struct.nondet /
+// sea.mem.nondet; pointers start as sea.ptr.null). The variable owned the site
+// (unique per program, sea.program's verifier): the nondet op takes it over,
+// made once per variable and only if some get reads it, so the lowered
+// program's sites stay unique.
 //
 // Contract.
 //   Accepts: any verified program. The seaimp verifier admits only
@@ -58,8 +61,62 @@ public:
   void runOnOperation() override;
 };
 
+/// Expands each region access into get / sea op `inplace` / set, before
+/// Mem2Reg (which then sees only get and set). Local: no dataflow.
+static void expandRegionAccesses(ProgramOp program) {
+  SmallVector<Operation *> accesses;
+  program.walk([&](Operation *op) {
+    if (isa<imp::LoadOp, imp::StoreOp, imp::MemSetOp, imp::MemMoveOp,
+            imp::MemHavocOp>(op))
+      accesses.push_back(op);
+  });
+  for (Operation *op : accesses) {
+    OpBuilder b(op);
+    Location loc = op->getLoc();
+    auto get = [&](Value var) {
+      Type t = cast<imp::VarType>(var.getType()).getValueType();
+      return imp::GetOp::create(b, loc, t, var).getResult();
+    };
+    UnitAttr inplace = b.getUnitAttr();
+    if (auto ld = dyn_cast<imp::LoadOp>(op)) {
+      Value m = get(ld.getVar());
+      Value r = LoadOp::create(b, loc, ld.getType(), m, ld.getAddr(),
+                               ld.getAlignAttr());
+      ld.getResult().replaceAllUsesWith(r);
+    } else if (auto st = dyn_cast<imp::StoreOp>(op)) {
+      Value m = get(st.getVar());
+      Value r = StoreOp::create(b, loc, m.getType(), m, st.getAddr(),
+                                st.getValue(), inplace, st.getAlignAttr(),
+                                /*tracked=*/UnitAttr());
+      imp::SetOp::create(b, loc, st.getVar(), r);
+    } else if (auto ms = dyn_cast<imp::MemSetOp>(op)) {
+      Value m = get(ms.getVar());
+      Value r = MemSetOp::create(b, loc, m.getType(), m, ms.getAddr(),
+                                 ms.getValue(), ms.getLen(), inplace,
+                                 ms.getAlignAttr(), /*tracked=*/UnitAttr());
+      imp::SetOp::create(b, loc, ms.getVar(), r);
+    } else if (auto mv = dyn_cast<imp::MemMoveOp>(op)) {
+      Value m = get(mv.getVar());
+      Value s = mv.getSrc() == mv.getVar() ? m : get(mv.getSrc());
+      Value r = MemMoveOp::create(b, loc, m.getType(), m, mv.getAddr(), s,
+                                  mv.getSrcAddr(), mv.getLen(), inplace,
+                                  mv.getAlignAttr(), mv.getSrcAlignAttr(),
+                                  /*tracked=*/UnitAttr());
+      imp::SetOp::create(b, loc, mv.getVar(), r);
+    } else if (auto mh = dyn_cast<imp::MemHavocOp>(op)) {
+      Value m = get(mh.getVar());
+      Value r = MemHavocOp::create(b, loc, m.getType(), m, mh.getAddr(),
+                                   mh.getLen(), mh.getSiteAttr(), inplace,
+                                   /*tracked=*/UnitAttr());
+      imp::SetOp::create(b, loc, mh.getVar(), r);
+    }
+    op->erase();
+  }
+}
+
 void LowerSeaImpPass::runOnOperation() {
   ProgramOp program = getOperation();
+  expandRegionAccesses(program);
   SmallVector<PromotableAllocationOpInterface> vars;
   bool anyVar = false;
   SmallVector<imp::VarOp> unused;
