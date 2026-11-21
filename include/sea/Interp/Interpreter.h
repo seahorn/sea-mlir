@@ -20,11 +20,11 @@
 //
 // Front-end promises are warnings, never stops. A sea.ptr.index whose
 // no-wrap promise breaks is poison in LLVM, UB only when it is used: the
-// interpreter remembers it and warns (interp.ptr-index-promise) at an
-// executed access whose address comes from it, also through memory: a
-// store marks the cells it writes, a load picks the marks up, memmove
-// copies them, memset and memhavoc clear them (docs/design/PtrIndex.md
-// section 6).
+// interpreter follows LLVM poison (every value op passes its operands'
+// marks on; a store marks the cells it writes, a load picks the marks up,
+// memmove copies them, memset and memhavoc clear them) and warns
+// (interp.ptr-index-promise) only at an executed access whose address
+// carries a mark (docs/design/PtrIndex.md section 6).
 //
 //===----------------------------------------------------------------------===//
 

@@ -445,10 +445,17 @@ struct Ptr {
   bool operator==(const Ptr &o) const { return obj == o.obj && off == o.off; }
 };
 
-/// One leaf of a register value: bits, or a pointer (abstract level).
+/// The id of a set of broken ptr.index promises (Interpreter::poisonSets);
+/// 0 is the empty set.
+using PoisonId = uint16_t;
+
+/// One leaf of a register value: bits, or a pointer (abstract level);
+/// `poison`: its broken ptr.index promises (a struct's leaves carry their
+/// own, as LLVM's aggregates do).
 struct Leaf {
   APInt bits;
   std::optional<Ptr> ptr;
+  PoisonId poison = 0;
 };
 
 /// An object: allocated (abstract level; name as in the segment map:
@@ -464,10 +471,6 @@ struct Prov {
   unsigned obj;
   unsigned bit = 0;
 };
-
-/// The id of a set of broken ptr.index promises (Interpreter::poisonSets);
-/// 0 is the empty set.
-using PoisonId = uint16_t;
 
 /// A ptr.index whose promise a run broke (`what`: the part broken, a
 /// static string of brokenPtrIndexPromise), and whether the pointer went
@@ -801,16 +804,33 @@ private:
     if (isa<StructType>(v.getType()))
       return structs.lookup(v);
     if (isa<PtrType>(v.getType()))
-      return {{APInt(), ptrs.lookup(v)}};
-    return {{env.lookup(v), std::nullopt}};
+      return {{APInt(), ptrs.lookup(v), poisonOf(v)}};
+    return {{env.lookup(v), std::nullopt, poisonOf(v)}};
   }
   void defineLeaves(Value v, ArrayRef<Leaf> leaves) {
-    if (isa<StructType>(v.getType()))
+    if (isa<StructType>(v.getType())) {
       structs[v] = SmallVector<Leaf>(leaves);
-    else if (isa<PtrType>(v.getType()))
+      return;
+    }
+    if (isa<PtrType>(v.getType()))
       ptrs[v] = *leaves.front().ptr;
     else
       define(v, leaves.front().bits);
+    setPoison(v, leaves.front().poison);
+  }
+  /// A select of pointers / structs (defined by defineLeaves): the
+  /// condition's broken promises poison the result too (LLVM).
+  void selectPoison(SelectOp sel) {
+    PoisonId c = poisonOf(sel.getCondition());
+    if (!c)
+      return;
+    Value r = sel.getResult();
+    if (!isa<StructType>(r.getType())) {
+      setPoison(r, unitePoison(c, poisonOf(r)));
+      return;
+    }
+    for (Leaf &l : structs[r])
+      l.poison = unitePoison(c, l.poison);
   }
   /// Executes struct.create / extract / insert.
   void execStruct(Operation &op);
@@ -861,15 +881,13 @@ private:
   PoisonId viaMemory(PoisonId id);
   /// Sets the broken ptr.index promises `to` carries (`poison`): `gep`'s
   /// own, if set, and those of the values in `from` (its address chain).
-  void passPoison(Value to, ArrayRef<Value> from, Operation *gep = nullptr,
+  void passPoison(Value to, ValueRange from, Operation *gep = nullptr,
                   StringRef what = {});
-  /// passPoison for a pure op that just defined its result: the ops that
-  /// move a pointer's bits (addr.add's base, select's picked operand,
-  /// addr.to_bits / from_bits, extract, trunc, concat), x | x and x & x,
-  /// and an arithmetic op whose other operand is its unit at run time
-  /// (x | 0, x ^ 0, x + 0, x - 0, x & ~0, x * 1: the VC's rewriter drops
-  /// such units and duplicates, so a pointer it resolves through memory
-  /// can pass them); others carry none.
+  /// LLVM poison for an op that just defined its scalar result: the union
+  /// of its operands' broken promises (a select: its condition's and the
+  /// picked operand's). Every value op, pointer ops included; not an
+  /// allocation (a fresh object) or ptr.index (passPoison, with its own
+  /// promise). Struct results carry marks in their leaves (execStruct).
   void propagatePoison(Operation &op);
   /// Warns (interp.ptr-index-promise) for each broken promise the address
   /// `addr` of the access `op` carries: the promise is a fact only there.
@@ -1023,15 +1041,12 @@ private:
   /// docs/design/PtrIndex.md, "Where the promise is a fact": a broken
   /// no-wrap promise is poison in LLVM, UB only when the pointer is the
   /// address of an access. A value's entry is the set of flagged
-  /// sea.ptr.index ops it comes from whose promise this run broke, with the
-  /// part broken. It comes from them through sea-check-ptr-index's chain
-  /// (the GEP, a GEP's base, a ptr.add / addr.add base, the selected
-  /// operand of a select), and, unlike that static walk, through block
-  /// arguments, memory (CellValue::poison: stores mark cells, loads take
-  /// the union) and the ops that move a pointer's bits (propagatePoison).
-  /// Not through arithmetic or integer conversions. The set is an id into
-  /// `poisonSets`, interned (`poisonIds`) so that a cell carries it in 16
-  /// bits.
+  /// sea.ptr.index ops whose promise this run broke and whose poison
+  /// reaches the value, with the part broken: LLVM poison through every
+  /// value op (propagatePoison), block arguments, struct leaves
+  /// (Leaf::poison) and memory (CellValue::poison: stores mark cells,
+  /// loads take the union). The set is an id into `poisonSets`, interned
+  /// (`poisonIds`) so that a cell carries it in 16 bits.
   llvm::DenseMap<Value, PoisonId> poison;
   std::vector<SmallVector<BrokenPromise, 1>> poisonSets{1}; // 0: empty
   std::map<SmallVector<BrokenPromise, 2>, PoisonId> poisonIds;
@@ -1194,7 +1209,7 @@ PoisonId Interpreter::viaMemory(PoisonId id) {
   return r;
 }
 
-void Interpreter::passPoison(Value to, ArrayRef<Value> from, Operation *gep,
+void Interpreter::passPoison(Value to, ValueRange from, Operation *gep,
                              StringRef what) {
   if (!gep && poison.empty())
     return; // nothing to pass on, no stale entry
@@ -1207,39 +1222,23 @@ void Interpreter::passPoison(Value to, ArrayRef<Value> from, Operation *gep,
 void Interpreter::propagatePoison(Operation &op) {
   if (poison.empty())
     return; // nothing to pass on, no stale entry
-  if (op.getNumResults() != 1 || op.getNumOperands() == 0)
+  if (op.getNumResults() != 1 ||
+      isa<PtrIndexOp, AllocaOp, MallocOp, GlobalOp, FuncAddrOp>(op))
     return;
   Value r = op.getResult(0);
-  if (isa<AddrAddOp, AddrToBitsOp, AddrFromBitsOp, ExtractOp, TruncOp>(op)) {
-    setPoison(r, poisonOf(op.getOperand(0)));
-  } else if (auto sel = dyn_cast<SelectOp>(op)) {
-    setPoison(r, poisonOf(env.lookup(sel.getCondition()).isOne()
-                              ? sel.getTrueValue()
-                              : sel.getFalseValue()));
-  } else if (isa<ConcatOp>(op)) {
-    setPoison(
-        r, unitePoison(poisonOf(op.getOperand(0)), poisonOf(op.getOperand(1))));
-  } else if (isa<OrOp, XorOp, AddOp, SubOp, AndOp, MulOp>(op)) {
-    // the identities x op unit = x (a unit on the right only for sub)
-    auto unit = [&](Value u) {
-      const APInt &v = env.lookup(u);
-      if (isa<AndOp>(op))
-        return v.isAllOnes();
-      if (isa<MulOp>(op))
-        return v.isOne();
-      return v.isZero();
-    };
-    Value a = op.getOperand(0), b = op.getOperand(1);
-    PoisonId id = 0;
-    // x | x = x & x = x (the VC's rewriter drops the duplicate)
-    if (a == b && isa<OrOp, AndOp>(op))
-      id = poisonOf(a);
-    else if (unit(b))
-      id = poisonOf(a);
-    if (!isa<SubOp>(op) && unit(a))
-      id = unitePoison(id, poisonOf(b));
-    setPoison(r, id);
+  if (isa<StructType, MemType>(r.getType()))
+    return;
+  PoisonId id = 0;
+  if (auto sel = dyn_cast<SelectOp>(op)) {
+    id = unitePoison(poisonOf(sel.getCondition()),
+                     poisonOf(env.lookup(sel.getCondition()).isOne()
+                                  ? sel.getTrueValue()
+                                  : sel.getFalseValue()));
+  } else {
+    for (Value o : op.getOperands())
+      id = unitePoison(id, poisonOf(o));
   }
+  setPoison(r, id);
 }
 
 void Interpreter::checkPromise(Operation &op, Value addr) {
@@ -1760,7 +1759,6 @@ LogicalResult Interpreter::execPtr(Operation &op, std::string &error) {
     Ptr p = ptrOf(pa.getPtr());
     p.off = p.off + env.lookup(pa.getOffset());
     setPtr(p);
-    passPoison(pa.getResult(), {pa.getPtr()});
     return success();
   }
   if (auto pi = dyn_cast<PtrIndexOp>(op)) {
@@ -1773,10 +1771,10 @@ LogicalResult Interpreter::execPtr(Operation &op, std::string &error) {
     std::optional<APInt> base;
     if (isa<AddrType>(pi.getBase().getType()))
       base = env.lookup(pi.getBase());
-    if (std::optional<StringRef> broken = brokenPtrIndexPromise(pi, base, idx))
-      passPoison(pi.getResult(), {pi.getBase()}, pi, *broken);
-    else
-      passPoison(pi.getResult(), {pi.getBase()});
+    // the base's and the indices' broken promises, and its own
+    std::optional<StringRef> broken = brokenPtrIndexPromise(pi, base, idx);
+    passPoison(pi.getResult(), pi->getOperands(), broken ? pi : nullptr,
+               broken ? *broken : StringRef());
     if (base) {
       define(pi.getResult(), *base + off);
       if (trackProv)
@@ -1991,14 +1989,18 @@ LogicalResult Interpreter::execBodyOp(Operation &op, std::string &error) {
   if (isa<LoadOp, IsModifiedOp>(op))
     return execMem(op, error);
   if (isa<PtrAddOp, PtrIndexOp, PtrDiffOp, PtrCmpOp, PtrNullOp, PtrToIntOp,
-          PtrFromIntOp, PtrBaseOp, PtrDereferenceableOp>(op))
-    return execPtr(op, error);
+          PtrFromIntOp, PtrBaseOp, PtrDereferenceableOp>(op)) {
+    if (failed(execPtr(op, error)))
+      return failure();
+    propagatePoison(op);
+    return success();
+  }
   if (auto sel = dyn_cast<SelectOp>(op);
       sel && isa<PtrType, StructType>(sel.getType())) {
     bool c = env.lookup(sel.getCondition()).isOne();
     defineLeaves(sel.getResult(),
                  leavesOf(c ? sel.getTrueValue() : sel.getFalseValue()));
-    propagatePoison(op);
+    selectPoison(sel);
     return success();
   }
   if (isa<StructCreateOp, StructExtractOp, StructInsertOp>(op)) {
@@ -2182,6 +2184,7 @@ RunResult Interpreter::run() {
               PtrFromIntOp, PtrBaseOp, PtrDereferenceableOp, PtrNondetOp>(op)) {
         if (failed(execPtr(op, error)))
           return finish(RunStatus::Error, &op, error);
+        propagatePoison(op);
         continue;
       }
       if (auto sel = dyn_cast<SelectOp>(op);
@@ -2189,7 +2192,7 @@ RunResult Interpreter::run() {
         bool c = env.lookup(sel.getCondition()).isOne();
         defineLeaves(sel.getResult(),
                      leavesOf(c ? sel.getTrueValue() : sel.getFalseValue()));
-        propagatePoison(op);
+        selectPoison(sel);
         continue;
       }
       if (auto sn = dyn_cast<StructNondetOp>(op)) {

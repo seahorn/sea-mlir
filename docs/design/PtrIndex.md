@@ -416,7 +416,10 @@ then used as an address. In LLVM it is still poison (a load of a poison
 byte is poison), and SeaM sees the GEP there too: `ptr.load-resolve`
 rewrites `from_bits(to_bits(p))` to p across the store, also when
 sea-split-wide-access moved p as cells (to_bits, extract; concat,
-from_bits). So the promise is a fact at that access as well.
+from_bits). So the promise is a fact at that access as well. The VC's
+rewriter can also see the GEP through bit operations it simplifies away
+(x | 0, `(x ^ k) ^ k`), so the interpreter follows LLVM poison through
+every value op (section 6).
 
 ptr.add stays (one offset, no structure). ptr.to_int / ptr.from_int (and
 the addr forms) remain the only places where a pointer becomes a number,
@@ -806,11 +809,16 @@ made by the expansion, counts `premise.a-nowrap`.
     address comes from a ptr.index whose promise broke. Computing,
     comparing or storing such a pointer is silent, and so is an access
     on a path that does not run.
-  - "Comes from" is the chain of sea-check-ptr-index, taken dynamically:
-    the ptr.index itself, a ptr.index's base, a ptr.add / addr.add base,
-    and the operand the run's select picked. Block arguments (phis) pass
-    a broken promise on.
-  - Memory passes it on too (rev 3: through `ptr.load-resolve`):
+  - "Comes from" is LLVM poison, taken at run time: the ptr.index
+    itself, and every value op passes the union of its operands' broken
+    promises to its result (bitwise and arithmetic ops, compares, zext /
+    sext / trunc, extract / concat, addr.to_bits / from_bits, to_int /
+    from_int, the pointer ops, a ptr.index's base and indices). A select
+    takes its condition's and the picked operand's. Block arguments
+    (phis) pass them on. A struct's leaves carry their own, through
+    struct.create / extract / insert. Allocations make fresh objects,
+    with no marks.
+  - Memory passes them on too (rev 3: through `ptr.load-resolve`):
     - a store marks the cells it writes with the stored value's broken
       promises, and clears them for an intact value;
     - a load takes the union over the cells it reads: one marked byte
@@ -819,19 +827,14 @@ made by the expansion, counts `premise.a-nowrap`.
       clear them;
     - the memory value carries them through block arguments (the
       interpreter runs memory in place).
-  - Between a pointer and memory the bits may move as integers. The
-    marks follow addr.to_bits / from_bits, extract, trunc, concat and
-    select, and an arithmetic op whose other operand is its unit at run
-    time (x | 0, x ^ 0, x + 0, x - 0, x & ~0, x * 1). Under `sea-vc
-    --lower-opt=false` SeaM drops such a unit (bv.ac.or, add.normalize)
-    and resolves the load through it. Other arithmetic, zext / sext and
-    to_int / from_int are not followed: SeaM keeps
-    `from_int(to_int(p))` apart from p.
-  - An integer read from marked cells carries the marks silently. A
-    warning comes only if it becomes an address.
+  - Only an access reports. A marked value used in arithmetic, in an
+    assert, assume or branch condition, or stored is silent. A branch on
+    poison is UB in LLVM; it is not reported here (no report kind for
+    it): the promise is a fact only at an access.
   - Cost: a mark is a 16-bit id of an interned set in each memory cell
-    (no cell grows), checked once per store and load. Past 65535
-    distinct sets the run stops with a limit error (`sea-run
+    (no cell grows), set at a store and read at a load. Every value op
+    checks whether any value is marked and returns at once if none is.
+    Past 65535 distinct sets the run stops with a limit error (`sea-run
     --max-poison-sets`, a test knob).
   - Differences from the check job:
     - it does not follow phis (check-ptr-index.phi) or loads
@@ -841,9 +844,6 @@ made by the expansion, counts `premise.a-nowrap`.
       interpreter is silent at a length of 0. The job is the stricter.
   - memhavoc is not an access here, as in the check job.
   - Known gaps:
-    - Pointer leaves of a struct (`!sea.struct`) are not followed, in
-      programs sea-run runs unscalarized. The VC and its replay always
-      run scalarized programs, so they agree.
     - A load of an earlier memory version reads the current contents
       (the in-place interpreter, warning interp.load-earlier-version);
       its marks inherit that approximation.

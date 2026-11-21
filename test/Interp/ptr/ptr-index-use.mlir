@@ -27,13 +27,19 @@
 // RUN: sea-run %s --program=memphi 2>&1 | FileCheck %s --check-prefix=MEM
 // RUN: sea-run %s --program=identity 2>&1 | FileCheck %s --check-prefix=MEM
 // RUN: sea-run %s --program=idsub 2>&1 | FileCheck %s --check-prefix=MEM
-// RUN: sea-run %s --program=subleft 2>&1 | FileCheck %s --check-prefix=QUIET
+// RUN: sea-run %s --program=subleft 2>&1 | FileCheck %s --check-prefix=MEM
 // RUN: sea-run %s --program=idxor 2>&1 | FileCheck %s --check-prefix=MEM
 // RUN: sea-run %s --program=idand 2>&1 | FileCheck %s --check-prefix=MEM
 // RUN: sea-run %s --program=idmul 2>&1 | FileCheck %s --check-prefix=MEM
 // RUN: sea-run %s --program=andself 2>&1 | FileCheck %s --check-prefix=MEM
 // RUN: sea-run %s --program=trunc 2>&1 | FileCheck %s --check-prefix=MEM
-// RUN: sea-run %s --program=arith 2>&1 | FileCheck %s --check-prefix=QUIET
+// RUN: sea-run %s --program=arith 2>&1 | FileCheck %s --check-prefix=MEM
+// RUN: sea-run %s --program=toint 2>&1 | FileCheck %s --check-prefix=MEM
+// RUN: sea-run %s --program=xorxor --missing=zero --input=2=2305843009213693952 --input=3=5 2>&1 | FileCheck %s --check-prefix=MEM
+// RUN: sea-run %s --program=selcond 2>&1 | FileCheck %s --check-prefix=LOAD
+// RUN: sea-run %s --program=branch 2>&1 | FileCheck %s --check-prefix=QUIET
+// RUN: sea-run %s --program=structbad 2>&1 | FileCheck %s --check-prefix=LOAD
+// RUN: sea-run %s --program=structok 2>&1 | FileCheck %s --check-prefix=QUIET
 // RUN: not sea-run %s --program=twosets --max-poison-sets=1 2>&1 | FileCheck %s --check-prefix=CAP
 // RUN: not sea-run %s --program=unused --max-poison-sets=65536 2>&1 | FileCheck %s --check-prefix=CAPFLAG
 
@@ -377,10 +383,10 @@ sea.program @memphi {
   sea.halt
 }
 
-// the bits pass x | 0 on the way to memory: SeaM drops the unit
-// (bv.ac.or) and resolves the load to the GEP when the lowering keeps the
-// or (sea-vc --lower-opt=false), so the mark passes it; x + 2 is
-// arithmetic and is not followed
+// LLVM poison: every value op passes its operands' marks on, so the bits
+// keep the mark through x | 0 and the variants below (SeaM drops such a
+// unit, bv.ac.or, and resolves the load to the GEP when the lowering keeps
+// the op: sea-vc --lower-opt=false), and through any other arithmetic
 sea.program @identity {
   %z = sea.const 0 : i8
   %m = sea.mem.const %z : !wm
@@ -419,7 +425,7 @@ sea.program @idsub {
   sea.halt
 }
 
-// @identity with 0 - x: a left 0 is not a unit of sub
+// @identity with 0 - x: not a unit, still poison
 sea.program @subleft {
   %z = sea.const 0 : i8
   %m = sea.mem.const %z : !wm
@@ -539,6 +545,7 @@ sea.program @trunc {
   sea.halt
 }
 
+// x + 8: arithmetic on poison is poison
 sea.program @arith {
   %z = sea.const 0 : i8
   %m = sea.mem.const %z : !wm
@@ -549,12 +556,122 @@ sea.program @arith {
   %i = sea.const 2000 : i16
   %q = sea.ptr.index %a [%i] strides [24] offset 0 inbounds : !sea.addr<16>, i16
   %bits = sea.addr.to_bits %q : !sea.addr<16> to i16
-  %two = sea.const 2 : i16
+  %two = sea.const 8 : i16
   %add = sea.add %bits, %two : i16
   %m1 = sea.store %m[%s], %add inplace : !wm, i16
   %v = sea.load %m1[%s] : !wm -> i16
   %r = sea.addr.from_bits %v : i16 to !sea.addr<16>
   %x = sea.load %m1[%r] : !wm -> i8
+  sea.halt
+}
+
+// to_int / from_int round trip on the way to memory
+sea.program @toint {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !wm
+  %b = sea.const 1 : i16
+  %a = sea.addr.from_int %b : i16 to !sea.addr<16>
+  %sb = sea.const 100 : i16
+  %s = sea.addr.from_int %sb : i16 to !sea.addr<16>
+  %i = sea.const 2000 : i16
+  %q = sea.ptr.index %a [%i] strides [24] offset 0 inbounds : !sea.addr<16>, i16
+  %qi = sea.addr.to_int %q : !sea.addr<16> to i16
+  %m1 = sea.store %m[%s], %qi inplace : !wm, i16
+  %v = sea.load %m1[%s] : !wm -> i16
+  %r = sea.addr.from_int %v : i16 to !sea.addr<16>
+  %x = sea.load %m1[%r] : !wm -> i8
+  sea.halt
+}
+
+// (x ^ k) ^ k with a nondet k: SeaM cancels the pair (bv.ac.xor) and
+// resolves the load to the GEP under the default lowering
+!xm = !sea.mem<!sea.addr<64>, i8>
+sea.program @xorxor {
+  %m0 = sea.mem.nondet "m" [0] : !xm
+  %z = sea.const 0 : i8
+  %zm = sea.mem.const %z : !xm
+  %p = sea.segment "heap.1" base 4096 : i64 size 192 : i64 align 8 kind "heap" : !sea.addr<64>
+  %s = sea.segment "heap.2" base 8192 : i64 size 8 : i64 align 8 kind "heap" : !sea.addr<64>
+  %i = sea.nondet "i" [2] : i64
+  %a = sea.ptr.index %p [%i] strides [24] offset 96 inbounds : !sea.addr<64>, i64
+  %big = sea.const 2305843009213693952 : i64
+  %isbig = sea.icmp eq, %i, %big : i64
+  sea.assume %isbig
+  %bits = sea.addr.to_bits %a : !sea.addr<64> to i64
+  %k = sea.nondet "k" [3] : i64
+  %three = sea.const 3 : i64
+  %kg = sea.icmp ugt, %k, %three : i64
+  sea.assume %kg
+  %t1 = sea.xor %bits, %k : i64
+  %t2 = sea.xor %t1, %k : i64
+  %m1 = sea.store %zm[%s], %t2 inplace : !xm, i64
+  %v = sea.load %m1[%s] : !xm -> i64
+  %r = sea.addr.from_bits %v : i64 to !sea.addr<64>
+  %c8 = sea.const 8 : i64
+  %h = sea.addr.add %p, %c8 : !sea.addr<64>, i64
+  %v1 = sea.const 1 : i8
+  %m2 = sea.store %m0[%h], %v1 inplace : !xm, i8
+  %x = sea.load %m2[%r] : !xm -> i8
+  sea.halt
+}
+
+// a select whose condition is computed from the broken GEP: poison in
+// LLVM, whichever operand it picks
+sea.program @selcond {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !am
+  %b = sea.const 1 : i8
+  %a = sea.addr.from_int %b : i8 to !sea.addr<8>
+  %six = sea.const 6 : i8
+  %q = sea.ptr.index %a [%six] strides [24] offset 0 inbounds : !sea.addr<8>, i8
+  %c = sea.addr.cmp eq, %q, %a : !sea.addr<8>
+  %p = sea.select %c, %q, %a : !sea.addr<8>
+  %x = sea.load %m[%p] : !am -> i8
+  sea.halt
+}
+
+// a branch on a value computed from the broken GEP: UB in LLVM, but only
+// an access reports (docs/design/PtrIndex.md section 6)
+sea.program @branch {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !am
+  %b = sea.const 1 : i8
+  %a = sea.addr.from_int %b : i8 to !sea.addr<8>
+  %six = sea.const 6 : i8
+  %q = sea.ptr.index %a [%six] strides [24] offset 0 inbounds : !sea.addr<8>, i8
+  %c = sea.addr.cmp eq, %q, %a : !sea.addr<8>
+  sea.cond_br %c, ^t, ^f
+^t:
+  sea.halt
+^f:
+  %x = sea.load %m[%a] : !am -> i8
+  sea.halt
+}
+
+// a struct's leaves carry their own marks: the broken leaf poisons an
+// access, the intact one does not
+sea.program @structbad {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !am
+  %b = sea.const 1 : i8
+  %a = sea.addr.from_int %b : i8 to !sea.addr<8>
+  %six = sea.const 6 : i8
+  %q = sea.ptr.index %a [%six] strides [24] offset 0 inbounds : !sea.addr<8>, i8
+  %st = sea.struct.create %q, %a : !sea.addr<8>, !sea.addr<8> -> !sea.struct<!sea.addr<8>, !sea.addr<8>>
+  %p = sea.struct.extract %st[0] : !sea.struct<!sea.addr<8>, !sea.addr<8>> -> !sea.addr<8>
+  %x = sea.load %m[%p] : !am -> i8
+  sea.halt
+}
+sea.program @structok {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !am
+  %b = sea.const 1 : i8
+  %a = sea.addr.from_int %b : i8 to !sea.addr<8>
+  %six = sea.const 6 : i8
+  %q = sea.ptr.index %a [%six] strides [24] offset 0 inbounds : !sea.addr<8>, i8
+  %st = sea.struct.create %q, %a : !sea.addr<8>, !sea.addr<8> -> !sea.struct<!sea.addr<8>, !sea.addr<8>>
+  %p = sea.struct.extract %st[1] : !sea.struct<!sea.addr<8>, !sea.addr<8>> -> !sea.addr<8>
+  %x = sea.load %m[%p] : !am -> i8
   sea.halt
 }
 

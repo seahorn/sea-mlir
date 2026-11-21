@@ -1018,9 +1018,10 @@ DIAGNOSTICS (stderr): "Warning: ... [kind]" (yellow), once per kind, with a
 summary of repeats at exit (--log=warn.<kind>:2 prints each); "Error: ...
 [kind]" (red) when the run stops with status: error. Logs: --log, SEA_LOG
 (docs/reference/logging.md). interp.ptr-index-promise: a warning at an
-executed access whose address comes from a sea.ptr.index whose no-wrap
-promise broke, also through memory (stored and loaded back); more than
-65535 distinct sets of such promises in one run is status: error (a limit).
+executed access whose address carries the poison of a sea.ptr.index whose
+no-wrap promise broke (LLVM poison: through every value op and through
+memory; other uses are silent); more than 65535 distinct sets of such
+promises in one run is status: error (a limit).
 
 STATUS CODES: 0 the run ended (any status but error or memory-error); 4
 memory-error (--defer-memory-errors: a memory-safety violation on a run
