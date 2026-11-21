@@ -345,10 +345,12 @@ check-inb: checks=<n> static=<n> left=<n> zero-length=<n>
 check-inb.part: <i> id=<check id> at=<loc> result=<r> status=<exit> time=<s> [solve-time=<s>] [fail-at=<loc>]
 check-inb.parts: total=<n> unsat=<n> sat=<n> unknown=<n> other=<n> skipped=<n> median-time=<s> max-time=<s> time=<s>
 check-inb.part-diags: none | <kind>=<parts> ...
-check-inb.discharges: a-inb a-sep a-null a-nowrap | none
+check-inb.discharges: a-inb a-sep a-null [a-nowrap] | none
 ```
 
-One `check-inb.part` line per part, as it ends. `result` is the part's
+One `check-inb.part` line per part, as it ends. `a-nowrap` is listed only
+when every placed object is smaller than 2^(w-1) units (warning
+`check-inb.nowrap-not-implied` otherwise). `result` is the part's
 `result:` (`error` or `inconclusive` for a part that ended with status 1,
 2, 5, 6 or 4); `other` counts those. In jsonl the records are
 `check-inb`, `check-inb.part`, `check-inb.parts`, `check-inb.part-diags`

@@ -3955,7 +3955,8 @@ Kinds and fields:
                 max_time, time
   check-inb.part-diags one field per diagnostic kind of the parts' stderr:
                 the number of parts that reported it
-  check-inb.discharges premises (`a-inb a-sep a-null a-nowrap` or `none`)
+  check-inb.discharges premises (`a-inb a-sep a-null[ a-nowrap]` or `none`;
+                a-nowrap only when every object is below 2^(w-1) units)
   split-part-start part
   split-part    part, choice, result, vc_time, solve_time, dag, alias_open,
                 alias_open_pairs, alias_open_memop, rows, ack_reads,

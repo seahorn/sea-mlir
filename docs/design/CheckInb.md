@@ -71,8 +71,8 @@ result: sat
   first error line.
 - `check-inb.discharges: a-inb a-sep a-null a-nowrap` comes with
   `result: unsat`: every access of every execution within the bound stays
-  in its object, so the premises of `--seam` hold (but see the condition
-  on A-NOWRAP below). A premise ledger can record them as "discharged by
+  in its object, so the premises of `--seam` hold. `a-nowrap` is listed
+  only when every object is smaller than 2^(w-1) units (below). A premise ledger can record them as "discharged by
   `--check-inb`". After any other verdict the line says `none`.
 
 `--check-inb` requires `--lower`, `--seam` and `--ackermannize=off`. The
@@ -212,7 +212,15 @@ With placement's disjoint objects, A-INB of every access implies A-SEP and
 A-NULL (SeaM.md). It implies A-NOWRAP for accesses at offsets below
 2^(w-1): A-NOWRAP reads the offset as a signed number, and an in-bounds
 offset of 2^(w-1) or more reads as negative. Only an object of 2^(w-1)
-units or more has such offsets; at 64 bits no placed object does.
+units or more has such offsets. So the job lists `a-nowrap` among the
+premises an unsat discharges only when every placed object is smaller
+than 2^(w-1) units, w the pointer width: the largest object the parts'
+placements print (`object:` lines), or, when every check was discharged
+statically and no part ran, the program's constant object sizes (an
+allocation of non-constant size then counts as too large). Otherwise it
+warns `check-inb.nowrap-not-implied` with the reason and leaves
+`a-nowrap` out (`test/VC/check-inb-nowrap.mlir`: one object of 2^31
+units at 32 bits). At 64 bits no placed object is that large.
 
 The two premises also read an access differently. A-INB reads the whole
 span of the access, `[off, off + n)`. The A-NOWRAP of the C++ rules
