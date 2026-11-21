@@ -119,7 +119,7 @@ public:
   Option<uint64_t> maxSymbolicSize{
       *this, "max-symbolic-size",
       llvm::cl::desc("Units reserved for an allocation of non-constant size"),
-      llvm::cl::init(4096)};
+      llvm::cl::init(kPlaceMaxSymbolicSize)};
   Option<std::string> symbolicSize{
       *this, "symbolic-size",
       llvm::cl::desc("How a non-constant size is bounded: assume, assert, "

@@ -221,11 +221,14 @@ A-NULL (SeaM.md). It implies A-NOWRAP for accesses at offsets below
 2^(w-1): A-NOWRAP reads the offset as a signed number, and an in-bounds
 offset of 2^(w-1) or more reads as negative. Only an object of 2^(w-1)
 units or more has such offsets. So the job lists `a-nowrap` among the
-premises an unsat discharges only when every placed object is smaller
-than 2^(w-1) units, w the pointer width: the largest object the parts'
-placements print (`object:` lines), or, when every check was discharged
-statically and no part ran, the program's constant object sizes (an
-allocation of non-constant size then counts as too large). Otherwise it
+premises an unsat discharges only when every object is smaller than
+2^(w-1) units, w the pointer width. `sea-check-inb` records the size of
+the program's largest object as placement sizes it
+(`sea.check_inb_largest_object`): a constant size, or for an allocation
+of non-constant size the room placement reserves for it (4096 units,
+`kPlaceMaxSymbolicSize`; the size is assumed to fit, and `under=` says
+so). The program is the one after the box lowering and before the
+split, so every part's objects are among its objects. Otherwise the job
 warns `check-inb.nowrap-not-implied` with the reason and leaves
 `a-nowrap` out (`test/VC/check-inb-nowrap.mlir`: one object of 2^31
 units at 32 bits). At 64 bits no placed object is that large.

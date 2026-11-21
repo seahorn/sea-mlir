@@ -81,10 +81,6 @@ struct PartRun {
   int status = 1;
   double seconds = 0, solveSeconds = -1;
   std::string failAt;
-  /// the placed objects: the largest size (units) of a non-null object,
-  /// and whether the part printed its objects at all
-  llvm::APInt maxObjectSize = llvm::APInt(128, 0);
-  bool sawObjects = false;
   /// the named assumptions its answer rests on: the `assume.<name>` lines
   /// that are in effect (a field not 0, or the state word `vc`)
   std::vector<std::string> assumes;
@@ -159,22 +155,6 @@ inline void readPartOutput(llvm::StringRef path, PartRun &r) {
     } else if (*kind == "replay") {
       if (auto s = o->getString("at"))
         r.failAt = s->str();
-    } else if (*kind == "object") {
-      r.sawObjects = true;
-      auto objkind = o->getString("objkind");
-      if (objkind && *objkind == "null")
-        continue;
-      // sizes below 2^53 are numbers, larger ones decimal strings
-      llvm::APInt size(128, 0);
-      if (auto n = o->getInteger("size"))
-        size = llvm::APInt(128, uint64_t(*n));
-      else if (auto s = o->getString("size")) {
-        if (s->getAsInteger(10, size))
-          size = llvm::APInt::getMaxValue(128);
-        size = size.zextOrTrunc(128);
-      }
-      if (size.ugt(r.maxObjectSize))
-        r.maxObjectSize = size;
     }
   }
 }
@@ -280,23 +260,11 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     if (w)
       ptrWidth = w;
   }
-  // with no part, the objects' sizes come from the program (constants)
-  llvm::APInt programLargest(128, 0);
-  std::string programWhyNot;
-  program.walk([&](mlir::Operation *op) {
-    std::optional<llvm::APInt> sz;
-    if (auto g = mlir::dyn_cast<GlobalOp>(op))
-      sz = llvm::APInt(128, g.getSize());
-    else if (mlir::isa<AllocaOp, MallocOp>(op)) {
-      llvm::APInt c;
-      if (mlir::matchPattern(op->getOperand(0), mlir::m_ConstantInt(&c)))
-        sz = c.zextOrTrunc(128);
-      else
-        programWhyNot = "an allocation of non-constant size";
-    }
-    if (sz && sz->ugt(programLargest))
-      programLargest = *sz;
-  });
+  // the largest object, as placement sizes it (sea-check-inb records it)
+  llvm::APInt largestObject(128, 0);
+  if (auto l =
+          program->getAttrOfType<mlir::IntegerAttr>(kCheckInbLargestObjectAttr))
+    largestObject = l.getValue().zextOrTrunc(128);
   uint64_t checks = 0, staticN = 0, left = 0, zero = 0;
   if (auto d =
           program->getAttrOfType<mlir::DictionaryAttr>(kCheckInbStatsAttr)) {
@@ -534,29 +502,17 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     // what an unsat discharges (docs/design/CheckInb.md): A-INB, and the
     // premises of --seam it implies. A-NOWRAP reads an offset as signed,
     // so A-INB implies it only for objects of fewer than 2^(w-1) units:
-    // the largest placed object of the parts (or, with no part, the
-    // constant sizes of the program's objects) decides.
+    // the largest object of the program (after the box lowering, before
+    // the split: every part's objects are among them) decides, sized as
+    // placement sizes it.
     std::string what = "none";
     if (verdict == "unsat") {
       what = "a-inb a-sep a-null";
       std::string whyNot;
       llvm::APInt half = llvm::APInt::getOneBitSet(128, ptrWidth - 1);
-      llvm::APInt largest(128, 0);
-      if (!runs.empty()) {
-        for (const PartRun &r : runs) {
-          if (!r.sawObjects)
-            whyNot = "part " + std::to_string(r.index) +
-                     " printed no placed objects";
-          if (r.maxObjectSize.ugt(largest))
-            largest = r.maxObjectSize;
-        }
-      } else {
-        largest = programLargest;
-        whyNot = programWhyNot;
-      }
-      if (whyNot.empty() && largest.uge(half))
+      if (largestObject.uge(half))
         whyNot = "an object of " +
-                 llvm::toString(largest, 10, /*Signed=*/false) +
+                 llvm::toString(largestObject, 10, /*Signed=*/false) +
                  " units, at least 2^" + std::to_string(ptrWidth - 1);
       if (whyNot.empty())
         what += " a-nowrap";

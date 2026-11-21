@@ -114,7 +114,9 @@ sea.program @ag_alone {
 // reported each kind. Here placement assumes the symbolic size fits.
 // DIAG: check-inb.part-diags: {{.*}}place.symbolic-size-assume=1
 // The verdict rests on that assumption: it is on the discharges line.
-// DIAG: check-inb.discharges: {{.*}} under={{.*}}place.symbolic-size-assume
+// A-NOWRAP is decided by the program's objects (the symbolic one at its
+// room), not by what a part prints: the part here folds to `assert true`.
+// DIAG: check-inb.discharges: a-inb a-sep a-null a-nowrap under={{.*}}place.symbolic-size-assume
 sea.program @diag {
   %m0 = sea.mem.nondet "m" [0] : !m
   %n = sea.nondet "n" [1] : i64
