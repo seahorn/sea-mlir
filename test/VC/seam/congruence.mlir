@@ -3,24 +3,24 @@
 // widening). Byte k of the reload against byte l of the store compares
 // T + 8i + l with T + 8j + k: for l != k the difference 8(i - j) + (l - k)
 // is never 0 (8 divides the variable part, not l - k), exactly, for every
-// i, j. --seam-congruence decides them, leaving only 8i = 8j in each
-// byte; with --seam-pull-concat the reload is then ite(8i = 8j, X,
-// from_bits(older)). Off, the rewriter's bit-vector rule bv.eq.low-zero2
-// decides the same compares once they are in linear form (8i + l - k = 8j);
-// with neither (--seam-congruence=false --seam-simplify=0) they stay
-// open.
+// i, j. cmp.congruence (default on) decides them in SeaM, leaving only
+// 8i = 8j in each byte; with --seam-pull-concat the reload is then
+// ite(8i = 8j, X, from_bits(older)). With --seam-congruence=false the
+// rewriter's bit-vector rule bv.eq.low-zero2 decides the same compares once
+// they are in linear form (8i + l - k = 8j); with neither
+// (--seam-congruence=false --seam-simplify=0) they stay open.
 // RUN: sea-vc %s --lower --seam --seam-stats --seam-congruence=false 2>&1 | FileCheck %s --check-prefixes=CHECK,OFF
-// RUN: sea-vc %s --lower --seam --seam-stats --seam-congruence=false --seam-simplify=0 2>&1 | FileCheck %s --check-prefixes=CHECK,RAW
-// RUN: sea-vc %s --lower --seam --seam-stats --seam-congruence 2>&1 | FileCheck %s --check-prefixes=CHECK,ON
+// RUN: sea-vc %s --lower --seam --seam-stats --seam-simplify=0 --seam-congruence=false 2>&1 | FileCheck %s --check-prefixes=CHECK,RAW
+// RUN: sea-vc %s --lower --seam --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,ON
 // RUN: sea-vc %s --lower --seam --seam-stats --seam-congruence --seam-pull-concat=4 2>&1 | FileCheck %s --check-prefixes=CHECK,PULL
 // RUN: sea-vc %s --lower --seam --seam-congruence --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // RUN: not sea-vc %s --lower --seam-congruence 2>&1 | FileCheck %s --check-prefix=NEED
 // The undecided ones are same-object alias questions (the census counts
 // normal forms of the offset compares they reduce to): 1 (8i = 8j) when
 // either rule decides the others, more with neither.
-// OFF-NOT: cmp.congruence
 // OFF: seam.alias.open.all: 1
 // OFF: seam.alias.open.same-object: 1
+// OFF-NOT: cmp.congruence
 // OFF: seam.rule.bv.eq.low-zero2: 56
 // RAW-NOT: cmp.congruence
 // RAW: seam.alias.open.all: {{[2-9]|[1-9][0-9]+}}

@@ -18,12 +18,13 @@ stored in memory and reloaded after a store that only A-INB lets the rewriting
 skip. Cells-violate: the sure violation (numeral offset) is detected statically
 in every program (fallbacks). Cells with --ptr-index and strides other than 1:
 each index is scaled to keep the address, so the accesses stay in their
-objects and the stride rules still fire.
+objects and the stride rules still fire (cmp.congruence off: it decides
+those pairs first).
 RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 1 -n 20 --accesses=bases | FileCheck %s --check-prefix=INB
 RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 2 -n 20 --accesses=any | FileCheck %s
 RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 3 -n 8 --accesses=cells | FileCheck %s --check-prefix=CELLS
 RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 4 -n 6 --accesses=cells-violate | FileCheck %s --check-prefix=VIOL
-RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 7 -n 8 --accesses=cells --ptr-index --ptr-index-strides=1,4,8,24 --extra-args=--seam-stride | FileCheck %s --check-prefix=STRIDE
+RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 7 -n 8 --accesses=cells --ptr-index --ptr-index-strides=1,4,8,24 --extra-args='--seam-stride --seam-congruence=false' | FileCheck %s --check-prefix=STRIDE
 RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 0 -n 12 --accesses=circular | FileCheck %s --check-prefix=CIRC
 RUN: %python %sea_src_root/utils/fuzz-seam.py --sea-vc sea-vc %if !yices %{ --solver=z3 %} --seed 1 -n 12 --accesses=ptrmem | FileCheck %s --check-prefix=PTRMEM
 CHECK: failures: 0

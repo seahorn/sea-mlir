@@ -257,15 +257,25 @@ the abstract program, only for a corpus that needs it; vcc has none).
     without failing it. The sat is confirmed (exit 0) when some guard
     fails; otherwise it is `vc.replay-no-failure` (exit 2), as for an
     assertion sat whose replay does not fail the assertion.
-- `--seam-congruence` (off by default, rule cmp.congruence in decidePair,
-  exact, no premise). Two addresses differ when their difference is
-  `sum c_k x_k + d` with 2^t dividing every c_k and not d, as in table
-  slots read a byte apart (8i + 1 vs 8j). [OBS] vcc-pi2: it fires 40,264
-  times in 11 hash jobs; queries are identical (md5) and verdicts are the
-  same. The pairs are decided later anyway (by ARM, which runs after it).
-  In the unit test (`test/VC/seam/congruence.mlir`) the rewriter's
-  bit-vector rule bv.eq.low-zero2 decides them too once they are in linear
-  form; only the run with `--seam-simplify=0` keeps them open.
+- `--seam-congruence` (on by default, `--seam-congruence=false` off; rule
+  cmp.congruence in decidePair, exact, no premise). Two addresses differ
+  when their difference is `sum c_k x_k + d` with 2^t dividing every c_k
+  and not d, as in table slots read a byte apart (8i + 1 vs 8j). [OBS]
+  vcc-pi2: it fires 40,264 times in 11 hash jobs; queries are identical
+  (md5) and verdicts are the same. The pairs are decided later anyway (by
+  ARM, which runs after it). That was why it was off.
+  It is on because of table slots indexed by a loaded value: a read of
+  slot[i] over a store to slot[j], j loaded from memory, with 32-byte
+  slots and fields 12 bytes apart, compares `32i + 8` with `32j + 20`
+  (`32i - 12 = 32 zext(j)` after the base cancels). ARM gives j no range,
+  so only this rule decides the pair. [OBS] firedancer step-reach-sz
+  (`--lower --seam --widen-memory=4`): without the rule 180 such compares
+  stay in the query; with it the rule fires 1601 times, row.store-skip
+  goes from 269 to 1870 and the query is 3.5% smaller; z3, seeds 0-7:
+  median time about 30 s to 4.5 s, conflicts 62k-214k to 2k-6k.
+  Tests: `test/VC/seam/congruence.mlir` (byte slots, nothing else decides
+  them) and `test/VC/seam/congruence-table-slots.mlir` (the table-slot
+  shape, reduced).
 - Census of same-object alias questions (D13). An undecided same-base
   compare is reduced by `overlap` to an integer compare of the offsets, so
   there is no pointer left to mark. The W-BYTE-IN guard `(j - i) <u w` is

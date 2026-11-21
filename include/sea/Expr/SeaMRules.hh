@@ -205,8 +205,11 @@ struct SeaMOptions {
   unsigned pullConcatIte = 0;
   /// cmp.congruence: decide two addresses apart when their difference is
   /// sum c_k x_k + d with 2^t dividing every c_k and not d (exact, no
-  /// premise). Off by default until measured. sea-vc --seam-congruence.
-  bool congruence = false;
+  /// premise). On by default: it decides the read-over-write compares of
+  /// table slots indexed by a loaded value (32i + 8 vs 32j + 20), which
+  /// nothing else does (docs/design/PtrSort.md). sea-vc
+  /// --seam-congruence=false turns it off.
+  bool congruence = true;
   /// Push an equality through ite when that resolves a leaf (ITE-EQ).
   bool pushEqIte = true;
   /// A bvadd is pulled through ites only if the product of their leaf counts

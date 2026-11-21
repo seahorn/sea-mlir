@@ -93,6 +93,9 @@ SeaMOptions simpOpts() {
   o.assumePremises = false;
   o.arm = false;
   o.storeMap = false;
+  // as OpSem without --seam: cmp.congruence would decide 24x = 7 before
+  // bv.eq.low-zero
+  o.congruence = false;
   return o;
 }
 

@@ -442,7 +442,6 @@ measurement and are not part of the supported configuration:
 | `--seam-pull-index` | pull a PTR_INDEX node through its first ite |
 | `--seam-resolve-ite-nodes=<N>` | resolve a loaded pointer through an ite of loaded values |
 | `--seam-pull-concat=<N>` | resolve a split pointer load through a shared ite |
-| `--seam-congruence` | decide addresses apart by divisibility |
 | `--seam-wide-ite-open` | W-ITE also for undecided ite leaf pairs (open, untuned) |
 | `--seam-leaf-split=0` | keep a read at an ite address whole (R-LEAVES off) |
 | `--seam-offset-leaves=0` | boundary byte expansion of a width term (--seam-wide) keeps a + k over an ite address (default 8 leaves, untuned) |

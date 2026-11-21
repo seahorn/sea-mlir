@@ -945,8 +945,9 @@ static cl::opt<bool> seamCongruence(
     cl::desc("With --seam: decide two addresses apart when their "
              "difference is sum c_k x_k + d with 2^t dividing every c_k "
              "and not d (exact, no premise; rule cmp.congruence; e.g. "
-             "T + 8i + 1 vs T + 8j). Default off"),
-    cl::init(false));
+             "T + 8i + 1 vs T + 8j). Default on; "
+             "--seam-congruence=false off"),
+    cl::init(true));
 
 static cl::opt<bool> seamWideIteOpen(
     "seam-wide-ite-open",
@@ -2390,9 +2391,10 @@ TYPICAL:
   sea-vc p.mlir --lower --seam --seam-leaf-split-partial  # R-LEAVES with
                                  #   undecided leaves too: they stay one
                                  #   read at the ite of them (untuned)
-  sea-vc p.mlir --lower --seam --seam-congruence  # decide addresses
-                                 #   apart by divisibility: 8i+1 vs 8j
-                                 #   (exact; rule cmp.congruence)
+  sea-vc p.mlir --lower --seam --seam-congruence=false  # do not decide
+                                 #   addresses apart by divisibility
+                                 #   (8i+1 vs 8j; rule cmp.congruence,
+                                 #   exact, default on)
   sea-vc p.mlir --lower --seam --seam-pull-index  # pull a pointer
                                  #   node through any ite in its base or
                                  #   indices (default off: the base ite and
@@ -4780,8 +4782,8 @@ int main(int argc, char **argv) {
        !seamPruneSize0 || seamWide || seamWideIteOpen || !seamLeafSplit ||
        seamLeafSplitPartial || seamPullIndex ||
        seamOffsetLeaves.getNumOccurrences() || seamResolveIteNodes ||
-       seamPullConcat || seamCongruence || ptrCompanion != CompanionMode::Off ||
-       !seamStoreMap || !seamSimplify) &&
+       seamPullConcat || seamCongruence.getNumOccurrences() ||
+       ptrCompanion != CompanionMode::Off || !seamStoreMap || !seamSimplify) &&
       !seam)
     return fail("--seam-premises, --seam-out-of-object, --seam-row-expand, "
                 "--seam-row-group, "

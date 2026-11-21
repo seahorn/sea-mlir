@@ -3,11 +3,13 @@
 // p + 24 i + 96 (inbounds) under a store-map of header bytes at 8 and 16:
 // byte 1 of the read is the node with K = 1, whose skip rests on A-NOWRAP
 // (the access address does not wrap); --seam-check proves each firing.
+// cmp.congruence (default on) decides that byte without a premise, so
+// @kwide runs with --seam-congruence=false.
 // @nul: two reads of the initial memory, one at a node over null (size 0),
 // one over p: the Ackermann stride rule drops the pair under A-NULL (no
 // access of positive width through null), and the null read is reported
 // out of its object.
-// RUN: sea-vc %s --program=kwide --lower --seam --seam-stats --seam-stride --seam-check | FileCheck %s --check-prefix=KWIDE
+// RUN: sea-vc %s --program=kwide --lower --seam --seam-congruence=false --seam-stats --seam-stride --seam-check | FileCheck %s --check-prefix=KWIDE
 // RUN: sea-vc %s --program=nul --lower --seam --ack-stride 2>&1 | FileCheck %s --check-prefix=NUL
 // KWIDE: assume.a-nowrap: seam={{[1-9][0-9]*}}
 // KWIDE: seam.rule.premise.a-nowrap: {{[1-9][0-9]*}}
