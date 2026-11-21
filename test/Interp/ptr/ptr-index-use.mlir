@@ -43,6 +43,7 @@
 // RUN: sea-run %s --program=structphi 2>&1 | FileCheck %s --check-prefix=LOAD
 // RUN: sea-run %s --program=insclear 2>&1 | FileCheck %s --check-prefix=QUIET
 // RUN: sea-run %s --program=structswap 2>&1 | FileCheck %s --check-prefix=LOAD
+// RUN: sea-run %s --program=twomarks --log=warn.interp.ptr-index-promise:2 2>&1 | FileCheck %s --check-prefix=TWO
 // RUN: sea-run %s --program=boxall 2>&1 | FileCheck %s --check-prefix=LOAD
 // RUN: not sea-run %s --program=twosets --max-poison-sets=1 2>&1 | FileCheck %s --check-prefix=CAP
 // RUN: not sea-run %s --program=unused --max-poison-sets=65536 2>&1 | FileCheck %s --check-prefix=CAPFLAG
@@ -62,6 +63,8 @@
 // CAP: status: error
 // CAP: message: more than 1 distinct sets of broken ptr.index promises
 // CAPFLAG: --max-poison-sets must be at most 65535
+// TWO: sea.ptr.index at {{.*}}:[[#L:]]:{{.*}} nusw: base + offset leaves the space (P3): the promise is broken{{.*}}[interp.ptr-index-promise]
+// TWO: sea.ptr.index at {{.*}}:[[#L+1]]:{{.*}} nusw: a product wraps (P1): the promise is broken{{.*}}[interp.ptr-index-promise]
 !am = !sea.mem<!sea.addr<8>, i8>
 
 // computed, never used
@@ -732,6 +735,25 @@ sea.program @structswap {
   sea.cond_br %first, ^h(%s1, %s0, %f : !sa, !sa, i1), ^use
 ^use:
   %p = sea.struct.extract %s1[0] : !sa -> !sea.addr<8>
+  %x = sea.load %m[%p] : !am -> i8
+  sea.halt
+}
+
+// one access carrying two marks: reported in the GEPs' location order
+// (stable, not in the order of their addresses in memory)
+sea.program @twomarks {
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !am
+  %b = sea.const 1 : i8
+  %a = sea.addr.from_int %b : i8 to !sea.addr<8>
+  %hb = sea.const 200 : i8
+  %h = sea.addr.from_int %hb : i8 to !sea.addr<8>
+  %six = sea.const 6 : i8
+  %three = sea.const 3 : i8
+  %q2 = sea.ptr.index %h [%three] strides [24] offset 0 inbounds : !sea.addr<8>, i8
+  %q1 = sea.ptr.index %a [%six] strides [24] offset 0 inbounds : !sea.addr<8>, i8
+  %c = sea.addr.cmp eq, %q2, %a : !sea.addr<8>
+  %p = sea.select %c, %a, %q1 : !sea.addr<8>
   %x = sea.load %m[%p] : !am -> i8
   sea.halt
 }

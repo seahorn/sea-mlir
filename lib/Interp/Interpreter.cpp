@@ -876,6 +876,11 @@ private:
   /// The interned set of `elems` (any order, repeats allowed); 0 if past
   /// RunOptions::maxPoisonSets (poisonOverflow).
   PoisonId internPoison(SmallVector<BrokenPromise, 2> elems);
+  /// The stable order of broken promises, independent of addresses: the
+  /// GEP's location text, then its position in the program, then the part
+  /// broken (`what`), then viaMemory (direct first). Reports and any
+  /// "first" choice use it.
+  bool stableBefore(const BrokenPromise &a, const BrokenPromise &b);
   PoisonId unitePoison(PoisonId a, PoisonId b);
   /// The set `id` with every element marked as gone through memory.
   PoisonId viaMemory(PoisonId id);
@@ -1050,7 +1055,14 @@ private:
   /// loads take the union). The set is an id into `poisonSets`, interned
   /// (`poisonIds`) so that a cell carries it in 16 bits.
   llvm::DenseMap<Value, PoisonId> poison;
+  /// Each set in a stable order (stableBefore), the order checkPromise
+  /// reports them in; `poisonIds` keys the same sets in pointer order, for
+  /// interning only (stable within a run).
   std::vector<SmallVector<BrokenPromise, 1>> poisonSets{1}; // 0: empty
+  /// The GEPs' location text and program order (stableBefore), filled on
+  /// first use.
+  llvm::DenseMap<Operation *, std::string> poisonLocText;
+  llvm::DenseMap<Operation *, unsigned> poisonOpOrder;
   std::map<SmallVector<BrokenPromise, 2>, PoisonId> poisonIds;
   llvm::DenseMap<uint32_t, PoisonId> poisonUnions, poisonViaMemory;
   /// More distinct sets than RunOptions::maxPoisonSets: the run stops
@@ -1174,9 +1186,40 @@ PoisonId Interpreter::internPoison(SmallVector<BrokenPromise, 2> elems) {
     return 0;
   }
   PoisonId id = PoisonId(poisonSets.size());
-  poisonSets.emplace_back(elems.begin(), elems.end());
+  SmallVector<BrokenPromise, 1> stable(elems.begin(), elems.end());
+  llvm::sort(stable, [&](const BrokenPromise &a, const BrokenPromise &b) {
+    return stableBefore(a, b);
+  });
+  poisonSets.push_back(std::move(stable));
   poisonIds.emplace(std::move(elems), id);
   return id;
+}
+
+bool Interpreter::stableBefore(const BrokenPromise &a, const BrokenPromise &b) {
+  auto locText = [&](Operation *op) -> const std::string & {
+    auto [it, fresh] = poisonLocText.try_emplace(op);
+    if (fresh) {
+      llvm::raw_string_ostream os(it->second);
+      os << op->getLoc();
+    }
+    return it->second;
+  };
+  auto order = [&](Operation *op) {
+    if (poisonOpOrder.empty()) {
+      unsigned n = 0;
+      program.walk([&](Operation *o) { poisonOpOrder[o] = n++; });
+    }
+    return poisonOpOrder.lookup(op);
+  };
+  if (a.gep != b.gep) {
+    const std::string &la = locText(a.gep), &lb = locText(b.gep);
+    if (la != lb)
+      return la < lb;
+    return order(a.gep) < order(b.gep);
+  }
+  if (a.what != b.what)
+    return a.what < b.what;
+  return a.viaMemory < b.viaMemory;
 }
 
 PoisonId Interpreter::unitePoison(PoisonId a, PoisonId b) {
@@ -1247,6 +1290,7 @@ void Interpreter::checkPromise(Operation &op, Value addr) {
   PoisonId id = poisonOf(addr);
   if (!id)
     return;
+  // poisonSets[id] is in the stable order (stableBefore)
   for (const BrokenPromise &b : poisonSets[id]) {
     std::string gep;
     llvm::raw_string_ostream os(gep);
