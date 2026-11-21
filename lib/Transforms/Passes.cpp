@@ -295,6 +295,7 @@ void registerPasses() {
   registerPass([] { return createLowerPtrIndexPass(); });
   registerPass([] { return createCheckAlignPass(); });
   registerPass([] { return createCheckPtrIndexPass(); });
+  registerPass([] { return createCheckInbPass(); });
   registerPass([] { return createExpandIntrinsicsPass(); });
   registerPass([] { return createWrapFlagsPass(); });
   registerPass([] { return createPrintStrengthenPass(); });

@@ -78,6 +78,20 @@ std::unique_ptr<mlir::Pass> createCheckAlignPass();
 /// (the paranoid job of the trusted GEP flags, docs/design/PtrIndex.md
 /// section 6).
 std::unique_ptr<mlir::Pass> createCheckPtrIndexPass(bool assumeAsserts = false);
+/// sea-check-inb: before every access of an abstract program, assert that
+/// its span lies in its pointer's object (sea.ptr.dereferenceable; the
+/// A-INB discharge job's instrumentation, docs/design/CheckInb.md); drop
+/// the program's asserts. \p staticDischarge: tier (a), no assert for a
+/// check proved with constants. \p memhavocNullNoop: a memhavoc of null is
+/// a no-op (sea-vc --memhavoc-null=noop), its check passes.
+std::unique_ptr<mlir::Pass> createCheckInbPass(bool staticDischarge = true,
+                                               bool memhavocNullNoop = true);
+/// On each assert sea-check-inb inserts: its id (an i64; the checks in
+/// program order, statically discharged ones included).
+inline constexpr llvm::StringLiteral kInbCheckAttr = "sea.inb_check";
+/// On the sea.program after sea-check-inb: its counters (a dictionary of
+/// i64 attributes: checks, static, left, zero-length).
+inline constexpr llvm::StringLiteral kCheckInbStatsAttr = "sea.check_inb";
 
 /// sea-expand-intrinsics: intrinsic ops (min/max, abs, bswap, funnel shifts,
 /// overflow bits) become core bit-vector ops; with \p keepMulOverflow,

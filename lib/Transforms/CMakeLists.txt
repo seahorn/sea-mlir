@@ -17,6 +17,7 @@ add_mlir_library(SeaTransforms
   SinkAssumes.cpp
   LowerPtrIndex.cpp
   CheckAlign.cpp
+  CheckInb.cpp
   CheckPtrIndex.cpp
   WidenMemory.cpp
   ApplyTracking.cpp
