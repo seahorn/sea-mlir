@@ -121,7 +121,7 @@ sea.program @ag_alone {
 // The verdict rests on that assumption: it is on the discharges line.
 // A-NOWRAP is decided by the program's objects (the symbolic one at its
 // room).
-// DIAG: check-inb.discharges: a-inb a-sep a-null a-nowrap under={{.*}}place.symbolic-size-assume
+// DIAG: check-inb.discharges: a-inb a-sep a-null a-nowrap under={{.*}}place.symbolic-size-assume,symbolic-size-bound
 sea.program @diag {
   %m0 = sea.mem.nondet "m" [0] : !m
   %n = sea.nondet "n" [1] : i64

@@ -262,8 +262,9 @@ inline bool partArguments(llvm::ArrayRef<const char *> args,
       "check-inb", "check-inb-dir", "check-inb-keep", "check-inb-static",
       "check-inb-max-time", "program", "format", "vcgen-only", "config",
       "lower", "lower-opt", "lower-disable", "range-fold", "expand-memmove",
-      "box-all-expand", "place-in", "place-out", "widen-memory",
-      "widen-memory-report", "widen-memory-per-class", "ptr-mode",
+      "box-all-expand", "place-in", "place-out", "symbolic-size",
+      "max-symbolic-size", "widen-memory", "widen-memory-report",
+      "widen-memory-per-class", "ptr-mode",
       // diagnostic output (logs,
       // crash reproducers, IR dumps):
       // not passed on, so the job
@@ -436,6 +437,9 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     if (sz.ugt(largestObject))
       largestObject = sz;
   });
+  // placement's bounds of symbolic sizes, counted on the program (read
+  // before the split: the program is not used after it)
+  const bool sizeBound = program->hasAttr(kSymbolicSizeBoundAttr);
   // the memhavocs guarded (or dropped) as no-ops on the null pointer
   if (auto g =
           program->getAttrOfType<mlir::IntegerAttr>(kMemhavocNullGuardsAttr))
@@ -564,6 +568,11 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
   // no part is left to report it
   if (nullNoop)
     jobUnder.insert("memhavoc-null-noop");
+  // placement assumed allocations of symbolic size to fit their room
+  // (counted on the program, assume.symbolic-size-bound), even when no part
+  // is left to report it
+  if (sizeBound)
+    jobUnder.insert("symbolic-size-bound");
   // the lowering's explicit assumptions: the job's own `*-assume` warnings
   for (const std::string &k : diag::warningKinds())
     if (llvm::StringRef(k).ends_with("-assume"))

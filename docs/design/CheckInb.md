@@ -90,7 +90,9 @@ result: sat
   `addr0-is-null`, since the job's lowering places null at address 0; the
   job's own warnings of a kind ending in `-assume` (an assumption made
   explicit in the program, such as `place.symbolic-size-assume`: an
-  allocation of symbolic size is assumed to fit its room); and
+  allocation of symbolic size is assumed to fit its room);
+  `symbolic-size-bound` when placement bounded such an allocation by an
+  assume (counted on the program, so also when no part is left); and
   `memhavoc-null-noop` when a check passes for the null pointer itself
   (`sea-check-inb`'s `null-noop` count) or the lowering guarded or dropped
   a memhavoc whose pointer may be null, even when that check folds away
@@ -244,7 +246,12 @@ integer cannot be discharged this way. The pass warns
 op through `ptr.add` and `ptr.index`.
 
 The program's own asserts are dropped: the job checks memory safety, not
-the program's property. Its assumes stay.
+the program's property. Its assumes stay, and so do premise asserts
+(`sea.premise`). With `--symbolic-size=assert`, placement (which runs
+after the instrumentation) makes each bound of a symbolic allocation size
+a premise assert, and the split makes it a part of its own (`id=-1`): a
+part that fails it ends with `premise.failed` (status 4, `inconclusive`),
+not a bounds violation.
 
 The job lowers boxes first: `sea-apply-tracking`, then `sea-lower-box-all`
 (with `--box-all-expand`), as `--lower` starts. The loads of a

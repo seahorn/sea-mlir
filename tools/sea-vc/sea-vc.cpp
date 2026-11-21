@@ -5028,7 +5028,8 @@ int main(int argc, char **argv) {
     jo.lower.opt = lowerOpt;
     jo.lower.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
     jo.lower.disable = lowerDisableMask;
-    jo.lower.place = sea::PlaceFiles{placeIn, placeOut};
+    jo.lower.place =
+        sea::PlaceFiles{placeIn, placeOut, symbolicSizeOpt, maxSymbolicSizeOpt};
     jo.lower.rangeFold = rangeFoldOpt;
     jo.lower.expandMemMove = expandMemMoveOpt;
     jo.lower.ptrCompanion = ptrCompanion != CompanionMode::Off;

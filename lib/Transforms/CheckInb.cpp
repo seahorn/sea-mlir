@@ -43,7 +43,9 @@
 // check stays (the verdict must not change).
 //
 // The program's own asserts are dropped: the job checks memory safety on
-// every execution, not the program's property; its assumes stay. A tagged
+// every execution, not the program's property; its assumes stay. Premise
+// asserts (kPremiseAttr, placement's symbolic-size=assert) stay too: they
+// are not the property, and nothing assumes them. A tagged
 // assert (sea-vc --reach) leaves its reach-site marker, as in
 // sea-check-align. A sea.box.all must be lowered first (sea-lower-box-all,
 // as sea-vc --check-inb does): its body's loads then sit at the box's
@@ -69,7 +71,7 @@
 //     pointer address (!sea.ptr), and no sea.box.all is left (lowered
 //     first); otherwise error check-inb.unsupported.
 //   Produces: one assert per access span not discharged statically, no
-//     original assert, and the counters on the program
+//     original assert but the premise asserts, and the counters on the program
 //     (kCheckInbStatsAttr): checks (spans checked, discharged ones
 //     included), static (discharged by tier (a)), left (asserts inserted),
 //     zero-length (constant length 0: no check), and null-noop (when not
@@ -198,7 +200,10 @@ void CheckInbPass::runOnOperation() {
   OpBuilder b(ctx);
   auto i1 = IntegerType::get(ctx, 1);
   SmallVector<AssertOp> original;
-  program.walk([&](AssertOp a) { original.push_back(a); });
+  program.walk([&](AssertOp a) {
+    if (!a->hasAttr(kPremiseAttr))
+      original.push_back(a);
+  });
 
   uint64_t checks = 0, discharged = 0, left = 0, zeroLength = 0,
            nullNoopChecks = 0;
@@ -348,10 +353,13 @@ void CheckInbPass::runOnOperation() {
           return a;
         }()));
 
-  // postcondition: no original assert, every assert is a check
+  // postcondition: no original assert, every assert is a check (premise
+  // asserts aside)
   unsigned asserts = 0;
   bool foreign = false;
   program.walk([&](AssertOp a) {
+    if (a->hasAttr(kPremiseAttr))
+      return;
     ++asserts;
     foreign = foreign || !a->hasAttr(kInbCheckAttr);
   });
