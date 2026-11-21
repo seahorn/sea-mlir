@@ -432,6 +432,12 @@ public:
   ///    A are lexicographically smaller is kept (canonical, deterministic).
   ///    RW_1: the new `=` at level 0, its sides (sums of normal terms, sorted
   ///    as the add rule sorts them) at level 1;
+  ///  - low zero bits, on the linear form: with z the low bits that are zero
+  ///    in every value of the terms of a side (zeroLow, 3 levels down; an
+  ///    empty side counts w), the equality is false when its numeral is not
+  ///    0 mod 2^z. A = d' (bv.eq.low-zero: 24x = 7) or A + d = B
+  ///    (bv.eq.low-zero2: 32x + 20 = 32y, z = min of the two sides; the
+  ///    difference A - B = -d is 0 mod 2^z and 2^z divides 2^w). RW_DONE;
   ///  - otherwise the two sides are ordered by id (bv.eq.order), RW_1 for the
   ///    same reason.
   /// No assumption.
@@ -548,6 +554,18 @@ public:
       unsigned z = zeroLow(l, w, 3);
       if (z && modPow2(numVal(r), z) != 0) {
         m_stats.count("bv.eq.low-zero");
+        return {mk<FALSE>(m_efac), RWStatus::RW_DONE};
+      }
+    }
+    // the same with terms on both sides, A + d = B: if every value of A and
+    // of B has its low z bits zero, so has A - B, which is -d; 2^z divides
+    // 2^w (z <= w), so this holds mod 2^w. 32x + 20 = 32y is false
+    // (bv.eq.low-zero2). d is the numeral of l after the swap; the verdict
+    // is the same for -d.
+    if (!A2.empty() && !B2.empty() && d != 0) {
+      unsigned z = std::min(zeroLowSum(A2, w), zeroLowSum(B2, w));
+      if (z && modPow2(d, z) != 0) {
+        m_stats.count("bv.eq.low-zero2");
         return {mk<FALSE>(m_efac), RWStatus::RW_DONE};
       }
     }
@@ -734,6 +752,19 @@ public:
   }
 
 private:
+  /// zeroLow of the sum of \p terms (no numeral, at least one term) without
+  /// building it: as zeroLow(sum(terms, 0, w), w, 3), whose bvadd takes one
+  /// level when there are two terms or more. Builds no node (a new node
+  /// would take an id, and ids order the terms of later sums).
+  unsigned zeroLowSum(llvm::ArrayRef<Expr> terms, unsigned w) {
+    if (terms.size() == 1)
+      return zeroLow(terms.front(), w, 3);
+    unsigned z = w;
+    for (size_t i = 0; i < terms.size() && z; ++i)
+      z = std::min(z, zeroLow(terms[i], w, 2));
+    return z;
+  }
+
   /// A lower bound of the number of low bits of \p e (a bit-vector of width
   /// \p w) that are zero whatever the values of its variables, capped at w;
   /// looks \p depth levels down (ite makes it exponential).
