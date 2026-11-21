@@ -819,6 +819,16 @@ private:
   /// placement) its object is less aligned, so placement may break it.
   void checkAlign(Operation &op, Value idx, std::optional<uint64_t> align,
                   StringRef name = "align");
+  /// Sets the broken ptr.index promises `to` carries (`poison`): `gep`'s
+  /// own, if set, and those of the values in `from` (its address chain).
+  void passPoison(Value to, ArrayRef<Value> from, Operation *gep = nullptr,
+                  StringRef what = {});
+  /// passPoison for a pure op that just defined its result: addr.add (its
+  /// base) and select (the selected operand); others carry none.
+  void propagatePoison(Operation &op);
+  /// Warns (interp.ptr-index-promise) for each broken promise the address
+  /// `addr` of the access `op` carries: the promise is a fact only there.
+  void checkPromise(Operation &op, Value addr);
   /// The object name and offset of a key (object empty for concrete).
   std::pair<std::string, APInt> splitKey(const Buffer &b, const APInt &key);
 
@@ -964,6 +974,19 @@ private:
   // prints
   bool trackProv = false; // a placed program: address provenance
   llvm::DenseMap<Value, Prov> prov;
+  /// docs/design/PtrIndex.md, "Where the promise is a fact": a broken
+  /// no-wrap promise is poison in LLVM, UB only when the pointer is the
+  /// address of an access. A value's entry lists the flagged sea.ptr.index
+  /// ops it comes from whose promise this run broke, each once, with the
+  /// part broken. It comes from them through sea-check-ptr-index's chain
+  /// (the GEP, a GEP's base, a ptr.add / addr.add base, the selected
+  /// operand of a select) and, unlike that static walk, through block
+  /// arguments. Not through memory or integer conversions.
+  struct BrokenPromise {
+    Operation *gep;
+    StringRef what;
+  };
+  llvm::DenseMap<Value, SmallVector<BrokenPromise, 1>> poison;
   llvm::DenseMap<Operation *, unsigned> segmentObject;
   /// RunResult::earlierVersionLoads, as a set
   llvm::DenseSet<Operation *> earlierVersionSeen;
@@ -1066,6 +1089,54 @@ void Interpreter::checkAlign(Operation &op, Value idx,
                op.getName().getStringRef() + " " + name + " " + Twine(*align) +
                    ": the promise is broken (" + broken + ")",
                op.getLoc());
+}
+
+void Interpreter::passPoison(Value to, ArrayRef<Value> from, Operation *gep,
+                             StringRef what) {
+  SmallVector<BrokenPromise, 1> out;
+  auto add = [&](const BrokenPromise &b) {
+    if (llvm::none_of(out,
+                      [&](const BrokenPromise &o) { return o.gep == b.gep; }))
+      out.push_back(b);
+  };
+  if (gep)
+    add({gep, what});
+  for (Value v : from)
+    if (auto it = poison.find(v); it != poison.end())
+      for (const BrokenPromise &b : it->second)
+        add(b);
+  if (out.empty())
+    poison.erase(to);
+  else
+    poison[to] = std::move(out);
+}
+
+void Interpreter::propagatePoison(Operation &op) {
+  if (poison.empty())
+    return; // nothing to pass on, no stale entry
+  if (auto aa = dyn_cast<AddrAddOp>(op))
+    passPoison(aa.getResult(), {aa.getOperand(0)});
+  else if (auto sel = dyn_cast<SelectOp>(op))
+    passPoison(sel.getResult(),
+               {env.lookup(sel.getCondition()).isOne() ? sel.getTrueValue()
+                                                       : sel.getFalseValue()});
+}
+
+void Interpreter::checkPromise(Operation &op, Value addr) {
+  auto it = poison.find(addr);
+  if (it == poison.end())
+    return;
+  for (const BrokenPromise &b : it->second) {
+    std::string gep;
+    llvm::raw_string_ostream os(gep);
+    os << b.gep->getLoc();
+    diag::warn("interp.ptr-index-promise",
+               "sea.ptr.index at " + gep + " " + b.what +
+                   ": the promise is broken (a poison pointer in LLVM), and "
+                   "this " +
+                   op.getName().getStringRef() + " uses it as its address",
+               op.getLoc());
+  }
 }
 
 FailureOr<APInt> Interpreter::cellKey(Buffer &b, Value idx, uint64_t k,
@@ -1205,6 +1276,7 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
   }
   if (auto ld = dyn_cast<LoadOp>(op)) {
     checkAlign(op, ld.getAddr(), ld.getAlign());
+    checkPromise(op, ld.getAddr());
     Buffer &buf = *mems.lookup(ld.getMem());
     if (buf.current != ld.getMem() && earlierVersionSeen.insert(&op).second)
       result.earlierVersionLoads.push_back(&op);
@@ -1284,13 +1356,22 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
     return success();
   }
 
-  if (auto st = dyn_cast<StoreOp>(op))
+  // the accesses of sea-check-ptr-index; a range of length 0 accesses
+  // nothing
+  if (auto st = dyn_cast<StoreOp>(op)) {
     checkAlign(op, st.getAddr(), st.getAlign());
-  else if (auto ms = dyn_cast<MemSetOp>(op))
+    checkPromise(op, st.getAddr());
+  } else if (auto ms = dyn_cast<MemSetOp>(op)) {
     checkAlign(op, ms.getAddr(), ms.getAlign());
-  else if (auto mv = dyn_cast<MemMoveOp>(op)) {
+    if (!env.lookup(ms.getLen()).isZero())
+      checkPromise(op, ms.getAddr());
+  } else if (auto mv = dyn_cast<MemMoveOp>(op)) {
     checkAlign(op, mv.getAddr(), mv.getAlign());
     checkAlign(op, mv.getSrcAddr(), mv.getSrcAlign(), "src_align");
+    if (!env.lookup(mv.getLen()).isZero()) {
+      checkPromise(op, mv.getAddr());
+      checkPromise(op, mv.getSrcAddr());
+    }
   }
 
   if (auto im = dyn_cast<IsModifiedOp>(op)) {
@@ -1550,21 +1631,23 @@ LogicalResult Interpreter::execPtr(Operation &op, std::string &error) {
     Ptr p = ptrOf(pa.getPtr());
     p.off = p.off + env.lookup(pa.getOffset());
     setPtr(p);
+    passPoison(pa.getResult(), {pa.getPtr()});
     return success();
   }
   if (auto pi = dyn_cast<PtrIndexOp>(op)) {
-    // docs/design/PtrIndex.md: the value is modular; a broken promise is a
-    // warning (in LLVM a poison pointer, UB only when used), never a stop
+    // docs/design/PtrIndex.md: the value is modular; a broken promise makes
+    // a poison pointer in LLVM, UB only when it is the address of an
+    // access: remembered here, a warning at such an access
+    // (checkPromise), never a stop
     SmallVector<APInt> idx = valuesOf(pi.getIndices());
     APInt off = ptrIndexOffset(pi, idx);
     std::optional<APInt> base;
     if (isa<AddrType>(pi.getBase().getType()))
       base = env.lookup(pi.getBase());
     if (std::optional<StringRef> broken = brokenPtrIndexPromise(pi, base, idx))
-      diag::warn("interp.ptr-index-promise",
-                 "sea.ptr.index " + *broken +
-                     ": the promise is broken (a poison pointer in LLVM)",
-                 op.getLoc());
+      passPoison(pi.getResult(), {pi.getBase()}, pi, *broken);
+    else
+      passPoison(pi.getResult(), {pi.getBase()});
     if (base) {
       define(pi.getResult(), *base + off);
       if (trackProv)
@@ -1761,6 +1844,18 @@ LogicalResult Interpreter::jump(Block *dest, ValueRange operands,
     if (inProv[i])
       prov[arg] = *inProv[i];
   }
+  // the broken promises an argument carries (a phi passes poison on): all
+  // read before any is set, as the arguments are bound at once
+  if (!poison.empty()) {
+    SmallVector<SmallVector<BrokenPromise, 1>> carried;
+    for (Value from : operands)
+      carried.push_back(poison.lookup(from));
+    for (auto [arg, c] : llvm::zip_equal(dest->getArguments(), carried))
+      if (c.empty())
+        poison.erase(arg);
+      else
+        poison[arg] = std::move(c);
+  }
   for (BlockArgument arg : dest->getArguments())
     afterValue(arg);
   return success();
@@ -1777,6 +1872,7 @@ LogicalResult Interpreter::execBodyOp(Operation &op, std::string &error) {
     bool c = env.lookup(sel.getCondition()).isOne();
     defineLeaves(sel.getResult(),
                  leavesOf(c ? sel.getTrueValue() : sel.getFalseValue()));
+    propagatePoison(op);
     return success();
   }
   if (isa<StructCreateOp, StructExtractOp, StructInsertOp>(op)) {
@@ -1799,6 +1895,7 @@ LogicalResult Interpreter::execBodyOp(Operation &op, std::string &error) {
   define(op.getResult(0), *v);
   if (trackProv)
     propagateProv(op, operands);
+  propagatePoison(op);
   return success();
 }
 
@@ -1959,6 +2056,7 @@ RunResult Interpreter::run() {
         bool c = env.lookup(sel.getCondition()).isOne();
         defineLeaves(sel.getResult(),
                      leavesOf(c ? sel.getTrueValue() : sel.getFalseValue()));
+        propagatePoison(op);
         continue;
       }
       if (auto sn = dyn_cast<StructNondetOp>(op)) {
@@ -2031,6 +2129,7 @@ RunResult Interpreter::run() {
       define(op.getResult(0), *v);
       if (trackProv)
         propagateProv(op, operands);
+      propagatePoison(op);
     }
     if (!next)
       return finish(RunStatus::Error, block->empty() ? nullptr : &block->back(),

@@ -18,6 +18,12 @@
 // errors). Pointers have no address: ptr.to_int, ptr.from_int of a non-zero
 // value, and reading a pointer cell as an integer stop the run.
 //
+// Front-end promises are warnings, never stops. A sea.ptr.index whose
+// no-wrap promise breaks is poison in LLVM, UB only when it is used: the
+// interpreter remembers it and warns (interp.ptr-index-promise) at an
+// executed access whose address comes from it (docs/design/PtrIndex.md
+// section 6).
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef SEA_INTERP_INTERPRETER_H

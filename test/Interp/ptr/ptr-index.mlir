@@ -9,7 +9,8 @@
 
 // sea.ptr.index (docs/design/PtrIndex.md): the value is
 // base + sum sext(i_k)*s_k + c (mod 2^n); a broken promise is a warning
-// (interp.ptr-index-promise), never a stop. 8-bit addresses.
+// (interp.ptr-index-promise) at an access through the GEP, never a stop
+// (ptr-index-use.mlir: where it is reported). 8-bit addresses.
 !am = !sea.mem<!sea.addr<8>, i8>
 !pm = !sea.mem<!sea.ptr<64>, i8>
 
@@ -59,36 +60,45 @@ sea.program @abstract {
 }
 
 // promise P1 broken: 6 * 24 = 144 does not fit 8 signed bits
-// P1: sea.ptr.index nusw: a product wraps (P1): the promise is broken{{.*}}[interp.ptr-index-promise]
+// P1: sea.ptr.index at {{.*}} nusw: a product wraps (P1): the promise is broken{{.*}}[interp.ptr-index-promise]
 // P1: status: halted
 sea.program @p1 {
   %b = sea.const 1 : i8
   %a = sea.addr.from_int %b : i8 to !sea.addr<8>
   %i = sea.const 6 : i8
   %q = sea.ptr.index %a [%i] strides [24] offset 0 inbounds : !sea.addr<8>, i8
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !am
+  %x = sea.load %m[%q] : !am -> i8
   sea.halt
 }
 
 // promise P2 broken: 5*24 = 120 and (-2)*(-4) = 8 fit; their sum 128
 // does not
-// P2: sea.ptr.index nusw: the offset wraps (P2): the promise is broken
+// P2: sea.ptr.index at {{.*}} nusw: the offset wraps (P2): the promise is broken
 sea.program @p2 {
   %b = sea.const 1 : i8
   %a = sea.addr.from_int %b : i8 to !sea.addr<8>
   %i = sea.const 5 : i8
   %j = sea.const -2 : i8
   %q = sea.ptr.index %a [%i, %j] strides [24, -4] offset 0 nusw : !sea.addr<8>, i8, i8
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !am
+  %x = sea.load %m[%q] : !am -> i8
   sea.halt
 }
 
 // promise P3 broken: 200 + 72 = 272 leaves the space above; 10 - 16 =
 // -6 below
-// P3: sea.ptr.index nusw: base + offset leaves the space (P3): the promise is broken
+// P3: sea.ptr.index at {{.*}} nusw: base + offset leaves the space (P3): the promise is broken
 sea.program @p3 {
   %b = sea.const 200 : i8
   %a = sea.addr.from_int %b : i8 to !sea.addr<8>
   %i = sea.const 3 : i8
   %q = sea.ptr.index %a [%i] strides [24] offset 0 inbounds : !sea.addr<8>, i8
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !am
+  %x = sea.load %m[%q] : !am -> i8
   sea.halt
 }
 sea.program @p3under {
@@ -96,16 +106,22 @@ sea.program @p3under {
   %a = sea.addr.from_int %b : i8 to !sea.addr<8>
   %i = sea.const -1 : i8
   %q = sea.ptr.index %a [%i] strides [16] offset 0 inbounds : !sea.addr<8>, i8
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !am
+  %x = sea.load %m[%q] : !am -> i8
   sea.halt
 }
 
 // under nuw the index -1 is 255 unsigned; 255 * 2 wraps 8 unsigned bits
-// NUW: sea.ptr.index nuw: a product wraps (P1): the promise is broken
+// NUW: sea.ptr.index at {{.*}} nuw: a product wraps (P1): the promise is broken
 sea.program @nuw {
   %b = sea.const 0 : i8
   %a = sea.addr.from_int %b : i8 to !sea.addr<8>
   %i = sea.const -1 : i8
   %q = sea.ptr.index %a [%i] strides [2] offset 0 nuw : !sea.addr<8>, i8
+  %z = sea.const 0 : i8
+  %m = sea.mem.const %z : !am
+  %x = sea.load %m[%q] : !am -> i8
   sea.halt
 }
 

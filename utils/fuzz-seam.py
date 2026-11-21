@@ -171,8 +171,8 @@ def as_ptr_index(text, rng, strides=(1,), in_bounds=True):
     is drawn, in the in-bounds modes (in_bounds), only when the promise
     holds: s > 0, b an alloca or a select of allocas (the smallest size
     taken), and every offset s * i in [0, size]; otherwise no flag. In the
-    violating modes the flag is drawn at random, so a broken promise
-    (interp.ptr-index-promise) is still reached. Values of other widths and other ops are kept."""
+    violating modes the flag is drawn at random, so a broken promise at an
+    access (interp.ptr-index-promise) is still reached. Values of other widths and other ops are kept."""
     consts = {}  # i32 constant -> its signed value
     sizes = {}  # pointer at offset 0 of objects -> the smallest size
     icmps = {}  # icmp ule / uge result -> (value, pred, const, line index)

@@ -898,10 +898,12 @@ def Sea_PtrIndexOp : Sea_Op<"ptr.index", [Pure,
     - P3: `p + O` (unsigned plus signed) is in [0, 2^n), no wrap above or
       below zero.
     `nuw`: P1-P3 with unsigned products, offset and sum. Like `align`, no
-    value depends on them; the interpreter warns
-    (`interp.ptr-index-promise`) when one is broken, a pass may drop them.
-    In LLVM a broken flag makes the GEP poison, UB only when the pointer is
-    used: the promise is a fact at an access, not at the op.
+    value depends on them, a pass may drop them. In LLVM a broken flag
+    makes the GEP poison, UB only when the pointer is used: the promise is a
+    fact at an access, not at the op. The interpreter warns
+    (`interp.ptr-index-promise`) when an executed access (a load, a store,
+    a memset / memmove of nonzero length) has an address that comes from an
+    op whose promise is broken.
 
     Every stride is nonzero. The index list may be empty: a constant-only
     GEP with a promise (`&t->count` inbounds, PtrIndex.md rev 7, A5); without

@@ -794,6 +794,24 @@ made by the expansion, counts `premise.a-nowrap`.
 - The interpreter warns `interp.ptr-index-promise` once per kind (a
   diagnostic, as interp.align-promise). It does not stop: a broken promise
   on a never-used pointer is a legal program.
+  - It warns where the promise is a fact (rev 3, section 1): at an
+    executed load, store, or memset / memmove of nonzero length whose
+    address comes from a ptr.index whose promise broke. Computing,
+    comparing or storing such a pointer is silent, and so is an access
+    on a path that does not run.
+  - "Comes from" is the chain of sea-check-ptr-index, taken dynamically:
+    the ptr.index itself, a ptr.index's base, a ptr.add / addr.add base,
+    and the operand the run's select picked.
+  - Two differences from the check job:
+    - Block arguments (phis) pass a broken promise on. The job does not
+      follow them (check-ptr-index.phi), so the interpreter can warn at
+      an access where the job asserts nothing.
+    - The job asserts at a memset / memmove whatever its length; the
+      interpreter is silent at a length of 0. The job is the stricter.
+  - Neither follows memory (a pointer stored and loaded back) or the
+    integer conversions.
+  - memhavoc is not an access here, as in the check job.
+  - The warning is at the access and names the ptr.index.
 
 ## 7. Front end
 
