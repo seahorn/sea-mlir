@@ -22,8 +22,9 @@ Verify under named assumptions; never drop one silently.
   `result: unsat`, any `seam.out-of-object:` line (the `unsat` holds only
   if those accesses do not execute), `assume.a-inb`
   (opt-in, off unless `--narrow-offsets` is given: reads narrowed under
-  A-INB; `--ack-own` is no premise for unsat, a completeness-only
-  assumption shown by the `vc.ackermann-own-*` counters), and also
+  A-INB; `--ack-own` and the premise classes of `--ack-arm` are no
+  premise for unsat, a completeness-only assumption shown by the
+  `vc.ackermann-own-*` and `vc.ackermann-arm-*` counters), and also
   `assume.memset-bound`, `assume.symbolic-size-bound` (allocations of
   non-constant size fit the room placement gave them;
   `--symbolic-size=assert` checks it instead, and a `premise.failed:`

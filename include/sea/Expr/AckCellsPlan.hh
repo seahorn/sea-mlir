@@ -129,10 +129,11 @@ struct CellsPlan {
   /// distinct candidate progression of a group and base), groups whose C is
   /// a bound (an object over kMaxBitmap units)
   uint64_t cellsMarked = 0, groupsCellsBound = 0;
-  /// constrained pairs of the lowering; of them those ARM separates (the
-  /// maps of both reads disjoint): by different bases (A-SEP), by intervals
-  /// of one base (exact)
-  uint64_t pairs = 0, armCrossBase = 0, armInterval = 0;
+  /// constrained pairs of the lowering; of them those ARM separates
+  /// (armApart, the classes of --ack-arm): by different bases (A-INB +
+  /// A-OWN), by intervals of one base once size-0 provenances are dropped
+  /// (A-INB), by intervals of one base (exact)
+  uint64_t pairs = 0, armCrossBase = 0, armSize0 = 0, armInterval = 0;
   /// constrained pairs of two groups, one of them converted (count, bits)
   uint64_t otherCount = 0, otherBits = 0;
   /// candidates the difference decider dropped (kDeciderFilter)
@@ -182,6 +183,7 @@ struct CellsPlan {
     line("keep").value(keep);
     line("pairs").value(pairs);
     line("arm-pairs-cross-base").value(armCrossBase);
+    line("arm-pairs-size0").value(armSize0);
     line("arm-pairs-interval").value(armInterval);
     line("converted").value(cConv);
     line("reads-converted").value(cReads);
@@ -487,11 +489,20 @@ inline CellsPlan planCells(
   for (const auto &p : ack.constrainedPairs()) {
     ++plan.pairs;
     const auto &mk = maps[p.array][p.k], &ml = maps[p.array][p.l];
-    if (mk && ml) {
-      bool usedCross = false;
-      if (AddrRangeMap::disjoint(*mk, *ml, true, nonZero, &usedCross))
-        ++(usedCross ? plan.armCrossBase : plan.armInterval);
-    }
+    if (mk && ml)
+      switch (armApart(*mk, *ml, true, nonZero)) {
+      case ArmApart::No:
+        break;
+      case ArmApart::Interval:
+        ++plan.armInterval;
+        break;
+      case ArmApart::Size0:
+        ++plan.armSize0;
+        break;
+      case ArmApart::CrossBase:
+        ++plan.armCrossBase;
+        break;
+      }
     long gk = groupOf[p.array][p.k], gl = groupOf[p.array][p.l];
     if (gk == gl) {
       if (gk >= 0)

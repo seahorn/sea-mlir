@@ -109,11 +109,11 @@ overflows into the padding after an object breaks A-INB and keeps A-NULL,
 and keeps A-SEP unless an access through another provenance reaches the
 same padding cell.
 
-**A-OWN (ownership)**, opt-in (`sea-vc --ack-own`, Ackermann.md, "The
-ownership drop"): no access through one object touches another object's
-cells, reads included. A-SEP does not imply it (two reads past their
-objects' ends can meet in a gap cell; A-SEP is about pairs with a write);
-A-INB of every access does. No SeaM rule uses it; the Ackermann lowering
+**A-OWN (ownership)**, opt-in (`sea-vc --ack-own` and `--ack-arm`,
+Ackermann.md, "The ownership drop", "ARM separation"): no access through
+one object touches another object's cells, reads included. A-SEP does not
+imply it (two reads past their objects' ends can meet in a gap cell; A-SEP
+is about pairs with a write); A-INB of every access does. No SeaM rule uses it; the Ackermann lowering
 uses it, with A-INB of one read, to drop the constraint of two reads of
 different objects. This is no premise of an unsat answer (the drop only adds
 models); it matters for sat answers and is not on the `assume.*` ledger

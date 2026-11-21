@@ -44,7 +44,7 @@
 // RUN: not sea-vc %t/broken.mlir --lower --seam --ack-own --brunch-stats 2>&1 | FileCheck %s --check-prefix=BROKEN
 // BROKEN-DAG: vc.ackermann-own-pairs: 1
 // BROKEN-DAG: vc.ackermann-model: {{.*}} inconsistent=1 {{.*}}own-broken=1
-// BROKEN-DAG: --ack-own dropped {{.*}}[vc.ackermann-inconsistent]
+// BROKEN-DAG: --ack-own {{.*}}dropped {{.*}}[vc.ackermann-inconsistent]
 // BROKEN-DAG: BRUNCH_STAT status 4
 // The same program placed first (no abstract program to rerun): the replay
 // reads the one cell and does not fail the assertion, so nothing confirms

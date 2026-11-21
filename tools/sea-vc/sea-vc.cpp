@@ -649,6 +649,21 @@ static cl::opt<bool> ackOwn(
              "(docs/design/Ackermann.md, \"The ownership drop\")"),
     cl::init(false));
 
+static cl::opt<bool> ackArm(
+    "ack-arm",
+    cl::desc("ARM separation in the Ackermann lowering (with --seam): a pair "
+             "of reads whose ARM maps (of the addresses the reads' selects "
+             "had before the boundary) share no value gets no constraint. One "
+             "base with disjoint offset intervals: exact, right after the "
+             "difference decider (vc.ackermann-arm-interval-pairs). With "
+             "SeaM's premises on, after the ownership drop: different bases "
+             "or a size-0 provenance, resting on A-INB/A-OWN as --ack-own "
+             "and handled as its pairs in the model check (own-broken, "
+             "vc.ack-own-collision-excused); vc.ackermann-arm-cross-base-"
+             "pairs / -arm-size0-pairs. Off by default "
+             "(docs/design/Ackermann.md, \"ARM separation\")"),
+    cl::init(false));
+
 static cl::opt<bool> ackCellsPlan(
     "ack-cells-plan",
     cl::desc("Cell representatives, the plan only (with --seam and the "
@@ -721,12 +736,14 @@ static cl::opt<std::string> ackRelaxSmt2(
     cl::value_desc("file"), cl::init(""));
 
 /// vc.ackermann-inconsistent when the pairs at fault are --ack-own drops
+/// (or --ack-arm's premise classes)
 static constexpr const char *ownBrokenMessage =
     "the model puts two reads of different objects whose constraint "
-    "--ack-own dropped at one index with different cells: it breaks A-INB "
-    "or A-OWN (an access through one object reaches another object's "
-    "cells), or a read that does not execute lands on another object; the "
-    "answer is not built on it (run without --ack-own)";
+    "--ack-own or --ack-arm dropped at one index with different cells: it "
+    "breaks A-INB or A-OWN (an access through one object reaches another "
+    "object's cells), or a read that does not execute lands on another "
+    "object; the answer is not built on it (run without --ack-own / "
+    "--ack-arm)";
 
 static cl::opt<bool> narrowOffsets(
     "narrow-offsets",
@@ -2742,6 +2759,19 @@ TYPICAL:
                                  #   needs the premises
                                  #   (else vc.ack-own: off-...).
                                  #   docs/design/Ackermann.md
+  sea-vc p.mlir --seam --ack-arm  # (off by default) ARM separation in
+                                 #   the Ackermann lowering: two reads whose
+                                 #   ARM maps (over the addresses of their
+                                 #   selects) share no value get no
+                                 #   constraint. One base, disjoint
+                                 #   intervals: exact, after the decider.
+                                 #   Different bases or a size-0 provenance
+                                 #   (with the premises; else vc.ack-arm:
+                                 #   exact-only): A-INB / A-OWN, handled as
+                                 #   --ack-own's pairs (own-broken, the
+                                 #   excused run); after --ack-own when both
+                                 #   are on. vc.ackermann-arm-*;
+                                 #   docs/design/Ackermann.md
   sea-vc p.mlir --seam --ack-cells-plan  # (off by default) the cells
                                  #   plan, counts only: per group of objects
                                  #   (ARM over the reads' access addresses),
@@ -3057,6 +3087,13 @@ OUTPUT (stdout, `key: value` lines):
                                   pairs of two objects dropped, pairs of
                                   one object and pairs with a read in no
                                   known object kept) /
+                                  -arm-reads / -arm-interval-pairs /
+                                  -arm-size0-pairs / -arm-cross-base-pairs
+                                  (--ack-arm: reads with an ARM map; pairs
+                                  dropped: one base, disjoint intervals
+                                  (exact); disjoint once size-0
+                                  provenances are dropped (A-INB);
+                                  different bases (A-INB + A-OWN)) /
                                   -constraints: arrays lowered and kept,
                                   distinct reads, read pairs, pairs of two
                                   different numerals, pairs S + c1, S + c2
@@ -3073,6 +3110,11 @@ OUTPUT (stdout, `key: value` lines):
                                   (resting on a memory operation's or an
                                   expansion's A-INB); the pair counters are
                                   vc.ackermann-own-*)
+  vc.ack-arm: on|exact-only|off-no-seam|off-no-ackermann|off-seam-words
+                                  (--ack-arm: whether ARM separation ran;
+                                  exact-only: SeaM's premises off, only
+                                  the exact class; the pair counters are
+                                  vc.ackermann-arm-*)
   vc.cells-plan: on|off-no-premises|off-no-ackermann|off-seam-words
                                   (--ack-cells-plan; on: vc.cells-plan-
                                   reads / -reads-arm-interval / -reads-full-
@@ -3086,8 +3128,9 @@ OUTPUT (stdout, `key: value` lines):
                                   -groups-cells-bound / -arms / -decider-
                                   dropped / -unknown-constraints / -keep,
                                   -pairs / -arm-pairs-cross-base / -arm-
-                                  pairs-interval (the constrained pairs,
-                                  those ARM separates),
+                                  pairs-size0 / -arm-pairs-interval (the
+                                  constrained pairs, those ARM separates,
+                                  by --ack-arm's classes),
                                   by count: -converted / -reads-converted /
                                   -removed / -added / -other-object-pairs,
                                   by bits: -bits-converted / -bits-reads-
@@ -3183,6 +3226,7 @@ OUTPUT (stdout, `key: value` lines):
                                   cells: a lowering bug, error
                                   vc.ackermann-inconsistent, status 2;
                                   own-broken, of them: pairs --ack-own
+                                  (or --ack-arm across bases / size 0)
                                   dropped, the model breaks A-INB / A-OWN
                                   or a read that does not execute lands on
                                   another object, same error; own-excused:
@@ -4333,8 +4377,9 @@ model (a value differs, or the run shows no failure of the property:
 vc.replay-no-failure): a bug in the VC or the interpreter, or a load of an earlier memory
 version whose cell was clobbered (the in-place interpreter sees the new
 value, the VC the old one); also 2 when the model of the Ackermann lowering
-is not a function on an array (vc.ackermann-inconsistent), except (--ack-own)
-when every such pair is one the ownership drop dropped and the replay fails
+is not a function on an array (vc.ackermann-inconsistent), except (--ack-own,
+--ack-arm) when every such pair is one the ownership drop (or ARM's premise
+classes: across bases, size 0) dropped and the replay fails
 the assertion with mismatches=0: then 0, warning
 vc.ack-own-collision-excused; 3 unknown; 4 (--seam) sat that does not replay
 because the program leaves an object with the model's inputs: A-INB does not
@@ -4998,6 +5043,9 @@ int main(int argc, char **argv) {
   if (ackOwn && !seam)
     return fail("--ack-own needs --seam (it rests on A-INB and A-OWN of the "
                 "accesses SeaM records)");
+  if (ackArm && !seam)
+    return fail("--ack-arm needs --seam (its maps are those of the accesses "
+                "SeaM records)");
   if (ackCellsPlan && !seam)
     return fail("--ack-cells-plan needs --seam (its objects are those of "
                 "the accesses SeaM records)");
@@ -5991,7 +6039,7 @@ int main(int argc, char **argv) {
     // own reads with their loads' execution conditions: also for the
     // stride rule's model check (AckermannModel::strideBroken)
     seamOpts.trackOwnReads =
-        narrowOffsets || ackOwn || ackStride || ackCellsPlan;
+        narrowOffsets || ackOwn || ackStride || ackCellsPlan || ackArm;
     seamOpts.layoutDecide = seamLayout;
     seamOpts.pruneSize0 = seamPruneSize0;
     seamOpts.wideAccess = seamWide;
@@ -6650,6 +6698,12 @@ int main(int argc, char **argv) {
     const bool narrowOn = narrowOffsets && inb && sem.seamRewriter();
     // --ack-own: the same premises
     const bool ownOn = ackOwn && inb && sem.seamRewriter();
+    // --ack-arm: the exact class needs no premise; the others A-INB (inb).
+    // Not on the words path (it records no access origins)
+    const bool armOn =
+        ackArm && sem.seamRewriter() && seamWords == WordsMode::Off;
+    // a pair may be dropped on A-INB + A-OWN (the model's own-broken)
+    const bool ownDropOn = ownOn || (armOn && inb);
     // --ack-cells-plan: the same premises (A-INB, A-SEP); not on the words
     // path (it records no access origins)
     const bool cellsPlanOn = ackCellsPlan && inb && sem.seamRewriter() &&
@@ -6757,7 +6811,8 @@ int main(int argc, char **argv) {
     } else {
       // the stride rule's record: the address each read had before the
       // nodes were expanded (the query only); also --narrow-offsets'
-      if ((strideOn || narrowOn || ownOn || cellsPlanOn) && sem.seamRewriter())
+      if ((strideOn || narrowOn || ownOn || cellsPlanOn || armOn) &&
+          sem.seamRewriter())
         sem.seamRewriter()->recordAccesses(&accessOrigins);
       query = sem.solverTerm(query);
       if (sem.seamRewriter())
@@ -6930,6 +6985,45 @@ int main(int argc, char **argv) {
         narrowSites.push_back(std::move(site));
       }
     }
+    // ARM over the reads' addresses (--ack-arm, --ack-cells-plan): per read
+    // index, the join of the ARM maps of the addresses its selects had
+    // before the boundary, and whether one has a provenance no A-INB
+    // condition names (Rules::armInbGap); none for an index with more than
+    // kMaxAddrs addresses, a shadow read, or no address
+    std::optional<expr::AddrRangeAnalysis> armAnalysis;
+    if (armOn || cellsPlanOn)
+      armAnalysis.emplace(vcgen.baseRegistry());
+    auto armOfIndex = [&](const expr::AccessOrigins::Entry &e)
+        -> std::optional<expr::ArmTable::Entry> {
+      if (e.many || e.shadow || e.addrs.empty())
+        return std::nullopt;
+      const auto &rules = sem.seamRewriter()->rules();
+      std::optional<expr::ArmTable::Entry> r;
+      for (const expr::Expr &ad : e.addrs) {
+        const expr::AddrRangeMap &x = armAnalysis->alpha(ad);
+        if (!r)
+          r = expr::ArmTable::Entry{x, false};
+        else
+          r->map = r->map.join(x);
+        r->gap = r->gap || rules.armInbGap(ad, 1);
+      }
+      return r;
+    };
+    // --ack-arm's table (docs/design/Ackermann.md, "ARM separation")
+    expr::ArmTable armTable;
+    if (armOn) {
+      const expr::BaseRegistry &reg = vcgen.baseRegistry();
+      const auto &rules = sem.seamRewriter()->rules();
+      for (const auto &kv : accessOrigins.byIndex)
+        if (auto e = armOfIndex(kv.second))
+          armTable.byIndex.emplace(kv.first, std::move(*e));
+      for (const expr::ObjectBase &o : reg.objects())
+        armTable.keyOf.emplace(rules.erase(o.constant).get(), o.order);
+      armTable.nonZero = [&reg](unsigned key) {
+        return key < reg.size() && !reg.objects()[key].size.isZero();
+      };
+      armTable.premises = inb;
+    }
     // Ackermann lowering of read-only arrays (an encoding step of the query,
     // docs/design/Ackermann.md); its table rebuilds the arrays on a model
     Phase ackPhase("ackermann");
@@ -6943,6 +7037,8 @@ int main(int argc, char **argv) {
       ack.setNarrow(&narrowTable);
     if (ownOn)
       ack.setOwn(&ownTable);
+    if (armOn)
+      ack.setArm(&armTable);
     if (strideOn && !accessOrigins.byIndex.empty()) {
       ack.setAccessOrigins(&accessOrigins);
       std::unordered_set<expr::ENode *> size0;
@@ -7014,6 +7110,8 @@ int main(int argc, char **argv) {
         dry.setNarrow(&narrowTable);
       if (ownOn)
         dry.setOwn(&ownTable);
+      if (armOn)
+        dry.setArm(&armTable);
       if (strideOn && !accessOrigins.byIndex.empty()) {
         dry.setAccessOrigins(&accessOrigins);
         std::unordered_set<expr::ENode *> size0;
@@ -7035,29 +7133,27 @@ int main(int argc, char **argv) {
               rules.erase(o.constant),
               o.size.getActiveBits() <= 63 ? o.size.getZExtValue() : UINT64_MAX,
               o.size.getActiveBits() <= 63, o.align, o.name};
-      expr::AddrRangeAnalysis arm(reg);
       uint64_t inbGapReads = 0;
       // the join of the ARM maps of the access addresses of every select
-      // merged into the read; none if one has no usable record
+      // merged into the read (armOfIndex); none if one has no usable record
       auto readMap = [&](size_t a,
                          size_t k) -> std::optional<expr::AddrRangeMap> {
         const auto &rd = dry.arrays()[a].reads[k];
         std::optional<expr::AddrRangeMap> m;
         for (const expr::Expr &sel : rd.selects) {
           auto it = accessOrigins.byIndex.find(sel->arg(1));
-          if (it == accessOrigins.byIndex.end() || it->second.many ||
-              it->second.shadow || it->second.addrs.empty())
+          if (it == accessOrigins.byIndex.end())
             return std::nullopt;
-          for (const expr::Expr &ad : it->second.addrs) {
-            // a provenance no A-INB condition names (Rules::armInbGap): the
-            // rewriter refuses decisions on it; the read is unknown
-            if (rules.armInbGap(ad, 1)) {
-              ++inbGapReads;
-              return expr::AddrRangeMap::top();
-            }
-            const expr::AddrRangeMap &x = arm.alpha(ad);
-            m = m ? m->join(x) : x;
+          std::optional<expr::ArmTable::Entry> e = armOfIndex(it->second);
+          if (!e)
+            return std::nullopt;
+          // a provenance no A-INB condition names (Rules::armInbGap): the
+          // rewriter refuses decisions on it; the read is unknown
+          if (e->gap) {
+            ++inbGapReads;
+            return expr::AddrRangeMap::top();
           }
+          m = m ? m->join(e->map) : e->map;
         }
         return m;
       };
@@ -7509,6 +7605,15 @@ int main(int argc, char **argv) {
           r.line("vc.ack-own-boundary-indices").value(ownBoundaryIndices);
         }
       }
+      // --ack-arm: whether it ran, with the premise classes or the exact one
+      // only (and why not); its counters are vc.ackermann-arm-*
+      if (ackArm)
+        r.line("vc.ack-arm")
+            .value(seamWords != WordsMode::Off ? "off-seam-words"
+                   : !armOn                    ? "off-no-seam"
+                   : !ackOn                    ? "off-no-ackermann"
+                   : !inb                      ? "exact-only"
+                                               : "on");
       // --ack-cells-plan: whether it ran (and why not), its counters
       if (ackCellsPlan) {
         r.line("vc.cells-plan")
@@ -8798,14 +8903,15 @@ int main(int argc, char **argv) {
              << " inconsistent=" << ackModel->inconsistent();
       if (strideOn)
         vout() << " stride-broken=" << ackModel->strideBroken();
-      if (ownOn)
+      if (ownDropOn)
         vout() << " own-broken=" << ackModel->ownBroken()
                << " own-excused=" << ownExcused;
       vout() << "\n";
       if (ownExcused)
         sea::diag::warn("vc.ack-own-collision-excused",
                         Twine(ownExcused) +
-                            " read pair(s) whose constraint --ack-own dropped "
+                            " read pair(s) whose constraint --ack-own or "
+                            "--ack-arm dropped "
                             "are at one index with different cells in the "
                             "model (reads that do not execute, or whose guard "
                             "is false); the replayed run fails the assertion "

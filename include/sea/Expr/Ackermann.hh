@@ -52,7 +52,12 @@
 // resting on A-INB of the access behind one read and A-OWN (no access through
 // one object touches another object's cells, reads included); a sat model that
 // puts two such reads at one index with different cells is counted as
-// inconsistent (AckermannModel::ownBroken). Otherwise no pair is dropped. An
+// inconsistent (AckermannModel::ownBroken). One more, off by default (sea-vc
+// --ack-arm): ARM separation (setArm, armApart), on the ARM maps of the reads'
+// index terms: one base with disjoint offset intervals right after the decider
+// (exact: ARM adds no premise to a same-base answer), and, after the ownership
+// drop, different bases or a size-0 provenance (A-INB + A-OWN, handled as the
+// ownership drop's pairs). Otherwise no pair is dropped. An
 // array is lowered only if every use of it is the array operand of a select: no
 // store over it, no equality, no ite, no other operator (then it is kept as it
 // is, `kept` counts it). Indices of reads may contain reads (of the same or
@@ -74,6 +79,7 @@
 // uf.<A>(i); no constraint is added (functional consistency is the solver's).
 // The reads (one per distinct index term) are recorded as for the eager
 // lowering, with value uf.<A>(i_k), so AckermannModel rebuilds A the same way.
+#include "sea/Expr/AddrRangeMap.hh"
 #include "sea/Expr/DiffDecider.hh"
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/LinearForms.hh"
@@ -86,8 +92,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -384,6 +392,55 @@ struct NarrowTable {
   std::unordered_map<ENode *, Entry> byIndex;
 };
 
+/// ARM separation (sea-vc --ack-arm, docs/design/Ackermann.md, "ARM
+/// separation"): per read index (the expanded index term of a select, as the
+/// query has it before the lowering), the join of the ARM maps
+/// (AddrRangeMap.hh) of the addresses its selects had before the boundary;
+/// an index without an entry has no map (a shadow read, more than
+/// AccessOrigins::kMaxAddrs addresses). `gap`: one of those addresses has an
+/// ARM provenance no A-INB condition names (seam::Rules::armInbGap).
+struct ArmTable {
+  struct Entry {
+    AddrRangeMap map;
+    bool gap = false;
+  };
+  std::unordered_map<ENode *, Entry> byIndex;
+  /// the erased base constant of each registered object -> its ARM key
+  /// (ObjectBase::order): a narrowed read's map is its object's
+  std::unordered_map<ENode *, unsigned> keyOf;
+  /// ARM key -> an object of nonzero size (AddrRangeMap::disjoint)
+  std::function<bool(unsigned)> nonZero;
+  /// the premise classes (size-0, cross-base) may drop pairs: the run
+  /// assumes A-INB (SeaM's premises on)
+  bool premises = false;
+};
+
+/// How ARM separates two reads' index maps (docs/design/Ackermann.md, "ARM
+/// separation"):
+///  - Interval: no common value with no assumption (one base on each side,
+///    the same, intervals that do not meet; or two absolute intervals);
+///  - Size0: disjoint once the entries of size-0 objects are dropped, with
+///    no cross-base step: rests on A-INB (no access of positive width is in
+///    an object of size 0);
+///  - CrossBase: disjoint only across different bases: rests on A-INB of
+///    each read's access and A-OWN.
+/// \p premises false: Interval only.
+enum class ArmApart { No, Interval, Size0, CrossBase };
+template <class NonZero>
+inline ArmApart armApart(const AddrRangeMap &p, const AddrRangeMap &q,
+                         bool premises, NonZero nonZero) {
+  if (p.isBot() || q.isBot())
+    return ArmApart::No; // never made by alpha: no claim taken from it
+  if (AddrRangeMap::disjoint(p, q, false, nonZero))
+    return ArmApart::Interval;
+  if (!premises)
+    return ArmApart::No;
+  bool cross = false, zero = false;
+  if (!AddrRangeMap::disjoint(p, q, true, nonZero, &cross, &zero))
+    return ArmApart::No;
+  return cross ? ArmApart::CrossBase : ArmApart::Size0;
+}
+
 /// The lowering (see the header). One instance per query; it keeps the table
 /// of reads that AckermannModel needs: destroy it before the ExprFactory.
 class Ackermannizer {
@@ -433,6 +490,13 @@ public:
     /// read not in one known object (kept)
     bool own = false;
     uint64_t ownReads = 0, ownPairs = 0, ownSameObject = 0, ownNotEligible = 0;
+    /// ARM separation (setArm): reads with a map; pairs dropped by class
+    /// (armApart: Interval after the decider, exact; Size0 and CrossBase
+    /// after the ownership drop, A-INB + A-OWN, in the ownership drop's
+    /// model accounting)
+    bool arm = false;
+    uint64_t armReads = 0, armIntervalPairs = 0, armSize0Pairs = 0,
+             armCrossBasePairs = 0;
     uint64_t constraints = 0; ///< constraints added (the other pairs)
     /// --narrow-offsets (setNarrow): reads narrowed (their index is
     /// base + zext(low_k(offset))), objects they are in, the largest k;
@@ -490,6 +554,12 @@ public:
         line("own-same-object").value(ownSameObject);
         line("own-not-eligible").value(ownNotEligible);
       }
+      if (arm) {
+        line("arm-reads").value(armReads);
+        line("arm-interval-pairs").value(armIntervalPairs);
+        line("arm-size0-pairs").value(armSize0Pairs);
+        line("arm-cross-base-pairs").value(armCrossBasePairs);
+      }
       line("constraints").value(constraints);
     }
   };
@@ -524,6 +594,11 @@ public:
     /// at w bits; null otherwise: the index itself is base + rest). The
     /// cells plan (AckCellsPlan.hh) enumerates its candidate offsets.
     Expr rest = Expr();
+    /// --ack-arm (setArm): the join of the ARM maps of every index term
+    /// merged into this read (none if one has no entry); armGap: one of
+    /// them has a provenance no A-INB condition names (no premise class)
+    std::optional<AddrRangeMap> arm = std::nullopt;
+    bool armNone = false, armGap = false;
   };
   struct Array {
     Expr array; ///< the array constant A
@@ -646,6 +721,7 @@ public:
           if (!fresh) {
             noteOrigins(m_arrays[a].reads[p->second], n->arg(1), false);
             noteOwn(m_arrays[a].reads[p->second], n->arg(1), false);
+            noteArm(m_arrays[a].reads[p->second], n->arg(1), false);
             if (m_keepImages)
               m_arrays[a].reads[p->second].selects.push_back(Expr(n));
             return m_arrays[a].reads[p->second].value;
@@ -657,6 +733,7 @@ public:
             m_arrays[a].reads.back().rest = rest;
           noteOrigins(m_arrays[a].reads.back(), n->arg(1), true);
           noteOwn(m_arrays[a].reads.back(), n->arg(1), true);
+          noteArm(m_arrays[a].reads.back(), n->arg(1), true);
           if (m_keepImages)
             m_arrays[a].reads.back().selects.push_back(Expr(n));
           ++m_stats.reads;
@@ -681,12 +758,22 @@ public:
       m_stats.narrowObjects = objs.size();
     }
     m_stats.own = m_own != nullptr;
-    if (m_own) {
+    if (m_own || m_arm)
       m_ownDropped.assign(m_arrays.size(), {});
+    if (m_own)
       for (const Array &arr : m_arrays)
         for (const Read &rd : arr.reads)
           m_stats.ownReads += rd.obase ? 1 : 0;
-    }
+    m_stats.arm = m_arm != nullptr;
+    if (m_arm)
+      for (Array &arr : m_arrays) {
+        const unsigned w = op::bv::width(
+            sort::arrayIndexTy(op::bind::declaredSort(arr.array)));
+        for (Read &rd : arr.reads) {
+          armNarrowed(rd, w);
+          m_stats.armReads += rd.arm ? 1 : 0;
+        }
+      }
     // linear forms and leaf tests of the narrowed offsets, per width k
     std::map<unsigned, LinearForms> lowForms;
     std::map<unsigned, LeafDecider> lowLeaves;
@@ -748,6 +835,18 @@ public:
           // narrowed read's index is base + zext(low))
           if (decided(deciders, w, &m_values, rs[k].index, rs[l].index))
             continue;
+          // ARM separation (--ack-arm): one base, disjoint intervals, exact;
+          // the premise classes wait for the ownership drop
+          ArmApart armSep = ArmApart::No;
+          if (m_arm && rs[k].arm && rs[l].arm) {
+            armSep = armApart(*rs[k].arm, *rs[l].arm,
+                              m_arm->premises && !rs[k].armGap && !rs[l].armGap,
+                              m_arm->nonZero);
+            if (armSep == ArmApart::Interval) {
+              ++m_stats.armIntervalPairs;
+              continue;
+            }
+          }
           // the stride rule (trusted GEP promises), after the exact tests
           if (StridePrem sp; strideApart(rs[k], rs[l], sp)) {
             ++m_stats.stridePairs;
@@ -758,19 +857,25 @@ public:
             continue;
           }
           // the ownership drop (A-INB + A-OWN), after every other rule
-          if (m_own) {
-            if (rs[k].obase && rs[l].obase) {
-              if (rs[k].obase != rs[l].obase) {
-                ++m_stats.ownPairs;
-                m_ownDropped[size_t(&arr - m_arrays.data())].insert(
-                    ownKey(k, l, rs.size()));
-                continue;
-              }
-              ++m_stats.ownSameObject;
-            } else {
-              ++m_stats.ownNotEligible;
-            }
+          if (m_own && rs[k].obase && rs[l].obase &&
+              rs[k].obase != rs[l].obase) {
+            ++m_stats.ownPairs;
+            m_ownDropped[size_t(&arr - m_arrays.data())].insert(
+                ownKey(k, l, rs.size()));
+            continue;
           }
+          // ARM's premise classes (A-INB + A-OWN), on what the ownership
+          // drop left: its model accounting (ownDropped)
+          if (armSep == ArmApart::Size0 || armSep == ArmApart::CrossBase) {
+            ++(armSep == ArmApart::Size0 ? m_stats.armSize0Pairs
+                                         : m_stats.armCrossBasePairs);
+            m_ownDropped[size_t(&arr - m_arrays.data())].insert(
+                ownKey(k, l, rs.size()));
+            continue;
+          }
+          if (m_own)
+            ++(rs[k].obase && rs[l].obase ? m_stats.ownSameObject
+                                          : m_stats.ownNotEligible);
           ++m_stats.constraints;
           if (rs[k].low || rs[l].low)
             ++m_stats.narrowMixed;
@@ -923,8 +1028,14 @@ public:
   /// pair of two such reads of different objects gets no constraint. Rests
   /// on A-INB of one read and A-OWN (counted).
   void setOwn(const NarrowTable *t) { m_own = t; }
-  /// Did the ownership drop drop the constraint of reads \p k and \p l of
-  /// lowered array \p a?
+  /// --ack-arm (docs/design/Ackermann.md, "ARM separation"): the ARM maps of
+  /// the read indices (null, the default: none). A pair whose maps ARM
+  /// separates gets no constraint: on one base exactly (Interval), else
+  /// (Size0, CrossBase, with \p t->premises) on A-INB + A-OWN, recorded with
+  /// the ownership drop's pairs (ownDropped).
+  void setArm(const ArmTable *t) { m_arm = t; }
+  /// Did the ownership drop (or ARM's premise classes, --ack-arm) drop the
+  /// constraint of reads \p k and \p l of lowered array \p a?
   bool ownDropped(size_t a, size_t k, size_t l) const {
     if (a >= m_ownDropped.size())
       return false;
@@ -983,6 +1094,54 @@ private:
       r.obase = b;
     else if (r.obase != b)
       r.obase = Expr();
+  }
+  /// Merge the ARM map of index term \p idx into \p r (\p first: r's
+  /// first index term): none once a term has no entry.
+  void noteArm(Read &r, ENode *idx, bool first) {
+    if (!m_arm)
+      return;
+    if (first) {
+      r.arm.reset();
+      r.armNone = false;
+      r.armGap = false;
+    }
+    if (r.armNone)
+      return;
+    auto it = m_arm->byIndex.find(idx);
+    if (it == m_arm->byIndex.end()) {
+      r.armNone = true;
+      r.arm.reset();
+      return;
+    }
+    r.arm = r.arm ? r.arm->join(it->second.map) : it->second.map;
+    r.armGap = r.armGap || it->second.gap;
+  }
+  /// A narrowed read compares base + zext(low_k(offset)), not its index:
+  /// its map is {base: [0, 2^k - 1]} (exact for that term: k < w), or the
+  /// index's own interval on base when that lies inside (then the two
+  /// terms are equal). Its provenance is the narrowing's object (A-INB of
+  /// its own load, which narrowing already rests on): no gap.
+  void armNarrowed(Read &rd, unsigned w) {
+    if (!rd.low)
+      return;
+    auto kt = m_arm->keyOf.find(rd.nbase.get());
+    const unsigned k = m_low.width(rd.low);
+    if (kt == m_arm->keyOf.end() || k >= w) {
+      rd.arm.reset();
+      rd.armNone = true;
+      return;
+    }
+    const llvm::APInt lo(w, 0), hi = llvm::APInt::getLowBitsSet(w, k);
+    rd.armGap = false;
+    rd.armNone = false;
+    if (rd.arm && rd.arm->size() == 1 &&
+        rd.arm->entries()[0].first == kt->second) {
+      const AddrRange &r = rd.arm->entries()[0].second;
+      if (r.isRange() && r.lo().getBitWidth() == w && r.lo().sge(lo) &&
+          r.hi().sle(hi))
+        return; // the narrowed term equals the index
+    }
+    rd.arm = AddrRangeMap::of(kt->second, AddrRange::range(lo, hi));
   }
   static uint64_t ownKey(size_t k, size_t l, size_t n) {
     return uint64_t(k) * uint64_t(n) + uint64_t(l);
@@ -1306,6 +1465,7 @@ private:
   const NarrowTable *m_narrow = nullptr;
   std::unordered_map<ENode *, NarrowedSelect> m_narrowSel;
   const NarrowTable *m_own = nullptr;
+  const ArmTable *m_arm = nullptr;
   /// per lowered array: the pairs the ownership drop dropped (ownKey)
   std::vector<std::unordered_set<uint64_t>> m_ownDropped;
   LowBits m_low;

@@ -60,10 +60,10 @@ claim your harness is intended to establish.
 3. **Warnings on stderr.** `Warning: ... [kind]` names handling that is
    incomplete or approximate. The verdict is then about the program as the
    tool understood it. One is about the answer itself:
-   `vc.ack-own-collision-excused` (`--ack-own`) says the solver's model
-   was not a consistent memory (`vc.ackermann-model: ... own-broken=<n>
-   own-excused=<n>`), and the `sat` rests on the replayed run alone, which
-   failed the assertion and validated. Without such a run the same model
+   `vc.ack-own-collision-excused` (`--ack-own`, `--ack-arm`) says the
+   solver's model was not a consistent memory (`vc.ackermann-model: ...
+   own-broken=<n> own-excused=<n>`), and the `sat` rests on the replayed
+   run alone, which failed the assertion and validated. Without such a run the same model
    ends in `vc.ackermann-inconsistent` (status 2).
 4. **`tool.version:`** and every `vc.config:` line. Record them with the
    verdict. The defaults are not tuned and can change between versions.
