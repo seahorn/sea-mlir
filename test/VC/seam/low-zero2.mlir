@@ -1,14 +1,34 @@
-// bv.eq.low-zero2: slot[i].f8 is read over a store to slot[prev].f20, prev
-// loaded from memory (32-byte slots). The ROW compare of the two addresses
-// reduces to 32*zext(i) + (-12) = 32*zext(prev): variables on both sides,
-// never true (32 divides both sums, not 12), for every i, prev. The rewriter
-// decides it with SeaM's cmp.congruence off, so no such `=` reaches the
-// query; also with the default options.
-// RUN: sea-vc %s --lower --seam --seam-congruence=false --seam-stats 2>&1 | FileCheck %s
+// Table slots indexed by a loaded value (reduced from a firedancer
+// reachability job). Slots of 32 bytes; prev is loaded from slot[i]; -1 is
+// stored at slot[prev] + 20, then slot[i] + 8 is read again. The ROW compare
+// of the read over the store, 32i + 8 vs 32 zext(prev) + 20, is never true
+// (32 divides the variable part, not 12), for every i and prev; ARM gives
+// prev no range. Three ways it is decided:
+// - default: SeaM's cmp.congruence decides it, the store is skipped
+//   (row.store-skip), no compare is left;
+// - --seam-congruence=false: the rewriter's bv.eq.low-zero2 decides it once
+//   it is linear (32*zext(i) + (-12) = 32*zext(prev), variables on both
+//   sides), so no such `=` reaches the query;
+// - --seam-congruence=false --seam-simplify=0: nothing decides it; the
+//   store stays (row.store) and an alias question is left open.
+// The verdict is unsat in all three.
+// RUN: sea-vc %s --lower --seam --widen-memory=4 --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,DEF
+// RUN: sea-vc %s --lower --seam --widen-memory=4 --seam-stats --seam-congruence=false 2>&1 | FileCheck %s --check-prefixes=CHECK,LZ
+// RUN: sea-vc %s --lower --seam --widen-memory=4 --seam-stats --seam-congruence=false --seam-simplify=0 2>&1 | FileCheck %s --check-prefixes=CHECK,RAW
 // RUN: sea-vc %s --lower --seam --seam-congruence=false --smt2 2>&1 | FileCheck %s --check-prefix=Q
 // RUN: sea-vc %s --lower --seam --smt2 2>&1 | FileCheck %s --check-prefix=Q
 // RUN: sea-vc %s --lower --seam --seam-congruence=false --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
-// CHECK: seam.rule.bv.eq.low-zero2: {{[1-9]}}
+// DEF-NOT: seam.alias.open
+// DEF: seam.rule.cmp.congruence: {{[1-9]}}
+// DEF-NOT: seam.rule.row.store:
+// DEF: seam.rule.row.store-skip: {{[1-9]}}
+// LZ-NOT: cmp.congruence
+// LZ: seam.rule.bv.eq.low-zero2: {{[1-9]}}
+// RAW: seam.alias.open.same-object: {{[1-9]}}
+// RAW-NOT: cmp.congruence
+// RAW-NOT: bv.eq.low-zero2
+// RAW: seam.rule.row.store: {{[1-9]}}
+// RAW-NOT: seam.rule.row.store-skip
 // CHECK: result: unsat
 // Q-NOT: bvmul
 // Q: (check-sat)
