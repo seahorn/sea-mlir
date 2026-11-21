@@ -8,6 +8,7 @@ jobs:
   b-left: {expected: sat, tier: smoke, premise-class: B}
   b-unconf: {expected: sat, tier: smoke, premise-class: B}
   b-inb: {expected: sat, tier: smoke, premise-class: B}
+  b-prom: {expected: sat, tier: smoke, premise-class: B}
   b-unsat: {expected: sat, tier: smoke, premise-class: B}
   b-mismatch: {expected: sat, tier: smoke, premise-class: B}
   c-unconf: {expected: sat, tier: smoke, premise-class: C}
@@ -15,6 +16,7 @@ jobs:
   a-left: {expected: sat, tier: smoke}
   a-unconf: {expected: sat, tier: smoke}
   a-inb: {expected: sat, tier: smoke}
+  a-prom: {expected: sat, tier: smoke}
   a-noclob: {expected: sat, tier: smoke}
   b-r2ok: {expected: sat, tier: smoke, premise-class: B}
   b-origmem: {expected: sat, tier: smoke, premise-class: B}

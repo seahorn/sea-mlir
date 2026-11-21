@@ -62,6 +62,8 @@ OUTPUT of run: stats.csv (job config rep wall cpu status verdict + every BRUNCH_
   verdict: sat unsat unknown timeout memout error inb-violation (rc 4) replay-mismatch (rc 2)
   premise-failed (rc 4 with a `premise.failed:` line: the replay failed a premise assert,
   --symbolic-size=assert, not the property; inconclusive),
+  promise-broken (rc 4 with a `vc.ack-stride-promise-broken:` line: the replay breaks a front-end GEP promise
+  the stride rule trusts at an access; the answer is that run),
   lowering-mismatch (rc 6: --replay-original, the input program does not fail the lowered sat's assertion),
   original-memory-error (rc 4 with replay.original match=no: the input program makes a memory-safety violation),
   check-invalid (rc 5: --seam-check / --narrow-check found an invalid rewrite), check-unproven (rc 7:
@@ -103,14 +105,14 @@ SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SE
     FAILS (exit 1) on: verdict != expected (sat/unsat jobs; timeout/unknown counts), replay-mismatch (rc 2),
     lowering-mismatch (rc 6), original-memory-error (rc 4 under --replay-original) on a gated job,
     replay-impossible (a sat whose model cannot be replayed) unless the job has `replay: impossible`,
-    error / inb-violation / premise-failed on a gated job (unknown-ok too; memout there is allowed), sat vs unsat between two configs (DISAGREE-SAT-UNSAT),
+    error / inb-violation / premise-failed / promise-broken on a gated job (unknown-ok too; memout there is allowed), sat vs unsat between two configs (DISAGREE-SAT-UNSAT),
     and (`FAIL: counter ...`, counted apart as counter-failures) a solved job of config `default` whose
     counter breaks its bound or is missing from the output (--no-counters: skip). --tag T: only jobs tagged T
     (`canary`: the small cross-family set, `just bench-canary`).
     premise-class B / C jobs pass a sat whose replay failed in a way a premise violation explains: rc 2 with
     `replay: assert-failed`, a `seam.inb-violation:` line and error vc.replay-mismatch (`premise-unconfirmed:
-    <job> ... log=... rerun: ...`) or rc 4 (`premise-inb-violation:`: an access outside an object, or a run that
-    breaks a GEP promise the stride rule trusts, vc.ack-stride-promise-broken); a run with
+    <job> ... log=... rerun: ...`) or rc 4 (`premise-inb-violation:`: an access outside an object, verdict
+    inb-violation, or a run that breaks a GEP promise the stride rule trusts, verdict promise-broken); a run with
     `replay: no-clobber-violated:` is never explained. Unsat fails on B, passes on C. A confirmed sat whose
     original-program run left its object (replay.original status=memory-error) counts as left-object. On C a
     sat needs one of these signals:
@@ -466,6 +468,14 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
         # --symbolic-size=assert: the replay failed a premise assert (an
         # allocation exceeded its room), not the property
         verdict = "premise-failed"
+    elif rc == 4 and re.search(
+        r'^vc\.ack-stride-promise-broken:|"key":"vc\.ack-stride-promise-broken"',
+        out,
+        re.M,
+    ):
+        # --ack-stride: the replay breaks a front-end GEP promise the stride
+        # rule trusts, at an access; the answer is that run
+        verdict = "promise-broken"
     elif rc == 4:
         verdict = "inb-violation"
     elif rc == 2:
@@ -1039,8 +1049,8 @@ def premise_signal(r):
     the replay whose original-program run left its object: replay.original status=memory-error),
     `unconfirmed` (rc 2: the replay reached the failing assertion, the values differ, and the A-INB
     fallback check ran: found or undetermined; the vc.replay-mismatch error, not vc.replay-no-failure),
-    `inb-violation` (rc 4: the check found an access outside an object, or a run that breaks a GEP promise the
-    stride rule trusts, vc.ack-stride-promise-broken), else None. A run whose replay
+    `inb-violation` (rc 4: the check found an access outside an object, verdict inb-violation, or a run that
+    breaks a GEP promise the stride rule trusts, verdict promise-broken), else None. A run whose replay
     reports a violated Mem-SSA no-clobber claim (`replay: no-clobber-violated:`) shows none."""
     if r.get("replay_no_clobber"):
         return None
@@ -1053,7 +1063,7 @@ def premise_signal(r):
         and r.get("replay_mismatch_diag")
     ):
         return "unconfirmed"
-    if r["verdict"] == "inb-violation":
+    if r["verdict"] in ("inb-violation", "promise-broken"):
         return "inb-violation"
     return None
 
@@ -1063,7 +1073,9 @@ def premise_hint(r, sig):
     what = {
         "left-object": "replay.original status=memory-error",
         "unconfirmed": f"replay: assert-failed, seam.inb-violation: {r.get('seam_inb')}",
-        "inb-violation": "seam.inb-violation or vc.ack-stride-promise-broken (rc 4)",
+        "inb-violation": "vc.ack-stride-promise-broken (rc 4)"
+        if r["verdict"] == "promise-broken"
+        else "seam.inb-violation (rc 4)",
     }[sig]
     return f"{what}: premise may fail on this job: declare it (premise-class, {PREMISE_DOC})"
 
@@ -1303,6 +1315,7 @@ def cmd_gate(a):
                 "error",
                 "inb-violation",
                 "premise-failed",
+                "promise-broken",
                 "original-memory-error",
                 "check-invalid",
                 "check-unproven",

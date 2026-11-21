@@ -119,8 +119,7 @@ sea.program @mixed {
 // THREE: vc.ackermann-stride-broken: 1
 // THREE-NOT: fallback
 // THREE: result: sat
-// THREE: vc.ack-stride-promise-broken: sea.ptr.index
-// THREE-NEXT: vc.ack-stride-promise-broken-at:
+// THREE: vc.ack-stride-promise-broken: {{.*}} promise=P{{[123]}} what=inbounds
 // THREE-NEXT: vc.ack-stride-promise-broken-access: sea.load
 // THREE: [vc.ack-stride-promise-broken]
 // THREE-NOT: run=2

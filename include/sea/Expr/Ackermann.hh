@@ -37,28 +37,26 @@
 // difference), or one at a node over an object of size 0. Dropping any
 // constraint only weakens the lowered query: unsat stays sound with no premise.
 // The promises (and A-NOWRAP for a byte of a wide access, A-NULL for a size-0
-// base: SeaMRules.hh, the named premises) are
-// what make the dropped constraints vacuous, so a sat model needs them. A
-// promise is a fact only at an access the run performs: a model that puts two
-// such reads at one index with different cells breaks one only if both reads
-// execute in it (Read::exec, their loads' block guards). Such a pair is
-// counted (AckermannModel::strideBroken); the promises are trusted front-end
-// facts, so sea-vc answers sat with that model, and a replay that breaks a
-// promise at an access instead of confirming the answer is reported as such
-// (--reach reruns without the rule). A pair with a read that does not execute
-// is counted (strideIdle) and breaks nothing. One more, off by default
-// (sea-vc --ack-own): the ownership drop, a pair of reads of two different
-// objects (every address of each index a pointer into its object: a load's
-// read or a select the boundary made for a memory operation), resting on
-// A-INB of the access behind one read and A-OWN (no access through one object
-// touches another object's cells, reads included); a sat model that puts two
-// such reads at one index with different cells is counted as inconsistent
-// (AckermannModel::ownBroken). Otherwise no pair is dropped. An array is
-// lowered only if every use of it is the array operand of a select: no store
-// over it, no equality, no ite, no
-// other operator (then it is kept as it is, `kept` counts it). Indices of reads
-// may contain reads (of the same or other arrays): they are lowered first
-// (bottom-up).
+// base: SeaMRules.hh, the named premises) are what make the dropped constraints
+// vacuous, so a sat model needs them. A promise is a fact only at an access the
+// run performs: a model that puts two such reads at one index with different
+// cells breaks one only if both reads execute in it (Read::exec, their loads'
+// block guards). Such a pair is counted (AckermannModel::strideBroken); the
+// promises are trusted front-end facts, so sea-vc answers sat with that model,
+// and a replay that breaks a promise at an access instead of confirming the
+// answer is reported as such (--reach reruns without the rule). A pair with a
+// read that does not execute is counted (strideIdle) and breaks nothing. One
+// more, off by default (sea-vc --ack-own): the ownership drop, a pair of reads
+// of two different objects (every address of each index a pointer into its
+// object: a load's read or a select the boundary made for a memory operation),
+// resting on A-INB of the access behind one read and A-OWN (no access through
+// one object touches another object's cells, reads included); a sat model that
+// puts two such reads at one index with different cells is counted as
+// inconsistent (AckermannModel::ownBroken). Otherwise no pair is dropped. An
+// array is lowered only if every use of it is the array operand of a select: no
+// store over it, no equality, no ite, no other operator (then it is kept as it
+// is, `kept` counts it). Indices of reads may contain reads (of the same or
+// other arrays): they are lowered first (bottom-up).
 //
 // Model reconstruction (AckermannModel): the model of the lowered formula has
 // values for i_k and r_k; each lowered array A becomes the finite function
