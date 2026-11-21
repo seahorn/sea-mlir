@@ -354,9 +354,11 @@ check-inb.discharges: a-inb a-sep a-null [a-nowrap] | none under=<name>,... | no
 One `check-inb.part` line per part, as it ends. `a-nowrap` is listed only
 when every placed object is smaller than 2^(w-1) units (warning
 `check-inb.nowrap-not-implied` otherwise). `under=` lists the
-assumptions the result rests on (the parts' `assume.*` names in effect
-but the discharged premises, and their `*-assume` warning kinds), sorted,
-or `none`. `result` is the part's
+assumptions the result rests on, sorted, or `none`: the parts'
+`assume.*` names in effect but the discharged premises, `addr0-is-null`
+(the job's placement), the job's own `*-assume` warning kinds, and
+`memhavoc-null-noop` when a check passed for the null pointer itself or
+the lowering guarded or dropped a memhavoc for it. `result` is the part's
 `result:` (`error` or `inconclusive` for a part that ended with status 1,
 2, 5, 6 or 4); `other` counts those. In jsonl the records are
 `check-inb`, `check-inb.split` (folded, parts, trivial, to_solve),

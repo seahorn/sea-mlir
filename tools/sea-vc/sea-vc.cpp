@@ -3111,6 +3111,29 @@ OUTPUT (stdout, `key: value` lines):
                                   a path or a select), symbolic (other))
   ite.load-site: kind= loads= loc=  (per kind and location, most first, at
                                   most --ite-stats-max)
+  check-inb: checks= static= left= zero-length=
+                                  (--check-inb: the bounds checks, those
+                                  proved statically, those left, ranges of
+                                  constant length 0)
+  check-inb.split: folded= parts= trivial= to-solve=
+                                  (checks the optimize stages removed
+                                  before the split; parts; parts folded to
+                                  true in their own optimize; parts run)
+  check-inb-dir: <path>           (a kept job directory: --check-inb-dir,
+                                  --check-inb-keep, --vcgen-only)
+  check-inb.manifest: <path> parts=<k>
+                                  (--check-inb --vcgen-only: parts and
+                                  manifest written, none run)
+  check-inb.part: <i> id= at= result= status= time= [solve-time=]
+                  [fail-at=] [error=<kind>]   (one per part, as it ends)
+  check-inb.part-error: <i> <first error line>  (a part that failed)
+  check-inb.parts: total= unsat= sat= unknown= other= skipped=
+                  median-time= max-time= solve-time= time=
+  check-inb.part-diags: none | <kind>=<parts> ...
+  check-inb.discharges: a-inb a-sep a-null [a-nowrap] | none
+                  under=<name>,... | none   (the premises an unsat
+                                  discharges; under= the assumptions the
+                                  result rests on; docs/design/CheckInb.md)
   result: sat|unsat|unknown|none  (none: --vcgen-only, --split-candidates)
   hint: split: open-aliases=<n>[ ackermann-constraints=<m>]; rerun with
                                   --split-candidates ...
@@ -3976,8 +3999,11 @@ Kinds and fields:
   check-inb.discharges premises (`a-inb a-sep a-null[ a-nowrap]` or `none`;
                 a-nowrap only when every object is below 2^(w-1) units),
                 under (the assumptions the result rests on: the parts'
-                assume.* names in effect but the discharged premises, and
-                their *-assume warning kinds; comma-separated, or `none`)
+                assume.* names in effect but the discharged premises,
+                addr0-is-null (the job's placement), the job's *-assume
+                warning kinds, memhavoc-null-noop when a check passed for
+                null or a memhavoc was guarded for it; comma-separated,
+                or `none`)
   split-part-start part
   split-part    part, choice, result, vc_time, solve_time, dag, alias_open,
                 alias_open_pairs, alias_open_memop, rows, ack_reads,

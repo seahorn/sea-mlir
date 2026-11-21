@@ -82,14 +82,19 @@ result: sat
   in its object, so the premises of `--seam` hold. `a-nowrap` is listed
   only when every object is smaller than 2^(w-1) units (below).
   `under=` names the assumptions the result itself rests on, sorted, or
-  `none`: the union over the parts of their `assume.*` lines in effect
-  (a nonzero count or `vc`), without the premises the job discharges,
-  and of their warnings of a kind ending in `-assume` (an assumption made
+  `none`. It is the union of: the parts' `assume.*` lines in effect (a
+  nonzero count or the state word `vc`), without the premises the job
+  discharges (`a-sep`, `a-null`, and `a-nowrap` when it is listed);
+  `addr0-is-null`, since the job's lowering places null at address 0; the
+  job's own warnings of a kind ending in `-assume` (an assumption made
   explicit in the program, such as `place.symbolic-size-assume`: an
-  allocation of symbolic size is assumed to fit its room). A part's use
-  of A-NOWRAP stays in `under=` when `a-nowrap` is not discharged. A
-  premise ledger reads it as "discharged by `--check-inb` under ...". A premise ledger can record them as "discharged by
-  `--check-inb`". After any other verdict the line says `none`.
+  allocation of symbolic size is assumed to fit its room); and
+  `memhavoc-null-noop` when a check passes for the null pointer itself
+  (`sea-check-inb`'s `null-noop` count) or the lowering guarded or dropped
+  a memhavoc whose pointer may be null, even when that check folds away
+  and no part reports it. A
+  premise ledger reads the line as "discharged by `--check-inb` under
+  ...". After any other verdict the line is `none under=<...>`.
 
 `--check-inb` requires `--lower`, `--seam` and `--ackermannize=off`. The
 Ackermann lowering uses A-INB itself (to drop constraints of two reads,
@@ -329,11 +334,12 @@ the options that need `--lower`), with the pointer mode the job resolved
 on the input (`--ptr-mode`), so a part does not lower or place again.
 What the lowering assumed is the job's to report: `under=` adds the
 lowering's own facts (null is address 0, the explicit `*-assume`
-warnings, guarded memhavocs) to the parts' lines.
+warnings, memhavoc(null) as a no-op: checks that pass for null and
+memhavocs guarded or dropped for it) to the parts' lines.
 
 Counters: `static` (tier (a)), `folded` (checks removed by the optimize
-stages before the split), `parts`, `parts-trivial` (a part whose assert
-folded to true after its own optimize: not run, unsat), `parts-solved`
+stages before the split), `parts`, `trivial` (a part whose assert
+folded to true after its own optimize: not run, unsat), `to-solve`
 (the parts run), and `solve-time` (the parts' solver time, summed)
 apart from `time` (wall time of the runs, mostly process and encoding
 overhead).
