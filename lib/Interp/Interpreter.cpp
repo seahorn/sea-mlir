@@ -1706,6 +1706,7 @@ LogicalResult Interpreter::jump(Block *dest, ValueRange operands,
   SmallVector<std::optional<Ptr>> inPtrs;
   SmallVector<std::optional<SmallVector<Leaf>>> inStructs;
   SmallVector<std::optional<Prov>> inProv;
+  llvm::SmallPtrSet<Buffer *, 4> taken;
   for (Value from : operands) {
     Type t = from.getType();
     vals.push_back(isa<MemType, PtrType, StructType>(t) ? APInt()
@@ -1715,7 +1716,7 @@ LogicalResult Interpreter::jump(Block *dest, ValueRange operands,
       auto it = mems.find(from);
       assert(it != mems.end() && "memory version without a buffer");
       buf = it->second;
-      if (buf->current != from) {
+      if (buf->current != from || !taken.insert(buf.get()).second) {
         error = "memory version consumed twice (not the current version of "
                 "its chain); the interpreter executes memory in place";
         return failure();

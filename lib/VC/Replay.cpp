@@ -247,6 +247,10 @@ private:
     shadows[to] = sh;
     return sh;
   }
+  // Replay runs loop-free BMC programs only, so no edge passes a block's own
+  // arguments back permuted and binding one argument at a time is a parallel
+  // copy here. Memory arguments only share a shadow (nothing is consumed): a
+  // version passed twice is rejected by the interpreter's jump() as it runs.
   void bind(Block *dest, ValueRange operands) {
     for (auto [arg, in] : llvm::zip(dest->getArguments(), operands))
       if (isa<MemType>(in.getType()))

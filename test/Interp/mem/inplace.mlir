@@ -3,6 +3,7 @@
 // RUN: sea-run %s --program=diamond --input=1=1 --missing=zero | FileCheck %s --check-prefix=OK
 // RUN: sea-run %s --program=diamond --input=1=0 --missing=zero | FileCheck %s --check-prefix=OK
 // RUN: not sea-run %s --program=stale_branch --missing=zero 2>&1 | FileCheck %s --check-prefix=TWICE
+// RUN: not sea-run %s --program=twice_jump --missing=zero 2>&1 | FileCheck %s --check-prefix=TWICE
 
 !m8 = !sea.mem<!sea.addr<8>, i8>
 
@@ -58,6 +59,15 @@ sea.program @stale_branch {
   sea.br ^j(%m0 : !m8)
 ^j(%m1 : !m8):
   %m2 = sea.store %m0[%a], %z inplace : !m8, i8
+  sea.halt
+}
+
+// One memory version passed to two arguments of the same edge consumes it
+// twice.
+sea.program @twice_jump {
+  %m0 = sea.mem.nondet "m" [0] : !m8
+  sea.br ^j(%m0, %m0 : !m8, !m8)
+^j(%m1 : !m8, %m2 : !m8):
   sea.halt
 }
 

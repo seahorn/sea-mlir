@@ -1,9 +1,10 @@
-// RUN: not sea-run %s | FileCheck %s
+// RUN: not sea-run %s 2>&1 | FileCheck %s
 
 // A back edge that passes the block's own pointer arguments swapped binds
 // them as a parallel copy: after one swap p0 is B (16 bytes), so p0+8 is in
 // bounds and p1+8 (A, 1 byte) is not.
-// CHECK: memory access out of bounds: offset 8 in heap.1 of size 1
+// CHECK: at: loc("p1_load"
+// CHECK-NEXT: message: memory access out of bounds: offset 8 in heap.1 of size 1
 !pm = !sea.mem<!sea.ptr<64>, i8>
 sea.program @ptrswap {
   %z = sea.const 0 : i8
@@ -22,7 +23,7 @@ sea.program @ptrswap {
   %q0 = sea.ptr.add %p0, %c8 : !sea.ptr<64>, i64
   %x = sea.load %m[%q0] : !pm -> i8
   %q1 = sea.ptr.add %p1, %c8 : !sea.ptr<64>, i64
-  %y = sea.load %m[%q1] : !pm -> i8
+  %y = sea.load %m[%q1] : !pm -> i8 loc("p1_load")
   sea.halt
 }
 
