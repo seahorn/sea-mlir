@@ -3277,10 +3277,14 @@ OUTPUT (stdout, `key: value` lines):
                                   discharges it)
   assume.memset-bound: count=<n> bound=<K>   (n > 0: --lower without --seam
                                   expanded n symbolic-length memsets /
-                                  memmoves with assume(len <= K), the
-                                  sea.assume ops marked sea.memset_bound; an
-                                  unsat holds only for lengths <= K; K the
-                                  largest bound; with --smt2 on stderr)
+                                  memmoves with assume(len <= K), counted
+                                  where sea-expand-memset made them (the
+                                  program attribute sea.memset_bound: it
+                                  may include bounds a later fold proved
+                                  redundant or whose memset the lowering
+                                  erased); an unsat holds only for lengths
+                                  <= K; K the largest bound; with --smt2 on
+                                  stderr)
   seam.premises: assumed accesses=<n> conditions=<m>
   seam.premises: off [(fallback: an access leaves its object)]
       [(lowering: drop-fresh-memhavoc=<n> rests on A-SEP)]   (--seam:
@@ -4978,13 +4982,14 @@ int main(int argc, char **argv) {
   uint64_t dropFreshInb = 0;
   if (auto n = program->getAttrOfType<IntegerAttr>(sea::kDropFreshInbAttr))
     dropFreshInb = n.getInt();
+  // (counted where sea-expand-memset made them)
   uint64_t memsetBounds = 0, memsetBoundK = 0;
-  program.walk([&](sea::AssumeOp a) {
-    if (auto k = a->getAttrOfType<IntegerAttr>(sea::kMemSetBoundAttr)) {
-      ++memsetBounds;
-      memsetBoundK = std::max<uint64_t>(memsetBoundK, k.getInt());
-    }
-  });
+  if (auto d = program->getAttrOfType<DictionaryAttr>(sea::kMemSetBoundAttr)) {
+    if (auto n = d.getAs<IntegerAttr>("count"))
+      memsetBounds = n.getInt();
+    if (auto k = d.getAs<IntegerAttr>("bound"))
+      memsetBoundK = k.getInt();
+  }
   // --sink-assumes: after the census of the assumes above (the pass erases
   // them; the result rests on them all the same)
   unsigned sunkAssumes = 0;

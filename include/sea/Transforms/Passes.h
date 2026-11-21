@@ -105,9 +105,12 @@ std::unique_ptr<mlir::Pass> createScalarizeStructsPass();
 /// chain of stores (option max-length, default 16) with an explicit
 /// assume / assert of the bound.
 std::unique_ptr<mlir::Pass> createExpandMemSetPass();
-/// The discardable attribute (an i64, the bound K) sea-expand-memset puts on
-/// each sea.assume(n <= K) it adds: the bounded expansions, an
-/// under-approximation sea-vc reports (assume.memset-bound).
+/// On the sea.program after sea-expand-memset (mode=assume): the bounded
+/// expansions, each a sea.assume(n <= K), a dictionary {count = <n>, bound
+/// = <K>} of i64 (K the largest; absent: none). Counted where the bound is
+/// made: one a later fold proves redundant, or whose memset the lowering
+/// erases, still counts (conservative). An under-approximation sea-vc
+/// reports as `assume.memset-bound: count=<n> bound=<K>`.
 inline constexpr llvm::StringLiteral kMemSetBoundAttr = "sea.memset_bound";
 /// sea-expand-small-memmove: a memmove of a constant length <= maxBytes
 /// index units as loads of every source cell, then stores in address order
