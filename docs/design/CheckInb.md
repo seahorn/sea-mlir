@@ -89,14 +89,56 @@ SeaM.md); with it off, the premises a part uses rest only on its own
 assumes. `--check-inb-dir=<dir>` keeps every part (`part-<i>.mlir`) and
 its output (`part-<i>.jsonl`, `part-<i>.err`); `--check-inb-static=false`
 turns the static discharge off; `--check-inb-max-time=<s>` starts no part
-after that many seconds (the rest are `skipped`, the verdict `unknown`).
-Write each option of the command line as `--name=value`: the parts get the
+after that many seconds (the rest are `skipped`, the verdict `unknown`);
+`--check-inb-keep` keeps the temporary job directory. A directory that
+stays (given, kept, or with `--vcgen-only`) is printed as
+`check-inb-dir: <path>`. With `--vcgen-only` the job writes every part
+and `manifest.json`, runs no part, and prints `check-inb.manifest:
+<path> parts=<k>` and `result: none`: another runner solves the parts
+(below). Write each option of the command line as `--name=value`: the parts get the
 command line without its input file and the job's own options, filtered
 token by token. A two-token option (`--program x`) leaves its value
 behind, and the parts then fail with status 1. The contents of
 `--config` files and `@file` response files reach the parts unfiltered;
 each part also gets `--check-inb=false` last, so a `--check-inb` there
 does not run the job again inside a part.
+
+## The manifest
+
+The job runs in two steps. First it writes every part
+(`part-<i>.mlir`) and `manifest.json` into the job directory; then it
+runs the parts, from the same list it wrote to the manifest. A runner
+outside sea-vc (distributed, threaded, in one process) can take the
+directory and run the parts its own way; the manifest is enough.
+
+`manifest.json`, format version 1. Fields are only ever added; a reader
+ignores fields it does not know and checks `format` and `version`.
+
+| field | meaning |
+|---|---|
+| `format` | `"sea-vc-check-inb"` |
+| `version` | the format version, `1` |
+| `sea_vc_version` | the `tool.version` of the sea-vc that wrote it |
+| `source` | `{path, sha256}`: the input file (absolute path) and the SHA-256 of its contents (`null` for standard input) |
+| `program` | the program's name |
+| `args` | the job's command line, without the binary |
+| `counters` | `{checks, static, left, zero_length}`, as on the `check-inb:` line |
+| `parts` | one object per part, in order |
+
+Each part:
+
+| field | meaning |
+|---|---|
+| `index` | the part's number, as on `check-inb.part:` |
+| `check_id` | the check's id (`sea.inb_check`) |
+| `at` | the check's source location (the access) |
+| `mlir` | the part's file, relative to the job directory |
+| `argv` | the exact command line that runs it: the sea-vc binary, the part's absolute path, the job's options (filtered as above, never `--vcgen-only`), `--format=jsonl`, `--check-inb=false` |
+| `stdout`, `stderr` | the file names (in the job directory) the job's own runner writes the part's output to; the job reads `result`, `solve-time` and the replay's `at` from the jsonl |
+
+A part's verdict is the `result` record of its jsonl and its exit status
+(the statuses of `sea-vc --agent`). The job's verdict is unsat iff every
+part is unsat.
 
 ## The check
 

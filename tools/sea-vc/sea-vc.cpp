@@ -355,6 +355,12 @@ static cl::opt<bool> checkInbStatic(
     cl::desc("With --check-inb: the static discharge of checks proved with "
              "constants (tier (a); default on; off: every check is a part)"),
     cl::init(true));
+static cl::opt<bool> checkInbKeep(
+    "check-inb-keep",
+    cl::desc("With --check-inb: keep the temporary job directory (parts, "
+             "manifest.json, outputs) and print its path "
+             "(check-inb-dir: <path>); for debugging"),
+    cl::init(false));
 static cl::opt<unsigned> checkInbMaxTime(
     "check-inb-max-time",
     cl::desc("With --check-inb: start no part after this many seconds (0: "
@@ -2697,6 +2703,10 @@ TYPICAL:
                                  #   check-inb.discharges: the premises
                                  #   an unsat discharges; unsat iff every
                                  #   part is unsat (docs/design/CheckInb.md)
+  sea-vc p.mlir --check-inb ... --vcgen-only --check-inb-dir=d
+                                 # write d/part-<i>.mlir and
+                                 #   d/manifest.json (each part's argv),
+                                 #   run none: result: none
   sea-vc p.mlir --lower --range-fold=on  # fold a sea.icmp / i1 op /
                                  #   select condition the integer ranges
                                  #   settle (InferIntRangeInterface walk,
@@ -3947,6 +3957,10 @@ Kinds and fields:
                 name=), order, objkind, base, size, align
   result        value: sat|unsat|unknown|none
   check-inb     (--check-inb) checks, static, left, zero_length
+  check-inb-dir path (a kept job directory: --check-inb-dir,
+                --check-inb-keep, --vcgen-only)
+  check-inb.manifest path, parts (--check-inb --vcgen-only: the parts and
+                manifest.json written, none run; result: none)
   check-inb.part part, id, at, result, status, time, [solve_time],
                 [fail_at], [error] (a failed part: its error kind, `-`
                 without one); one per part, as it ends
@@ -4615,6 +4629,12 @@ int main(int argc, char **argv) {
     jo.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
     jo.maxSeconds = checkInbMaxTime;
     jo.boxAllExpand = boxAllExpandOpt;
+    jo.keep = checkInbKeep;
+    // --vcgen-only: the parts and the manifest, no part run
+    jo.prepareOnly = vcgenOnly;
+    jo.source = inputFilename;
+    for (int i = 1; i < argc; ++i)
+      jo.jobArgs.push_back(argv[i]);
     // the part's options: the command line's, without the input and the
     // options of the job itself (each part is one program in a file)
     bool inputDropped = false;
@@ -4625,8 +4645,9 @@ int main(int argc, char **argv) {
         inputDropped = true;
         continue;
       }
-      if (a.starts_with("-") && (name.starts_with("check-inb") ||
-                                 name == "program" || name == "format"))
+      if (a.starts_with("-") &&
+          (name.starts_with("check-inb") || name == "program" ||
+           name == "format" || name == "vcgen-only"))
         continue;
       jo.partArgs.push_back(a.str());
     }

@@ -28,6 +28,7 @@
 #include "sea/Interp/Interpreter.h"
 #include "sea/Support/Diag.h"
 #include "sea/Support/Output.h"
+#include "sea/Support/Version.h"
 #include "sea/Support/WriteFile.h"
 #include "sea/Transforms/Passes.h"
 
@@ -43,6 +44,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
+#include "llvm/Support/SHA256.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -68,6 +70,14 @@ struct JobOptions {
   /// stop starting parts after this many seconds (0: no limit); the parts
   /// not run are `skipped` and the verdict is unknown
   unsigned maxSeconds = 0;
+  /// --check-inb-keep: a temporary directory stays (and is printed)
+  bool keep = false;
+  /// --vcgen-only: write the parts and the manifest, run no part
+  bool prepareOnly = false;
+  /// the input file (for the manifest: its path and hash) and the job's
+  /// own command line (argv[1..])
+  std::string source;
+  std::vector<std::string> jobArgs;
   /// sea-lower-box-all's expand-max (sea-vc --box-all-expand)
   unsigned boxAllExpand = kBoxAllExpandDefault;
 };
@@ -222,6 +232,30 @@ inline int worseStatus(int a, int b) {
   return rank(a) >= rank(b) ? a : b;
 }
 
+/// One part as the manifest describes it: everything an outside runner
+/// needs to run it (docs/design/CheckInb.md, "The manifest").
+struct PartSpec {
+  unsigned index = 0;
+  int64_t checkId = -1;
+  std::string at;
+  /// file names in the job directory
+  std::string mlir, stdoutFile, stderrFile;
+  /// the exact command line (argv[0] the sea-vc binary; absolute paths)
+  std::vector<std::string> argv;
+};
+
+/// The manifest's format version: 1. Fields are only ever added.
+constexpr unsigned kManifestVersion = 1;
+
+/// The SHA-256 of a file, hex; empty if it cannot be read.
+inline std::string sha256Of(llvm::StringRef path) {
+  auto buf = llvm::MemoryBuffer::getFile(path);
+  if (!buf)
+    return "";
+  auto h = llvm::SHA256::hash(llvm::arrayRefFromStringRef((*buf)->getBuffer()));
+  return llvm::toHex(h, /*LowerCase=*/true);
+}
+
 inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
                   out::Emitter &out) {
   using Clock = std::chrono::steady_clock;
@@ -319,35 +353,45 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     diag::error("vc.check-inb-dir", "cannot make " + dir + ": " + ec.message());
     return 1;
   }
-
-  // a temporary directory goes on every return from here
+  {
+    // absolute: the manifest's argv runs from any directory
+    llvm::SmallString<256> abs(dir);
+    (void)llvm::sys::fs::make_absolute(abs);
+    dir = abs.str().str();
+  }
+  // a temporary directory goes on every return from here, unless kept
+  // (--check-inb-keep, --vcgen-only)
+  const bool keepDir = !tempDir || o.keep || o.prepareOnly;
   auto removeTemp = llvm::scope_exit([&] {
-    if (tempDir)
+    if (!keepDir)
       (void)llvm::sys::fs::remove_directories(dir);
   });
-  std::vector<PartRun> runs;
-  int worst = 0;
-  unsigned skipped = 0;
-  auto t0 = Clock::now();
+  if (keepDir) {
+    out::Record rec("check-inb-dir");
+    rec.str("path", dir);
+    rec.text = "check-inb-dir: " + dir;
+    out.emit(rec);
+  }
+
+  // step 1: every part and the manifest, before any part runs
+  std::vector<PartSpec> specs;
   for (auto [i, part] : llvm::enumerate(parts)) {
-    PartRun r;
-    r.index = i;
+    PartSpec sp;
+    sp.index = i;
     AssertOp a;
     part.walk([&](AssertOp x) { a = x; });
     if (!a) {
       (void)postconditionFailedNoAssert(part);
       return 1;
     }
-    r.at = locText(a.getLoc());
+    sp.at = locText(a.getLoc());
     if (auto id = a->getAttrOfType<mlir::IntegerAttr>(kInbCheckAttr))
-      r.checkId = id.getInt();
-    if (o.maxSeconds && secondsSince(t0) > o.maxSeconds) {
-      ++skipped;
-      continue;
-    }
-    std::string base = (dir + "/part-" + llvm::Twine(i)).str();
-    std::string mlirFile = base + ".mlir", jsonFile = base + ".jsonl",
-                errFile = base + ".err";
+      sp.checkId = id.getInt();
+    std::string base = ("part-" + llvm::Twine(i)).str();
+    sp.mlir = base + ".mlir";
+    sp.stdoutFile = base + ".jsonl";
+    sp.stderrFile = base + ".err";
+    std::string mlirPath = dir + "/" + sp.mlir;
     {
       // the part alone, with its source locations
       mlir::OpBuilder b(ctx);
@@ -355,7 +399,7 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
           mlir::ModuleOp::create(b.getUnknownLoc());
       m->getBody()->push_back(part->clone());
       if (mlir::failed(writeFileAtomic(
-              mlirFile,
+              mlirPath,
               [&](llvm::raw_ostream &os) {
                 m->print(os, mlir::OpPrintingFlags().enableDebugInfo());
                 return mlir::success();
@@ -363,19 +407,101 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
               "vc.check-inb-dir", "--check-inb part")))
         return 1;
     }
-    std::vector<llvm::StringRef> args{o.self, mlirFile};
+    sp.argv = {o.self, mlirPath};
     for (const std::string &s : o.partArgs)
-      args.push_back(s);
-    args.push_back("--format=jsonl");
+      sp.argv.push_back(s);
+    sp.argv.push_back("--format=jsonl");
     // the last occurrence wins: a --config file or response file that
     // names --check-inb does not run the job again inside the part
-    args.push_back("--check-inb=false");
+    sp.argv.push_back("--check-inb=false");
+    specs.push_back(std::move(sp));
+  }
+  {
+    llvm::json::Array partsJ;
+    for (const PartSpec &sp : specs) {
+      llvm::json::Array argv;
+      for (const std::string &s : sp.argv)
+        argv.push_back(s);
+      partsJ.push_back(llvm::json::Object{{"index", int64_t(sp.index)},
+                                          {"check_id", sp.checkId},
+                                          {"at", sp.at},
+                                          {"mlir", sp.mlir},
+                                          {"argv", std::move(argv)},
+                                          {"stdout", sp.stdoutFile},
+                                          {"stderr", sp.stderrFile}});
+    }
+    llvm::json::Array jobArgs;
+    for (const std::string &s : o.jobArgs)
+      jobArgs.push_back(s);
+    std::string hash = sha256Of(o.source);
+    llvm::SmallString<256> sourcePath(o.source);
+    if (o.source != "-")
+      (void)llvm::sys::fs::make_absolute(sourcePath);
+    llvm::json::Object manifest{
+        {"format", "sea-vc-check-inb"},
+        {"version", int64_t(kManifestVersion)},
+        {"sea_vc_version", versionString()},
+        {"source",
+         llvm::json::Object{{"path", sourcePath.str()},
+                            {"sha256", hash.empty()
+                                           ? llvm::json::Value(nullptr)
+                                           : llvm::json::Value(hash)}}},
+        {"program", name},
+        {"args", std::move(jobArgs)},
+        {"counters", llvm::json::Object{{"checks", int64_t(checks)},
+                                        {"static", int64_t(staticN)},
+                                        {"left", int64_t(left)},
+                                        {"zero_length", int64_t(zero)}}},
+        {"parts", std::move(partsJ)}};
+    if (mlir::failed(writeFileAtomic(
+            dir + "/manifest.json",
+            [&](llvm::raw_ostream &os) {
+              os << llvm::formatv("{0:2}",
+                                  llvm::json::Value(std::move(manifest)))
+                 << "\n";
+              return mlir::success();
+            },
+            "vc.check-inb-dir", "--check-inb manifest")))
+      return 1;
+  }
+  if (o.prepareOnly) {
+    out::Record pr("check-inb.manifest");
+    pr.str("path", dir + "/manifest.json").num("parts", specs.size());
+    pr.text = llvm::formatv("check-inb.manifest: {0}/manifest.json parts={1}",
+                            dir, specs.size())
+                  .str();
+    out.emit(pr);
+    out::Record rec("result");
+    rec.str("value", "none");
+    rec.text = "result: none";
+    out.emit(rec);
+    out.flush();
+    return 0;
+  }
+  std::vector<PartRun> runs;
+  int worst = 0;
+  unsigned skipped = 0;
+  auto t0 = Clock::now();
+  // step 2: run the parts, from the data the manifest was written from
+  for (const PartSpec &sp : specs) {
+    const unsigned i = sp.index;
+    PartRun r;
+    r.index = i;
+    r.at = sp.at;
+    r.checkId = sp.checkId;
+    if (o.maxSeconds && secondsSince(t0) > o.maxSeconds) {
+      ++skipped;
+      continue;
+    }
+    std::string jsonFile = dir + "/" + sp.stdoutFile,
+                errFile = dir + "/" + sp.stderrFile;
+    std::vector<llvm::StringRef> args(sp.argv.begin(), sp.argv.end());
     std::optional<llvm::StringRef> redirects[] = {
         std::nullopt, llvm::StringRef(jsonFile), llvm::StringRef(errFile)};
     auto tp = Clock::now();
     std::string err;
-    r.status = llvm::sys::ExecuteAndWait(o.self, args, std::nullopt, redirects,
-                                         0, 0, &err);
+    r.status = llvm::sys::ExecuteAndWait(sp.argv[0], args, std::nullopt,
+                                         redirects, 0, 0, &err);
     r.seconds = secondsSince(tp);
     if (r.status < 0) {
       diag::error("vc.check-inb-part",

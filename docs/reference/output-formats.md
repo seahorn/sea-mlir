@@ -342,6 +342,8 @@ for the check jobs (`--check-align`, `--check-ptr-index`,
 
 ```text
 check-inb: checks=<n> static=<n> left=<n> zero-length=<n>
+check-inb-dir: <path>                       (a kept directory only)
+check-inb.manifest: <path> parts=<k>        (--vcgen-only only)
 check-inb.part: <i> id=<check id> at=<loc> result=<r> status=<exit> time=<s> [solve-time=<s>] [fail-at=<loc>]
 check-inb.parts: total=<n> unsat=<n> sat=<n> unknown=<n> other=<n> skipped=<n> median-time=<s> max-time=<s> time=<s>
 check-inb.part-diags: none | <kind>=<parts> ...
@@ -356,7 +358,8 @@ but the discharged premises, and their `*-assume` warning kinds), sorted,
 or `none`. `result` is the part's
 `result:` (`error` or `inconclusive` for a part that ended with status 1,
 2, 5, 6 or 4); `other` counts those. In jsonl the records are
-`check-inb`, `check-inb.part`, `check-inb.parts`, `check-inb.part-diags`
+`check-inb`, `check-inb-dir` (path), `check-inb.manifest` (path,
+parts), `check-inb.part`, `check-inb.parts`, `check-inb.part-diags`
 (one field per kind) and `check-inb.discharges` (fields `premises`,
 `under`), with the fields of the text.
 
