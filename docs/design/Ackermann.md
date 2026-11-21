@@ -161,9 +161,27 @@ the stride differences does not divide the constant difference), or one at
 a node over an object of size 0. Dropping any constraint only weakens the
 lowered query: unsat stays sound with no premise. The promises (and, for a
 byte of a wide access or a size-0 base, A-INB) are what make the dropped
-constraints vacuous, so a sat model needs them: one that puts two such
-reads at one index breaks one, is detected (AckermannModel::strideBroken)
-before the result, and sea-vc reruns without the rule.
+constraints vacuous, so a sat model needs them. A promise is a fact only
+at an access the run performs (PtrIndex.md, "Where the promise is a
+fact"). So a model that puts two such reads at one index with different
+cells breaks a promise only when both reads execute in it: the guard of
+the block of one of each read's loads is true. AckermannModel::strideBroken
+counts those pairs before the result (`vc.ackermann-stride-broken`), and
+sea-vc reruns without the rule. A pair with a read that does not execute
+breaks nothing: its index is free. It is counted
+`vc.ackermann-stride-idle`, and the run goes on.
+
+Execution conditions come from OpSem: each load records its block's guard
+with the selects it leaves at its own address (`Rules::noteOwnReads`), and
+the boundary's record (`AccessOrigins`) carries them to the reads. A read
+whose condition is unknown counts as executed: a select made elsewhere (a
+memory operation's source read, the boundary's translations), a shared
+one, an index with more than 16 conditions, or a guard without a Boolean
+value in the model. That direction only adds reruns. Two counters show
+the fallback: `vc.ackermann-stride-exec-unknown: 1` when a load's walk
+of its reads stopped at its node bound (then every read counts as
+executed), and `vc.ackermann-stride-exec-overflow`, the indices with more
+than 16 conditions.
 Counted `vc.ackermann-stride-pairs` (of them `-stride-a-null-pairs`, `-stride-a-nowrap-pairs`) and
 why the rest were not (`-stride-not-eligible`, `-other-base`, `-divides`).
 On vcc hash_table_eq (seam-wide, yices): 95104 -> 43712 constraints, solve
@@ -748,7 +766,22 @@ consistent by the constraints (two reads with equal index values have
 equal cell values; a pair that is not, `inconsistent`, is a lowering bug,
 or under `--ack-own` a model that breaks its premises (`own-broken`, above):
 sea-vc reports error `vc.ackermann-inconsistent`, status 2, unless the
-replay confirms an `own-broken`-only model, above). Its `eval(e)`
+replay confirms an `own-broken`-only model, above).
+
+A pair the stride rule or the ownership drop dropped may have different
+cells at one index. Each index has a representative read: the first
+executed read at it, else the first read. Every later read is compared
+only with the representative, so the reads after the first executed one
+are compared only with it, and every pair of executed reads with
+different cells shows in some comparison with it. The cell is the
+representative's, so a replay reads the cell an executed load read, also
+for the ownership drop's pairs. The inconsistency check covers less than
+when every read was compared with the first: a pair of two reads that do
+not execute, or of one that does not execute and the representative, may
+be counted idle (`vc.ackermann-stride-idle`) where the old check counted
+it `inconsistent`. A correct model has no such pair.
+
+`AckermannModel`'s `eval(e)`
 rewrites e bottom-up: `select(A, j)` becomes `F_A(value(j))` (j rewritten
 and evaluated first), any other occurrence of A becomes the store chain of
 F_A over a constant-0 array, then the inner model evaluates the result.

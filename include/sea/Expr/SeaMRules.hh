@@ -3628,26 +3628,51 @@ public:
   /// expansion, memory-operation reads, wide expansion) are not own, unless
   /// they are the same node (hash-consed: the same cell at the same term).
   /// The walk does not enter read indices or ite conditions; at most
-  /// kOwnWalk nodes per load.
+  /// kOwnWalk nodes per load. \p exec: the condition under which the load
+  /// executes (its block's guard; null: always), kept for every select the
+  /// walk reaches, own or not (ownExec: the stride rule's model check).
   static constexpr size_t kOwnWalk = 4096;
-  void noteOwnReads(const Expr &res, const Expr &ptr, uint64_t units) const {
+  void noteOwnReads(const Expr &res, const Expr &ptr, uint64_t units,
+                    const Expr &exec = Expr()) const {
     if (!m_opts.trackOwnReads)
       return;
     const Expr p = op::ptr::stripObservation(ptr);
-    noteValueReads(res, [&](ENode *n) {
+    const Expr cond = exec ? exec : mk<TRUE>(res->efac());
+    const bool complete = noteValueReads(res, [&](ENode *n) {
+      OwnExec &oe = m_ownExec[n];
+      oe.node = Expr(n);
+      std::vector<Expr> &ex = oe.conds;
+      if (std::find(ex.begin(), ex.end(), cond) == ex.end())
+        ex.push_back(cond);
       const Expr x = op::ptr::stripObservation(Expr(n->arg(1)));
       mpz_class d;
       if (x == p || (cancelDiff(x, p, d) && d >= mpz_class(0L) &&
                      d < mpz_class((unsigned long)units)))
         m_ownReads.emplace(n, Expr(n));
     });
+    // a select the walk did not reach may be read by this load too: no
+    // select's conditions are known any more
+    if (!complete)
+      m_ownExecIncomplete = true;
+  }
+  /// A walk of noteOwnReads stopped at kOwnWalk: every select's execution
+  /// conditions are unknown (ownExec null; the reads count as executed).
+  bool ownExecIncomplete() const { return m_ownExecIncomplete; }
+  /// The execution conditions of select \p n: the guards of the blocks of
+  /// every load whose value reaches it (noteOwnReads). Null if unknown: \p n
+  /// is not an own read, or a load's walk stopped at kOwnWalk.
+  const std::vector<Expr> *ownExec(const ENode *n) const {
+    if (m_ownExecIncomplete || !ownRead(n))
+      return nullptr;
+    auto it = m_ownExec.find(const_cast<ENode *>(n));
+    return it == m_ownExec.end() ? nullptr : &it->second.conds;
   }
   /// \p fn on every select reachable from \p res as a value: through every
   /// operator but into neither a select's operands (its index is an
   /// address, its memory a memory) nor an ite's condition; at most kOwnWalk
-  /// nodes.
+  /// nodes. False if it stopped there with nodes left.
   template <typename Fn>
-  void noteValueReads(const Expr &res, Fn fn) const {
+  bool noteValueReads(const Expr &res, Fn fn) const {
     std::unordered_set<ENode *> seen;
     std::vector<ENode *> stack{res.get()};
     while (!stack.empty() && seen.size() < kOwnWalk) {
@@ -3667,6 +3692,10 @@ public:
       for (size_t i = 0; i < n->arity(); ++i)
         stack.push_back(n->arg(i));
     }
+    for (ENode *n : stack)
+      if (!seen.count(n))
+        return false;
+    return true;
   }
   bool ownRead(const ENode *n) const {
     return m_ownReads.count(const_cast<ENode *>(n)) != 0;
@@ -6067,6 +6096,14 @@ private:
   mutable std::vector<std::string> m_inbUnrecorded;
   /// noteOwnReads: the own selects (pinned)
   mutable std::unordered_map<ENode *, Expr> m_ownReads;
+  /// noteOwnReads: per own select, the execution conditions of its loads
+  struct OwnExec {
+    Expr node; ///< the key, pinned
+    std::vector<Expr> conds;
+  };
+  mutable std::unordered_map<ENode *, OwnExec> m_ownExec;
+  /// a walk of noteOwnReads stopped at kOwnWalk: ownExec knows nothing
+  mutable bool m_ownExecIncomplete = false;
   /// noteBoundaryRead: selects made elsewhere (pinned)
   mutable std::unordered_map<ENode *, Expr> m_boundaryReads;
   mutable std::vector<Expr> m_boundaryPending;
@@ -6227,6 +6264,18 @@ class SeaMRewriter {
   bool m_memOpsMade = false;
   bool m_wideMade = false;
   AccessOrigins *m_record = nullptr;
+  /// the execution conditions of own read \p n as the query has them
+  /// (erased); null if none were recorded
+  const std::vector<Expr> *erasedExec(const seam::Rules &ru, ENode *n) {
+    const std::vector<Expr> *ex = ru.ownExec(n);
+    if (!ex)
+      return nullptr;
+    m_execTmp.clear();
+    for (const Expr &g : *ex)
+      m_execTmp.push_back(ru.erase(g));
+    return &m_execTmp;
+  }
+  std::vector<Expr> m_execTmp;
   void recordReads(const Expr &root) {
     std::unordered_set<ENode *> seen;
     std::vector<ENode *> stack{root.get()};
@@ -6240,7 +6289,8 @@ class SeaMRewriter {
         const seam::Rules &ru = m_config.rules();
         const bool own = ru.ownRead(n), made = ru.boundaryRead(n);
         m_record->add(ru.erase(idx), idx, ru.shadowMemory(Expr(n->arg(0))),
-                      !own || made, own && made);
+                      !own || made, own && made,
+                      own && !made ? erasedExec(ru, n) : nullptr);
       }
       for (size_t i = 0; i < n->arity(); ++i)
         stack.push_back(n->arg(i));

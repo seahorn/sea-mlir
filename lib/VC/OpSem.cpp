@@ -604,10 +604,12 @@ Expr SeaOpSem::memLoad(Expr mem, Expr ptr, uint64_t units, OpSemContext &ctx) {
   if (!seamMode)
     return sel;
   Expr res = seamRw->rewrite(sel);
-  // the selects this load leaves at its own address (--narrow-offsets);
-  // not for shadow / companion memories, which are not program accesses
+  // the selects this load leaves at its own address (--narrow-offsets),
+  // with the condition under which it executes (the stride rule's model
+  // check); not for shadow / companion memories, which are not program
+  // accesses
   if (!seamRw->rules().shadowMemory(mem) && !keyedAccess())
-    seamRw->rules().noteOwnReads(res, ptr, units);
+    seamRw->rules().noteOwnReads(res, ptr, units, ctx.getPathCond());
   seamRw->settleBoundaryReads();
   return res;
 }

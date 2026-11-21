@@ -210,10 +210,17 @@ off without A-INB.
 - Unsat: dropping a functional-consistency constraint only weakens the
   lowered query, so unsat is sound with no premise.
 - Sat: the promises (and A-INB for K and size-0) make the dropped
-  constraints vacuous, so they are needed only for sat. A sat model that
-  puts two dropped-pair reads at one index breaks one. It is found before
-  the result (AckermannModel::strideBroken, the arrays built eagerly), and
-  sea-vc reruns without the rule (`vc.ackermann-stride: fallback`).
+  constraints vacuous, so they are needed only for sat. A promise is a
+  fact only where its access executes (rev 3, section 1). A sat model
+  that puts two dropped-pair reads at one index, with different cells,
+  breaks one only if both reads execute in it (the guard of a block of
+  each read's loads is true). Such a pair is found before the result
+  (AckermannModel::strideBroken, the arrays built eagerly;
+  `vc.ackermann-stride-broken`), and sea-vc reruns without the rule
+  (`vc.ackermann-stride: fallback`). A pair with a read that does not
+  execute is counted `vc.ackermann-stride-idle` and causes no rerun. The
+  array keeps an executed read's cell, also for pairs the ownership drop
+  dropped (Ackermann.md).
 - Eligibility avoids spurious reruns; it is not a soundness condition.
 - So the Ackermann case needs no PremPtrIndex obligation. The premise and
   --seam-check formulas of section 5 are needed when the rule enters SeaM
@@ -679,7 +686,9 @@ made by the expansion, counts `premise.a-nowrap`.
   compares (section 1).
 - Ackermann: the pair loop, after the residue test. Counted in
   `Ackermannizer::Stats` as `stride` and `stride-a-null` / `stride-a-nowrap` pairs, printed as
-  `vc.ackermann-stride-pairs` / `vc.ackermann-stride-a-null-pairs` / `-a-nowrap-pairs`. The
+  `vc.ackermann-stride-pairs` / `vc.ackermann-stride-a-null-pairs` / `-a-nowrap-pairs`.
+  A sat model is checked on the dropped pairs whose reads both execute
+  (section 0b, Soundness). The
   Ackermann header's "no A-INB" (Ackermann.hh:26-27) becomes "A-INB only
   for the stride rule, reported".
 

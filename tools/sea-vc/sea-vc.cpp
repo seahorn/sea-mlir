@@ -3045,6 +3045,22 @@ OUTPUT (stdout, `key: value` lines):
                                   definition atoms
                                   asserted, bvadd nodes replaced; with
                                   vc-time, stderr with --smt2)
+  vc.ackermann-stride-broken: <n>  (sat, --ack-stride with stride pairs:
+  vc.ackermann-stride-idle: <n>    pairs the rule dropped that the model
+                                  puts at one index with different cells;
+                                  broken: both reads execute (a GEP promise
+                                  broken at an access the run performs:
+                                  warning vc.ack-stride-promise-broken,
+                                  printed before any result, run again
+                                  without the rule); idle: a read of the
+                                  pair does not execute (its block's guard
+                                  is false; no promise there, no rerun))
+  vc.ackermann-stride-exec-unknown: 0|1  (with stride-idle: 1 if a load's
+  vc.ackermann-stride-exec-overflow: <n>  walk of its reads stopped at its
+                                  node bound, so every read counts as
+                                  executed; overflow: read indices with
+                                  more than 16 execution conditions,
+                                  counted as executed)
   vc.ackermann-model: defaulted=<n> inconsistent=<n> [stride-broken=<n>]
       [own-broken=<n> own-excused=<n>]   (sat, lowering on: reads at indices the
                                   query does not read (cell 0; any value
@@ -5756,7 +5772,9 @@ int main(int argc, char **argv) {
     seamOpts.expandUnknownRow = seamRowExpand;
     seamOpts.groupSameValueRow = seamRowGroup;
     seamOpts.checkInbPremise = seamCheckInbPremise;
-    seamOpts.trackOwnReads = narrowOffsets || ackOwn;
+    // own reads with their loads' execution conditions: also for the
+    // stride rule's model check (AckermannModel::strideBroken)
+    seamOpts.trackOwnReads = narrowOffsets || ackOwn || ackStride;
     seamOpts.layoutDecide = seamLayout;
     seamOpts.pruneSize0 = seamPruneSize0;
     seamOpts.wideAccess = seamWide;
@@ -8346,6 +8364,18 @@ int main(int argc, char **argv) {
       expr::AckermannModel probe(*probeInner, ack);
       for (size_t a = 0; a < ack.arrays().size(); ++a)
         (void)probe.function(a);
+      {
+        sea::stats::Report r;
+        r.line("vc.ackermann-stride-idle").value(probe.strideIdle());
+        // reads taken as executed for want of conditions: everywhere (a
+        // load's walk stopped) / at indices with too many conditions
+        r.line("vc.ackermann-stride-exec-unknown")
+            .value(uint64_t(sem.seamRewriter() &&
+                            sem.seamRewriter()->rules().ownExecIncomplete()));
+        r.line("vc.ackermann-stride-exec-overflow")
+            .value(accessOrigins.execOverflow);
+        r.print(vout(), brunchStats);
+      }
       if (probe.strideBroken()) {
         sea::stats::Report r;
         r.line("vc.ackermann-stride-broken").value(probe.strideBroken());

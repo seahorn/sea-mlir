@@ -38,30 +38,34 @@
 // constraint only weakens the lowered query: unsat stays sound with no premise.
 // The promises (and A-NOWRAP for a byte of a wide access, A-NULL for a size-0
 // base: SeaMRules.hh, the named premises) are
-// what make the dropped constraints vacuous, so a sat model needs them: one
-// that puts two such reads at one index breaks one, is detected
-// (AckermannModel::strideBroken) before the result, and sea-vc reruns without
-// the rule. One more, off by default (sea-vc --ack-own): the ownership drop, a
-// pair of reads of two different objects (every address of each index a
-// pointer into its object: a load's read or a select the boundary made for a
-// memory operation), resting on A-INB of the access behind one read and A-OWN
-// (no access through one
-// object touches another object's cells, reads included); a sat model that
-// puts two such reads at one index with different cells is counted as
-// inconsistent (AckermannModel::ownBroken). Otherwise no pair is dropped. An
-// array is lowered only if every use of it
-// is the array operand of a select: no store over it, no equality, no ite, no
+// what make the dropped constraints vacuous, so a sat model needs them. A
+// promise is a fact only at an access the run performs: a model that puts two
+// such reads at one index with different cells breaks one only if both reads
+// execute in it (Read::exec, their loads' block guards). Such a pair is
+// detected (AckermannModel::strideBroken) before the result, and sea-vc reruns
+// without the rule; a pair with a read that does not execute is counted
+// (strideIdle) and breaks nothing. One more, off by default (sea-vc --ack-own):
+// the ownership drop, a pair of reads of two different objects (every address
+// of each index a pointer into its object: a load's read or a select the
+// boundary made for a memory operation), resting on A-INB of the access behind
+// one read and A-OWN (no access through one object touches another object's
+// cells, reads included); a sat model that puts two such reads at one index
+// with different cells is counted as inconsistent (AckermannModel::ownBroken).
+// Otherwise no pair is dropped. An array is lowered only if every use of it is
+// the array operand of a select: no store over it, no equality, no ite, no
 // other operator (then it is kept as it is, `kept` counts it). Indices of reads
 // may contain reads (of the same or other arrays): they are lowered first
 // (bottom-up).
 //
 // Model reconstruction (AckermannModel): the model of the lowered formula has
 // values for i_k and r_k; each lowered array A becomes the finite function
-// {value(i_k) -> value(r_k)} (consistent: by the constraints) with default 0
-// elsewhere. AckermannModel is a solver::Model whose eval reads every
-// select(A, j) through that function (j evaluated first) and replaces any
-// other occurrence of A by the store chain over a constant 0 array, so every
-// consumer of the model (replay, validation) sees the same array.
+// {value(i_k) -> value(r_k)} (consistent: by the constraints, but for the
+// dropped pairs: of two values at one index an executed read's wins, also
+// for the ownership drop's pairs) with default 0 elsewhere. AckermannModel is a
+// solver::Model whose eval reads every select(A, j) through that function (j
+// evaluated first) and replaces any other occurrence of A by the store chain
+// over a constant 0 array, so every consumer of the model (replay, validation)
+// sees the same array.
 //
 // The UF form (setUf, sea-vc --ro-arrays=uf with the lowering off): the same
 // arrays (only read, bv -> bv) become an uninterpreted function uf.<A> with
@@ -284,17 +288,44 @@ struct AccessOrigins {
     bool notOwn = false;
     /// of notOwn: an own read that is also made elsewhere (one node)
     bool shared = false;
+    /// when some select at this index executes: the execution conditions
+    /// (block guards, erased) of the loads whose own reads they are, at
+    /// most kMaxExec; `execAlways` when a select here is not an own read
+    /// with recorded conditions (a read made elsewhere, a shared one), or
+    /// there were more (the model check takes such a read as executed)
+    static constexpr size_t kMaxExec = 16;
+    std::vector<Expr> exec;
+    bool execAlways = false;
   };
   std::unordered_map<ENode *, Entry> byIndex;
+  /// indices whose execution conditions were more than kMaxExec (then
+  /// execAlways)
+  uint64_t execOverflow = 0;
   /// \p key (expanded) was the read address \p origin (of a shadow memory:
   /// \p shadow)
+  /// \p exec: the execution conditions of the select (null: unknown, taken
+  /// as always)
   void add(const Expr &key, const Expr &origin, bool shadow = false,
-           bool notOwn = false, bool shared = false) {
+           bool notOwn = false, bool shared = false,
+           const std::vector<Expr> *exec = nullptr) {
     Entry &e = byIndex[key.get()];
     e.key = key;
     e.shadow = e.shadow || shadow;
     e.notOwn = e.notOwn || notOwn;
     e.shared = e.shared || shared;
+    if (!exec) {
+      e.execAlways = true;
+    } else if (!e.execAlways) {
+      for (const Expr &g : *exec)
+        if (std::find(e.exec.begin(), e.exec.end(), g) == e.exec.end())
+          e.exec.push_back(g);
+      if (e.exec.size() > Entry::kMaxExec) {
+        e.execAlways = true;
+        ++execOverflow;
+      }
+    }
+    if (e.execAlways)
+      e.exec.clear();
     if (std::find(e.addrs.begin(), e.addrs.end(), origin) == e.addrs.end()) {
       if (e.addrs.size() < kMaxAddrs)
         e.addrs.push_back(origin);
@@ -483,6 +514,11 @@ public:
     /// (the own table's base); null if one is not in the table or two
     /// disagree
     Expr obase = Expr();
+    /// when the read executes (setAccessOrigins): it does iff one of the
+    /// conditions in exec is true; execAlways: unknown, taken as always
+    /// (no origins, an index without an entry, or one with execAlways)
+    std::vector<Expr> exec;
+    bool execAlways = true;
   };
   struct Array {
     Expr array; ///< the array constant A
@@ -947,6 +983,7 @@ private:
     if (!m_origins)
       return;
     auto it = m_origins->byIndex.find(idx);
+    noteExec(r, it == m_origins->byIndex.end() ? nullptr : &it->second, first);
     if (it == m_origins->byIndex.end() || it->second.plain ||
         it->second.nodes.empty()) {
       r.plain = true;
@@ -960,6 +997,23 @@ private:
     for (const Expr &n : it->second.nodes)
       if (std::find(r.nodes.begin(), r.nodes.end(), n) == r.nodes.end())
         r.nodes.push_back(n);
+  }
+
+  /// Merge the execution conditions of an index term's entry \p e (null:
+  /// none) into \p r (\p first: r's first index term).
+  static void noteExec(Read &r, const AccessOrigins::Entry *e, bool first) {
+    if (!e || e->execAlways) {
+      r.execAlways = true;
+      r.exec.clear();
+      return;
+    }
+    if (first)
+      r.execAlways = false;
+    if (r.execAlways)
+      return;
+    for (const Expr &g : e->exec)
+      if (std::find(r.exec.begin(), r.exec.end(), g) == r.exec.end())
+        r.exec.push_back(g);
   }
 
   /// The stride rule (PtrIndex.md section 5, the Ackermann case: cells,
@@ -1275,10 +1329,16 @@ public:
   /// (a bug).
   uint64_t inconsistent() const { return m_inconsistent; }
   /// Read pairs at one index value with different cells whose constraint
-  /// the stride rule dropped: the model breaks a trusted GEP promise (a
-  /// wrapping offset; poison, UB in LLVM). Not a lowering bug: sea-vc
+  /// the stride rule dropped, both reads executed in the model (executed()):
+  /// the model breaks a trusted GEP promise at an access the run performs
+  /// (a wrapping offset; poison, UB in LLVM). Not a lowering bug: sea-vc
   /// reruns without the rule (--ack-stride).
   uint64_t strideBroken() const { return m_strideBroken; }
+  /// Such pairs with a read that does not execute in the model: no promise
+  /// is a fact at its address (PtrIndex.md, "Where the promise is a fact"),
+  /// so its index is free and nothing is broken. Its cell does not reach
+  /// the array (an executed read at that index wins, build()).
+  uint64_t strideIdle() const { return m_strideIdle; }
   /// Of inconsistent(): read pairs at one index value with different cells
   /// whose constraint the ownership drop (--ack-own) dropped. The model breaks
   /// A-INB of a read or A-OWN (an access through one object reaches another
@@ -1382,12 +1442,23 @@ private:
       unsigned w = op::bv::widthBvNum(v);
       Expr vn = op::bv::bvnum(reducedValue(v), w, v->efac());
       auto [it, fresh] = m_funcs[a].emplace(reducedValue(i), vn);
-      if (fresh)
+      if (fresh) {
         first.emplace(reducedValue(i), &rd);
-      else if (it->second != vn) {
-        const Ackermannizer::Read &f = *first.at(reducedValue(i));
+        continue;
+      }
+      // the representative of the index: the first executed read at it,
+      // else the first read; every later read is compared with it, so
+      // every executed read after the first executed one is compared with
+      // that one
+      const Ackermannizer::Read *&rep = first.at(reducedValue(i));
+      const Ackermannizer::Read &f = *rep;
+      const bool fExec = executed(f), rdExec = executed(rd);
+      if (it->second != vn) {
         if (m_ack.strideDropped(f, rd)) {
-          ++m_strideBroken;
+          if (fExec && rdExec)
+            ++m_strideBroken;
+          else
+            ++m_strideIdle;
         } else {
           if (m_ack.ownDropped(a, size_t(&f - reads.data()),
                                size_t(&rd - reads.data())))
@@ -1395,7 +1466,34 @@ private:
           ++m_inconsistent;
         }
       }
+      // the cell is an executed read's: a replay reads it there (a read
+      // that does not execute only fills an index no executed read has);
+      // also for pairs the ownership drop dropped
+      if (!fExec && rdExec) {
+        it->second = vn;
+        rep = &rd;
+      }
     }
+  }
+
+  /// Does read \p rd execute in the inner model: one of its execution
+  /// conditions (Read::exec, the guards of the blocks of its loads) is
+  /// true. Unknown (no conditions recorded, or one without a Boolean value
+  /// in the model) counts as executed.
+  bool executed(const Ackermannizer::Read &rd) {
+    if (rd.execAlways)
+      return true;
+    for (const Expr &g : rd.exec) {
+      auto [it, fresh] = m_execMemo.emplace(g.get(), true);
+      if (fresh) {
+        Expr v = m_inner.eval(g, /*complete=*/false);
+        it->second = !(v && isOpX<FALSE>(v));
+        m_keep.push_back(g);
+      }
+      if (it->second)
+        return true;
+    }
+    return false;
   }
 
   /// Does \p n contain a lowered array? Memoized, iterative.
@@ -1502,6 +1600,9 @@ private:
   bool m_broken = false;
   uint64_t m_inconsistent = 0;
   uint64_t m_strideBroken = 0;
+  uint64_t m_strideIdle = 0;
+  /// executed(): guard -> true unless the model makes it false
+  std::unordered_map<ENode *, bool> m_execMemo;
   uint64_t m_ownBroken = 0;
   uint64_t m_defaulted = 0;
 };
