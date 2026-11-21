@@ -77,9 +77,19 @@ TYPICAL:
                                           #   -> SSA values and block
                                           #   arguments (Mem2Reg); a read
                                           #   before any set = sea.nondet
-                                          #   "<name>" [<site>] of the var;
+                                          #   "<name>" [<site>] of the var
+                                          #   (memories: sea.mem.nondet;
+                                          #   pointers: null); region ops
+                                          #   (seaimp.load / store / memset
+                                          #   / memmove / memhavoc / alloca)
+                                          #   -> the sea op on the chain;
                                           #   sea-run needs this first
                                           #   (docs/design/SeaImp.md)
+  sea-opt p.mlir --sea-erase-mem-ssa      # the program's one memory chain ->
+                                          #   seaimp region %mem (inverse of
+                                          #   the above); errors
+                                          #   erase-mem-ssa.non-linear /
+                                          #   .regions (several memories)
   sea-opt p.mlir --sea-vc-lower           # what sea-vc --lower runs (placed input)
   sea-opt p.mlir --sea-vc-lower='reach=true'
                                           # what sea-vc --lower --reach runs:

@@ -6,7 +6,10 @@
 _Imperative layer over sea: variables, lowered to sea._
 
 `seaimp` holds what is convenient to write but not SSA: variables
-(`seaimp.var`, read and written whole by `seaimp.get` / `seaimp.set`).
+(`seaimp.var`, read and written whole by `seaimp.get` / `seaimp.set`),
+and, on a variable that holds a memory (a region), the sea memory ops
+without the memory operand (`seaimp.load` / `store` / `memset` /
+`memmove` / `memhavoc`) and allocation in the region (`seaimp.alloca`).
 It has no runtime semantics of its own: a program means what its
 lowering to sea means (`sea-lower-seaimp`, MLIR's Mem2Reg). The
 interpreter and the VC generator refuse seaimp ops
@@ -15,6 +18,56 @@ interpreter and the VC generator refuse seaimp ops
 [TOC]
 
 ## Operations
+
+### `seaimp.alloca` (::sea::imp::AllocaOp)
+
+_Allocate a new stack object in a region_
+
+Syntax:
+
+```
+operation ::= `seaimp.alloca` $var `,` $size `align` $align ` ` `[` $site `]` (`label` $label^)?
+              attr-dict `:` qualified(type($var)) `,` type($size) `->`
+              qualified(type($result))
+```
+
+`sea.alloca` of an object whose cells are in the region `var`: each
+execution creates a new object of `size` units, aligned to `align`.
+The lowering is `sea.alloca` with the same operands and attributes
+(sea allocation takes no memory: pointers are not tied to a memory);
+the region is what a later partition into regions checks accesses
+against. `site` is unique with the program's other nondet sites; the
+result is a pointer that indexes the region.
+
+```mlir
+%p = seaimp.alloca %mem, %c4 align 4 [1] : !seaimp.var<!m>, i64 -> !sea.ptr<64>
+```
+
+Interfaces: `Sea_NondetSiteOpInterface`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>align</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is positive</td></tr>
+<tr><td><code>site</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is non-negative</td></tr>
+<tr><td><code>label</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `var` | seaimp variable holding a memory |
+| `size` | integer |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | pointer |
+
+
 
 ### `seaimp.get` (::sea::imp::GetOp)
 
@@ -49,6 +102,160 @@ Interfaces: `PromotableMemOpInterface`
 
 
 
+### `seaimp.load` (::sea::imp::LoadOp)
+
+_Read the cells at an address of a region_
+
+Syntax:
+
+```
+operation ::= `seaimp.load` $var `[` $addr `]` (`align` $align^)? attr-dict `:` qualified(type($var))
+              `->` qualified(type($result))
+```
+
+`sea.load` on the memory the variable holds: `get`, then load.
+
+```mlir
+%x = seaimp.load %mem[%p] align 4 : !seaimp.var<!m> -> i32
+```
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>align</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is positive</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `var` | seaimp variable holding a memory |
+| `addr` | address or pointer |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | integer, address or pointer |
+
+
+
+### `seaimp.memhavoc` (::sea::imp::MemHavocOp)
+
+_Make `len` cells of a region nondeterministic_
+
+Syntax:
+
+```
+operation ::= `seaimp.memhavoc` $var `[` $addr `]` `,` $len ` ` `[` $site `]` attr-dict `:`
+              qualified(type($var))
+```
+
+`sea.memhavoc` on the memory the variable holds: `get`, memhavoc
+`inplace`, `set`. `site` is unique with the program's other nondet
+sites; the lowered memhavoc keeps it.
+
+```mlir
+seaimp.memhavoc %mem[%buf], %c16 [5] : !seaimp.var<!m>
+```
+
+Interfaces: `Sea_NondetSiteOpInterface`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>site</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is non-negative</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `var` | seaimp variable holding a memory |
+| `addr` | address or pointer |
+| `len` | integer |
+
+
+
+### `seaimp.memmove` (::sea::imp::MemMoveOp)
+
+_Copy `len` cells from a region to a region_
+
+Syntax:
+
+```
+operation ::= `seaimp.memmove` $var `[` $addr `]` `,` $src `[` $srcAddr `]` `,` $len
+              (`align` $align^)? (`src_align` $src_align^)? attr-dict `:`
+              qualified(type($var))
+```
+
+`sea.memmove` on the memories the variables hold: `get` both (one
+`get` if they are the same variable), memmove `inplace`, `set` the
+destination. The source is read as it was before the op, so overlap is
+harmless. With one region, `src` and `var` are the same variable.
+
+```mlir
+seaimp.memmove %mem[%dst], %mem[%buf], %c8 : !seaimp.var<!m>
+```
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>align</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is positive</td></tr>
+<tr><td><code>src_align</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is positive</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `var` | seaimp variable holding a memory |
+| `addr` | address or pointer |
+| `src` | seaimp variable holding a memory |
+| `srcAddr` | address or pointer |
+| `len` | integer |
+
+
+
+### `seaimp.memset` (::sea::imp::MemSetOp)
+
+_Set `len` index units of a region to a unit value_
+
+Syntax:
+
+```
+operation ::= `seaimp.memset` $var `[` $addr `]` `,` $value `,` $len (`align` $align^)? attr-dict `:`
+              qualified(type($var))
+```
+
+`sea.memset` on the memory the variable holds: `get`, memset
+`inplace`, `set`.
+
+```mlir
+seaimp.memset %mem[%buf], %z8, %c16 : !seaimp.var<!m>
+```
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>align</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is positive</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `var` | seaimp variable holding a memory |
+| `addr` | address or pointer |
+| `value` | integer |
+| `len` | integer |
+
+
+
 ### `seaimp.set` (::sea::imp::SetOp)
 
 _Write a variable_
@@ -76,6 +283,41 @@ Interfaces: `PromotableMemOpInterface`
 
 
 
+### `seaimp.store` (::sea::imp::StoreOp)
+
+_Write a value to a region_
+
+Syntax:
+
+```
+operation ::= `seaimp.store` $var `[` $addr `]` `,` $value (`align` $align^)? attr-dict `:`
+              qualified(type($var)) `,` qualified(type($value))
+```
+
+`sea.store` on the memory the variable holds: `get`, store `inplace`,
+`set`.
+
+```mlir
+seaimp.store %mem[%p], %v align 4 : !seaimp.var<!m>, i32
+```
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>align</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is positive</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `var` | seaimp variable holding a memory |
+| `addr` | address or pointer |
+| `value` | integer, address or pointer |
+
+
+
 ### `seaimp.var` (::sea::imp::VarOp)
 
 _Declare a variable_
@@ -89,20 +331,24 @@ operation ::= `seaimp.var` $name ` ` `[` $site `]` attr-dict `:` qualified(type(
 A variable holding one value of type `T`, read and written whole. A
 read before any write gives the variable's initial value: integers
 start nondet, named by `name` and `site` (`sea.nondet "<name>" [<site>]`);
-pointers start null (`sea.ptr.null`); structs are `sea.struct.nondet`
-(one bit-vector of the integer and address leaves, pointer leaves null).
+memories (regions) start with nondet contents
+(`sea.mem.nondet "<name>" [<site>]`); pointers start null
+(`sea.ptr.null`); structs are `sea.struct.nondet` (one bit-vector of
+the integer and address leaves, pointer leaves null).
 Programs are expected to set a variable before they get it; a pointer
 read before it is set is not given a meaning beyond null. Every read
 before a write sees the same value. `site` is unique with
 the program's other nondet sites.
 
 The op is in the entry block of a `sea.program`. Its result is used
-only as the variable operand of `seaimp.get` / `seaimp.set` in the
-same region (not as a block argument, a select operand or a stored
-value): every verified variable is promoted by the lowering.
+only as the variable operand of seaimp ops (`get`, `set`, the region
+accesses, `alloca`) in the same region (not as a block argument, a
+select operand or a stored value): every verified variable is promoted
+by the lowering.
 
 ```mlir
 %x = seaimp.var "x" [7] : !seaimp.var<i32>
+%mem = seaimp.var "mem" [0] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
 ```
 
 Interfaces: `PromotableAllocationOpInterface`, `Sea_NondetSiteOpInterface`
@@ -138,13 +384,14 @@ Syntax:
 ```
 
 The handle of a `seaimp.var`. It is not a program value: only
-`seaimp.get` and `seaimp.set` may use it. `T` is a sea register type:
-a signless integer, a pointer (`!sea.ptr`) or a struct
-(`!sea.struct`). Addresses and memories are not supported yet.
+seaimp ops may use it. `T` is a signless integer, a pointer
+(`!sea.ptr`), a struct (`!sea.struct`) or a memory (`!sea.mem`: a
+region, accessed by the region ops). Addresses are not supported.
 
 ```mlir
 !seaimp.var<i32>
 !seaimp.var<!sea.ptr<64>>
+!seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
 ```
 
 #### Parameters:

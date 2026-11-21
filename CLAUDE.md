@@ -37,7 +37,12 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   imperative layer over sea: variables (`seaimp.var` / `get` / `set`),
   lowered to SSA values by `sea-lower-seaimp` (MLIR Mem2Reg; first in the
   VC lowering; a read before any set = `sea.nondet "<name>" [<site>]` for integers,
-  `sea.ptr.null` for pointers).
+  `sea.ptr.null` for pointers, `sea.mem.nondet` for memories). A memory
+  variable is a region: `seaimp.load` / `store` / `memset` / `memmove` /
+  `memhavoc` (the sea op without the Mem-SSA plumbing, expanded to get /
+  op inplace / set before Mem2Reg) and `seaimp.alloca %region` (allocation
+  names its region; lowered to `sea.alloca`). `sea-erase-mem-ssa` is the
+  inverse for a program's one memory (linear chains only).
   No runtime semantics, on purpose: an exception to the new-op rule below
   (no `Semantics.cpp`, no `check-semantics.py`, no interpreter tests);
   sea-run refuses seaimp ops, sea-vc lowers them first under `--lower` and
@@ -133,8 +138,11 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   `sea-vc --box-all-expand=K`; first after sea-apply-tracking in the lowering;
   docs/design/BoxAll.md),
   `sea-lower-seaimp` (seaimp variables -> SSA values by upstream
-  Mem2Reg, the verifier admitting only promotable variables; first in the
-  lowering; docs/design/SeaImp.md),
+  Mem2Reg, the verifier admitting only promotable variables; region ops
+  expanded first; first in the lowering; docs/design/SeaImp.md),
+  `sea-erase-mem-ssa` (sea -> seaimp: the Mem-SSA chain of a program's one
+  memory -> the region `%mem` and region ops; refuses non-linear chains and
+  several memories; erase then lower = an equivalent program),
   `sea-print-strengthen` / `sea-print-weaken` (counterexample print ops,
   weak = by name vs strong = SSA operands, docs/design/Print.md),
   `sea-drop-fresh-memhavoc` (memhavoc of an object nothing wrote or read

@@ -2033,10 +2033,11 @@ INPUT FORM (checked; anything else is an error, never approximated):
   (the value wraps, as in SeaHorn: an over-approximation); --range-fold=on
   uses them (counted: vc.range-fold wrap-flags=). sea-wrap-flags turns
   them into assumes or asserts.
-  seaimp variables (seaimp.var / get / set, docs/design/SeaImp.md) need
-  --lower: sea-lower-seaimp makes them SSA values right after parsing (a
-  read before any set is the nondet of the var's site); without --lower
-  they are error vc.seaimp.
+  seaimp variables (seaimp.var / get / set, region ops on memory
+  variables, docs/design/SeaImp.md) need --lower: sea-lower-seaimp makes
+  them SSA values right after parsing (a read before any set is the
+  nondet of the var's site; pointers start null); without --lower they
+  are error vc.seaimp.
   sea.box.all (a claim over a box of 1-2 i64 indices, docs/design/BoxAll.md)
   needs --lower: sea-lower-box-all replaces it by its body at one
   arbitrary index (nondet box.all.<tag>.<d>, assume t <u trip count; a box

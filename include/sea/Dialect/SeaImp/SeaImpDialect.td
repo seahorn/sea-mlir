@@ -13,7 +13,10 @@ def SeaImp_Dialect : Dialect {
   let summary = "Imperative layer over sea: variables, lowered to sea.";
   let description = [{
     `seaimp` holds what is convenient to write but not SSA: variables
-    (`seaimp.var`, read and written whole by `seaimp.get` / `seaimp.set`).
+    (`seaimp.var`, read and written whole by `seaimp.get` / `seaimp.set`),
+    and, on a variable that holds a memory (a region), the sea memory ops
+    without the memory operand (`seaimp.load` / `store` / `memset` /
+    `memmove` / `memhavoc`) and allocation in the region (`seaimp.alloca`).
     It has no runtime semantics of its own: a program means what its
     lowering to sea means (`sea-lower-seaimp`, MLIR's Mem2Reg). The
     interpreter and the VC generator refuse seaimp ops
@@ -21,7 +24,8 @@ def SeaImp_Dialect : Dialect {
   }];
   let cppNamespace = "::sea::imp";
   let useDefaultTypePrinterParser = 1;
-  // the lowering makes sea.nondet / sea.struct.nondet / sea.ptr.null
+  // the lowering makes sea.nondet / sea.struct.nondet / sea.ptr.null /
+  // sea.mem.nondet and the sea memory ops
   let dependentDialects = ["::sea::SeaDialect"];
 }
 

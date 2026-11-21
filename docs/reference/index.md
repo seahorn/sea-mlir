@@ -4,8 +4,8 @@
   uses, and its sources.
 - [The sea dialect](dialect.md): every operation, type and attribute,
   generated from the dialect's definitions.
-- [The seaimp dialect](seaimp.md): variables written over sea and
-  lowered to it ([design](../design/SeaImp.md)).
+- [The seaimp dialect](seaimp.md): variables and memory regions written
+  over sea and lowered to it ([design](../design/SeaImp.md)).
 - [Command line](cli.md): each installed tool and its main options.
 - [Output formats and exit codes](output-formats.md): the text lines, the
   JSONL records, and the exit status of each tool.
