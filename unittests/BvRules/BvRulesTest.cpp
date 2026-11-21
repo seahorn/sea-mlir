@@ -429,8 +429,9 @@ void testEq() {
            F.f, {"bv.eq.low-zero"});
   // terms on both sides, A + d = B (bv.eq.low-zero2): false iff d is not 0
   // mod 2^z, z = the low zero bits of both sides; each verdict checked with
-  // z3 (unsat / sat) before it was coded
-  for (unsigned w : {8u, 32u, 64u}) {
+  // z3 (unsat / sat) before it was coded. Width 1 is left out: the cases
+  // need w >= 6 (coefficient 32, 2^(w-2))
+  for (unsigned w : {8u, 32u, 64u, 128u}) {
     std::string ws = std::to_string(w);
     Expr xw = F.var(("x" + ws).c_str(), w), yw = F.var(("y" + ws).c_str(), w);
     auto n = [&](const mpz_class &v) {

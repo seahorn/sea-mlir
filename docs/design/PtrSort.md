@@ -263,8 +263,9 @@ the abstract program, only for a corpus that needs it; vcc has none).
   slots read a byte apart (8i + 1 vs 8j). [OBS] vcc-pi2: it fires 40,264
   times in 11 hash jobs; queries are identical (md5) and verdicts are the
   same. The pairs are decided later anyway (by ARM, which runs after it).
-  In the unit test (`test/VC/seam/congruence.mlir`) nothing else decides
-  them.
+  In the unit test (`test/VC/seam/congruence.mlir`) the rewriter's
+  bit-vector rule bv.eq.low-zero2 decides them too once they are in linear
+  form; only the run with `--seam-simplify=0` keeps them open.
 - Census of same-object alias questions (D13). An undecided same-base
   compare is reduced by `overlap` to an integer compare of the offsets, so
   there is no pointer left to mark. The W-BYTE-IN guard `(j - i) <u w` is

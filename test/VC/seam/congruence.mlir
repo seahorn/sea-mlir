@@ -7,9 +7,10 @@
 // byte; with --seam-pull-concat the reload is then ite(8i = 8j, X,
 // from_bits(older)). Off, the rewriter's bit-vector rule bv.eq.low-zero2
 // decides the same compares once they are in linear form (8i + l - k = 8j);
-// with neither (--seam-simplify=0) they stay open.
-// RUN: sea-vc %s --lower --seam --seam-stats 2>&1 | FileCheck %s --check-prefixes=CHECK,OFF
-// RUN: sea-vc %s --lower --seam --seam-stats --seam-simplify=0 2>&1 | FileCheck %s --check-prefixes=CHECK,RAW
+// with neither (--seam-congruence=false --seam-simplify=0) they stay
+// open.
+// RUN: sea-vc %s --lower --seam --seam-stats --seam-congruence=false 2>&1 | FileCheck %s --check-prefixes=CHECK,OFF
+// RUN: sea-vc %s --lower --seam --seam-stats --seam-congruence=false --seam-simplify=0 2>&1 | FileCheck %s --check-prefixes=CHECK,RAW
 // RUN: sea-vc %s --lower --seam --seam-stats --seam-congruence 2>&1 | FileCheck %s --check-prefixes=CHECK,ON
 // RUN: sea-vc %s --lower --seam --seam-stats --seam-congruence --seam-pull-concat=4 2>&1 | FileCheck %s --check-prefixes=CHECK,PULL
 // RUN: sea-vc %s --lower --seam --seam-congruence --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
