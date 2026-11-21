@@ -5,6 +5,8 @@
 // or more reads as negative.
 // RUN: sea-vc %s --program=big --check-inb --lower --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=BIG
 // RUN: sea-vc %s --program=big_static --check-inb --lower --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=BIG
+// RUN: sea-vc %s --program=big_fact --check-inb --lower --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=BIG
+// RUN: sea-vc %s --program=big_arg --check-inb --lower --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=BIG
 // RUN: sea-vc %s --program=small --check-inb --lower --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=SMALL
 
 // BIG: Warning: {{.*}}2^31{{.*}}[check-inb.nowrap-not-implied]
@@ -37,6 +39,38 @@ sea.program @big_static {
   %sz = sea.const 2147483648 : i32
   %a = sea.malloc %sz align 8 [1] : i32 -> !sea.ptr<32>
   %x = sea.load %m0[%a] : !m -> i8
+  sea.halt
+}
+
+// The size becomes the constant 2^31 only after the lowering's folds (an
+// assume `sz == 2^31`; a block argument): the placed object decides.
+sea.program @big_fact {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %sz = sea.nondet "sz" [3] : i32
+  %big = sea.const 2147483648 : i32
+  %eq = sea.icmp eq, %sz, %big : i32
+  sea.assume %eq
+  %a = sea.malloc %sz align 8 [1] : i32 -> !sea.ptr<32>
+  %n = sea.nondet "n" [2] : i32
+  %c16 = sea.const 16 : i32
+  %lt = sea.icmp ult, %n, %c16 : i32
+  sea.assume %lt
+  %p = sea.ptr.add %a, %n : !sea.ptr<32>, i32
+  %x = sea.load %m0[%p] : !m -> i8
+  sea.halt
+}
+sea.program @big_arg {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %big = sea.const 2147483648 : i32
+  sea.br ^b1(%big : i32)
+^b1(%sz: i32):
+  %a = sea.malloc %sz align 8 [1] : i32 -> !sea.ptr<32>
+  %n = sea.nondet "n" [2] : i32
+  %c16 = sea.const 16 : i32
+  %lt = sea.icmp ult, %n, %c16 : i32
+  sea.assume %lt
+  %p = sea.ptr.add %a, %n : !sea.ptr<32>, i32
+  %x = sea.load %m0[%p] : !m -> i8
   sea.halt
 }
 

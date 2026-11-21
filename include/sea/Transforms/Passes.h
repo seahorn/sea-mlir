@@ -92,13 +92,6 @@ inline constexpr llvm::StringLiteral kInbCheckAttr = "sea.inb_check";
 /// On the sea.program after sea-check-inb: its counters (a dictionary of
 /// i64 attributes: checks, static, left, zero-length).
 inline constexpr llvm::StringLiteral kCheckInbStatsAttr = "sea.check_inb";
-/// On the sea.program after sea-check-inb: the size in units of its largest
-/// object as placement sizes it (an i64, unsigned; a non-constant size
-/// counts as kPlaceMaxSymbolicSize, the room placement gives it; a size
-/// beyond 64 bits as 2^64 - 1). sea-vc --check-inb discharges A-NOWRAP only
-/// when it is below 2^(w-1).
-inline constexpr llvm::StringLiteral kCheckInbLargestObjectAttr =
-    "sea.check_inb_largest_object";
 /// sea-place-static's default max-symbolic-size: the units it reserves for
 /// an allocation of non-constant size (assumed or asserted to fit).
 inline constexpr uint64_t kPlaceMaxSymbolicSize = 4096;

@@ -304,11 +304,6 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     if (w)
       ptrWidth = w;
   }
-  // the largest object, as placement sizes it (sea-check-inb records it)
-  llvm::APInt largestObject(128, 0);
-  if (auto l =
-          program->getAttrOfType<mlir::IntegerAttr>(kCheckInbLargestObjectAttr))
-    largestObject = l.getValue().zextOrTrunc(128);
   uint64_t checks = 0, staticN = 0, left = 0, zero = 0;
   if (auto d =
           program->getAttrOfType<mlir::DictionaryAttr>(kCheckInbStatsAttr)) {
@@ -346,6 +341,20 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
         addVCOptimizeChecks(prog, o.lower);
         prog.addPass(createScalarizeStructsPass());
         addVCLowerMemory(prog, o.lower);
+      })))
+    return 1;
+  // the largest placed object (A-NOWRAP): the sizes of the segments right
+  // after placement (the folds after it erase unused ones), every part's
+  // objects among them (null aside: size 0)
+  llvm::APInt largestObject(128, 0);
+  program.walk([&](SegmentOp seg) {
+    if (seg.getKind() == "null")
+      return;
+    llvm::APInt sz = seg.getSize().zextOrTrunc(128);
+    if (sz.ugt(largestObject))
+      largestObject = sz;
+  });
+  if (mlir::failed(run([&](mlir::OpPassManager &prog) {
         addVCOptimizeChecks(prog, o.lower);
       })))
     return 1;
@@ -383,6 +392,11 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
       pc.id = id.getInt();
     partChecks.push_back(pc);
   }
+  // the program itself, if no part was made of it (no assert left), is
+  // done: only the parts go on
+  for (ProgramOp p : llvm::make_early_inc_range(module.getOps<ProgramOp>()))
+    if (!p->hasAttr(kSplitAssertAttr))
+      p.erase();
   // optimize each part with the rest of --lower: the fold of facts (the
   // earlier checks are assumes now), merge (one assert), the tail
   if (mlir::failed(run([&](mlir::OpPassManager &prog) {
@@ -711,9 +725,7 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     // what an unsat discharges (docs/design/CheckInb.md): A-INB, and the
     // premises of --seam it implies. A-NOWRAP reads an offset as signed,
     // so A-INB implies it only for objects of fewer than 2^(w-1) units:
-    // the largest object of the program (after the box lowering, before
-    // the split: every part's objects are among them) decides, sized as
-    // placement sizes it.
+    // the largest placed object decides.
     std::string what = "none";
     if (verdict == "unsat") {
       what = "a-inb a-sep a-null";

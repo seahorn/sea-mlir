@@ -13,7 +13,6 @@
 // goes, its assume stays.
 // CHECK-LABEL: sea.program @access
 // CHECK-SAME: sea.check_inb = {checks = 2 : i64, left = 2 : i64, static = 0 : i64
-// CHECK-SAME: sea.check_inb_largest_object = 16 : i64
 // CHECK: sea.assume
 // CHECK: %[[W4:.*]] = sea.const 4 : i64
 // CHECK: %[[D:.*]] = sea.ptr.dereferenceable %[[P:.*]], %[[W4]]
@@ -45,8 +44,6 @@ sea.program @access {
 // removed (counted static). Out of bounds or not constant: kept.
 // CHECK-LABEL: sea.program @tier_a
 // CHECK-SAME: sea.check_inb = {checks = 9 : i64, left = 5 : i64, static = 4 : i64
-// The largest object: the symbolic malloc, at placement's room (4096).
-// CHECK-SAME: sea.check_inb_largest_object = 4096 : i64
 // NOSTATIC-LABEL: sea.program @tier_a
 // NOSTATIC-SAME: sea.check_inb = {checks = 9 : i64, left = 9 : i64, static = 0 : i64
 sea.program @tier_a {

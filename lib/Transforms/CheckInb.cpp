@@ -71,8 +71,7 @@
 //     original assert, and the counters on the program
 //     (kCheckInbStatsAttr): checks (spans checked, discharged ones
 //     included), static (discharged by tier (a)), left (asserts inserted),
-//     zero-length (constant length 0: no check); and the size of its
-//     largest object (kCheckInbLargestObjectAttr).
+//     zero-length (constant length 0: no check).
 //
 //===----------------------------------------------------------------------===//
 
@@ -319,22 +318,6 @@ void CheckInbPass::runOnOperation() {
     }
     a.erase();
   }
-
-  // the largest object as placement sizes it (A-NOWRAP, docs/design/
-  // CheckInb.md): a constant size, else the room placement reserves
-  uint64_t largest = 0;
-  program.walk([&](Operation *op) {
-    uint64_t size = 0;
-    if (auto g = dyn_cast<GlobalOp>(op))
-      size = g.getSize();
-    else if (isa<AllocaOp, MallocOp>(op)) {
-      std::optional<APInt> c = foldConstant(op->getOperand(0));
-      size = c ? c->getLimitedValue() : kPlaceMaxSymbolicSize;
-    }
-    largest = std::max(largest, size);
-  });
-  program->setAttr(kCheckInbLargestObjectAttr,
-                   b.getIntegerAttr(b.getI64Type(), APInt(64, largest)));
 
   auto i64 = [&](uint64_t v) { return b.getI64IntegerAttr(v); };
   program->setAttr(kCheckInbStatsAttr,
