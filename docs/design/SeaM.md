@@ -278,7 +278,8 @@ Discharging the premises is a separate memory-safety job: instrument the
 program with a bounds check before every access (the object its pointer came
 from, as SeaHorn's `sea fpf` does), and verify the instrumented program; an
 unsat of the instrumented job (A-INB holds) together with an unsat of the
-original one gives the unconditional claim. A-NULL alone is a
+original one gives the unconditional claim. `sea-vc --check-inb` is that
+job (CheckInb.md). A-NULL alone is a
 null-dereference check when null is the only object of size 0 (zero-sized
 allocations need their own check), cheaper and more common. `--seam-check`
 states every premise firing as the in-bounds conditions of its accesses;

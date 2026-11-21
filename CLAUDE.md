@@ -110,6 +110,13 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   pointer-holding memories; ptr.base / dereferenceable become arithmetic);
   `sea-lower-ptr-index` (`sea.ptr.index`, explicit GEP pointer arithmetic with trusted no-wrap flags, -> mul / add / ptr.add, flags dropped; standalone only: the VC encodes the op as a PTR_INDEX node, docs/design/PtrIndex.md),
   `sea-check-ptr-index` (paranoid job: assert every used GEP no-wrap promise, docs/design/PtrIndex.md section 6; `sea-vc --check-ptr-index`),
+  `sea-check-inb` (the A-INB discharge job's instrumentation: a bounds
+  check, `sea.ptr.dereferenceable`, before every access of an abstract
+  program, the program's asserts dropped, tier (a) static discharge) and
+  `sea-split-asserts` (the counterpart of sea-merge-asserts: one program
+  per assert, the other asserts assumed, pruned to its cone); `sea-vc
+  --check-inb` runs each part as a sea-vc process of its own
+  (`tools/sea-vc/CheckInbJob.h`, docs/design/CheckInb.md),
   `sea-lower-box-all` (`sea.box.all`, a conjunction over a box of 1-2
   i64 indices, in assert polarity only -> its body at one nondet index
   with `assume(t ult tripcount)`, guarded when the box may be empty; other

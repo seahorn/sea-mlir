@@ -335,7 +335,25 @@ adds the `replay.original:` line. Without a lowering (`--lower` or
 for the check jobs (`--check-align`, `--check-ptr-index`,
 `--ptr-companion=check`), whose assertions are not the program's.
 
-### Where a counterexample fails
+### The A-INB discharge job
+
+`sea-vc --check-inb` ([design](../design/CheckInb.md)) prints, before its
+`result:` line:
+
+```text
+check-inb: checks=<n> static=<n> left=<n> zero-length=<n>
+check-inb.part: <i> id=<check id> at=<loc> result=<r> status=<exit> time=<s> [solve-time=<s>] [fail-at=<loc>]
+check-inb.parts: total=<n> unsat=<n> sat=<n> unknown=<n> other=<n> skipped=<n> median-time=<s> max-time=<s> max-part=<i> time=<s>
+check-inb.part-diags: none | <kind>=<parts> ...
+check-inb.discharges: a-inb a-sep a-null a-nowrap | none
+```
+
+One `check-inb.part` line per part, as it ends. `result` is the part's
+`result:` (`error` or `inconclusive` for a part that ended with status 1,
+2, 5, 6 or 4); `other` counts those. In jsonl the records are
+`check-inb`, `check-inb.part`, `check-inb.parts`, `check-inb.part-diags`
+(one field per kind) and `check-inb.discharges` (field `premises`), with the fields of the text.
+
 
 After `replay: assert-failed` (`sea-vc`) or `status: assert-failed`
 (`sea-run`):

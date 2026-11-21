@@ -19,6 +19,15 @@
 // S1.6b: from_bits(to_bits(p)) ~> p), which keeps its view.
 // RUN: sea-vc %s --lower --solver=z3 --seam --seam-stats 2>&1 | FileCheck %s --check-prefix=RESOLVE
 // RUN: sea-vc %s --lower --solver=z3 --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefix=RESOLVE
+// The A-INB discharge job (--check-inb) finds the out-of-bounds store: a
+// bounds check before every access, each check's part assuming the checks
+// before it, so no rewrite under A-INB of a later access hides it.
+// RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=JOB
+// RUN: %if yices %{ sea-vc %s --check-inb --lower --seam --ackermannize=off --solver=yices | FileCheck %s --check-prefix=JOB %}
+// RUN: %if bitwuzla %{ sea-vc %s --check-inb --lower --seam --ackermannize=off --solver=bitwuzla | FileCheck %s --check-prefix=JOB %}
+// JOB: result=sat status=0
+// JOB: check-inb.discharges: none
+// JOB: result: sat
 // RESOLVE: seam.rule.ptr.load-resolve: {{[1-9]}}
 // RESOLVE: result: unsat
 // PLAIN: result: sat

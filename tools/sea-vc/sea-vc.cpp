@@ -9,6 +9,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "ArithStats.h"
+#include "CheckInbJob.h"
 #include "EqAudit.h"
 #include "sea/Dialect/Sea/SeaDialect.h"
 #include "sea/Dialect/Sea/SeaOps.h"
@@ -332,6 +333,33 @@ static cl::opt<bool> checkAlign(
              "before widening), drop the program's own asserts; unsat = "
              "every promise holds (within the bound)"),
     cl::init(false));
+
+static cl::opt<bool> checkInb(
+    "check-inb",
+    cl::desc("With --lower, --seam and --ackermannize=off, on an abstract "
+             "program: the A-INB discharge job: a bounds check before every "
+             "access (sea-check-inb), the program's asserts dropped, one "
+             "part per check left (sea-split-asserts, the earlier checks "
+             "assumed), each part an ordinary safety query in a process of "
+             "its own; unsat = every access stays in its object (within the "
+             "bound). docs/design/CheckInb.md"),
+    cl::init(false));
+static cl::opt<std::string> checkInbDir(
+    "check-inb-dir",
+    cl::desc("With --check-inb: keep each part (part-<i>.mlir) and its "
+             "output (part-<i>.jsonl, part-<i>.err) in this directory "
+             "(default: a temporary one, removed)"),
+    cl::value_desc("dir"), cl::init(""));
+static cl::opt<bool> checkInbStatic(
+    "check-inb-static",
+    cl::desc("With --check-inb: the static discharge of checks proved with "
+             "constants (tier (a); default on; off: every check is a part)"),
+    cl::init(true));
+static cl::opt<unsigned> checkInbMaxTime(
+    "check-inb-max-time",
+    cl::desc("With --check-inb: start no part after this many seconds (0: "
+             "no limit); the parts not run are skipped, the verdict unknown"),
+    cl::value_desc("s"), cl::init(0));
 
 static cl::opt<bool> checkPtrIndex(
     "check-ptr-index",
@@ -2656,6 +2684,19 @@ TYPICAL:
                                  #   `align` / every used GEP no-wrap
                                  #   promise, drop the program's asserts;
                                  #   unsat = they hold (one job at a time)
+  sea-vc p.mlir --check-inb --lower --seam --ackermannize=off
+                                 # the A-INB discharge job (abstract
+                                 #   program): a bounds check before
+                                 #   every access, the program's asserts
+                                 #   dropped, checks proved with
+                                 #   constants removed, one part per
+                                 #   check left (earlier checks assumed),
+                                 #   each part a sea-vc run of its own;
+                                 #   check-inb.part: per part,
+                                 #   check-inb.parts: summary,
+                                 #   check-inb.discharges: the premises
+                                 #   an unsat discharges; unsat iff every
+                                 #   part is unsat (docs/design/CheckInb.md)
   sea-vc p.mlir --lower --range-fold=on  # fold a sea.icmp / i1 op /
                                  #   select condition the integer ranges
                                  #   settle (InferIntRangeInterface walk,
@@ -3905,6 +3946,14 @@ Kinds and fields:
   object        id (<seg>), symbol (the VC constant obj.<seg> of the text's
                 name=), order, objkind, base, size, align
   result        value: sat|unsat|unknown|none
+  check-inb     (--check-inb) checks, static, left, zero_length
+  check-inb.part part, id, at, result, status, time, [solve_time],
+                [fail_at]; one per part, as it ends
+  check-inb.parts total, unsat, sat, unknown, other, skipped, median_time,
+                max_time, max_part, time
+  check-inb.part-diags one field per diagnostic kind of the parts' stderr:
+                the number of parts that reported it
+  check-inb.discharges premises (`a-inb a-sep a-null a-nowrap` or `none`)
   split-part-start part
   split-part    part, choice, result, vc_time, solve_time, dag, alias_open,
                 alias_open_pairs, alias_open_memop, rows, ack_reads,
@@ -4522,6 +4571,59 @@ int main(int argc, char **argv) {
     if (program)
       return fail("several programs; pick one with --program");
     program = p;
+  }
+  // --check-inb: instrument, split, and run each part as a job of its own
+  if (checkInb) {
+    if (!program)
+      return fail(programName.empty()
+                      ? "no sea.program in input"
+                      : "no program named '" + programName + "'");
+    if (!lower || !seam || ackermannize != AckMode::Off) {
+      sea::diag::error("vc.check-inb-config",
+                       "--check-inb runs with --lower --seam "
+                       "--ackermannize=off (the premises of each check's "
+                       "part are justified by the checks before it; the "
+                       "Ackermann lowering uses A-INB itself)");
+      return 1;
+    }
+    if (checkAlign || checkPtrIndex || reachKind != sea::ReachKind::Off ||
+        rangeFoldOpt == sea::RangeFoldMode::Check) {
+      sea::diag::error("vc.check-jobs",
+                       "--check-inb is a job of its own: not with "
+                       "--check-align, --check-ptr-index, --reach or "
+                       "--range-fold=check");
+      return 1;
+    }
+    if (!sea::isAbstract(program)) {
+      sea::diag::error("vc.check-inb-config",
+                       "--check-inb needs an abstract program (pointers "
+                       "with their objects)",
+                       program.getLoc());
+      return 1;
+    }
+    sea::checkinb::JobOptions jo;
+    jo.self = llvm::sys::fs::getMainExecutable(
+        argv[0], reinterpret_cast<void *>(&printSolverVersions));
+    jo.dir = checkInbDir;
+    jo.staticDischarge = checkInbStatic;
+    jo.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
+    jo.maxSeconds = checkInbMaxTime;
+    // the part's options: the command line's, without the input and the
+    // options of the job itself (each part is one program in a file)
+    bool inputDropped = false;
+    for (int i = 1; i < argc; ++i) {
+      StringRef a(argv[i]);
+      StringRef name = a.ltrim('-').split('=').first;
+      if (!inputDropped && a == inputFilename) {
+        inputDropped = true;
+        continue;
+      }
+      if (a.starts_with("-") && (name.starts_with("check-inb") ||
+                                 name == "program" || name == "format"))
+        continue;
+      jo.partArgs.push_back(a.str());
+    }
+    return sea::checkinb::runJob(*module, program, jo, *gOut);
   }
   if ((!seamPremises || seamOutOfObject.getNumOccurrences() || !seamRowExpand ||
        !seamRowGroup || seamCheckInbPremise || !seamLayout || !seamArm ||
