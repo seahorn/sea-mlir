@@ -109,6 +109,10 @@ struct PartRun {
   /// the first error line of its stderr (`Error: ...` or an MLIR
   /// `error:`), and its kind (`[kind]`, else empty)
   std::string firstError, errorKind;
+  /// its run failed a premise assert (sea.premise; --symbolic-size=assert):
+  /// the `premise.failed:` line and its jsonl fields (in record order)
+  std::string premiseText;
+  std::vector<std::pair<std::string, std::string>> premiseFields;
 };
 
 inline std::string locText(mlir::Location loc) {
@@ -172,6 +176,19 @@ inline void readPartOutput(llvm::StringRef path, PartRun &r) {
         if (active && !llvm::is_contained(r.assumes, name))
           r.assumes.push_back(name);
       }
+    } else if (*kind == "premise") {
+      // a failed premise assert (sea-vc's premise record): kept whole
+      if (auto t = o->getString("text"))
+        r.premiseText = t->str();
+      r.premiseFields.clear();
+      for (llvm::StringRef k :
+           {"status", "name", "size", "room", "at", "at_inlined", "at_name"})
+        if (const llvm::json::Value *val = o->get(k)) {
+          std::string j;
+          llvm::raw_string_ostream js(j);
+          js << *val;
+          r.premiseFields.emplace_back(k.str(), j);
+        }
     } else if (*kind == "replay") {
       // the failing assert itself (assert-op): the check's access. Not
       // `at` (assert-at, where the condition is computed), which for a
@@ -780,7 +797,12 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     }
     readPartOutput(jsonFile, r);
     readPartDiags(errFile, r);
-    if (r.status != 0 && r.status != 3 && r.result != "unknown")
+    // a failed premise is the part's answer: the premise class (status 4,
+    // as sea-vc's premise.failed), not an inconclusive or failed part
+    const bool premiseFailed = r.status == 4 && !r.premiseText.empty();
+    if (premiseFailed)
+      r.result = "premise-failed";
+    else if (r.status != 0 && r.status != 3 && r.result != "unknown")
       r.result = r.status == 4 ? "inconclusive" : "error";
     worst = worseStatus(worst, r.status);
     out::Record rec("check-inb.part");
@@ -805,7 +827,7 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     }
     // why a part failed, without --check-inb-dir: its error's kind here,
     // its first error line on check-inb.part-error
-    const bool failed = r.status != 0 && r.status != 3;
+    const bool failed = r.status != 0 && r.status != 3 && !premiseFailed;
     if (failed) {
       std::string kind = r.errorKind.empty() ? "-" : r.errorKind;
       rec.str("error", kind);
@@ -813,6 +835,15 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     }
     rec.text = text;
     out.emit(rec);
+    // the part's premise.failed line, as the job's own (with its part)
+    if (premiseFailed) {
+      out::Record pr("premise");
+      for (const auto &[k, v] : r.premiseFields)
+        pr.set(k, v);
+      pr.num("part", i);
+      pr.text = r.premiseText + " part=" + std::to_string(i);
+      out.emit(pr);
+    }
     if (failed) {
       out::Record er("check-inb.part-error");
       er.num("part", i).str("message", r.firstError);
@@ -826,7 +857,7 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     runs.push_back(r);
   }
 
-  unsigned unsat = 0, sat = 0, unknown = 0, other = 0;
+  unsigned unsat = 0, sat = 0, unknown = 0, premise = 0, other = 0;
   std::vector<double> times;
   // no "slowest part" here: which part is slowest is a timing, which the
   // part lines give; a summary field of it would differ between two runs
@@ -843,6 +874,8 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
       ++sat;
     else if (r.result == "unknown")
       ++unknown;
+    else if (r.result == "premise-failed")
+      ++premise;
     else
       ++other;
   }
@@ -860,22 +893,27 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
         .num("unknown", unknown)
         .num("other", other)
         .num("skipped", skipped)
+        .num("premise", premise)
         .str("median_time", llvm::formatv("{0:f3}", median).str())
         .str("max_time", llvm::formatv("{0:f3}", maxT).str())
         .str("solve_time", llvm::formatv("{0:f3}", solveSum).str())
         .str("time", llvm::formatv("{0:f3}", secondsSince(t0)).str());
     rec.text =
         llvm::formatv("check-inb.parts: total={0} unsat={1} sat={2} "
-                      "unknown={3} other={4} skipped={5} median-time={6:f3} "
-                      "max-time={7:f3} solve-time={8:f3} time={9:f3}",
-                      specs.size(), unsat, sat, unknown, other, skipped, median,
-                      maxT, solveSum, secondsSince(t0))
+                      "unknown={3} other={4} skipped={5} premise={6} "
+                      "median-time={7:f3} max-time={8:f3} solve-time={9:f3} "
+                      "time={10:f3}",
+                      specs.size(), unsat, sat, unknown, other, skipped,
+                      premise, median, maxT, solveSum, secondsSince(t0))
             .str();
     out.emit(rec);
   }
-  // the verdict: sat if a part's failure replayed; unsat iff every part
-  // is unsat (a trivial part is); else unknown
-  std::string verdict = sat                                 ? "sat"
+  // the verdict: sat if a part's failure replayed, a bounds violation or a
+  // failed premise (premise.failed, exit 4: the premise class, as sea-vc
+  // reports it); unsat iff every part is unsat (a trivial part is); else
+  // unknown. A sat part and a failed part: sat, with the failed part's
+  // status (a premise part's 4).
+  std::string verdict = sat || premise                      ? "sat"
                         : unsat == specs.size() && !skipped ? "unsat"
                                                             : "unknown";
   {

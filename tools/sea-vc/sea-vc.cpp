@@ -3154,7 +3154,12 @@ OUTPUT (stdout, `key: value` lines):
   check-inb.part: <i> id= at= result= status= time= [solve-time=]
                   [fail-at=] [error=<kind>]   (one per part, as it ends)
   check-inb.part-error: <i> <first error line>  (a part that failed)
-  check-inb.parts: total= unsat= sat= unknown= other= skipped=
+  premise.failed: <name> size= room= at= part=<i>   (after a part with
+                                  result=premise-failed: its run failed a
+                                  premise assert, --symbolic-size=assert;
+                                  the job then says result: sat and exits
+                                  4, also with a sat part)
+  check-inb.parts: total= unsat= sat= unknown= other= skipped= premise=
                   median-time= max-time= solve-time= time=
   check-inb.part-diags: none | <kind>=<parts> ...
   check-inb.discharges: a-inb a-sep a-null [a-nowrap] | none
@@ -4045,8 +4050,9 @@ Kinds and fields:
                 [fail_at], [error] (a failed part: its error kind, `-`
                 without one); one per part, as it ends
   check-inb.part-error part, message (a failed part's first error line)
-  check-inb.parts total, unsat, sat, unknown, other, skipped, median_time,
-                max_time, solve_time (summed over the parts), time
+  check-inb.parts total, unsat, sat, unknown, other, skipped, premise,
+                median_time, max_time, solve_time (summed over the parts),
+                time
   check-inb.part-diags one field per diagnostic kind of the parts' stderr:
                 the number of parts that reported it
   check-inb.discharges premises (`a-inb a-sep a-null[ a-nowrap]` or `none`;
@@ -4102,7 +4108,7 @@ Kinds and fields:
                 several lines)
   validate      checked, mismatches, dontcare
   premise       status (failed), name, [size, room] (null: not found), at
-                [at_inlined] [at_name] (premise.failed)
+                [at_inlined] [at_name] (premise.failed), [part] (--check-inb)
   reach         id, status, op, [via, by], [reason], [replay], [inb],
                 [mismatches], [witness], time, [at] [at_inlined] [at_name],
                 [site] (--reach; reach.config, reach.summary and reach.runs are
@@ -4199,7 +4205,8 @@ discharged (takes precedence over 0 and 3). 4 also
 (--symbolic-size=assert) when the replayed run fails a premise assert, not
 the property (premise.failed, vc.premise-failed): an allocation's size
 exceeds its room; inconclusive, before --replay-original (the input
-program has no premise assert).
+program has no premise assert). Under --check-inb a part that fails one
+makes the job's status 4, its premise.failed line on the job's output.
 Split (--split*): the status of the verdict (0 sat or unsat, 3 unknown); a
 part's status 1, 2, 4, 5 or 6 stops the split with that status; 5 also for
 a failed --split-check.

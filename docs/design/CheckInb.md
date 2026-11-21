@@ -44,7 +44,7 @@ check-inb: checks=5 static=3 left=2 zero-length=0
 check-inb.split: folded=0 parts=2 trivial=0 to-solve=2
 check-inb.part: 0 id=1 at=p.mlir:50:9 result=unsat status=0 time=0.024 solve-time=0.000
 check-inb.part: 1 id=3 at=p.mlir:53:9 result=sat status=0 time=0.035 solve-time=0.000 fail-at=p.mlir:53:9
-check-inb.parts: total=2 unsat=1 sat=1 unknown=0 other=0 skipped=0 median-time=0.029 max-time=0.035 solve-time=0.000 time=0.061
+check-inb.parts: total=2 unsat=1 sat=1 unknown=0 other=0 skipped=0 premise=0 median-time=0.029 max-time=0.035 solve-time=0.000 time=0.061
 check-inb.part-diags: none
 check-inb.discharges: none under=addr0-is-null
 result: sat
@@ -79,6 +79,14 @@ result: sat
   `result: sat` and exits with the failed part's status. A failed part's
   line ends with `error=<kind>`, and `check-inb.part-error` gives its
   first error line.
+- A failed premise is the answer (`--symbolic-size=assert`): a part whose
+  run ends with `premise.failed` (status 4) is `result=premise-failed`,
+  counted as `premise=` (not `other`), and its `premise.failed:` line
+  follows the part's line, with `part=<i>`, naming the allocation, its
+  size and its room. The job then prints `result: sat` and exits 4, the
+  premise class of a single run; with a sat part as well, the same (the
+  rule above: sat, the failed part's status). Nothing is discharged
+  (`check-inb.discharges: none`).
 - `check-inb.discharges: a-inb a-sep a-null a-nowrap` comes with
   `result: unsat`: every access of every execution within the bound stays
   in its object, so the premises of `--seam` hold. `a-nowrap` is listed
@@ -250,8 +258,8 @@ the program's property. Its assumes stay, and so do premise asserts
 (`sea.premise`). With `--symbolic-size=assert`, placement (which runs
 after the instrumentation) makes each bound of a symbolic allocation size
 a premise assert, and the split makes it a part of its own (`id=-1`): a
-part that fails it ends with `premise.failed` (status 4, `inconclusive`),
-not a bounds violation.
+part that fails it ends with `premise.failed` (status 4): the job's
+answer, in the premise class (above), not a bounds violation.
 
 The job lowers boxes first: `sea-apply-tracking`, then `sea-lower-box-all`
 (with `--box-all-expand`), as `--lower` starts. The loads of a
