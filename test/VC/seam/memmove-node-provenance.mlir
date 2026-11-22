@@ -8,12 +8,12 @@
 // mentioned B, d had no view and ARM no entry: the range test stayed open.
 // k, n <= 32 keep the move in B, j < 64 the read in A (A-INB holds:
 // the plain VC is unsat too).
-// RUN: sea-vc %s --lower | FileCheck %s --check-prefix=PLAIN
-// RUN: sea-vc %s --lower --seam --seam-stats 2>&1 | FileCheck %s
-// RUN: sea-vc %s --lower --seam --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
+// RUN: sea-vc %s --lower --program=ring | FileCheck %s --check-prefix=PLAIN
+// RUN: sea-vc %s --lower --seam --program=ring --seam-stats 2>&1 | FileCheck %s
+// RUN: sea-vc %s --lower --seam --program=ring --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
 // The bounds job checks the move against B (the offset companion of a
 // ptr.add is its operand's plus the offset), so it discharges A-SEP here.
-// RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off --timeout=60 2>&1 | FileCheck %s --check-prefix=INB
+// RUN: sea-vc %s --check-inb --program=ring --lower --seam --ackermannize=off --timeout=60 2>&1 | FileCheck %s --check-prefix=INB
 // CHECK: seam.rule.cmp.diff-base: {{[1-9]}}
 // CHECK-NOT: seam.rule.row.mcopy:
 // CHECK: seam.rule.row.mcopy-skip: 1
@@ -23,6 +23,22 @@
 // INB: check-inb.discharges: a-inb a-sep
 // INB: result: unsat
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
+// @escape: the same node provenance makes an escape a premise violation,
+// and the bounds job sees it the same way. d = B + (to_int(A) - to_int(B))
+// is pointer arithmetic on B (a pointer into B whose address is A): the
+// move writes A's cells. The plain VC is sat; --seam reads d as a pointer
+// into B and separates it from the read of A by A-SEP (unsat under the
+// premise); --check-inb checks the move against B and reports it (no
+// discharge, sat).
+// RUN: sea-vc %s --lower --program=escape | FileCheck %s --check-prefix=EPLAIN
+// RUN: sea-vc %s --lower --seam --program=escape --seam-stats 2>&1 | FileCheck %s --check-prefix=ESEAM
+// RUN: sea-vc %s --check-inb --program=escape --lower --seam --ackermannize=off --timeout=60 2>&1 | FileCheck %s --check-prefix=EINB
+// EPLAIN: result: sat
+// ESEAM: seam.rule.cmp.diff-base: {{[1-9]}}
+// ESEAM: seam.rule.view.node: {{[1-9]}}
+// ESEAM: result: unsat
+// EINB: check-inb.discharges: none
+// EINB: result: sat
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @ring {
   %m0 = sea.mem.nondet "m" [9] : !m
@@ -47,6 +63,31 @@ sea.program @ring {
   %ie = sea.ptr.to_int %e : !sea.ptr<64> to i64
   %iq = sea.ptr.to_int %q : !sea.ptr<64> to i64
   %u = sea.sub %ie, %iq : i64
+  %d = sea.ptr.add %B, %u : !sea.ptr<64>, i64
+  %Aj = sea.ptr.add %A, %j : !sea.ptr<64>, i64
+  %r = sea.load %m0[%Aj] : !m -> i8
+  %m1 = sea.memmove %m0[%d], %m0[%C], %n inplace : !m
+  %l = sea.load %m1[%Aj] : !m -> i8
+  %ok = sea.icmp eq, %l, %r : i8
+  sea.assert %ok
+  sea.halt
+}
+sea.program @escape {
+  %m0 = sea.mem.nondet "m" [9] : !m
+  %c64 = sea.const 64 : i64
+  %A = sea.malloc %c64 align 8 [1] : i64 -> !sea.ptr<64>
+  %B = sea.malloc %c64 align 8 [2] : i64 -> !sea.ptr<64>
+  %C = sea.malloc %c64 align 8 [3] : i64 -> !sea.ptr<64>
+  %n = sea.nondet "n" [5] : i64
+  %j = sea.nondet "j" [7] : i64
+  %c32 = sea.const 32 : i64
+  %nok = sea.icmp ule, %n, %c32 : i64
+  sea.assume %nok
+  %jok = sea.icmp ult, %j, %c64 : i64
+  sea.assume %jok
+  %ia = sea.ptr.to_int %A : !sea.ptr<64> to i64
+  %ib = sea.ptr.to_int %B : !sea.ptr<64> to i64
+  %u = sea.sub %ia, %ib : i64
   %d = sea.ptr.add %B, %u : !sea.ptr<64>, i64
   %Aj = sea.ptr.add %A, %j : !sea.ptr<64>, i64
   %r = sea.load %m0[%Aj] : !m -> i8

@@ -303,7 +303,10 @@ the abstract program, only for a corpus that needs it; vcc has none).
 - Left from S2: `flat` / `flatDeep` are both the eraser's arithmetic and
   how `view` / `pullIteNode` read a node; the boundary keeps sharing them
   (that is what keeps the `--seam` queries identical) until views read
-  nodes structurally only (S4). Done: the unit drivers (SeaMRules,
+  nodes structurally only (S4). A partial step: `viewNode` reads a node
+  chain by its pointer operand (a base, or an ite of pointers into one
+  object) where the flat sum gives no view; the flat reading still comes
+  first. Done: the unit drivers (SeaMRules,
   StoreMap, MemOps, AddrRange) build pointer-sorted inputs as OpSem does
   and type-check them; an erased twin is an index alias of its object
   (`addAlias`), not a second object.

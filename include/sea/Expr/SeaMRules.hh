@@ -1306,41 +1306,41 @@ public:
   /// selects off_L.
   Expr iteLeafOffsets(const Expr &it, Expr &base, unsigned cap,
                       bool &overCap) const {
+    // iterative over the DAG (a VC has deep ite chains): an ite node is
+    // expanded, then mapped once both branches are
     std::unordered_map<ENode *, Expr> memo;
     unsigned leaves = 0;
-    bool fail = false;
-    std::function<Expr(const Expr &)> map = [&](const Expr &e) -> Expr {
-      if (fail)
-        return Expr();
-      auto known = memo.find(e.get());
-      if (known != memo.end())
-        return known->second;
-      Expr r;
+    llvm::SmallVector<std::pair<Expr, bool>, 32> stack;
+    stack.push_back({it, false});
+    while (!stack.empty()) {
+      auto [e, expanded] = stack.back();
+      stack.pop_back();
+      if (memo.count(e.get()))
+        continue;
       if (isOpX<ITE>(e) && !m_bases.lookup(e)) {
-        Expr t = map(e->arg(1));
-        Expr f = fail ? Expr() : map(e->arg(2));
-        if (fail)
-          return Expr();
-        r = t == f ? t : mk<ITE>(e->arg(0), t, f);
-      } else {
-        if (++leaves > cap) {
-          overCap = true;
-          fail = true;
-          return Expr();
+        if (!expanded) {
+          stack.push_back({e, true});
+          for (unsigned i : {2u, 1u})
+            if (!memo.count(e->arg(i)))
+              stack.push_back({e->arg(i), false});
+          continue;
         }
-        std::optional<PtrView> v = view(e);
-        if (!v || (base && v->base != base)) {
-          fail = true;
-          return Expr();
-        }
-        base = v->base;
-        r = offSum(v->off);
+        const Expr &t = memo.find(e->arg(1))->second;
+        const Expr &f = memo.find(e->arg(2))->second;
+        memo.emplace(e.get(), t == f ? t : mk<ITE>(e->arg(0), t, f));
+        continue;
       }
-      memo.emplace(e.get(), r);
-      return r;
-    };
-    Expr r = map(it);
-    return fail ? Expr() : r;
+      if (++leaves > cap) {
+        overCap = true;
+        return Expr();
+      }
+      std::optional<PtrView> v = view(e);
+      if (!v || (base && v->base != base))
+        return Expr();
+      base = v->base;
+      memo.emplace(e.get(), offSum(v->off));
+    }
+    return memo.find(it.get())->second;
   }
 
   /// The view of a node chain PTR_INDEX*(p, x_k, ...) from its pointer

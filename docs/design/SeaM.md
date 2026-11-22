@@ -81,7 +81,7 @@ view, `Rules::view`) in two ways:
   `PTR_FROM_INT`, no view, and a sum `obj.a + (obj.b - obj.a)` mentions two
   bases, no view; no rule decides anything about such an address and no
   premise is used for it. No rule turns a cast sum into a node (a unit
-  check in `sea-seam-rules-test`, node-view and random). A node chain
+  check in `sea-seam-rules-test`, node-view). A node chain
   over an operand with no view (a loaded pointer, from_int) keeps the sum
   reading of its flat form.
 

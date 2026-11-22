@@ -1886,12 +1886,18 @@ void testNodeView() {
           "node-view: over the cap: no view, counted");
   }
   // no rule turns a cast sum into a node: reads at from_int(to_int(p) + x)
+  // over stores whose addresses do not mention o1, so o1 has no provenance
+  // in the input and any node over it in the output is caught
   for (const Expr &p : {F.o1, F.add({F.o1, F.num(8)}),
                         Expr(mk<ITE>(F.a, F.o1, F.add({F.o1, F.num(4)})))}) {
     Expr idx = mk<PTR_FROM_INT>(mk<BADD>(mk<PTR_TO_INT>(p), F.num(4)));
-    for (const Expr &mm : {F.st(F.m, F.add({F.o2, F.x}), v),
-                           F.st(F.m, F.add({F.o1, F.num(8)}), v)}) {
+    for (const Expr &mm :
+         {F.st(F.m, F.add({F.o2, F.x}), v), F.st(F.m, F.add({F.o3, F.y}), v)}) {
       Expr in = F.sel(mm, idx);
+      // the check itself: the planted rewrite of the cast sum into the node
+      // p + 4 is caught
+      CHECK(!noCastToNode(in, F.sel(mm, F.add({F.o1, F.num(4)}))),
+            "node-view: the cast check misses a planted node");
       RewriteStats st;
       Expr out = F.rewrite(in, SeaMOptions(), st);
       CHECK(noCastToNode(in, out),
