@@ -80,6 +80,13 @@ mlir::Operation *createReachSiteMarker(mlir::OpBuilder &b, mlir::Location loc,
 #include "sea/Dialect/Sea/SeaOps.h.inc"
 
 namespace sea {
+/// The checks of sea.print.mem that do not depend on its operands: a
+/// non-empty tag, an element of whole bytes or a pointer / address, a known
+/// format for it. Shared with seaimp.print.mem.
+mlir::LogicalResult verifyPrintMemShape(mlir::Operation *op,
+                                        llvm::StringRef tag, mlir::Type t,
+                                        std::optional<llvm::StringRef> fmt);
+
 /// True if `program` uses the abstract memory level (!sea.ptr anywhere):
 /// it must be placed (sea-place-static) before concrete tools run it.
 bool isAbstract(ProgramOp program);

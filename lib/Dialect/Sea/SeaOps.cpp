@@ -1090,6 +1090,10 @@ static std::string boxBodyRefusal(Operation *op, BoxAllOp box) {
     return "a nested region";
   if (op->getNumSuccessors() || op->hasTrait<OpTrait::IsTerminator>())
     return "control flow";
+  // a read of a region of a dialect lowered to sea (seaimp.load): its
+  // lowering reads the memory before the box
+  if (isa<BoxBodyReadOpInterface>(op))
+    return "";
   if (!isa<SeaDialect>(op->getDialect()))
     return "an op of another dialect";
   if (isa<SegmentOp, GlobalOp, FuncAddrOp>(op))
@@ -1418,27 +1422,33 @@ void PrintOp::print(OpAsmPrinter &p) {
   p.printOptionalAttrDict((*this)->getAttrs(), elided);
 }
 
-LogicalResult PrintMemOp::verify() {
-  if (getTag().empty())
-    return emitOpError("the tag must not be empty");
-  Type t = getType();
+LogicalResult verifyPrintMemShape(Operation *op, StringRef tag, Type t,
+                                  std::optional<StringRef> fmt) {
+  if (tag.empty())
+    return op->emitOpError("the tag must not be empty");
   if (auto it = dyn_cast<IntegerType>(t)) {
     if (!it.isSignless() || it.getWidth() % 8 != 0)
-      return emitOpError("the element must be whole bytes, got ") << t;
+      return op->emitOpError("the element must be whole bytes, got ") << t;
   } else if (!isa<AddrType, PtrType>(t)) {
-    return emitOpError("the element must be an integer or a pointer, got ")
+    return op->emitOpError("the element must be an integer or a pointer, got ")
            << t;
   }
-  if (auto f = getFmt()) {
-    if (*f == "hexdump") {
+  if (fmt) {
+    if (*fmt == "hexdump") {
       if (!t.isInteger(8))
-        return emitOpError("hexdump reads bytes (type i8)");
-    } else if (!isPrintFormat(*f)) {
-      return emitOpError("unknown format '") << *f << "'";
-    } else if (*f != "auto" && !isa<IntegerType>(t)) {
-      return emitOpError("format '") << *f << "' needs an integer";
+        return op->emitOpError("hexdump reads bytes (type i8)");
+    } else if (!isPrintFormat(*fmt)) {
+      return op->emitOpError("unknown format '") << *fmt << "'";
+    } else if (*fmt != "auto" && !isa<IntegerType>(t)) {
+      return op->emitOpError("format '") << *fmt << "' needs an integer";
     }
   }
+  return success();
+}
+
+LogicalResult PrintMemOp::verify() {
+  if (failed(verifyPrintMemShape(*this, getTag(), getType(), getFmt())))
+    return failure();
   if (isStrong()) {
     if (getMem() || getAddr() || getCountRef())
       return emitOpError("a print is weak (names) or strong (operands), not "

@@ -21,4 +21,15 @@ def Sea_NondetSiteOpInterface : OpInterface<"NondetSiteOpInterface"> {
   ];
 }
 
+def Sea_BoxBodyReadOpInterface : OpInterface<"BoxBodyReadOpInterface"> {
+  let description = [{
+    An op of a dialect lowered to sea that may stand in a `sea.box.all`
+    body because it only reads memory defined outside the box: the region
+    reads of seaimp (`seaimp.load`, `seaimp.is_modified`). Their lowering
+    reads the memory before the box. The box's verifier admits them; their
+    own verifier says what they read.
+  }];
+  let cppNamespace = "::sea";
+}
+
 #endif // SEA_INTERFACES

@@ -47,10 +47,36 @@ sea.program @region {
   seaimp.memmove %heap[%q], %mem[%p], %n : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
   // CHECK: seaimp.memhavoc %[[M]][%{{.*}}], %{{.*}} [4] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
   seaimp.memhavoc %mem[%p], %n [4] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
-  // CHECK: seaimp.get %[[M]] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
-  %m = seaimp.get %mem : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
-  // CHECK: seaimp.set %[[H]], %{{.*}} : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
-  seaimp.set %heap, %m : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  // CHECK: seaimp.store %[[M]][%{{.*}}], %{{.*}} tracked : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i8
+  seaimp.store %mem[%p], %z tracked : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i8
+  // CHECK: seaimp.memset %[[M]][%{{.*}}], %{{.*}}, %{{.*}} tracked : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  seaimp.memset %mem[%p], %z, %n tracked : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  // CHECK: seaimp.memmove %[[M]][%{{.*}}], %[[M]][%{{.*}}], %{{.*}} tracked : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  seaimp.memmove %mem[%q], %mem[%p], %n tracked : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  // CHECK: seaimp.memhavoc %[[M]][%{{.*}}], %{{.*}} [5] tracked : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  seaimp.memhavoc %mem[%p], %n [5] tracked : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  // CHECK: seaimp.is_modified %[[M]][%{{.*}}] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  %f = seaimp.is_modified %mem[%p] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  // CHECK: seaimp.reset_modified %[[M]][%{{.*}}] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  seaimp.reset_modified %mem[%p] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  // CHECK: seaimp.print.mem "v" %[[M]][%{{.*}}] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> i32
+  seaimp.print.mem "v" %mem[%p] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> i32
+  // CHECK: seaimp.print.mem "b" %[[M]][%{{.*}}], %{{.*}} fmt "hexdump" : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> i8
+  seaimp.print.mem "b" %mem[%p], %n fmt "hexdump" : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> i8
+  // CHECK: seaimp.print.mem "w" %[[M]][%{{.*}}] fmt "s" count 4 offset 8 : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> i32
+  seaimp.print.mem "w" %mem[%p] fmt "s" count 4 offset 8 : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> i32
+  // a region read in a sea.box.all body
+  // CHECK: sea.box.all
+  // CHECK: seaimp.load %[[M]][%{{.*}}] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> i8
+  // CHECK: seaimp.is_modified %[[M]][%{{.*}}] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  %all = sea.box.all (%i) = (0) to (%n) {
+    %r = sea.ptr.add %p, %i : !sea.ptr<64>, i64
+    %b = seaimp.load %mem[%r] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> i8
+    %g = seaimp.is_modified %mem[%r] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+    %e = sea.icmp eq, %b, %z : i8
+    %o = sea.or %e, %g : i1
+    sea.yield %o
+  }
   sea.halt
 }
 

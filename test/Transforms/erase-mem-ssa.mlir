@@ -104,56 +104,109 @@ sea.program @loop {
   sea.halt
 }
 
-// A root that is not the variable's (sea.mem.const): it stays and is set;
-// the variable is "mem" with a fresh site. Readers without a region op
-// (is_modified) and tracked updates go through get / set.
-// CHECK-LABEL: sea.program @const_root
-// CHECK-NEXT: %[[MEM:.*]] = seaimp.var "mem" [3] :
-// CHECK: %[[C:.*]] = sea.mem.const
-// CHECK-NEXT: seaimp.set %[[MEM]], %[[C]]
-// CHECK: %[[G:.*]] = seaimp.get %[[MEM]]
-// CHECK-NEXT: %[[S:.*]] = sea.store %[[G]][%{{.*}}], %{{.*}} inplace tracked
-// CHECK-NEXT: seaimp.set %[[MEM]], %[[S]]
-// CHECK: %[[G2:.*]] = seaimp.get %[[MEM]]
-// CHECK-NEXT: sea.mem.is_modified %[[G2]]
-// LOW-LABEL: sea.program @const_root
-// LOW-NOT: sea.mem.nondet
-// LOW: %[[C:.*]] = sea.mem.const
-// LOW: %[[S:.*]] = sea.store %[[C]]{{.*}} tracked
-// LOW: sea.mem.is_modified %[[S]]
-sea.program @const_root {
+// Modification tracking: tracked updates keep `tracked`, reset_modified and
+// is_modified have region forms; the lowering rebuilds the chain.
+// CHECK-LABEL: sea.program @tracking
+// CHECK: %[[MEM:.*]] = seaimp.var "mem" [0]
+// CHECK: seaimp.store %[[MEM]][%[[P:.*]]], %{{.*}} tracked :
+// CHECK-NEXT: seaimp.memmove %[[MEM]][%[[Q:.*]]], %[[MEM]][%[[P]]], %{{.*}} tracked :
+// CHECK-NEXT: seaimp.reset_modified %[[MEM]][%[[P]]] :
+// CHECK-NEXT: %{{.*}} = seaimp.is_modified %[[MEM]][%[[Q]]] :
+// CHECK-NOT: seaimp.get
+// LOW-LABEL: sea.program @tracking
+// LOW: %[[M0:.*]] = sea.mem.nondet "mem" [0]
+// LOW: %[[M1:.*]] = sea.store %[[M0]][%{{.*}}], %{{.*}} inplace tracked
+// LOW-NEXT: %[[M2:.*]] = sea.memmove %[[M1]][%{{.*}}], %[[M1]][%{{.*}}], %{{.*}} inplace tracked
+// LOW-NEXT: %[[M3:.*]] = sea.mem.reset_modified %[[M2]][%{{.*}}] inplace
+// LOW-NEXT: sea.mem.is_modified %[[M3]][%{{.*}}]
+sea.program @tracking {
+  %m0 = sea.mem.nondet "mem" [0] : !m
   %z = sea.const 0 : i8
-  %m0 = sea.mem.const %z : !m
   %c4 = sea.const 4 : i64
-  %p = sea.malloc %c4 align 4 [2] : i64 -> !sea.ptr<64>
+  %p = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %q = sea.malloc %c4 align 4 [2] : i64 -> !sea.ptr<64>
   %m1 = sea.store %m0[%p], %z inplace tracked : !m, i8
-  %mod = sea.mem.is_modified %m1[%p] : !m
+  %m2 = sea.memmove %m1[%q], %m1[%p], %c4 inplace tracked : !m
+  %m3 = sea.mem.reset_modified %m2[%p] inplace : !m
+  %mod = sea.mem.is_modified %m3[%q] : !m
   sea.assert %mod
   sea.halt
 }
 
-// A load in a sea.box.all body reads a get put before the box (seaimp
-// accesses stay in the variable's region).
+// A strong print.mem reads the region at its point (count operand, format,
+// offset kept); a weak one names memories and stays.
+// CHECK-LABEL: sea.program @print
+// CHECK: seaimp.print.mem "v" %[[MEM:.*]][%[[P:.*]]] offset 4 : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> i32
+// CHECK-NEXT: seaimp.print.mem "b" %[[MEM]][%[[P]]], %{{.*}} fmt "hexdump" : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> i8
+// CHECK-NEXT: sea.print.mem "w" = "nd.0"["p"] : i8
+// LOW-LABEL: sea.program @print
+// LOW: %[[M1:.*]] = sea.store
+// LOW-NEXT: sea.print.mem "v" %[[M1]][%{{.*}}] : !sea.mem<!sea.ptr<64>, i8> -> i32 {offset = 4 : i64}
+// LOW-NEXT: sea.print.mem "b" %[[M1]][%{{.*}}], %{{.*}} : !sea.mem<!sea.ptr<64>, i8>, i64 -> i8 {fmt = "hexdump"}
+sea.program @print {
+  %m0 = sea.mem.nondet "mem" [0] : !m
+  %c8 = sea.const 8 : i64
+  %p = sea.malloc %c8 align 4 [1] : i64 -> !sea.ptr<64>
+  %z = sea.const 0 : i8
+  %m1 = sea.store %m0[%p], %z inplace : !m, i8
+  sea.print.mem "v" %m1[%p] : !m -> i32 {offset = 4}
+  sea.print.mem "b" %m1[%p], %c8 : !m, i64 -> i8 {fmt = "hexdump"}
+  sea.print.mem "w" = "nd.0"["p"] : i8
+  sea.halt
+}
+
+// Reads in a sea.box.all body become region reads in the body; the
+// lowering reads the version before the box.
 // CHECK-LABEL: sea.program @box
-// CHECK: %[[G:.*]] = seaimp.get
+// CHECK: %[[MEM:.*]] = seaimp.var "m" [0]
+// CHECK: seaimp.store %[[MEM]]
 // CHECK-NEXT: sea.box.all
-// CHECK: sea.load %[[G]]
+// CHECK: seaimp.load %[[MEM]][%{{.*}}] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> i8
+// CHECK: seaimp.is_modified %[[MEM]][%{{.*}}] :
+// CHECK-NOT: seaimp.get
 // LOW-LABEL: sea.program @box
-// LOW: %[[M0:.*]] = sea.mem.nondet "m" [0]
-// LOW: sea.box.all
-// LOW: sea.load %[[M0]]
+// LOW: %[[M1:.*]] = sea.store
+// LOW-NEXT: sea.box.all
+// LOW: sea.load %[[M1]]
+// LOW: sea.mem.is_modified %[[M1]]
 sea.program @box {
   %m = sea.mem.nondet "m" [0] : !m
   %n = sea.const 16 : i64
   %p = sea.malloc %n align 8 [1] : i64 -> !sea.ptr<64>
   %z = sea.const 0 : i8
+  %m1 = sea.store %m[%p], %z inplace : !m, i8
   %all = sea.box.all (%i) = (0) to (%n) {
     %q = sea.ptr.add %p, %i : !sea.ptr<64>, i64
-    %x = sea.load %m[%q] : !m -> i8
+    %x = sea.load %m1[%q] : !m -> i8
+    %f = sea.mem.is_modified %m1[%q] : !m
     %e = sea.icmp eq, %x, %z : i8
-    sea.yield %e
+    %r = sea.or %e, %f : i1
+    sea.yield %r
   }
   sea.assert %all
+  sea.halt
+}
+
+// An unreachable block is rewritten but not checked: its load of an
+// earlier version reads the region (nothing executes it).
+// CHECK-LABEL: sea.program @unreachable
+// CHECK: seaimp.store
+// CHECK: ^bb1:  // no predecessors
+// CHECK-NEXT: seaimp.load
+// LOW-LABEL: sea.program @unreachable
+// LOW: ^bb1:  // no predecessors
+// LOW-NEXT: sea.load
+sea.program @unreachable {
+  %m0 = sea.mem.nondet "mem" [0] : !m
+  %p = sea.ptr.nondet "p" [1] : !sea.ptr<64>
+  %z = sea.const 0 : i8
+  %m1 = sea.store %m0[%p], %z inplace : !m, i8
+  %x = sea.load %m1[%p] : !m -> i8
+  %ok = sea.icmp eq, %x, %z : i8
+  sea.assert %ok
+  sea.halt
+^dead:
+  %y = sea.load %m0[%p] : !m -> i8
   sea.halt
 }
 

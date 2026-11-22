@@ -254,5 +254,100 @@ sea.program @alloca_site {
   sea.halt
 }
 
+// -----
+
+// Memory is reachable only through region ops: no get / set of a region.
+sea.program @get_region {
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  // expected-error@+1 {{'seaimp.get' op on a memory variable (a region): memory is read and written only through the region ops}}
+  %v = seaimp.get %m : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  sea.halt
+}
+
+// -----
+
+sea.program @set_region {
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  %z = sea.const 0 : i8
+  %c = sea.mem.const %z : !sea.mem<!sea.ptr<64>, i8>
+  // expected-error@+1 {{'seaimp.set' op on a memory variable (a region)}}
+  seaimp.set %m, %c : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  sea.halt
+}
+
+// -----
+
+// A sea.box.all body only reads: a region update there is refused.
+sea.program @box_store {
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  %p = sea.ptr.nondet "p" [2] : !sea.ptr<64>
+  %n = sea.const 4 : i64
+  %z = sea.const 0 : i8
+  %all = sea.box.all (%i) = (0) to (%n) {
+    // expected-error@+1 {{must be in the region of its seaimp.var (not in a nested region)}}
+    seaimp.store %m[%p], %z : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i8
+    %t = sea.const 1 : i1
+    sea.yield %t
+  }
+  sea.halt
+}
+
+// -----
+
+// A region read in a region other than a sea.box.all body.
+sea.program @is_modified_nested {
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  %p = sea.ptr.nondet "p" [2] : !sea.ptr<64>
+  "test.region"() ({
+    // expected-error@+1 {{must be in the region of its seaimp.var or in a sea.box.all body directly in it}}
+    %f = seaimp.is_modified %m[%p] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+    "test.yield"() : () -> ()
+  }) : () -> ()
+  sea.halt
+}
+
+// -----
+
+// is_modified and reset_modified take a pointer (object identity).
+sea.program @is_modified_addr {
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.addr<64>, i8>>
+  %a = sea.const 8 : i64
+  %w = sea.addr.from_int %a : i64 to !sea.addr<64>
+  // expected-error@+1 {{operand #1 must be pointer}}
+  %f = seaimp.is_modified %m[%w] : !seaimp.var<!sea.mem<!sea.addr<64>, i8>>
+  sea.halt
+}
+
+// -----
+
+sea.program @print_count_twice {
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  %p = sea.ptr.nondet "p" [2] : !sea.ptr<64>
+  %n = sea.const 4 : i64
+  // expected-error@+1 {{count and a count operand exclude each other}}
+  seaimp.print.mem "v" %m[%p], %n count 2 : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> i8
+  sea.halt
+}
+
+// -----
+
+sea.program @print_element {
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  %p = sea.ptr.nondet "p" [2] : !sea.ptr<64>
+  // expected-error@+1 {{the element must be whole bytes, got 'i12'}}
+  seaimp.print.mem "v" %m[%p] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> i12
+  sea.halt
+}
+
+// -----
+
+sea.program @print_hexdump {
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  %p = sea.ptr.nondet "p" [2] : !sea.ptr<64>
+  // expected-error@+1 {{hexdump reads bytes (type i8)}}
+  seaimp.print.mem "v" %m[%p] fmt "hexdump" : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> i32
+  sea.halt
+}
+
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

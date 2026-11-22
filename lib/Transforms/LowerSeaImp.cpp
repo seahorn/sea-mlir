@@ -5,8 +5,13 @@
 //
 // docs/design/SeaImp.md. Two steps. First, every region access is
 // expanded in place: `get` the memory, apply the sea op `inplace`, `set`
-// the result (seaimp.load: `get` and load; seaimp.alloca: sea.alloca, the
-// region dropped). Then every seaimp.var becomes
+// the result (the reads seaimp.load / is_modified / print.mem: `get` and
+// the sea op; a read in a sea.box.all body: its `get` before the box;
+// seaimp.alloca: sea.alloca, the region dropped). These
+// get / set of memory exist only inside the pass (the verifier refuses
+// them in input): each get's value is used by the one op made with it, and
+// each set stores the result of a fresh update, so every version is used
+// linearly and `inplace` holds. Then every seaimp.var becomes
 // SSA values by MLIR's Mem2Reg (tryToPromoteMemorySlots,
 // mlir/lib/Transforms/Mem2Reg.cpp): a seaimp.get is replaced by the value of
 // the last seaimp.set on its path, joins get block arguments (the iterated
@@ -63,20 +68,31 @@ public:
 };
 
 /// Expands each region access into get / sea op `inplace` / set, before
-/// Mem2Reg (which then sees only get and set). Local: no dataflow.
+/// Mem2Reg (which then sees only get and set). Local: no dataflow. A read in
+/// a sea.box.all body gets its `get` right before the box op, in the
+/// variable's region: the body cannot write memory, so the version before
+/// the box is the one every index reads, and Mem2Reg sees no use in a
+/// nested region.
 static void expandRegionAccesses(ProgramOp program) {
   SmallVector<Operation *> accesses;
   program.walk([&](Operation *op) {
     if (isa<imp::LoadOp, imp::StoreOp, imp::MemSetOp, imp::MemMoveOp,
-            imp::MemHavocOp, imp::AllocaOp>(op))
+            imp::MemHavocOp, imp::IsModifiedOp, imp::ResetModifiedOp,
+            imp::PrintMemOp, imp::AllocaOp>(op))
       accesses.push_back(op);
   });
   for (Operation *op : accesses) {
     OpBuilder b(op);
     Location loc = op->getLoc();
+    // the get: before the op, or before the box whose body holds it (the
+    // verifier admits only reads there)
+    Operation *top = op;
+    if (isa<BoxAllOp>(op->getParentOp()))
+      top = op->getParentOp();
     auto get = [&](Value var) {
       Type t = cast<imp::VarType>(var.getType()).getValueType();
-      return imp::GetOp::create(b, loc, t, var).getResult();
+      OpBuilder gb(top);
+      return imp::GetOp::create(gb, loc, t, var).getResult();
     };
     UnitAttr inplace = b.getUnitAttr();
     if (auto ld = dyn_cast<imp::LoadOp>(op)) {
@@ -86,15 +102,15 @@ static void expandRegionAccesses(ProgramOp program) {
       ld.getResult().replaceAllUsesWith(r);
     } else if (auto st = dyn_cast<imp::StoreOp>(op)) {
       Value m = get(st.getVar());
-      Value r = StoreOp::create(b, loc, m.getType(), m, st.getAddr(),
-                                st.getValue(), inplace, st.getAlignAttr(),
-                                /*tracked=*/UnitAttr());
+      Value r =
+          StoreOp::create(b, loc, m.getType(), m, st.getAddr(), st.getValue(),
+                          inplace, st.getAlignAttr(), st.getTrackedAttr());
       imp::SetOp::create(b, loc, st.getVar(), r);
     } else if (auto ms = dyn_cast<imp::MemSetOp>(op)) {
       Value m = get(ms.getVar());
       Value r = MemSetOp::create(b, loc, m.getType(), m, ms.getAddr(),
                                  ms.getValue(), ms.getLen(), inplace,
-                                 ms.getAlignAttr(), /*tracked=*/UnitAttr());
+                                 ms.getAlignAttr(), ms.getTrackedAttr());
       imp::SetOp::create(b, loc, ms.getVar(), r);
     } else if (auto mv = dyn_cast<imp::MemMoveOp>(op)) {
       Value m = get(mv.getVar());
@@ -102,14 +118,32 @@ static void expandRegionAccesses(ProgramOp program) {
       Value r = MemMoveOp::create(b, loc, m.getType(), m, mv.getAddr(), s,
                                   mv.getSrcAddr(), mv.getLen(), inplace,
                                   mv.getAlignAttr(), mv.getSrcAlignAttr(),
-                                  /*tracked=*/UnitAttr());
+                                  mv.getTrackedAttr());
       imp::SetOp::create(b, loc, mv.getVar(), r);
     } else if (auto mh = dyn_cast<imp::MemHavocOp>(op)) {
       Value m = get(mh.getVar());
-      Value r = MemHavocOp::create(b, loc, m.getType(), m, mh.getAddr(),
-                                   mh.getLen(), mh.getSiteAttr(), inplace,
-                                   /*tracked=*/UnitAttr());
+      Value r =
+          MemHavocOp::create(b, loc, m.getType(), m, mh.getAddr(), mh.getLen(),
+                             mh.getSiteAttr(), inplace, mh.getTrackedAttr());
       imp::SetOp::create(b, loc, mh.getVar(), r);
+    } else if (auto im = dyn_cast<imp::IsModifiedOp>(op)) {
+      Value m = get(im.getVar());
+      Value r = IsModifiedOp::create(b, loc, b.getI1Type(), m, im.getPtr());
+      im.getResult().replaceAllUsesWith(r);
+    } else if (auto rm = dyn_cast<imp::ResetModifiedOp>(op)) {
+      Value m = get(rm.getVar());
+      Value r = ResetModifiedOp::create(b, loc, m.getType(), m, rm.getAddr(),
+                                        inplace);
+      imp::SetOp::create(b, loc, rm.getVar(), r);
+    } else if (auto pm = dyn_cast<imp::PrintMemOp>(op)) {
+      Value m = get(pm.getVar());
+      SmallVector<Value, 3> args{m, pm.getAddr()};
+      if (Value n = pm.getCountValue())
+        args.push_back(n);
+      PrintMemOp::create(b, loc, args, pm.getTagAttr(), /*mem=*/StringAttr(),
+                         /*addr=*/StringAttr(), pm.getTypeAttr(),
+                         pm.getFmtAttr(), pm.getCountAttr(),
+                         /*count_ref=*/StringAttr(), pm.getOffsetAttr());
     } else if (auto al = dyn_cast<imp::AllocaOp>(op)) {
       // sea allocation takes no memory: the region is dropped
       Value r = AllocaOp::create(b, loc, al.getType(), al.getSize(),

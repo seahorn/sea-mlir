@@ -125,22 +125,47 @@ sea.program @loop {
   sea.halt
 }
 
-// get / set of a whole memory: b starts as a copy of a's initial
-// contents; a is not used again, so the chain stays linear.
-// CHECK-LABEL: sea.program @whole
-// CHECK: %[[M0:.*]] = sea.mem.nondet "a" [0]
-// CHECK-NOT: sea.mem.nondet
-// CHECK: %[[M1:.*]] = sea.store %[[M0]][%{{.*}}], %{{.*}} inplace
-// CHECK-NEXT: sea.load %[[M1]]
-sea.program @whole {
-  %a = seaimp.var "a" [0] : !seaimp.var<!m>
-  %b = seaimp.var "b" [1] : !seaimp.var<!m>
-  %p = sea.ptr.nondet "p" [2] : !sea.ptr<64>
-  %old = seaimp.get %a : !seaimp.var<!m>
-  seaimp.set %b, %old : !seaimp.var<!m>
-  %v = sea.const 1 : i8
-  seaimp.store %b[%p], %v : !seaimp.var<!m>, i8
-  %x = seaimp.load %b[%p] : !seaimp.var<!m> -> i8
+// Tracking and printing: tracked updates keep `tracked`; reset_modified is
+// an update, is_modified and the strong print.mem read the current version;
+// a read in a sea.box.all body reads the version before the box (its get is
+// put before the box op).
+// CHECK-LABEL: sea.program @spec
+// CHECK: %[[M0:.*]] = sea.mem.nondet "mem" [0]
+// CHECK: %[[M1:.*]] = sea.store %[[M0]][%[[P:.*]]], %{{.*}} inplace tracked
+// CHECK-NEXT: %[[M2:.*]] = sea.memset %[[M1]][%[[P]]], %{{.*}}, %{{.*}} inplace tracked
+// CHECK-NEXT: %[[M3:.*]] = sea.memhavoc %[[M2]][%[[P]]], %{{.*}} [3] inplace tracked
+// CHECK-NEXT: %[[M4:.*]] = sea.memmove %[[M3]][%[[Q:.*]]], %[[M3]][%[[P]]], %{{.*}} inplace tracked
+// CHECK-NEXT: %[[F:.*]] = sea.mem.is_modified %[[M4]][%[[Q]]]
+// CHECK-NEXT: %[[M5:.*]] = sea.mem.reset_modified %[[M4]][%[[Q]]] inplace
+// CHECK-NEXT: sea.print.mem "v" %[[M5]][%[[Q]]], %{{.*}} : !sea.mem<!sea.ptr<64>, i8>, i64 -> i8 {fmt = "x", offset = 1 : i64}
+// CHECK-NEXT: sea.print.mem "w" %[[M5]][%[[Q]]] : !sea.mem<!sea.ptr<64>, i8> -> i16 {count = 2 : i64}
+// CHECK-NEXT: sea.box.all
+// CHECK: sea.load %[[M5]]
+// CHECK: sea.mem.is_modified %[[M5]]
+sea.program @spec {
+  %mem = seaimp.var "mem" [0] : !seaimp.var<!m>
+  %c4 = sea.const 4 : i64
+  %p = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
+  %q = sea.malloc %c4 align 4 [2] : i64 -> !sea.ptr<64>
+  %z = sea.const 0 : i8
+  seaimp.store %mem[%p], %z tracked : !seaimp.var<!m>, i8
+  seaimp.memset %mem[%p], %z, %c4 tracked : !seaimp.var<!m>
+  seaimp.memhavoc %mem[%p], %c4 [3] tracked : !seaimp.var<!m>
+  seaimp.memmove %mem[%q], %mem[%p], %c4 tracked : !seaimp.var<!m>
+  %f = seaimp.is_modified %mem[%q] : !seaimp.var<!m>
+  seaimp.reset_modified %mem[%q] : !seaimp.var<!m>
+  seaimp.print.mem "v" %mem[%q], %c4 fmt "x" offset 1 : !seaimp.var<!m>, i64 -> i8
+  seaimp.print.mem "w" %mem[%q] count 2 : !seaimp.var<!m> -> i16
+  %all = sea.box.all (%i) = (0) to (%c4) {
+    %r = sea.ptr.add %q, %i : !sea.ptr<64>, i64
+    %x = seaimp.load %mem[%r] : !seaimp.var<!m> -> i8
+    %g = seaimp.is_modified %mem[%r] : !seaimp.var<!m>
+    %e = sea.icmp eq, %x, %z : i8
+    %o = sea.or %e, %g : i1
+    sea.yield %o
+  }
+  %ok = sea.and %all, %f : i1
+  sea.assert %ok
   sea.halt
 }
 

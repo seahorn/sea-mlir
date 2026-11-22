@@ -69,10 +69,9 @@ LogicalResult VarOp::verify() {
     // every operand of a seaimp access that may hold a handle is a
     // variable operand (the others are typed as sea values), except set's
     // stored value
-    bool ok =
-        isa<GetOp, LoadOp, StoreOp, MemSetOp, MemMoveOp, MemHavocOp, AllocaOp>(
-            user) ||
-        (isa<SetOp>(user) && use.getOperandNumber() == 0);
+    bool ok = isa<GetOp, LoadOp, StoreOp, MemSetOp, MemMoveOp, MemHavocOp,
+                  IsModifiedOp, ResetModifiedOp, PrintMemOp, AllocaOp>(user) ||
+              (isa<SetOp>(user) && use.getOperandNumber() == 0);
     if (!ok) {
       InFlightDiagnostic diag =
           emitOpError("the variable handle may be used only as the variable "
@@ -126,14 +125,37 @@ static LogicalResult verifyAccess(Operation *op, Value var) {
   if (!decl)
     return op->emitOpError(
         "the variable operand must be the result of a seaimp.var");
-  if (decl->getParentRegion() != op->getParentRegion())
-    return op->emitOpError("must be in the region of its seaimp.var (not in "
-                           "a nested region)");
+  if (decl->getParentRegion() == op->getParentRegion())
+    return success();
+  // a region read in a sea.box.all body directly in the variable's region:
+  // the lowering reads the memory before the box (the body only reads)
+  if (isa<sea::BoxBodyReadOpInterface>(op)) {
+    auto box = dyn_cast_or_null<sea::BoxAllOp>(op->getParentOp());
+    if (box && box->getParentRegion() == decl->getParentRegion())
+      return success();
+    return op->emitOpError("must be in the region of its seaimp.var or in a "
+                           "sea.box.all body directly in it");
+  }
+  return op->emitOpError("must be in the region of its seaimp.var (not in "
+                         "a nested region)");
+}
+
+/// get and set: not on a memory variable. Memory is reached only through
+/// the region ops, so seaimp code never holds a memory version, and every
+/// version the lowering makes is used linearly (docs/design/SeaImp.md).
+static LogicalResult verifyWholeAccess(Operation *op, Value var) {
+  if (failed(verifyAccess(op, var)))
+    return failure();
+  if (isa<sea::MemType>(cast<VarType>(var.getType()).getValueType()))
+    return op->emitOpError()
+           << "on a memory variable (a region): memory is read and written "
+              "only through the region ops (seaimp.load, store, memset, "
+              "memmove, memhavoc, is_modified, reset_modified, print.mem)";
   return success();
 }
 
-LogicalResult GetOp::verify() { return verifyAccess(*this, getVar()); }
-LogicalResult SetOp::verify() { return verifyAccess(*this, getVar()); }
+LogicalResult GetOp::verify() { return verifyWholeAccess(*this, getVar()); }
+LogicalResult SetOp::verify() { return verifyWholeAccess(*this, getVar()); }
 
 bool GetOp::loadsFrom(const MemorySlot &slot) { return getVar() == slot.ptr; }
 
@@ -245,6 +267,21 @@ LogicalResult MemMoveOp::verify() {
 }
 
 LogicalResult MemHavocOp::verify() { return verifyAccess(*this, getVar()); }
+
+LogicalResult IsModifiedOp::verify() { return verifyAccess(*this, getVar()); }
+
+LogicalResult ResetModifiedOp::verify() {
+  return verifyAccess(*this, getVar());
+}
+
+LogicalResult PrintMemOp::verify() {
+  if (failed(verifyAccess(*this, getVar())) ||
+      failed(sea::verifyPrintMemShape(*this, getTag(), getType(), getFmt())))
+    return failure();
+  if (getCountValue() && getCount())
+    return emitOpError("count and a count operand exclude each other");
+  return success();
+}
 
 //===----------------------------------------------------------------------===//
 // Allocation in a region

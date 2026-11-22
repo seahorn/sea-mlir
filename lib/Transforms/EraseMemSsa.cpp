@@ -21,34 +21,34 @@
 // refused (erase-mem-ssa.non-linear). Unreachable blocks are rewritten but
 // not checked (nothing executes them).
 //
-// Rewriting, op by op:
-//   - sea.load / store / memset / memmove / memhavoc (no `tracked`) ->
-//     the seaimp region op (`inplace` is dropped: the lowering puts it back,
+// Rewriting, op by op: every op that reads or updates a version becomes
+// its region op, so the output holds no memory value at all (seaimp code
+// never holds a memory version: seaimp.get / set of a memory variable are
+// refused by the verifier):
+//   - sea.load / store / memset / memmove / memhavoc (with `tracked`),
+//     sea.mem.is_modified / reset_modified, a strong sea.print.mem -> the
+//     seaimp region op (`inplace` is dropped: the lowering puts it back,
 //     and the check above is what makes it true);
-//   - a tracked update and sea.mem.reset_modified -> seaimp.get, the op on
-//     the value, seaimp.set of its result (seaimp has no `tracked`);
-//   - any other op that reads a version (sea.mem.is_modified, a strong
-//     sea.print.mem, a sea.load in a sea.box.all body) -> it reads a
-//     seaimp.get put before it (before the top-level op that holds it);
-//   - the root: the only root, a sea.mem.nondet in the entry block, becomes
-//     the variable (its name and site; the lowering makes the same
-//     sea.mem.nondet at the start of the entry block). Any other root
-//     (sea.mem.const, a sea.mem.nondet elsewhere, several roots) stays and
-//     is followed by a seaimp.set; the variable is then "mem" with a fresh
-//     site, and its initial value is never read;
+//   - a sea.load / sea.mem.is_modified in a sea.box.all body -> the region
+//     op in the body (the body only reads; the lowering reads the version
+//     before the box);
+//   - the root, a sea.mem.nondet in the entry block, becomes the variable
+//     (its name and site; the lowering makes the same sea.mem.nondet at the
+//     start of the entry block);
 //   - sea.alloca whose pointer indexes the memory -> seaimp.alloca %mem.
+//     sea.malloc and sea.global stay (no region form yet).
 //
 // Contract.
 //   Accepts: a program with at most one memory (one class of memory values
 //     connected by def-use: an update and the version it consumes, a branch
 //     operand and its block argument); none: unchanged. Refused, with an
-//     error: several memories (erase-mem-ssa.regions: one region only), a
-//     non-linear chain (erase-mem-ssa.non-linear), a memory value made by an
-//     op that is no root or update, or in a nested region
-//     (erase-mem-ssa.unsupported).
-//   Produces: no memory block argument; every remaining memory value is a
-//     seaimp.get result or is used only by seaimp.set (checked:
-//     sea-erase-mem-ssa.postcondition).
+//     error and no change: several memories (erase-mem-ssa.regions: one
+//     region only), a non-linear chain (erase-mem-ssa.non-linear), a memory
+//     that does not start at one sea.mem.nondet in the entry block (a
+//     sea.mem.const root, a second root, no root), a memory value made by
+//     an op that is no root or update or in a nested region, a reader with
+//     no region form (erase-mem-ssa.unsupported).
+//   Produces: no memory value (checked: sea-erase-mem-ssa.postcondition).
 //
 //===----------------------------------------------------------------------===//
 
@@ -164,6 +164,11 @@ public:
 
 private:
   LogicalResult collect();
+  void unsupported(Operation *op, const Twine &what);
+  /// The op (top level) has a region form if it reads or updates memory.
+  LogicalResult checkRegionForm(Operation *op);
+  /// `inner`, in a region of `holder`, has a region form there.
+  LogicalResult checkNestedRegionForm(Operation *holder, Operation *inner);
   /// The block's memory argument (the class has one memory), or null.
   BlockArgument memArg(Block *b);
   State transfer(Block *b, State in, bool check, LogicalResult &ok);
@@ -263,7 +268,72 @@ LogicalResult Eraser::collect() {
     return failure();
   }
   memType = cast<MemType>(memValues.front().getType());
+
+  // the region starts as its variable's initial value, a sea.mem.nondet
+  // with the variable's name and site at the start of the entry block
+  if (roots.size() > 1) {
+    unsupported(roots[1], "a second root of the memory (restarting the "
+                          "whole memory has no region form)");
+    return failure();
+  }
+  if (roots.empty()) {
+    unsupported(program, "a memory without a root");
+    return failure();
+  }
+  if (!isa<MemNondetOp>(roots.front()) ||
+      roots.front()->getBlock() != &body.front()) {
+    unsupported(roots.front(), "a memory root other than sea.mem.nondet in "
+                               "the entry block (a region starts as its "
+                               "variable's nondet initial value)");
+    return failure();
+  }
+
+  // every reader and update has a region form
+  for (Block &b : body)
+    for (Operation &op : b) {
+      if (failed(checkRegionForm(&op)))
+        return failure();
+      for (Region &r : op.getRegions())
+        for (Block &nb : r)
+          for (Operation &inner : nb)
+            if (failed(checkNestedRegionForm(&op, &inner)))
+              return failure();
+    }
   return success();
+}
+
+void Eraser::unsupported(Operation *op, const Twine &what) {
+  diag::error("erase-mem-ssa.unsupported",
+              Twine(kPass) + ": " + op->getName().getStringRef() + ": " + what,
+              op->getLoc());
+}
+
+LogicalResult Eraser::checkRegionForm(Operation *op) {
+  if (!llvm::any_of(op->getOperands(), isMem))
+    return success();
+  if (isa<LoadOp, IsModifiedOp, ResetModifiedOp, BranchOpInterface>(op))
+    return success();
+  if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp>(op))
+    return success();
+  if (auto pm = dyn_cast<PrintMemOp>(op); pm && pm.isStrong() &&
+                                          isMem(pm.getMemValue()) &&
+                                          !isMem(pm.getAddrValue()))
+    return success();
+  unsupported(op, "reads a memory version and has no region form");
+  return failure();
+}
+
+LogicalResult Eraser::checkNestedRegionForm(Operation *holder,
+                                            Operation *inner) {
+  if (!llvm::any_of(inner->getOperands(), isMem))
+    return success();
+  if (isa<BoxAllOp>(holder) && isa<LoadOp, IsModifiedOp>(inner))
+    return success();
+  unsupported(inner, Twine("reads a memory version in a nested region of ") +
+                         holder->getName().getStringRef() +
+                         " and has no region form there (only sea.load and "
+                         "sea.mem.is_modified in a sea.box.all body)");
+  return failure();
 }
 
 BlockArgument Eraser::memArg(Block *b) {
@@ -352,21 +422,26 @@ LogicalResult Eraser::run() {
 
   rewrite();
 
-  // postcondition
-  for (Block &b : body)
-    if (BlockArgument a = memArg(&b))
-      return postconditionFailed(kPass, "a memory block argument",
-                                 a.getOwner()->getParentOp());
-  for (Block &b : body)
-    for (Operation &op : b)
-      for (Value r : op.getResults())
-        if (isMem(r) && !isa<imp::GetOp>(op) &&
-            !llvm::all_of(r.getUsers(),
-                          [](Operation *u) { return isa<imp::SetOp>(u); }))
-          return postconditionFailed(kPass,
-                                     "a memory value not read through the "
-                                     "variable",
-                                     &op);
+  // postcondition: no memory version is left (seaimp code never holds one)
+  Operation *left = nullptr;
+  program.walk([&](Operation *op) {
+    bool has = llvm::any_of(op->getResults(), isMem) ||
+               llvm::any_of(op->getRegions(), [](Region &r) {
+                 return llvm::any_of(r.getArguments(), isMem) ||
+                        llvm::any_of(r.getBlocks(), [](Block &nb) {
+                          return llvm::any_of(nb.getArguments(), isMem);
+                        });
+               });
+    if (!has)
+      return WalkResult::advance();
+    left = op;
+    return WalkResult::interrupt();
+  });
+  for (Block &blk : body)
+    if (!left && memArg(&blk))
+      left = blk.getParentOp();
+  if (left)
+    return postconditionFailed(kPass, "a memory value", left);
   return success();
 }
 
@@ -376,33 +451,33 @@ void Eraser::rewrite() {
   OpBuilder b(&entry, entry.begin());
   MLIRContext *ctx = program.getContext();
 
-  // the variable: the root it replaces, else "mem" with a fresh site
-  Operation *consumed = nullptr;
-  if (roots.size() == 1 && isa<MemNondetOp>(roots.front()) &&
-      roots.front()->getBlock() == &entry)
-    consumed = roots.front();
-  StringAttr name;
-  IntegerAttr site;
-  if (auto nd = dyn_cast_or_null<MemNondetOp>(consumed)) {
-    name = nd.getNameAttr();
-    site = nd.getSiteAttr();
-  } else {
-    uint64_t next = 0;
-    program.walk([&](NondetSiteOpInterface s) {
-      next = std::max<uint64_t>(next, s.getSite() + 1);
-    });
-    name = StringAttr::get(ctx, "mem");
-    site = b.getI64IntegerAttr(next);
-  }
+  // the variable takes the root's name and site (collect: one root, a
+  // sea.mem.nondet in the entry block)
+  auto root = cast<MemNondetOp>(roots.front());
   auto varType = imp::VarType::get(ctx, memType);
-  Location varLoc = consumed ? consumed->getLoc() : program.getLoc();
-  Value var = imp::VarOp::create(b, varLoc, varType, name, site);
+  Value var = imp::VarOp::create(b, root.getLoc(), varType, root.getNameAttr(),
+                                 root.getSiteAttr());
 
-  SmallVector<Operation *> erase;
-  if (consumed)
-    erase.push_back(consumed);
-  auto getMem = [&](OpBuilder &ob, Location loc) {
-    return imp::GetOp::create(ob, loc, memType, var).getResult();
+  SmallVector<Operation *> erase{root};
+  // a read: the region op in place of `op` (top level or in a sea.box.all
+  // body); false if `op` is no read of memory
+  auto rewriteRead = [&](Operation *op) {
+    OpBuilder ob(op);
+    Location loc = op->getLoc();
+    if (auto ld = dyn_cast<LoadOp>(op)) {
+      Value r = imp::LoadOp::create(ob, loc, ld.getType(), var, ld.getAddr(),
+                                    ld.getAlignAttr())
+                    .getResult();
+      ld.getResult().replaceAllUsesWith(r);
+    } else if (auto im = dyn_cast<IsModifiedOp>(op)) {
+      Value r =
+          imp::IsModifiedOp::create(ob, loc, ob.getI1Type(), var, im.getPtr());
+      im.getResult().replaceAllUsesWith(r);
+    } else {
+      return false;
+    }
+    erase.push_back(op);
+    return true;
   };
 
   SmallVector<Operation *> ops;
@@ -410,80 +485,52 @@ void Eraser::rewrite() {
     for (Operation &op : blk)
       ops.push_back(&op);
   for (Operation *op : ops) {
-    if (op == var.getDefiningOp() || op == consumed)
+    if (op == var.getDefiningOp() || op == root)
       continue;
     OpBuilder ob(op);
     Location loc = op->getLoc();
-    if (isRoot(op)) {
-      ob.setInsertionPointAfter(op);
-      imp::SetOp::create(ob, loc, var, op->getResult(0));
+    if (rewriteRead(op))
       continue;
-    }
-    if (auto ld = dyn_cast<LoadOp>(op)) {
-      Value r = imp::LoadOp::create(ob, loc, ld.getType(), var, ld.getAddr(),
-                                    ld.getAlignAttr())
-                    .getResult();
-      ld.getResult().replaceAllUsesWith(r);
-      erase.push_back(op);
-      continue;
-    }
-    if (auto st = dyn_cast<StoreOp>(op); st && !st.getTracked()) {
+    if (auto st = dyn_cast<StoreOp>(op)) {
       imp::StoreOp::create(ob, loc, var, st.getAddr(), st.getValue(),
-                           st.getAlignAttr());
-      erase.push_back(op);
-      continue;
-    }
-    if (auto ms = dyn_cast<MemSetOp>(op); ms && !ms.getTracked()) {
+                           st.getAlignAttr(), st.getTrackedAttr());
+    } else if (auto ms = dyn_cast<MemSetOp>(op)) {
       imp::MemSetOp::create(ob, loc, var, ms.getAddr(), ms.getValue(),
-                            ms.getLen(), ms.getAlignAttr());
-      erase.push_back(op);
-      continue;
-    }
-    if (auto mv = dyn_cast<MemMoveOp>(op); mv && !mv.getTracked()) {
+                            ms.getLen(), ms.getAlignAttr(),
+                            ms.getTrackedAttr());
+    } else if (auto mv = dyn_cast<MemMoveOp>(op)) {
       imp::MemMoveOp::create(ob, loc, var, mv.getAddr(), var, mv.getSrcAddr(),
                              mv.getLen(), mv.getAlignAttr(),
-                             mv.getSrcAlignAttr());
-      erase.push_back(op);
-      continue;
-    }
-    if (auto mh = dyn_cast<MemHavocOp>(op); mh && !mh.getTracked()) {
+                             mv.getSrcAlignAttr(), mv.getTrackedAttr());
+    } else if (auto mh = dyn_cast<MemHavocOp>(op)) {
       imp::MemHavocOp::create(ob, loc, var, mh.getAddr(), mh.getLen(),
-                              mh.getSiteAttr());
-      erase.push_back(op);
-      continue;
-    }
-    if (auto al = dyn_cast<AllocaOp>(op);
-        al && al.getType() == memType.getIndex()) {
+                              mh.getSiteAttr(), mh.getTrackedAttr());
+    } else if (auto rm = dyn_cast<ResetModifiedOp>(op)) {
+      imp::ResetModifiedOp::create(ob, loc, var, rm.getAddr());
+    } else if (auto pm = dyn_cast<PrintMemOp>(op);
+               pm && pm.isStrong() && isMem(pm.getMemValue())) {
+      imp::PrintMemOp::create(ob, loc, var, pm.getAddrValue(),
+                              pm.getCountValue(), pm.getTagAttr(),
+                              pm.getTypeAttr(), pm.getFmtAttr(),
+                              pm.getCountAttr(), pm.getOffsetAttr());
+    } else if (auto al = dyn_cast<AllocaOp>(op);
+               al && al.getType() == memType.getIndex()) {
       Value r = imp::AllocaOp::create(ob, loc, al.getType(), var, al.getSize(),
                                       al.getAlignAttr(), al.getSiteAttr(),
                                       al.getLabelAttr())
                     .getResult();
       al.getResult().replaceAllUsesWith(r);
-      erase.push_back(op);
+    } else {
+      // reads in a sea.box.all body (collect admits only those); branch
+      // operands are dropped below
+      for (Region &r : op->getRegions())
+        for (Block &nb : r)
+          for (Operation &inner : llvm::make_early_inc_range(nb))
+            if (llvm::any_of(inner.getOperands(), isMem))
+              (void)rewriteRead(&inner);
       continue;
     }
-    // any other use of a version: branch operands are dropped below;
-    // every other operand (of the op or of an op nested in it) reads a get
-    // put before the op. A remaining update gets a set of its result.
-    auto br = dyn_cast<BranchOpInterface>(op);
-    Value g;
-    op->walk([&](Operation *inner) {
-      for (OpOperand &o : inner->getOpOperands()) {
-        if (!isMem(o.get()) ||
-            o.get().getParentRegion() != op->getParentRegion())
-          continue;
-        if (inner == op && br &&
-            br.getSuccessorBlockArgument(o.getOperandNumber()))
-          continue;
-        if (!g)
-          g = getMem(ob, loc);
-        o.set(g);
-      }
-    });
-    if (consumedMem(op)) {
-      ob.setInsertionPointAfter(op);
-      imp::SetOp::create(ob, loc, var, op->getResult(0));
-    }
+    erase.push_back(op);
   }
 
   // drop the memory successor operands and block arguments
