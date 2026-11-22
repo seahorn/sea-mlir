@@ -10,10 +10,10 @@
 // offsets are bounded); the test needs them constrained.
 // --vc-fold-top-eqs=false: the fold (on by default) eliminates the object
 // base, the sums become numerals plus offsets, and no name is made.
-// RUN: sea-vc %s --lower --seam --ack-decider=false --smt2 --vc-defs=hidden 2>/dev/null | FileCheck %s --check-prefix=HID
-// RUN: sea-vc %s --lower --seam --ack-decider=false --smt2 --vc-defs=eq 2>/dev/null | FileCheck %s --check-prefix=EQ
+// RUN: sea-vc %s --lower --seam --ack-decider=false --vc-fold-top-eqs=false --smt2 --vc-defs=hidden 2>/dev/null | FileCheck %s --check-prefix=HID
+// RUN: sea-vc %s --lower --seam --ack-decider=false --vc-fold-top-eqs=false --smt2 --vc-defs=eq 2>/dev/null | FileCheck %s --check-prefix=EQ
 // RUN: sea-vc %s --lower --seam --ack-decider=false --vc-fold-top-eqs=false --smt2 2>/dev/null | FileCheck %s --check-prefix=INL
-// RUN: sea-vc %s --lower --seam --ack-decider=false --smt2 --vc-defs=nest 2>/dev/null | FileCheck %s --check-prefix=NEST
+// RUN: sea-vc %s --lower --seam --ack-decider=false --vc-fold-top-eqs=false --smt2 --vc-defs=nest 2>/dev/null | FileCheck %s --check-prefix=NEST
 // HID: (declare-fun def.0 () (_ BitVec 64))
 // HID-NOT: (= def.{{[0-9]+$}}
 // HID-DAG: (bvule def.1

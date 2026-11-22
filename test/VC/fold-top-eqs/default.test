@@ -23,16 +23,17 @@
 # RUN: not sea-vc %S/post-store.mlir --program=trail --lower --seam --reach --model-trail-out=%t.x 2>&1 | FileCheck %s --check-prefix=TRAIL-REACH
 # TRAIL-REACH: --model-trail-out needs the fold of --vc-fold-top-eqs (vc.fold-top-eqs-status: off-reach)
 
-# A written query keeps its constants by default (the second step would
-# make it equisatisfiable, not equivalent, to the VC: the query comparisons
-# read it); --vc-fold-top-eqs folds it. @fold: the fold makes it false.
+# A written query is folded like a solving run (equisatisfiable with the
+# VC; the query tools pass =false). @fold: the fold makes it false.
 # RUN: sea-vc %S/post-store.mlir --program=fold --lower --seam --smt2 2>%t.err | FileCheck %s --check-prefix=SMT2
 # RUN: FileCheck %s --check-prefix=SMT2-STAT < %t.err
-# SMT2-NOT: (assert false)
-# SMT2: (check-sat)
-# SMT2-STAT: vc.fold-top-eqs-status: off-smt2
-# RUN: sea-vc %S/post-store.mlir --program=fold --lower --seam --smt2 --vc-fold-top-eqs 2>/dev/null | FileCheck %s --check-prefix=SMT2-ON
-# SMT2-ON: (assert false)
+# SMT2: (assert false)
+# SMT2-STAT: vc.fold-top-eqs-status: on
+# RUN: sea-vc %S/post-store.mlir --program=fold --lower --seam --smt2 --vc-fold-top-eqs=false 2>%t.err | FileCheck %s --check-prefix=SMT2-OFF
+# RUN: FileCheck %s --check-prefix=SMT2-OFF-STAT < %t.err
+# SMT2-OFF-NOT: (assert false)
+# SMT2-OFF: (check-sat)
+# SMT2-OFF-STAT: vc.fold-top-eqs-status: off-flag
 
 # SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -3,7 +3,7 @@
 // sea-vc --place-out / --place-in: the lowering's placement written to a
 // file and taken from one (sea-place-static place-out / place-in).
 // RUN: rm -rf %t && split-file %s %t
-// DEFINE: %{vc} = sea-vc --lower --seam --smt2
+// DEFINE: %{vc} = sea-vc --lower --seam --vc-fold-top-eqs=false --smt2
 
 // Roundtrip: a lowering that takes the placement it wrote makes the same
 // query, byte for byte.

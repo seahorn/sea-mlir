@@ -100,6 +100,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import seavc_flags  # noqa: E402
+
 AGENT = """\
 query-diff: compare the SMT queries of two sea-vc binaries over a corpus.
 WHY: the gate of a change that must not change queries (or only their
@@ -111,6 +114,8 @@ USAGE:
       [--z3 <z3>] [--rlimit 200000000] [--timeout 300] [--project-blocks]
       [--no-hints]
       [--strict] [--keep <dir>]
+  Both runs pass --vc-fold-top-eqs=false (the fold of the written
+  query is off: the queries are compared as the VC) to a binary that has it.
 CLASSES (what each proves; OLD/NEW = the queries, symbols matched by name):
   identical   byte-identical queries
   order       equal up to the order of commutative arguments and forms
@@ -664,7 +669,7 @@ INB = re.compile(r"seam\.(?:premises|inb): \S+ accesses=(\d+) conditions=(\d+)")
 def run(binary, f, args, timeout):
     try:
         p = subprocess.run(
-            [binary, f] + args + ["--smt2"],
+            [binary, f] + args + ["--smt2"] + seavc_flags.no_fold(binary),
             capture_output=True,
             text=True,
             timeout=timeout,

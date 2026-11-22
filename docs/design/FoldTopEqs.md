@@ -222,7 +222,6 @@ run, stdout; stderr with `--smt2`):
 |---|---|
 | `on` | the default where it applies, or `--vc-fold-top-eqs` |
 | `off-flag` | `--vc-fold-top-eqs=false` |
-| `off-smt2` | `--smt2` or `--split-smt2` without the flag |
 | `off-reach` | `--reach` |
 | `off-ack-relax` | `--ack-relax` |
 | `off-no-simplify` | no simplifier (no `--seam`, no `--simplify`; `--seam-simplify=0`; `--mem=lambda`) |
@@ -232,21 +231,24 @@ modes (section Where it runs). `--model-trail-out` and
 `--vc-fold-concat-ite` need the fold on, by default or by the flag; off,
 they are errors that name the status.
 
-Why not under `--smt2` by default. Step 2 removes constants from the
-query, so the written query is equisatisfiable with the VC, not
-equivalent to it. The query comparisons read `--smt2` queries as the VC:
-`utils/query-diff.py` (the gate of a change that must not change
-queries), `encoding-diff.py`, `cover-diff.py` level 1, `memops-equiv.py`.
-With the fold, two queries that differ only in an eliminated fact are
-identical: in `test/Tools/cover-diff-layout.test` a program input that
-only one side assumes (`x == 5`) became a pass instead of a DIFF. A
-written query therefore keeps its constants unless `--vc-fold-top-eqs` is
-given; the solved query (no `--smt2`) is folded. A consequence: query-diff
-on this default sees the unfolded query, so the fold's own change to what
-the solver gets is measured by the benchmarks (default against
-`no-fold-top-eqs`), not by query-diff. Open: writing the trail with the
-query (definitions the comparisons could substitute back) would let a
-written query be folded by default too.
+A written query (`--smt2`, `--split-smt2`) is folded by default like a
+solving run: a dumped query is the one the solver gets, so it can be
+examined and run with external tools or other z3 versions. Step 2 removes
+constants from it, so it is equisatisfiable with the VC, not equivalent to
+it; the model trail (`--model-trail-out`) is what extends a model of the
+query to a model of the VC.
+
+The query comparisons read `--smt2` queries as the VC, so they turn the
+fold off with `--vc-fold-top-eqs=false`: `utils/query-diff.py` (the gate
+of a change that must not change queries), `encoding-diff.py`,
+`cover-diff.py` level 1, `memops-equiv.py`. With the fold, two queries
+that differ only in an eliminated fact are identical: in
+`test/Tools/cover-diff-layout.test` a program input that only one side
+assumes (`x == 5`) became a pass instead of a DIFF. They pass the flag
+only to a binary that knows it (probed once from `--help-hidden`,
+`utils/seavc_flags.py`): an older binary does not fold. Consequence:
+query-diff does not see the fold's own change to the query; the
+benchmarks (default against `no-fold-top-eqs`) measure it.
 
 `--check-inb` runs each part as a sea-vc process of its own with the
 options passed on: the parts get the default.

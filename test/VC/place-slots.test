@@ -31,7 +31,7 @@
 // ALIGNED: vc.narrow-base-unaligned: 0
 // ALIGNED: result: sat
 // ALIGNED: validate: checked={{[0-9]+}} mismatches=0
-// RUN: %{vc} %t/p.mlir --place-slots=aligned --smt2 2>/dev/null | FileCheck %s --check-prefix=BASE
+// RUN: %{vc} %t/p.mlir --place-slots=aligned --vc-fold-top-eqs=false --smt2 2>/dev/null | FileCheck %s --check-prefix=BASE
 // BASE: (= obj.heap.1 #x000000000804a000)
 
 // Round trip: the aligned placement written and taken back makes the same

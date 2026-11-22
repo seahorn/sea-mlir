@@ -837,9 +837,9 @@ static cl::opt<bool> vcFoldTopEqs(
              "Exact; needs --simplify (on under --seam); not with --reach "
              "or --ack-relax; counted vc.fold-top-eqs, vc.model-trail. "
              "Default: on where it applies (simplify on, no --reach, no "
-             "--ack-relax, no --smt2 / --split-smt2: a written query keeps "
-             "its constants), else off, the reason in "
-             "vc.fold-top-eqs-status; "
+             "--ack-relax; also under --smt2 / --split-smt2: the written "
+             "query is equisatisfiable with the VC, not equivalent), else "
+             "off, the reason in vc.fold-top-eqs-status; "
              "=true where it does not apply is an error, =false turns it "
              "off (docs/design/FoldTopEqs.md)"),
     cl::init(false));
@@ -2120,6 +2120,10 @@ semantics) and every computed value is checked against the model.
 SLOW OR TIMEOUT: read docs/agents/slow-vc.md. First commands:
   sea-vc p.mlir <flags> --smt2 > q.smt2; z3 -v:10 -st q.smt2   # size or
                                  #   search: num-exprs per step, conflicts
+                                 #   (the query is the solving run's,
+                                 #   folded by --vc-fold-top-eqs unless
+                                 #   =false: equisatisfiable with the VC;
+                                 #   the query-diff tools turn it off)
   sea-vc p.mlir <flags> --z3-param=verbose=10   # the same inside a run
   sea-vc p.mlir <flags> --dag-stats --vcgen-only  # size with sharing
   sea-vc p.mlir <flags> --ack-dump-pairs=f --eq-audit   # big terms by value
@@ -2688,8 +2692,9 @@ TYPICAL:
                                  #   runs. Default array.
   sea-vc p.mlir --seam --vc-fold-top-eqs=false  # the A/B baseline: by
                                  #   default (on where it applies: simplify
-                                 #   on, no --reach, no --ack-relax, no
-                                 #   --smt2 / --split-smt2;
+                                 #   on, no --reach, no --ack-relax; also
+                                 #   under --smt2 / --split-smt2, where the
+                                 #   query is equisatisfiable with the VC;
                                  #   vc.fold-top-eqs-status) the query's
                                  #   top-level facts T = c are substituted
                                  #   (concat facts by part, Boolean
@@ -3265,14 +3270,13 @@ OUTPUT (stdout, `key: value` lines):
   vc.ack-relax-mode: incremental  (--ack-relax-mode=incremental only)
   vc.ack-relax-time: <s>          (--ack-relax-mode=incremental only: the
                                   rounds, the fallback and the assertions)
-  vc.fold-top-eqs-status: on|off-flag|off-smt2|off-reach|off-ack-relax|
+  vc.fold-top-eqs-status: on|off-flag|off-reach|off-ack-relax|
       off-no-simplify             (--vc-fold-top-eqs: whether the fold ran:
-                                  on by default where it applies; off by
-                                  =false, by default under --smt2 /
-                                  --split-smt2 (the written query keeps its
-                                  constants; =true folds it), under
-                                  --reach, under --ack-relax, without the
-                                  simplifier)
+                                  on by default where it applies, also
+                                  under --smt2 / --split-smt2 (the written
+                                  query is equisatisfiable with the VC);
+                                  off by =false, under --reach, under
+                                  --ack-relax, without the simplifier)
   vc.fold-top-eqs: facts=<n> term=<n> split=<n> bool=<n> uses=<n>
       rounds=<n> concat-ite=<n> concat-ite-refused=<n> skipped-masked=<n>
       skipped-untyped=<n> skipped-ptr=<n>
@@ -5267,17 +5271,14 @@ int main(int argc, char **argv) {
     return fail("--vc-fold-top-eqs needs --simplify (on under --seam): "
                 "the substituted query is simplified again");
   // --vc-fold-top-eqs: on by default where it applies; an explicit =true
-  // where it does not is an error above, =false turns it off. Not by
-  // default in a written query (--smt2, --split-smt2): its second step
-  // removes constants, so that query would be equisatisfiable with the VC,
-  // not equivalent, and the query comparisons (utils/query-diff.py,
-  // encoding-diff.py, cover-diff.py) would not see the eliminated facts;
-  // =true writes the folded query (docs/design/FoldTopEqs.md, "Default")
+  // where it does not is an error above, =false turns it off. A written
+  // query (--smt2, --split-smt2) is folded too: it is equisatisfiable
+  // with the VC, not equivalent, and the model trail extends its models;
+  // the query comparisons pass =false
+  // (docs/design/FoldTopEqs.md, "Default")
   const char *foldTopEqsStatus = "on";
   if (vcFoldTopEqs.getNumOccurrences())
     foldTopEqsStatus = vcFoldTopEqs ? "on" : "off-flag";
-  else if (smt2 || !splitSmt2.empty())
-    foldTopEqsStatus = "off-smt2";
   else if (reach)
     foldTopEqsStatus = "off-reach";
   else if (relaxSel)
