@@ -1549,6 +1549,8 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
     checkAlign(op, ms.getAddr(), ms.getAlign());
     if (!env.lookup(ms.getLen()).isZero())
       checkPromise(op, ms.getAddr());
+  } else if (auto mf = dyn_cast<MemFillOp>(op)) {
+    checkPromise(op, mf.getAddr()); // at least one cell
   } else if (auto mv = dyn_cast<MemMoveOp>(op)) {
     checkAlign(op, mv.getAddr(), mv.getAlign());
     checkAlign(op, mv.getSrcAddr(), mv.getSrcAlign(), "src_align");
@@ -1603,6 +1605,10 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
     } else if (auto ms = dyn_cast<MemSetOp>(op)) {
       inObject = checkRange(ms.getAddr(), env.lookup(ms.getLen()),
                             mems.lookup(mem)->units, error);
+    } else if (auto mf = dyn_cast<MemFillOp>(op)) {
+      Buffer &b = *mems.lookup(mem);
+      inObject = checkRange(mf.getAddr(), APInt(64, mf.getNumCells() * b.units),
+                            b.units, error);
     } else if (auto mv = dyn_cast<MemMoveOp>(op)) {
       inObject = checkRange(mv.getSrcAddr(), env.lookup(mv.getLen()),
                             mems.lookup(mv.getSrc())->units, error);
@@ -1667,7 +1673,7 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
       buf.modified.erase(obj);
       return success();
     }
-    Value len; // none for a store: it always writes
+    Value len; // none for a store or a fill: it always writes
     if (auto ms = dyn_cast<MemSetOp>(op))
       len = ms.getLen();
     else if (auto mv = dyn_cast<MemMoveOp>(op))
@@ -1685,6 +1691,17 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
       if (failed(k))
         return failure();
       write(buf, *k, cellOf(st.getValue(), i, buf.cellWidth));
+    }
+    return success();
+  }
+  if (auto mf = dyn_cast<MemFillOp>(op)) {
+    // cell k at addr + k cells (the verifier: the data's cells are the
+    // memory's, and they fit the index space)
+    for (auto [k, cell] : llvm::enumerate(mf.getData().getValues<APInt>())) {
+      FailureOr<APInt> at = cellKey(buf, mf.getAddr(), k * buf.units, error);
+      if (failed(at))
+        return failure();
+      write(buf, *at, CellValue{cell, std::nullopt, 0});
     }
     return success();
   }
@@ -2231,7 +2248,7 @@ RunResult Interpreter::run() {
                       "tracking markers must be applied first "
                       "(sea-apply-tracking)");
       if (isa<MemNondetOp, MemConstOp, LoadOp, StoreOp, MemSetOp, MemMoveOp,
-              MemHavocOp, IsModifiedOp, ResetModifiedOp>(op)) {
+              MemHavocOp, MemFillOp, IsModifiedOp, ResetModifiedOp>(op)) {
         if (failed(execMem(op, error)))
           return finish(RunStatus::Error, &op, error);
         continue;

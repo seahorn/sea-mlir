@@ -320,6 +320,7 @@ void registerPasses() {
   registerPass([] { return createPlaceStaticPass(); });
   registerPass([] { return createScalarizeStructsPass(); });
   registerPass([] { return createExpandMemSetPass(); });
+  registerPass([] { return createExpandMemFillPass(); });
   registerPass([] { return createExpandSmallMemMovePass(); });
   registerPass([] { return createSplitCriticalEdgesPass(); });
   registerPass([] { return createSplitAtChecksPass(); });
@@ -339,6 +340,8 @@ void registerPasses() {
   registerPass([] { return createAssumeFoldPass(); });
   registerPass([] { return createPruneEdgesPass(); });
   registerPass([] { return createLowerBoxAllPass(); });
+  registerPass([] { return createLowerSeaImpPass(); });
+  registerPass([] { return createEraseMemSsaPass(); });
   registerPass([] { return createLowerPtrIndexPass(); });
   registerPass([] { return createCheckAlignPass(); });
   registerPass([] { return createCheckPtrIndexPass(); });
@@ -374,6 +377,9 @@ void addPrintRefsPass(OpPassManager &pm, PrintRefs refs) {
 
 void addVCLowerPrefix(OpPassManager &prog, const VCLowerConfig &c) {
   const bool cse = c.opt && !(c.disable & LowerDisableCse);
+  // seaimp variables -> SSA values, before any pass reads the program
+  // (a no-op without seaimp ops)
+  prog.addPass(createLowerSeaImpPass());
   prog.addPass(createApplyTrackingPass());
   // claims over index boxes, before anything else sees a region op
   prog.addPass(createLowerBoxAllPass(c.boxAllExpand));
@@ -420,6 +426,10 @@ void addVCLowerMemory(OpPassManager &prog, const VCLowerConfig &c) {
       llvm::report_fatal_error("sea-widen-memory: bad k");
     prog.addPass(std::move(widen));
   }
+  // fills as one store per cell (the VC encodes no fill: every memory mode
+  // sees stores): after widening, which packs a widened memory's fill data
+  // into words, so the stores have the final cell type
+  prog.addPass(createExpandMemFillPass());
   // short constant memmoves as explicit copies (exact): after the metadata
   // lowerings (a keyed companion memmove is expanded only with its data
   // memmove) and widening (word layouts are kept); before

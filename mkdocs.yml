@@ -113,6 +113,7 @@ nav:
       - reference/index.md
       - "Background: SeaM": reference/seam.md
       - The sea dialect: reference/dialect.md
+      - The seaimp dialect: reference/seaimp.md
       - Command line: reference/cli.md
       - Output formats and exit codes: reference/output-formats.md
       - Logging: reference/logging.md

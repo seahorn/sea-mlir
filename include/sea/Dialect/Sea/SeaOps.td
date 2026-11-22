@@ -8,6 +8,7 @@
 
 include "sea/Dialect/Sea/SeaDialect.td"
 include "sea/Dialect/Sea/SeaTypes.td"
+include "sea/Dialect/Sea/SeaInterfaces.td"
 include "mlir/IR/BuiltinAttributeInterfaces.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/SymbolInterfaces.td"
@@ -150,7 +151,7 @@ def Sea_AssertOp : Sea_Op<"assert"> {
   let assemblyFormat = "$cond attr-dict";
 }
 
-def Sea_NondetOp : Sea_Op<"nondet"> {
+def Sea_NondetOp : Sea_Op<"nondet", [Sea_NondetSiteOpInterface]> {
   let summary = "A nondeterministic bit-vector";
   let description = [{
     Exported 1:1 from a call to a nondet function (`nondet_u32()`, the `nd_*`
@@ -451,7 +452,8 @@ def Sea_StructCreateOp : Sea_Op<"struct.create", [Pure]> {
   let hasVerifier = 1;
 }
 
-def Sea_StructNondetOp : Sea_Op<"struct.nondet"> {
+def Sea_StructNondetOp : Sea_Op<"struct.nondet",
+    [Sea_NondetSiteOpInterface]> {
   let summary = "A struct with nondeterministic fields";
   let description = [{
     The explicit nondet initialization of a struct (LLVM's `insertvalue
@@ -628,7 +630,7 @@ def Sea_MemConstOp : Sea_Op<"mem.const", [
       "$value (`shadow` $shadow^)? attr-dict `:` qualified(type($result))";
 }
 
-def Sea_MemNondetOp : Sea_Op<"mem.nondet"> {
+def Sea_MemNondetOp : Sea_Op<"mem.nondet", [Sea_NondetSiteOpInterface]> {
   let summary = "Unconstrained initial contents of a memory region";
   let description = [{
     `site` is the replay key, unique per program together with the sites of
@@ -740,7 +742,8 @@ def Sea_MemMoveOp : Sea_MemUpdateOp<"memmove", [
   let hasVerifier = 1;
 }
 
-def Sea_MemHavocOp : Sea_MemUpdateOp<"memhavoc", [Sea_LenOf<"mem", "len">]> {
+def Sea_MemHavocOp : Sea_MemUpdateOp<"memhavoc",
+    [Sea_LenOf<"mem", "len">, Sea_NondetSiteOpInterface]> {
   let summary = "Make `len` cells from `addr` nondeterministic";
   let description = [{
     Only the range changes. `site` is the replay key (shared with the other
@@ -754,6 +757,41 @@ def Sea_MemHavocOp : Sea_MemUpdateOp<"memhavoc", [Sea_LenOf<"mem", "len">]> {
     (`tracked` $tracked^)? attr-dict `:` qualified(type($mem))
   }];
   let hasVerifier = 1;
+}
+
+def Sea_MemFillOp : Sea_MemUpdateOp<"mem.fill"> {
+  let summary = "Write constant cells from `addr`: a memcpy from constant data";
+  let description = [{
+    Cell `k` of `data` (a 1-D dense integer attribute of the memory's cell
+    type, at least one cell) is written at `addr + k * c`, where `c` is the
+    number of index units per cell (1 for the exact and keyed layouts, k
+    for k-byte words): the cells are consecutive. It models data preloaded
+    into memory, such as an LLVM global initializer; it is not a memset,
+    which repeats one value. The cells written must fit the index space
+    (`N * c < 2^w`). `inplace` and `tracked` are those of the other
+    updates (a tracked fill marks the object of `addr` as modified).
+
+    The VC does not encode it: the VC lowering expands it into one store
+    per cell (`sea-expand-mem-fill`, after `sea-widen-memory`, which packs
+    the bytes of a fill on a widened memory into words), so every memory
+    mode sees stores; docs/design/MemFill.md.
+
+    ```mlir
+    %m1 = sea.mem.fill %m0[%p], dense<[1, 2, 3]> : tensor<3xi8> inplace : !sea.mem<!sea.ptr<64>, i8>
+    ```
+  }];
+  let arguments = (ins Sea_Mem:$mem, Sea_Index:$addr,
+                   AnyIntElementsAttr:$data, UnitAttr:$inplace,
+                   UnitAttr:$tracked);
+  let assemblyFormat = [{
+    $mem `[` $addr `]` `,` $data (`inplace` $inplace^)? (`tracked` $tracked^)?
+    attr-dict `:` qualified(type($mem))
+  }];
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    /// The number of cells written.
+    uint64_t getNumCells() { return getData().getNumElements(); }
+  }];
 }
 
 //===----------------------------------------------------------------------===//
@@ -803,7 +841,8 @@ def Sea_TrackingOffOp : Sea_Op<"tracking_off"> {
 // Abstract pointers and allocation (docs/design/Memory-Step2.md)
 //===----------------------------------------------------------------------===//
 
-class Sea_AllocOp<string mnemonic, string what> : Sea_Op<mnemonic> {
+class Sea_AllocOp<string mnemonic, string what>
+    : Sea_Op<mnemonic, [Sea_NondetSiteOpInterface]> {
   let summary = "Allocate a new " # what # " object";
   let description = [{
     Each execution creates a new object of `size` units, aligned to
@@ -828,7 +867,7 @@ class Sea_AllocOp<string mnemonic, string what> : Sea_Op<mnemonic> {
 def Sea_AllocaOp : Sea_AllocOp<"alloca", "stack">;
 def Sea_MallocOp : Sea_AllocOp<"malloc", "heap">;
 
-def Sea_GlobalOp : Sea_Op<"global", [Pure]> {
+def Sea_GlobalOp : Sea_Op<"global", [Pure, Sea_GlobalObjectOpInterface]> {
   let summary = "The object of a global variable";
   let description = [{
     Every use of the same `name` denotes the same object; `size` and `align`
@@ -978,7 +1017,7 @@ def Sea_PtrDereferenceableOp : Sea_Op<"ptr.dereferenceable", [Pure]> {
   let hasVerifier = 1;
 }
 
-def Sea_PtrNondetOp : Sea_Op<"ptr.nondet"> {
+def Sea_PtrNondetOp : Sea_Op<"ptr.nondet", [Sea_NondetSiteOpInterface]> {
   let summary = "A pointer value that can never be dereferenced";
   let description = [{
     Each execution makes a fresh opaque object of size 0 (named

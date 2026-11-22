@@ -19,6 +19,8 @@ using namespace sea;
 
 #include "sea/Dialect/Sea/SeaEnums.cpp.inc"
 
+#include "sea/Dialect/Sea/SeaInterfaces.cpp.inc"
+
 #define GET_OP_CLASSES
 #include "sea/Dialect/Sea/SeaOps.cpp.inc"
 
@@ -34,48 +36,36 @@ LogicalResult ProgramOp::verifyRegions() {
     return emitOpError("entry block must have no arguments");
 
   // Nondet sites name the program's inputs (scalars, initial memories,
-  // havocked ranges); they must be unique.
+  // havocked ranges, objects; the variables of dialects lowered to sea);
+  // they must be unique.
   llvm::DenseMap<uint64_t, Operation *> sites;
-  WalkResult res = body.walk([&](Operation *op) {
-    std::optional<uint64_t> site;
-    if (auto nd = dyn_cast<NondetOp>(op))
-      site = nd.getSite();
-    else if (auto sn = dyn_cast<StructNondetOp>(op))
-      site = sn.getSite();
-    else if (auto mn = dyn_cast<MemNondetOp>(op))
-      site = mn.getSite();
-    else if (auto mh = dyn_cast<MemHavocOp>(op))
-      site = mh.getSite();
-    else if (auto al = dyn_cast<AllocaOp>(op))
-      site = al.getSite();
-    else if (auto ml = dyn_cast<MallocOp>(op))
-      site = ml.getSite();
-    else if (auto pn = dyn_cast<PtrNondetOp>(op))
-      site = pn.getSite();
-    if (!site)
+  WalkResult res = body.walk([&](NondetSiteOpInterface op) {
+    std::optional<uint64_t> s = op.getSite();
+    if (!s)
       return WalkResult::advance();
-    auto [it, inserted] = sites.try_emplace(*site, op);
+    uint64_t site = *s;
+    auto [it, inserted] = sites.try_emplace(site, op);
     if (inserted)
       return WalkResult::advance();
-    InFlightDiagnostic diag = op->emitOpError("duplicate nondet site ")
-                              << *site;
+    InFlightDiagnostic diag = op->emitOpError("duplicate nondet site ") << site;
     diag.attachNote(it->second->getLoc()) << "previous use here";
     return WalkResult::interrupt();
   });
   if (res.wasInterrupted())
     return failure();
 
-  // All uses of a global denote one object: size and alignment must agree.
-  llvm::DenseMap<StringAttr, GlobalOp> globals;
-  res = body.walk([&](GlobalOp g) {
+  // All uses of a global denote one object: size and alignment must agree
+  // (sea.global and the global forms of dialects lowered to sea).
+  llvm::DenseMap<StringAttr, GlobalObjectOpInterface> globals;
+  res = body.walk([&](GlobalObjectOpInterface g) {
     auto [it, inserted] = globals.try_emplace(g.getNameAttr().getAttr(), g);
     if (inserted || (it->second.getSize() == g.getSize() &&
                      it->second.getAlign() == g.getAlign()))
       return WalkResult::advance();
     InFlightDiagnostic diag =
-        g.emitOpError("size or alignment differs from another use of ")
+        g->emitOpError("size or alignment differs from another use of ")
         << g.getNameAttr();
-    diag.attachNote(it->second.getLoc()) << "other use here";
+    diag.attachNote(it->second->getLoc()) << "other use here";
     return WalkResult::interrupt();
   });
   return failure(res.wasInterrupted());
@@ -656,6 +646,34 @@ LogicalResult MemHavocOp::verify() {
   return verifyAccess(*this, getMem().getType(), getAddr(), getLen());
 }
 
+LogicalResult sea::verifyMemFillData(Operation *op, MemType mem,
+                                     DenseIntElementsAttr data) {
+  auto t = cast<ShapedType>(data.getType());
+  if (t.getRank() != 1)
+    return op->emitOpError("data must be a 1-D list of cells, got ") << t;
+  if (t.getElementType() != mem.getCell())
+    return op->emitOpError("data cells ")
+           << t.getElementType() << " are not the memory's cells "
+           << mem.getCell();
+  uint64_t n = data.getNumElements();
+  if (n == 0)
+    return op->emitOpError("data must have at least one cell");
+  // the cells written, in index units, fit the index space (no wrap onto
+  // the fill's own cells)
+  unsigned w = mem.getIndexWidth();
+  APInt units = APInt(128, n) * APInt(128, mem.getCellUnits());
+  if (w < 128 && units.getActiveBits() > w)
+    return op->emitOpError("data of ")
+           << n << " cells does not fit the " << w << "-bit index space";
+  return success();
+}
+
+LogicalResult MemFillOp::verify() {
+  if (failed(verifyAccess(*this, getMem().getType(), getAddr())))
+    return failure();
+  return verifyMemFillData(*this, getMem().getType(), getData());
+}
+
 //===----------------------------------------------------------------------===//
 // Abstract pointers and allocation
 //===----------------------------------------------------------------------===//
@@ -1104,6 +1122,10 @@ static std::string boxBodyRefusal(Operation *op, BoxAllOp box) {
     return "a nested region";
   if (op->getNumSuccessors() || op->hasTrait<OpTrait::IsTerminator>())
     return "control flow";
+  // a read of a region of a dialect lowered to sea (seaimp.load): its
+  // lowering reads the memory before the box
+  if (isa<BoxBodyReadOpInterface>(op))
+    return "";
   if (!isa<SeaDialect>(op->getDialect()))
     return "an op of another dialect";
   if (isa<SegmentOp, GlobalOp, FuncAddrOp>(op))
@@ -1432,27 +1454,33 @@ void PrintOp::print(OpAsmPrinter &p) {
   p.printOptionalAttrDict((*this)->getAttrs(), elided);
 }
 
-LogicalResult PrintMemOp::verify() {
-  if (getTag().empty())
-    return emitOpError("the tag must not be empty");
-  Type t = getType();
+LogicalResult verifyPrintMemShape(Operation *op, StringRef tag, Type t,
+                                  std::optional<StringRef> fmt) {
+  if (tag.empty())
+    return op->emitOpError("the tag must not be empty");
   if (auto it = dyn_cast<IntegerType>(t)) {
     if (!it.isSignless() || it.getWidth() % 8 != 0)
-      return emitOpError("the element must be whole bytes, got ") << t;
+      return op->emitOpError("the element must be whole bytes, got ") << t;
   } else if (!isa<AddrType, PtrType>(t)) {
-    return emitOpError("the element must be an integer or a pointer, got ")
+    return op->emitOpError("the element must be an integer or a pointer, got ")
            << t;
   }
-  if (auto f = getFmt()) {
-    if (*f == "hexdump") {
+  if (fmt) {
+    if (*fmt == "hexdump") {
       if (!t.isInteger(8))
-        return emitOpError("hexdump reads bytes (type i8)");
-    } else if (!isPrintFormat(*f)) {
-      return emitOpError("unknown format '") << *f << "'";
-    } else if (*f != "auto" && !isa<IntegerType>(t)) {
-      return emitOpError("format '") << *f << "' needs an integer";
+        return op->emitOpError("hexdump reads bytes (type i8)");
+    } else if (!isPrintFormat(*fmt)) {
+      return op->emitOpError("unknown format '") << *fmt << "'";
+    } else if (*fmt != "auto" && !isa<IntegerType>(t)) {
+      return op->emitOpError("format '") << *fmt << "' needs an integer";
     }
   }
+  return success();
+}
+
+LogicalResult PrintMemOp::verify() {
+  if (failed(verifyPrintMemShape(*this, getTag(), getType(), getFmt())))
+    return failure();
   if (isStrong()) {
     if (getMem() || getAddr() || getCountRef())
       return emitOpError("a print is weak (names) or strong (operands), not "

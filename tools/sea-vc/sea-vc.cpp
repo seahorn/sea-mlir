@@ -13,6 +13,7 @@
 #include "EqAudit.h"
 #include "sea/Dialect/Sea/SeaDialect.h"
 #include "sea/Dialect/Sea/SeaOps.h"
+#include "sea/Dialect/SeaImp/SeaImpDialect.h"
 #include "sea/Expr/AckRelax.hh"
 #include "sea/Expr/Ackermann.hh"
 #include "sea/Expr/ExprAPInt.hh"
@@ -106,7 +107,9 @@ static cl::opt<bool>
     lower("lower",
           cl::desc("Run the VC lowering pipeline first (sea-opt "
                    "--sea-vc-lower; lib/Transforms/Passes.cpp): "
-                   "sea-apply-tracking, sccp, sea-scalarize-structs; for "
+                   "sea-lower-seaimp (seaimp variables; run right after "
+                   "parsing), sea-apply-tracking, sccp, "
+                   "sea-scalarize-structs; for "
                    "abstract pointers sea-drop-fresh-memhavoc, "
                    "sea-lower-tracking, sea-lower-fat-pointers, "
                    "sea-place-static; sea-widen-memory (--widen-memory=k); "
@@ -2030,6 +2033,11 @@ INPUT FORM (checked; anything else is an error, never approximated):
   (the value wraps, as in SeaHorn: an over-approximation); --range-fold=on
   uses them (counted: vc.range-fold wrap-flags=). sea-wrap-flags turns
   them into assumes or asserts.
+  seaimp variables (seaimp.var / get / set, region ops on memory
+  variables, docs/design/SeaImp.md) need --lower: sea-lower-seaimp makes
+  them SSA values right after parsing, one program after the other (a
+  read before any set is the nondet of the var's site; pointers start
+  null); without --lower they are error vc.seaimp.
   sea.box.all (a claim over a box of 1-2 i64 indices, docs/design/BoxAll.md)
   needs --lower: sea-lower-box-all replaces it by its body at one
   arbitrary index (nondet box.all.<tag>.<d>, assume t <u trip count; a box
@@ -2182,6 +2190,9 @@ TYPICAL:
                                  #   structs; if abstract: tracking and
                                  #   fat-pointer metadata to memories, then
                                  #   place; widen (--widen-memory=k); expand
+                                 #   fills into cell stores (every memory
+                                 #   mode; without --lower a fill is
+                                 #   refused: vc.mem-fill); expand
                                  #   symbolic memsets (not with --seam);
                                  #   merge asserts, split wide accesses
                                  #   (kept whole with --seam --seam-wide),
@@ -4817,9 +4828,34 @@ int main(int argc, char **argv) {
       return success();
     });
   context.getOrLoadDialect<sea::SeaDialect>();
+  context.getOrLoadDialect<sea::imp::SeaImpDialect>();
   OwningOpRef<ModuleOp> module = sea::parseInputFile(inputFilename, &context);
   if (!module)
     return 1;
+  // seaimp has no runtime semantics: --lower lowers it first, before
+  // anything reads the program (the copies kept for replay must be sea);
+  // the lowering pipeline's own sea-lower-seaimp then finds nothing
+  if (Operation *imp = sea::imp::findSeaImpOp(*module)) {
+    if (!lower) {
+      sea::diag::error("vc.seaimp",
+                       "seaimp ops have meaning only through their lowering: "
+                       "run with --lower, or sea-opt --sea-lower-seaimp first",
+                       imp->getLoc());
+      return 1;
+    }
+    // one program at a time, in module order: a nested pipeline would
+    // lower the programs in parallel and interleave their lower.pass
+    // events. Only this seaimp pre-pass is serialized, in module order; the
+    // main lowering still runs per program, in parallel, so its lower.pass
+    // log order across programs is not deterministic.
+    PassManager pm(&context, sea::ProgramOp::getOperationName());
+    pm.addPass(sea::createLowerSeaImpPass());
+    if (failed(configurePM(pm)))
+      return 1;
+    for (auto p : module->getOps<sea::ProgramOp>())
+      if (failed(pm.run(p)))
+        return 1;
+  }
 
   sea::ProgramOp program;
   for (auto p : module->getOps<sea::ProgramOp>()) {

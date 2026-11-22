@@ -13,6 +13,7 @@ add_mlir_dialect_library(MLIRSea
   DEPENDS
   MLIRSeaOpsIncGen
   MLIRSeaEnumsIncGen
+  MLIRSeaInterfacesIncGen
 
   LINK_LIBS PUBLIC
   MLIRIR

@@ -1,0 +1,64 @@
+// sea-erase-mem-ssa, then sea-lower-seaimp (sea-vc --lower), on a fixed
+// sample of the VC tests with one memory gives the query of the original
+// program (encoding-diff: identical). The sample covers joins, memset /
+// memmove / memhavoc, strong print.mem, malloc / alloca / global objects,
+// placed and abstract programs, memories that start at sea.mem.const
+// (a variable with init).
+// REQUIRES: z3
+// RUN: rm -rf %t && mkdir -p %t
+// RUN: sea-opt %S/ackermann/sat.mlir --sea-erase-mem-ssa -o %t/ackermann_sat.mlir
+// RUN: sea-opt %S/ackermann/unsat.mlir --sea-erase-mem-ssa -o %t/ackermann_unsat.mlir
+// RUN: sea-opt %S/bitwuzla/merge.mlir --sea-erase-mem-ssa -o %t/bitwuzla_merge.mlir
+// RUN: sea-opt %S/drop-fresh-memhavoc-join.mlir --sea-erase-mem-ssa -o %t/drop-fresh-memhavoc-join.mlir
+// RUN: sea-opt %S/expand-memmove-row.mlir --sea-erase-mem-ssa -o %t/expand-memmove-row.mlir
+// RUN: sea-opt %S/mem/merge.mlir --sea-erase-mem-ssa -o %t/mem_merge.mlir
+// RUN: sea-opt %S/narrow/two-objects.mlir --sea-erase-mem-ssa -o %t/narrow_two-objects.mlir
+// RUN: sea-opt %S/print/defaults.mlir --sea-erase-mem-ssa -o %t/print_defaults.mlir
+// RUN: sea-opt %S/print/replay.mlir --sea-erase-mem-ssa -o %t/print_replay.mlir
+// RUN: sea-opt %S/seam/check-loaded-address.mlir --sea-erase-mem-ssa -o %t/seam_check-loaded-address.mlir
+// RUN: sea-opt %S/seam/memops-terms.mlir --sea-erase-mem-ssa -o %t/seam_memops-terms.mlir
+// RUN: sea-opt %S/seam/join.mlir --sea-erase-mem-ssa -o %t/seam_join.mlir
+// RUN: sea-opt %S/seam/pull-concat.mlir --sea-erase-mem-ssa -o %t/seam_pull-concat.mlir
+// RUN: sea-opt %S/seam/initial-words-nested-wide.mlir --sea-erase-mem-ssa -o %t/seam_initial-words-nested-wide.mlir
+// RUN: sea-opt %S/seam/low-zero2.mlir --sea-erase-mem-ssa -o %t/seam_low-zero2.mlir
+// RUN: sea-opt %S/seam/null-zero-length.mlir --sea-erase-mem-ssa -o %t/seam_null-zero-length.mlir
+// RUN: sea-opt %S/seam/sameaddr-node-flat.mlir --sea-erase-mem-ssa -o %t/seam_sameaddr-node-flat.mlir
+// RUN: sea-opt %S/segment-encoding.mlir --sea-erase-mem-ssa -o %t/segment-encoding.mlir
+// RUN: sea-opt %S/split/selectors.mlir --sea-erase-mem-ssa -o %t/split_selectors.mlir
+// RUN: sea-opt %S/vc-defs/cursor-unsat.mlir --sea-erase-mem-ssa -o %t/vc-defs_cursor-unsat.mlir
+// RUN: sea-opt %S/check-align-wide.mlir --sea-erase-mem-ssa -o %t/check-align-wide.mlir
+// RUN: sea-opt %S/drop-fresh-memhavoc-const.mlir --sea-erase-mem-ssa -o %t/drop-fresh-memhavoc-const.mlir
+// RUN: sea-opt %S/seam/arm.mlir --sea-erase-mem-ssa -o %t/seam_arm.mlir
+// RUN: sea-opt %S/seam/inb-ok.mlir --sea-erase-mem-ssa -o %t/seam_inb-ok.mlir
+// RUN: sea-opt %S/seam/zero-size.mlir --sea-erase-mem-ssa -o %t/seam_zero-size.mlir
+// RUN: %python %sea_src_root/utils/encoding-diff.py --sea-vc %sea_vc --z3 %z3 \
+// RUN:   %S/ackermann/sat.mlir %t/ackermann_sat.mlir \
+// RUN:   %S/ackermann/unsat.mlir %t/ackermann_unsat.mlir \
+// RUN:   %S/bitwuzla/merge.mlir %t/bitwuzla_merge.mlir \
+// RUN:   %S/drop-fresh-memhavoc-join.mlir %t/drop-fresh-memhavoc-join.mlir \
+// RUN:   %S/expand-memmove-row.mlir %t/expand-memmove-row.mlir \
+// RUN:   %S/mem/merge.mlir %t/mem_merge.mlir \
+// RUN:   %S/narrow/two-objects.mlir %t/narrow_two-objects.mlir \
+// RUN:   %S/print/defaults.mlir %t/print_defaults.mlir \
+// RUN:   %S/print/replay.mlir %t/print_replay.mlir \
+// RUN:   %S/seam/check-loaded-address.mlir %t/seam_check-loaded-address.mlir \
+// RUN:   %S/seam/memops-terms.mlir %t/seam_memops-terms.mlir \
+// RUN:   %S/seam/join.mlir %t/seam_join.mlir \
+// RUN:   %S/seam/pull-concat.mlir %t/seam_pull-concat.mlir \
+// RUN:   %S/seam/initial-words-nested-wide.mlir %t/seam_initial-words-nested-wide.mlir \
+// RUN:   %S/seam/low-zero2.mlir %t/seam_low-zero2.mlir \
+// RUN:   %S/seam/null-zero-length.mlir %t/seam_null-zero-length.mlir \
+// RUN:   %S/seam/sameaddr-node-flat.mlir %t/seam_sameaddr-node-flat.mlir \
+// RUN:   %S/segment-encoding.mlir %t/segment-encoding.mlir \
+// RUN:   %S/split/selectors.mlir %t/split_selectors.mlir \
+// RUN:   %S/vc-defs/cursor-unsat.mlir %t/vc-defs_cursor-unsat.mlir \
+// RUN:   %S/check-align-wide.mlir %t/check-align-wide.mlir \
+// RUN:   %S/drop-fresh-memhavoc-const.mlir %t/drop-fresh-memhavoc-const.mlir \
+// RUN:   %S/seam/arm.mlir %t/seam_arm.mlir \
+// RUN:   %S/seam/inb-ok.mlir %t/seam_inb-ok.mlir \
+// RUN:   %S/seam/zero-size.mlir %t/seam_zero-size.mlir \
+// RUN:   | FileCheck %s
+// CHECK: total: identical=25 same-dag=0 equiv-parts=0 equiv=0 both-unsat=0 diff=0 unknown=0 error=0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -357,6 +357,8 @@ producer's name for the object: a source variable, "malloc at
 foo.c:12") is shown in the counterexample object table
 (docs/design/Print.md); sea-place-static copies it to the segment.
 
+Interfaces: `Sea_NondetSiteOpInterface`
+
 #### Attributes:
 
 <table>
@@ -927,7 +929,7 @@ must agree between uses.
 
 Traits: `AlwaysSpeculatableImplTrait`
 
-Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`, `Sea_GlobalObjectOpInterface`
 
 Effects: `MemoryEffects::Effect{}`
 
@@ -1104,6 +1106,8 @@ producer's name for the object: a source variable, "malloc at
 foo.c:12") is shown in the counterexample object table
 (docs/design/Print.md); sea-place-static copies it to the segment.
 
+Interfaces: `Sea_NondetSiteOpInterface`
+
 #### Attributes:
 
 <table>
@@ -1177,6 +1181,61 @@ be consumed `inplace` from one buffer. Unused, it is trivially dead.
 
 
 
+### `sea.mem.fill` (::sea::MemFillOp)
+
+_Write constant cells from `addr`: a memcpy from constant data_
+
+Syntax:
+
+```
+operation ::= `sea.mem.fill` $mem `[` $addr `]` `,` $data (`inplace` $inplace^)? (`tracked` $tracked^)?
+              attr-dict `:` qualified(type($mem))
+```
+
+Cell `k` of `data` (a 1-D dense integer attribute of the memory's cell
+type, at least one cell) is written at `addr + k * c`, where `c` is the
+number of index units per cell (1 for the exact and keyed layouts, k
+for k-byte words): the cells are consecutive. It models data preloaded
+into memory, such as an LLVM global initializer; it is not a memset,
+which repeats one value. The cells written must fit the index space
+(`N * c < 2^w`). `inplace` and `tracked` are those of the other
+updates (a tracked fill marks the object of `addr` as modified).
+
+The VC does not encode it: the VC lowering expands it into one store
+per cell (`sea-expand-mem-fill`, after `sea-widen-memory`, which packs
+the bytes of a fill on a widened memory into words), so every memory
+mode sees stores; docs/design/MemFill.md.
+
+```mlir
+%m1 = sea.mem.fill %m0[%p], dense<[1, 2, 3]> : tensor<3xi8> inplace : !sea.mem<!sea.ptr<64>, i8>
+```
+
+Interfaces: `InferTypeOpInterface`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>data</code></td><td>::mlir::DenseIntElementsAttr</td><td>integer elements attribute</td></tr>
+<tr><td><code>inplace</code></td><td>::mlir::UnitAttr</td><td>unit attribute</td></tr>
+<tr><td><code>tracked</code></td><td>::mlir::UnitAttr</td><td>unit attribute</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `mem` | memory |
+| `addr` | address or pointer |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | memory |
+
+
+
 ### `sea.mem.is_modified` (::sea::IsModifiedOp)
 
 _1 if a tracked update wrote to `ptr`'s object_
@@ -1227,6 +1286,8 @@ operation ::= `sea.mem.nondet` $name ` ` `[` $site `]` attr-dict `:` qualified(t
 ```mlir
 %m = sea.mem.nondet "heap" [4] : !sea.mem<!sea.addr<64>, i8>
 ```
+
+Interfaces: `Sea_NondetSiteOpInterface`
 
 #### Attributes:
 
@@ -1293,7 +1354,7 @@ operation ::= `sea.memhavoc` $mem `[` $addr `]` `,` $len ` ` `[` $site `]` (`inp
 Only the range changes. `site` is the replay key (shared with the other
 nondet sites).
 
-Interfaces: `InferTypeOpInterface`
+Interfaces: `InferTypeOpInterface`, `Sea_NondetSiteOpInterface`
 
 #### Attributes:
 
@@ -1498,6 +1559,8 @@ the VC names its constant by it and replay looks it up in the model.
 ```mlir
 %x = sea.nondet "nondet_u32" [3] : i32
 ```
+
+Interfaces: `Sea_NondetSiteOpInterface`
 
 #### Attributes:
 
@@ -2031,6 +2094,8 @@ pointers, and no access through it is in bounds
 (sea.ptr.dereferenceable is 0). Harnesses use it to mark fields that
 must never be dereferenced (SeaHorn's nd_* functions returning
 pointers). `site` is unique with the other nondet sites.
+
+Interfaces: `Sea_NondetSiteOpInterface`
 
 #### Attributes:
 
@@ -2723,6 +2788,8 @@ the VC constant `nd.<site>`.
 ```mlir
 %s = sea.struct.nondet "undef" [4] : !sea.struct<i16, i32>
 ```
+
+Interfaces: `Sea_NondetSiteOpInterface`
 
 #### Attributes:
 

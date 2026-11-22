@@ -19,6 +19,8 @@
 #include "sea/Dialect/Sea/SeaDialect.h"
 #include "sea/Dialect/Sea/SeaTypes.h"
 
+#include "sea/Dialect/Sea/SeaInterfaces.h.inc"
+
 namespace sea {
 /// The side effect of print ops (sea.print*): an output stream, so prints
 /// are not dead and keep their order; no program state.
@@ -78,6 +80,19 @@ mlir::Operation *createReachSiteMarker(mlir::OpBuilder &b, mlir::Location loc,
 #include "sea/Dialect/Sea/SeaOps.h.inc"
 
 namespace sea {
+/// The checks of sea.print.mem that do not depend on its operands: a
+/// non-empty tag, an element of whole bytes or a pointer / address, a known
+/// format for it. Shared with seaimp.print.mem.
+mlir::LogicalResult verifyPrintMemShape(mlir::Operation *op,
+                                        llvm::StringRef tag, mlir::Type t,
+                                        std::optional<llvm::StringRef> fmt);
+
+/// The data of sea.mem.fill on a memory of type `mem`: a 1-D list of at
+/// least one cell of the memory's cell type, whose cells fit the index
+/// space. Shared with seaimp.mem.fill.
+mlir::LogicalResult verifyMemFillData(mlir::Operation *op, MemType mem,
+                                      mlir::DenseIntElementsAttr data);
+
 /// True if `program` uses the abstract memory level (!sea.ptr anywhere):
 /// it must be placed (sea-place-static) before concrete tools run it.
 bool isAbstract(ProgramOp program);

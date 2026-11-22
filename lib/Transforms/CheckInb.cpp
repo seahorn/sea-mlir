@@ -312,6 +312,12 @@ void CheckInbPass::runOnOperation() {
       } else if (auto ms = dyn_cast<MemSetOp>(op)) {
         auto [l, c] = lenOf(ms.getLen());
         check(op, ms.getAddr(), l, c, false);
+      } else if (auto mf = dyn_cast<MemFillOp>(op)) {
+        // every cell of the data, in index units
+        check(
+            op, mf.getAddr(), Value(),
+            APInt(64, mf.getNumCells() * mf.getMem().getType().getCellUnits()),
+            false);
       } else if (auto mv = dyn_cast<MemMoveOp>(op)) {
         auto [l, c] = lenOf(mv.getLen());
         check(op, mv.getAddr(), l, c, false);

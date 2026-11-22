@@ -77,6 +77,14 @@ inline constexpr llvm::StringLiteral kMergedAssertLocName = "sea.assert";
 /// it onto the branches it makes of the assert, and RunResult::assertOp
 /// is the op that carries it for the failing assert.
 inline constexpr llvm::StringLiteral kAssertIdAttr = "sea.assert_id";
+/// sea-lower-seaimp: seaimp variables -> SSA values by MLIR's Mem2Reg; a
+/// read before any write is the variable's nondet initial value
+/// (docs/design/SeaImp.md). First in the VC lowering.
+std::unique_ptr<mlir::Pass> createLowerSeaImpPass();
+/// sea-erase-mem-ssa: the Mem-SSA chain of a program's one memory -> a
+/// seaimp memory variable and region accesses (sea -> seaimp; the inverse
+/// of the region part of sea-lower-seaimp; docs/design/SeaImp.md).
+std::unique_ptr<mlir::Pass> createEraseMemSsaPass();
 /// sea-lower-ptr-index: sea.ptr.index -> mul / add / ptr.add (the no-wrap
 /// flags dropped; docs/design/PtrIndex.md).
 std::unique_ptr<mlir::Pass> createLowerPtrIndexPass();
@@ -137,6 +145,11 @@ std::unique_ptr<mlir::Pass> createScalarizeStructsPass();
 /// chain of stores (option max-length, default 16) with an explicit
 /// assume / assert of the bound.
 std::unique_ptr<mlir::Pass> createExpandMemSetPass();
+
+/// sea-expand-mem-fill: each sea.mem.fill -> one store per cell of the
+/// memory's cell type, in order (the VC encodes no fill;
+/// docs/design/MemFill.md).
+std::unique_ptr<mlir::Pass> createExpandMemFillPass();
 /// On the sea.program after sea-expand-memset (mode=assume): the bounded
 /// expansions, each a sea.assume(n <= K), a dictionary {count = <n>, bound
 /// = <K>} of i64 (K the largest; absent: none). Counted where the bound is

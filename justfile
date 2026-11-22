@@ -72,7 +72,7 @@ lint *args="--all-files":
 attest *args="":
     python3 utils/attest.py {{args}}
 
-# regenerate the committed dialect reference docs/reference/dialect.md from the ODS (needs mlir-tblgen: argument, $MLIR_TBLGEN, the build's LLVM, or PATH)
+# regenerate the committed dialect references docs/reference/dialect.md and seaimp.md from the ODS (needs mlir-tblgen: argument, $MLIR_TBLGEN, the build's LLVM, or PATH)
 docs-dialect *tblgen="":
     utils/gen-dialect-doc.sh {{tblgen}}
 

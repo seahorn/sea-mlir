@@ -10,6 +10,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include "sea/Dialect/Sea/SeaDialect.h"
+#include "sea/Dialect/SeaImp/SeaImpDialect.h"
 #include "sea/Reduce/Reduce.h"
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
@@ -18,8 +19,8 @@
 
 static const char *const agentGuide = R"(sea-opt agent guide (plain, terse)
 
-WHAT: the mlir-opt driver for the sea dialect: parse, verify, print, and
-run passes on sea programs.
+WHAT: the mlir-opt driver for the sea dialect (and seaimp, the variables
+lowered to sea): parse, verify, print, and run passes on sea programs.
 
 WHY BEAT MANUAL: the verifier checks what eyeballing misses (types of
 block arguments, unique nondet sites, cast widths, terminators). Printing
@@ -39,6 +40,9 @@ TYPICAL:
   sea-opt p.mlir --sea-scalarize-structs  # struct values -> their leaves
   sea-opt p.mlir --sea-expand-memset      # symbolic-length memset -> bounded
                                           #   store chain + assume(n <= 16)
+  sea-opt p.mlir --sea-expand-mem-fill    # sea.mem.fill -> one store per cell
+                                          #   (cell type of the memory; the
+                                          #   VC encodes no fill: vc.mem-fill)
   sea-opt p.mlir --pass-pipeline='builtin.module(sea.program(sea-wrap-flags{mode=assume}))'
                                           # nsw/nuw promises -> assume|assert|drop
   sea-opt p.mlir --sea-widen-memory="k=8 report=true"
@@ -72,6 +76,39 @@ TYPICAL:
                                           #   constant-0 assert but SeaHorn's
                                           #   unlocated error marker
                                           #   (report=false: no warning)
+  sea-opt p.mlir --sea-lower-seaimp       # seaimp variables (var / get / set)
+                                          #   -> SSA values and block
+                                          #   arguments (Mem2Reg); a read
+                                          #   before any set = sea.nondet
+                                          #   "<name>" [<site>] of the var
+                                          #   (memories: sea.mem.nondet, or
+                                          #   sea.mem.const %v for
+                                          #   `seaimp.var "m" init %v`;
+                                          #   pointers: null); region ops
+                                          #   (seaimp.load / store / memset
+                                          #   / memmove / memhavoc / mem.fill
+                                          #   / is_modified / reset_modified
+                                          #   / print.mem / alloca / malloc
+                                          #   / global) -> the sea op on the
+                                          #   chain; no get / set of a
+                                          #   memory variable (verifier);
+                                          #   sea-run needs this first
+                                          #   (docs/design/SeaImp.md)
+  sea-opt p.mlir --sea-erase-mem-ssa      # the program's one memory chain ->
+                                          #   seaimp region %mem (inverse of
+                                          #   the above); errors
+                                          #   erase-mem-ssa.non-linear (an
+                                          #   earlier version used, two
+                                          #   memory block arguments),
+                                          #   .regions (several memories),
+                                          #   .unsupported (the memory does
+                                          #   not start at one root in the
+                                          #   entry block: a second root,
+                                          #   none, a sea.mem.const of a
+                                          #   non-constant); a sea.mem.const
+                                          #   root -> `seaimp.var "mem" init
+                                          #   %v`; sea.mem.fill ->
+                                          #   seaimp.mem.fill
   sea-opt p.mlir --sea-vc-lower           # what sea-vc --lower runs (placed input)
   sea-opt p.mlir --sea-vc-lower='reach=true'
                                           # what sea-vc --lower --reach runs:
@@ -113,7 +150,7 @@ int main(int argc, char **argv) {
   } summary;
 
   mlir::DialectRegistry registry;
-  registry.insert<sea::SeaDialect>();
+  registry.insert<sea::SeaDialect, sea::imp::SeaImpDialect>();
 
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, "sea optimizer driver\n", registry));

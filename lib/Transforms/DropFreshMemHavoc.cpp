@@ -240,7 +240,8 @@ static bool fresh(Value mem, Operation *alloc, HappensBefore &before,
       r = true;
       break;
     }
-    if (!isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(def)) {
+    if (!isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, MemFillOp,
+             ResetModifiedOp>(def)) {
       r = false; // a sea.mem.const, or an unknown producer
       break;
     }
@@ -292,7 +293,8 @@ static void rootsOf(Value mem, SmallVectorImpl<Value> &roots) {
       continue;
     }
     Operation *def = v.getDefiningOp();
-    if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(def))
+    if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, MemFillOp,
+            ResetModifiedOp>(def))
       work.push_back(def->getOperand(0));
     else
       roots.push_back(v);
@@ -366,7 +368,7 @@ priorAccesses(MemHavocOp op, const llvm::SmallPtrSetImpl<Operation *> &allocs,
           acc.any = true;
           work.push_back(mv.getResult());
         }
-      } else if (isa<StoreOp, MemSetOp, MemHavocOp>(user)) {
+      } else if (isa<StoreOp, MemSetOp, MemHavocOp, MemFillOp>(user)) {
         acc.any = true;
         work.push_back(user->getResult(0));
       } else if (isa<ResetModifiedOp>(user)) {

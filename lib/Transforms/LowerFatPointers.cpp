@@ -114,7 +114,8 @@ void LowerFatPointersPass::runOnOperation() {
 
   // Memories that hold pointers (def-use classes).
   program.walk([&](Operation *op) {
-    if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(op))
+    if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, MemFillOp,
+            ResetModifiedOp>(op))
       unite(op->getOperand(0), op->getResult(0));
     if (auto mv = dyn_cast<MemMoveOp>(op))
       unite(mv.getSrc(), mv.getMem());
@@ -294,8 +295,8 @@ void LowerFatPointersPass::runOnOperation() {
                                 b.getI64IntegerAttr(nextSite++)),
             MemNondetOp::create(b, loc, memTy, b.getStringAttr("fat.size"),
                                 b.getI64IntegerAttr(nextSite++))};
-      } else if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(
-                     op) &&
+      } else if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, MemFillOp,
+                     ResetModifiedOp>(op) &&
                  needsMem(op->getOperand(0))) {
         auto m = lookup(op->getOperand(0), op);
         if (!m)

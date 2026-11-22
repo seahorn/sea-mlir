@@ -3,6 +3,7 @@
 
 add_mlir_library(SeaTransforms
   ExpandIntrinsics.cpp
+  ExpandMemFill.cpp
   ExpandMemSet.cpp
   ExpandSmallMemMove.cpp
   Passes.cpp
@@ -32,6 +33,8 @@ add_mlir_library(SeaTransforms
   AssumeFold.cpp
   PruneEdges.cpp
   LowerBoxAll.cpp
+  LowerSeaImp.cpp
+  EraseMemSsa.cpp
   TestInsertPrints.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -39,6 +42,7 @@ add_mlir_library(SeaTransforms
 
   LINK_LIBS PUBLIC
   MLIRSea
+  MLIRSeaImp
   MLIRIR
   MLIRPass
   MLIRTransforms

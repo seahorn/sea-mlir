@@ -962,6 +962,13 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
                   op.getLoc());
       return failure();
     }
+    if (isa<MemFillOp>(op)) {
+      diag::error("vc.mem-fill",
+                  "sea.mem.fill is not encoded by the VC: expand it into "
+                  "stores first (sea-expand-mem-fill; sea-vc --lower does)",
+                  op.getLoc());
+      return failure();
+    }
     if (isa<MemSetOp, MemMoveOp, MemHavocOp>(op)) {
       if (failed(execRangeOp(op, ctx)))
         return failure();
