@@ -17,14 +17,23 @@
 //    parts hold: refused by the numeral mode, hoisted by the all mode;
 //  - refused-memo: a top concat refused for budget leaves no memo entries,
 //    so a hoistable concat among its arms is counted in either conjunct order;
-//  - every hoist is checked equal to its input by z3.
+//  - every hoist is checked equal to its input by z3;
+//  - ptr-facts: a fact whose term (or concat part) derives from a pointer's
+//    address outside a memory read is not substituted (addressDerived,
+//    "Pointer observations"): an address, an extract of one, a sum with
+//    one, a pointer difference, a concat part that is one; a read at a
+//    pointer index is (its value is memory contents).
 //
 //===----------------------------------------------------------------------===//
 
 #include "sea/VC/FoldTopEqs.h"
 
 #include "sea/Expr/Expr.hh"
+#include "sea/Expr/ExprOpArray.hh"
+#include "sea/Expr/ExprOpBind.hh"
 #include "sea/Expr/ExprOpBv.hh"
+#include "sea/Expr/ExprOpPtr.hh"
+#include "sea/Expr/ExprOpSort.hh"
 #include "sea/Expr/Smt/Z3SolverImpl.hh"
 
 #include "llvm/Support/raw_ostream.h"
@@ -242,6 +251,62 @@ void testRefusedMemo() {
 }
 } // namespace
 
+/// does the fold of [t = c, use(t)] replace t in use(t)? \p skipped: the
+/// skipped-ptr count
+bool folds(const Expr &t, const Expr &c, uint64_t &skipped) {
+  sea::TopEqFolder f([](Expr e) { return e; });
+  Expr use = mk<BULT>(t, c);
+  Expr q = f.fold(mk<AND>(mk<EQ>(t, c), use));
+  skipped = f.stats().skippedPtr;
+  return q->arity() == 2 && q->arg(1) != use;
+}
+
+void testPtrFacts() {
+  ExprFactory efac;
+  auto name = [&](const char *n) { return mkTerm<std::string>(n, efac); };
+  Expr p = op::ptr::ptrConst(name("p"), 32),
+       q = op::ptr::ptrConst(name("q"), 32);
+  Expr x = op::bv::bvConst(name("x"), 32);
+  auto n32 = [&](long v) { return op::bv::bvnum(mpz_class(v), 32, efac); };
+  auto n8 = [&](long v) { return op::bv::bvnum(mpz_class(v), 8, efac); };
+  Expr ap = mk<ADDR>(p);
+  uint64_t sk = 0;
+  struct Case {
+    const char *name;
+    Expr t, c;
+    bool expect;
+  };
+  Expr mem = bind::mkConst(name("m"), sort::arrayTy(op::ptr::ptrsort(32, efac),
+                                                    op::bv::bvsort(8, efac)));
+  std::vector<Case> cases = {
+      {"addr", ap, n32(64), false},
+      {"extract", op::bv::extract(7, 0, ap), n8(64), false},
+      {"sum", mk<BADD>(mk<PTR_TO_INT>(p), x), n32(64), false},
+      {"diff", mk<PTR_DIFF>(p, q), n32(64), false},
+      {"read", op::array::select(mem, p), n8(7), true},
+      {"value", x, n32(64), true},
+  };
+  for (const Case &k : cases) {
+    bool r = folds(k.t, k.c, sk);
+    llvm::outs() << "ptr-facts: " << k.name << " folded=" << r
+                 << " skipped-ptr=" << sk << "\n";
+    CHECK(r == k.expect, std::string("ptr-facts: ") + k.name);
+  }
+  // a concat part: concat(x, addr(p)) = c fixes x and addr(p); x is
+  // substituted, addr(p) is not (nor the concat)
+  Expr t = mk<BCONCAT>(x, ap);
+  sea::TopEqFolder f([](Expr e) { return e; });
+  Expr ux = mk<BULT>(x, n32(3)), ua = mk<BULT>(ap, n32(3));
+  Expr r = f.fold(
+      mk<AND>(mk<EQ>(t, op::bv::bvnum(mpz_class(5L), 64, efac)), ux, ua));
+  bool xFolded = r->arity() == 3 && r->arg(1) != ux;
+  bool aFolded = r->arity() == 3 && r->arg(2) != ua;
+  llvm::outs() << "ptr-facts: concat-part x-folded=" << xFolded
+               << " addr-folded=" << aFolded
+               << " skipped-ptr=" << f.stats().skippedPtr << "\n";
+  CHECK(xFolded && !aFolded, "ptr-facts: concat part");
+}
+
 int main() {
   testShared();
   llvm::outs() << "test: shared ok\n";
@@ -251,6 +316,8 @@ int main() {
   llvm::outs() << "test: budget ok\n";
   testRefusedMemo();
   llvm::outs() << "test: refused-memo ok\n";
+  testPtrFacts();
+  llvm::outs() << "test: ptr-facts ok\n";
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

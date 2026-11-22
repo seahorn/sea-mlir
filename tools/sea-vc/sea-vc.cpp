@@ -3291,9 +3291,11 @@ OUTPUT (stdout, `key: value` lines):
                                   in one round and still in the query is
                                   counted again); facts not
                                   used: bvand(x, m) = c, a concat part of
-                                  unknown width, the address of a pointer
-                                  (addr(obj.k) = c: step 2 eliminates
-                                  the bases after the boundary); warning
+                                  unknown width, a term or concat part
+                                  derived from a pointer's address outside
+                                  a memory read (addr(obj.k) = c: step 2
+                                  eliminates the bases after the boundary);
+                                  warning
                                   vc.fold-top-eqs-rounds: the round bound
                                   stopped it)
   vc.model-trail: cells=<n> defs=<n> rounds=<n>  (fold on:

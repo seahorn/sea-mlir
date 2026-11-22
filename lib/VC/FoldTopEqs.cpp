@@ -9,6 +9,7 @@
 
 #include "sea/VC/FoldTopEqs.h"
 
+#include "sea/Expr/ExprOpArray.hh"
 #include "sea/Expr/ExprOpBind.hh"
 #include "sea/Expr/ExprOpBool.hh"
 #include "sea/Expr/ExprOpBv.hh"
@@ -331,6 +332,35 @@ Expr TopConstEliminator::image(const Expr &e) {
   return defs.empty() ? e : substMap(e, defs, cache, nullptr);
 }
 
+bool TopEqFolder::addressDerived(const Expr &e) {
+  // post-order over the DAG, reads not entered; memoized across facts and
+  // rounds (the key held: a freed node's address can come back)
+  std::vector<std::pair<ENode *, bool>> stack{{e.get(), false}};
+  while (!stack.empty()) {
+    auto [n, expanded] = stack.back();
+    stack.pop_back();
+    if (addrMemo.count(n))
+      continue;
+    if (isOp<op::PtrOp>(n) || isOpX<SELECT>(n) || isOpX<W_SELECT>(n) ||
+        n->arity() == 0) {
+      addrMemo.emplace(n, std::make_pair(Expr(n), isOp<op::PtrOp>(n)));
+      continue;
+    }
+    if (!expanded) {
+      stack.push_back({n, true});
+      for (size_t i = 0; i < n->arity(); ++i)
+        if (!addrMemo.count(n->arg(i)))
+          stack.push_back({n->arg(i), false});
+      continue;
+    }
+    bool d = false;
+    for (size_t i = 0; i < n->arity() && !d; ++i)
+      d = addrMemo.at(n->arg(i)).second;
+    addrMemo.emplace(n, std::make_pair(Expr(n), d));
+  }
+  return addrMemo.at(e.get()).second;
+}
+
 void TopEqFolder::splitConcat(const Expr &t, const Expr &c,
                               std::vector<std::tuple<Expr, Expr, Kind>> &out) {
   // parts from the high end; each part's width by sort inference
@@ -354,7 +384,10 @@ void TopEqFolder::splitConcat(const Expr &t, const Expr &c,
     if (isNumeral(a))
       continue;
     Expr pc = op::bv::bvnum(part, w, t->efac());
-    out.emplace_back(a, pc, Kind::Split);
+    if (addressDerived(a))
+      ++st.skippedPtr;
+    else
+      out.emplace_back(a, pc, Kind::Split);
     if (isOpX<BCONCAT>(a))
       splitConcat(a, pc, out);
   }
@@ -374,17 +407,14 @@ void TopEqFolder::factsOf(const Expr &c,
         ++st.skippedMasked;
         return;
       }
-      // the address of a pointer (addr / to_int / to_bits; the
-      // placement's layout facts addr(obj.k) = c): substituted, a sum of
-      // two objects' addresses reads as one object's pointer, and SeaM's
-      // object rules (cmp.diff-base) would decide alias questions about a
-      // term no access made (docs/design/FoldTopEqs.md, "Pointer
-      // observations"). Step 2 eliminates the bases after the boundary.
-      if (op::ptr::isObservation(t)) {
+      // a term whose value derives from a pointer's address (the layout
+      // facts addr(obj.k) = c, an extract or a sum of one, a pointer
+      // difference): not substituted (addressDerived); a concat of one
+      // still gives its other parts
+      if (addressDerived(t))
         ++st.skippedPtr;
-        return;
-      }
-      out.emplace_back(t, v, Kind::Term);
+      else
+        out.emplace_back(t, v, Kind::Term);
       if (isOpX<BCONCAT>(t))
         splitConcat(t, v, out);
       return;

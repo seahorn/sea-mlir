@@ -49,8 +49,9 @@ other than the entry is `guard -> c`). The facts:
   (b := false): the guard of the exit block, Boolean nondets.
 
 Skipped and counted: `bvand(x, m) = c` with a numeral mask (`skipped-masked`):
-it fixes the bits of x under m only; T the address of a pointer
-(`skipped-ptr`, section Pointer observations).
+it fixes the bits of x under m only; T, or a concat part, whose value
+derives from a pointer's address (`skipped-ptr`, section Pointer
+observations).
 
 Every occurrence of a fact's T in the other conjuncts becomes c. The
 defining conjunct stays, rebuilt with its own T kept (`T = c` never
@@ -115,10 +116,26 @@ values is not removed (substituted, it is false).
 
 ### Pointer observations
 
-A fact whose T is the address of a pointer (`addr(p)`, `to_int(p)`,
-`to_bits(p)`) is not substituted. These are mostly the placement's layout
-facts `addr(obj.k) = c`, conjuncts of every placed query. Substituted,
-they change what SeaM's object rules read: an address that mentions two
+The rule: a substitution T -> c must not replace a term whose value
+derives from a pointer's address; replacing it erases provenance that
+SeaM's premise rules read. Structurally (`TopEqFolder::addressDerived`):
+T is skipped when a pointer operator (`op::ptr::PtrOp`: `addr`, `to_int`,
+`to_bits`, `ptr-diff`, `ptr-eq`, `overlap`, a node) is reachable from T
+without passing a memory read (`select`, `wselect`). A read's value is
+memory contents, not an address: a fact on a read at a pointer index
+(`select(m, p) = c`, the facts of the step jobs) replaces the read, and
+its index stays. The same test applies to each part of a concat fact; a
+concat with such a part is not a fact itself, its other parts are. Skips
+are counted `skipped-ptr` (terms and parts, summed over the rounds).
+Covered: an address, an extract of one, a sum with one, a pointer
+difference, a concat part that is one (`sea-fold-top-eqs-test`,
+ptr-facts). `op::ptr::isObservation` is not the test: it names the
+one-pointer markers that `stripObservation` removes, and leaves out
+`ptr-diff` (two pointers) on purpose.
+
+The facts this skips are mostly the placement's layout facts
+`addr(obj.k) = c`, conjuncts of every placed query. Substituted, they
+change what SeaM's object rules read: an address that mentions two
 objects becomes a pointer into one, with a base no access gave it. The
 case that showed it (`test/VC/fold-top-eqs/layout-facts.mlir`, from the
 wide fuzz programs, `utils/fuzz-seam.py --seed 5 --accesses=wide`,

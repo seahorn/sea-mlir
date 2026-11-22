@@ -52,8 +52,9 @@ struct FoldTopEqsStats {
   /// facts not used: masked (`bvand(x, m) = c`), a concat part of unknown
   /// width
   uint64_t skippedMasked = 0, skippedUntyped = 0;
-  /// facts not used: the key is the address of a pointer (addr / to_int /
-  /// to_bits of a pointer; the layout facts addr(obj.k) = c)
+  /// facts not used (terms and concat parts): the key's value derives from
+  /// a pointer's address outside a memory read (TopEqFolder::addressDerived;
+  /// the layout facts addr(obj.k) = c)
   uint64_t skippedPtr = 0;
   /// the round bound stopped the iteration (not a fixpoint)
   bool roundCap = false;
@@ -108,6 +109,14 @@ private:
                std::vector<std::tuple<expr::Expr, expr::Expr, Kind>> &out);
   void splitConcat(const expr::Expr &t, const expr::Expr &c,
                    std::vector<std::tuple<expr::Expr, expr::Expr, Kind>> &out);
+  /// Is the value of \p e derived from the address of a pointer outside a
+  /// memory read? True when a pointer operator (op::ptr::PtrOp: addr,
+  /// to_int, to_bits, ptr-diff, ptr-eq, overlap, offset, a node) is reached
+  /// from \p e without passing a read (select / wselect). Such a T is not
+  /// a fact (docs/design/FoldTopEqs.md, "Pointer observations"): replacing
+  /// it erases the provenance SeaM's object rules read. A read's value is
+  /// memory contents: a fact on it replaces the read, never its index.
+  bool addressDerived(const expr::Expr &e);
   /// \p e with every key of \p m replaced, memoized in \p cache; counts uses
   expr::Expr subst(const expr::Expr &e, const Map &m, Cache &cache, bool count);
   /// \p e with the keys in \p own kept (their operands substituted)
@@ -120,6 +129,8 @@ private:
   FoldTopEqsStats st;
   /// every key and its value (all rounds)
   Map facts;
+  /// addressDerived per node (the node held)
+  std::unordered_map<expr::ENode *, std::pair<expr::Expr, bool>> addrMemo;
   /// the map of each round that changed the query, for image()
   std::vector<Map> roundMaps;
   std::vector<Cache> imageCaches;
