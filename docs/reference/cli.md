@@ -64,6 +64,7 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--solver=z3|yices|bitwuzla` | the solver; z3 is the default and the supported one |
 | `--timeout=<s>` | wall-clock limit of the solver's check; does not bound query generation |
 | `--mem-limit=<GB>` | address-space limit of the process (`RLIMIT_AS`); a hit prints where it was (`mem-limit-phase:`, in encode also `mem-limit-progress:`, `mem-limit-op:`; [Output formats](output-formats.md)) |
+| `--max-nodes=<n>`, `--max-rss=<MiB>` | budgets of live terms and of resident memory, checked as terms are made and at phase boundaries (`--max-nodes` deterministically): exceeded, `result: unknown`, `budget: hit` and the census of that moment (`budget.*` lines, [Output formats](output-formats.md)), error `vc.node-budget` / `vc.rss-budget`, exit status 3 ([Diagnosing a VC blowup](../agents/blowups.md)) |
 | `--z3-param=<key=value>` | a global z3 parameter (repeatable); a name or value z3 rejects is an error, kind `smt.z3-param` |
 | `--z3-tactic=<tactic>` | z3's default tactic for the solver of the verdict (the auxiliary checks keep z3's own); `sls-smt` is z3's stochastic local search (see [Local search in the solver](fuzzing.md#local-search-in-the-solver)); a tactic z3 cannot parse or does not know is an error, kind `vc.z3-tactic`. Any other error z3 reports ends the run with kind `smt.z3-internal` and a non-zero exit; a z3 memory-out is `unknown` (exit 3) |
 | `--yices-param=<key=value>` | a Yices search parameter (repeatable), e.g. `random-seed=N`; Yices times vary widely with the seed, so compare medians over several seeds |
@@ -139,6 +140,7 @@ split: open-aliases=<n>; ...` line that points to it.
 | `--arith-stats` | print the multiplications, divisions and remainders of the query the solver gets, by operator, width and operand kind (numeral, ite of numerals, ite with a symbolic leaf, two non-constant terms), and per source location of the sea op that made them (`arith.*` lines; works with `--vcgen-only`) |
 | `--progress` | log the start and end of each phase on stderr, or the log file (= `--log=vc.phase`); the end with the memory; progress lines inside `encode` |
 | `--progress-interval=<s>` | the `vc.phase progress` lines inside `encode`: one every `s` seconds (default 10, not tuned); `0`: one after every block ([Logging](logging.md)) |
+| `--mem-trace`, `--mem-trace-interval=<s>`, `--mem-top=<n>` | a memory heartbeat on stderr, or the log file (= `--log=vc.mem`): every `s` seconds (default 10) while terms are made, and at the end of each phase, the memory, live terms and the top operators, rules and operations (`n` each, default 8) ([Logging](logging.md)) |
 | `--print=lines|tree|off` | how the program's prints are shown in a replay |
 | `--print-refs=asis|weak|strong` | convert the program's prints before the lowering |
 | `--print-limit=<n>`, `--print-locs` | limit the print lines; add the location of each print |

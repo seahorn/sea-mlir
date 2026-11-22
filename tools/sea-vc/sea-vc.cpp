@@ -11,6 +11,7 @@
 #include "ArithStats.h"
 #include "CheckInbJob.h"
 #include "EqAudit.h"
+#include "MemWatch.h"
 #include "sea/Dialect/Sea/SeaDialect.h"
 #include "sea/Dialect/Sea/SeaOps.h"
 #include "sea/Dialect/SeaImp/SeaImpDialect.h"
@@ -1437,6 +1438,62 @@ static sea::log::Tag logSolve("vc.solve", 1,
                               "each solver call of the verdict: backend, "
                               "result, time, Expr nodes made so far");
 
+static sea::log::Tag logMem(
+    "vc.mem", 1,
+    "a memory heartbeat (--mem-trace): every --mem-trace-interval seconds "
+    "while Expr nodes are made, and at the end of each phase: memory, live "
+    "nodes, the top operators, rules and sea ops (docs/agents/blowups.md)");
+
+static cl::opt<bool> memTrace(
+    "mem-trace",
+    cl::desc("A memory heartbeat on stderr, or the log file: an alias of "
+             "--log=vc.mem (=false: vc.mem:0); `log: vc.mem beat` lines "
+             "every --mem-trace-interval seconds while Expr nodes are made "
+             "and `log: vc.mem phase-end` lines: rss, live nodes, the "
+             "operators with the most live nodes, the rules fired since the "
+             "last beat, the sea ops that made the most nodes "
+             "(docs/agents/blowups.md)"),
+    cl::init(false), cl::cb<void, bool>([](bool on) {
+      sea::log::select(on ? "vc.mem" : "vc.mem:0", "--mem-trace");
+    }));
+
+static cl::opt<double> memTraceInterval(
+    "mem-trace-interval",
+    cl::desc("Seconds between vc.mem beats (default 10, untuned; a beat "
+             "also waits 20 times its own census's time; 0: at every check, "
+             "every 4096 nodes made, however slow)"),
+    cl::init(10.0), cl::value_desc("seconds"));
+
+static cl::opt<unsigned> memTop(
+    "mem-top",
+    cl::desc("The length of each top list of vc.mem beats and of a budget "
+             "stop's census (default 8)"),
+    cl::init(8), cl::value_desc("n"));
+
+static cl::opt<unsigned> memWatchStep(
+    "mem-watch-step",
+    cl::desc("Testing only: the --mem-trace / budget checks run every <n> "
+             "Expr nodes made (default 4096; --max-nodes=<m> lowers it to "
+             "m/8)"),
+    cl::init(4096), cl::value_desc("n"), cl::Hidden);
+
+static cl::opt<uint64_t> maxNodes(
+    "max-nodes",
+    cl::desc("Budget of live Expr nodes (hash-consed, 0: none): when "
+             "exceeded, stop with `result: unknown`, `budget: hit "
+             "resource=nodes` and the census (budget.* lines), error "
+             "vc.node-budget, status 3; checked every n/8 (at most 4096) "
+             "nodes made and at phase boundaries (deterministic)"),
+    cl::init(0), cl::value_desc("n"));
+
+static cl::opt<uint64_t> maxRss(
+    "max-rss",
+    cl::desc("Budget of resident memory in MiB (0: none): as --max-nodes, "
+             "`budget: hit resource=rss`, error vc.rss-budget; checked every "
+             "4096 Expr nodes made and at phase boundaries (not inside the "
+             "solver's check: --mem-limit bounds that)"),
+    cl::init(0), cl::value_desc("MiB"));
+
 static cl::opt<bool> progress(
     "progress",
     cl::desc("Log the start and end of each phase on stderr, or the log "
@@ -1629,6 +1686,10 @@ static sea::log::Event &withMem(sea::log::Event &e) {
   return e;
 }
 
+/// --mem-trace / --max-nodes / --max-rss (MemWatch.h): set in main when
+/// one is on; the phases tell it where the run is
+static sea::MemWatch *gMemWatch = nullptr;
+
 /// MLIR's timing (--mlir-timing): the root scope of one report over every
 /// PassManager and the phases (Phase); set in main when timing is on
 static mlir::TimingScope *gTiming = nullptr;
@@ -1654,6 +1715,8 @@ struct Phase {
       memPhaseNote.set(t);
       memProgressNote.clear();
     }
+    if (gMemWatch)
+      gMemWatch->phaseStart(name, run);
     if (gTiming || logPhase.on(sea::log::Flow))
       scope.emplace(timer, gTiming);
     if (!logPhase.on(sea::log::Flow))
@@ -1668,8 +1731,15 @@ struct Phase {
   }
   Phase(const Phase &) = delete;
   Phase &operator=(const Phase &) = delete;
+  ~Phase() { end(); }
   /// Ends the phase (once; a later call does nothing).
-  void end() { scope.reset(); }
+  void end() {
+    scope.reset();
+    if (!ended && gMemWatch)
+      gMemWatch->phaseEnd(name);
+    ended = true;
+  }
+  bool ended = false;
   /// The time of the ended phase.
   double seconds() const { return timer.seconds(); }
   /// The --mlir-timing scope of what runs inside the phase (a pass
@@ -1712,6 +1782,8 @@ public:
   ~EncodeMeter() { memCurOp.store(nullptr, std::memory_order_release); }
 
   void operator()(const sea::EncodeProgress &p) {
+    if (gMemWatch)
+      gMemWatch->opStart(p.op, efac.nodesMade());
     if (memLimit) {
       memCurOpIndex.store(p.ops, std::memory_order_relaxed);
       memCurOp.store(p.op, std::memory_order_release);
@@ -1869,6 +1941,85 @@ static uint64_t countOps(Operation *op) {
 /// it must not return.
 [[noreturn]] static void memLimitHitLlvm(void *, const char *, bool) {
   memLimitHit();
+}
+
+/// --max-nodes / --max-rss exceeded (MemWatch): `result: unknown`, the
+/// `budget: hit` line and the census (budget.* lines), with --seam-stats the
+/// rewriter's counters, BRUNCH_STAT result / budget / status; error
+/// vc.node-budget / vc.rss-budget; exit 3 (an unknown, as --mem-limit). The
+/// run is inside Expr construction: it ends here, without unwinding.
+[[noreturn]] static void budgetHit(sea::MemWatch::Budget b, uint64_t limit,
+                                   const sea::MemWatch::Census &c,
+                                   const expr::RewriteStats *rw) {
+  const bool nodes = b == sea::MemWatch::Budget::Nodes;
+  sea::out::Record res("result");
+  res.str("value", "unknown");
+  res.text = "result: unknown";
+  gOut->emit(res);
+  raw_ostream &os = smt2 && !gOut->jsonl() ? errs() : vout();
+  printStats(os, [&](sea::stats::Report &r) {
+    sea::stats::Line &l = r.line("budget")
+                              .value("hit")
+                              .kv("resource", nodes ? "nodes" : "rss")
+                              .kv("limit", limit)
+                              .kv("nodes-live", c.nodesLive)
+                              .kv("nodes-made", c.nodesMade);
+    for (const auto &[k, v] : sea::memFields(c.mem))
+      l.kv(k, v);
+    l.kv("phase", c.phase);
+    if (c.run)
+      l.kv("run", c.run);
+    l.kv("time", sea::secondsText(c.time));
+    if (c.cacheEntries >= 0)
+      l.kv("rw-cache", uint64_t(c.cacheEntries));
+    if (rw)
+      l.kv("rule-calls", c.ruleCalls);
+    if (!c.curOp.empty())
+      r.line("budget.op-in-progress")
+          .value(c.curOp)
+          .kv("nodes", c.curOpNodes)
+          .kv("at", sea::log::textValue(c.curOpAt));
+    for (const auto &o : c.ops)
+      r.line("budget.op").value(o.op).kv("live", o.live);
+    std::vector<sea::MemWatch::RuleCount> rules = c.rules;
+    std::sort(rules.begin(), rules.end(), [](const auto &x, const auto &y) {
+      return x.total != y.total ? x.total > y.total : x.rule < y.rule;
+    });
+    if (rules.size() > memTop)
+      rules.resize(memTop);
+    for (const auto &ru : rules)
+      r.line("budget.rule")
+          .value(ru.rule)
+          .kv("fired", ru.total)
+          .kv("recent", ru.recent);
+    for (const auto &st : c.sites)
+      r.line("budget.site")
+          .value(st.op)
+          .kv("nodes", st.nodes)
+          .kv("at", sea::log::textValue(st.where));
+    if (seamStats && rw)
+      rw->report(r, "seam.");
+    resultLine(r, "unknown");
+    r.line("budget")
+        .value(nodes ? "nodes" : "rss")
+        .brunch(sea::stats::Brunch::Value)
+        .brunchOnly();
+    r.line("status").value(3).brunch(sea::stats::Brunch::Value).brunchOnly();
+  });
+  gOut->flush();
+  sea::diag::error(nodes ? "vc.node-budget" : "vc.rss-budget",
+                   nodes ? "more than " + std::to_string(limit) +
+                               " live Expr nodes (--max-nodes) in phase " +
+                               c.phase +
+                               ": stopped, the census is in the "
+                               "budget.* lines"
+                         : "resident memory above " + std::to_string(limit) +
+                               " MiB (--max-rss) in phase " + c.phase +
+                               ": stopped, the census is in the budget.* "
+                               "lines");
+  sea::diag::printSummary();
+  errs().flush();
+  ::_exit(3);
 }
 
 static cl::list<std::string> configFiles(
@@ -2223,6 +2374,12 @@ TYPICAL:
                                  #   space, not resident memory): set it
                                  #   above the expected resident size, with
                                  #   headroom
+  sea-vc p.mlir --mem-trace --max-nodes=50000000  # a VC blowup: a
+                                 #   heartbeat of what grows (vc.mem beats on
+                                 #   stderr) and a diagnosed stop (budget:
+                                 #   hit, the census, status 3) instead of
+                                 #   an out-of-memory kill;
+                                 #   docs/agents/blowups.md
   sea-vc p.mlir --lower --reach  # REACH: per check site (sea.assume,
                                  #   sea.assert, sea.unreachable = a folded
                                  #   assume of false) after the lowering, is
@@ -3509,6 +3666,27 @@ OUTPUT (stdout, `key: value` lines):
       biggest-op-at=]             (a hit in encode, after a progress tick:
                                   the counters of the last tick, see
                                   PROGRESS; up to --progress-interval old)
+  budget: hit resource=nodes|rss limit=<n> nodes-live=<n> nodes-made=<n>
+      [rss-mb= vm-mb=] peak-rss-mb= phase=<p> [run=<n>] time=<s>
+      [rw-cache=<n> rule-calls=<n>]   (after result: unknown: --max-nodes
+                                  (live hash-consed Expr nodes) or
+                                  --max-rss (MiB) exceeded; the census of
+                                  that moment follows; rw-cache: entries of
+                                  the rewriter's cache)
+  budget.op-in-progress: <op> nodes=<n> at=<where>   (a hit in encode: the
+                                  op being encoded, the nodes it made so far)
+  budget.op: <operator> live=<n>  (the operators with the most live nodes,
+                                  --mem-top of them, largest first)
+  budget.rule: <rule> fired=<n> recent=<n>   (the rewrite rules by firings,
+                                  recent: since the last vc.mem beat)
+  budget.site: <op> nodes=<n> at=<where>   (the sea ops whose encoding,
+                                  SeaM rewriting included, made the most
+                                  nodes; the op in progress counted so far)
+                                  Then, with --seam-stats, the seam.*
+                                  counters; with --brunch-stats
+                                  BRUNCH_STAT result unknown, budget
+                                  nodes|rss, status 3. Error
+                                  vc.node-budget / vc.rss-budget
   mem-limit-op: <op> ops=<n> at=<where>   (a hit in encode: the op being
                                   encoded, n-th in encoding order; where:
                                   file:line:col, else the location name,
@@ -4004,6 +4182,26 @@ array of file:line:col strings, outermost last), the name in
 path (positions) and, when an entry was inlined, path_inlined (an array
 parallel to path of call-site arrays, [] for an entry not inlined).
 
+MEMORY TRACE (--mem-trace = --log=vc.mem; docs/agents/blowups.md; on
+stderr, or the log file, each line flushed): while Expr nodes are made,
+every --mem-trace-interval=<s> seconds (default 10, untuned; a beat also
+waits 20 times its census's time; 0: every check), and at the end of each
+phase:
+`log: vc.mem beat|phase-end phase=<p> [run=<n>] time=<s> <memory>
+nodes-live=<n> nodes-made=<n> [rw-cache=<n> rule-calls=<n>] [op=<op>
+op-at=<where> op-nodes=<n>] top-ops=<n>:<operator>,...
+[top-rules=<n>:<rule>,...] [top-sites=<n>:<op>@<where>,...]`: live
+hash-consed nodes, nodes made so far, the rewriter's cache entries and rule
+calls; in encode the op in progress and the nodes it made so far; the
+operators with the most live nodes; the rules fired since the last beat;
+the sea ops (encode) that made the most nodes. Lists: --mem-top=<n> items
+(default 8), count first, `-` when empty. The checks run every 4096 nodes
+made, so a phase that makes none (solve) has its phase-end line only.
+Budgets: --max-nodes=<n> (live nodes), --max-rss=<MiB>, checked at the
+same points and at phase boundaries: exceeded, the run stops with
+result: unknown, budget: hit and the census (OUTPUT FORMATS), status 3.
+Off (no flag): one compare per node made.
+
 PROGRESS (--progress = --log=vc.phase, --progress=false = vc.phase:0; on
 stderr, or the log file; each line flushed as it is written):
 `log: vc.phase start phase=<name>` at the start of each phase and
@@ -4491,7 +4689,8 @@ is not a function on an array (vc.ackermann-inconsistent), except (--ack-own,
 --ack-arm) when every such pair is one the ownership drop (or ARM's premise
 classes: across bases, size 0) dropped and the replay fails
 the assertion with mismatches=0: then 0, warning
-vc.ack-own-collision-excused; 3 unknown; 4 (--seam) sat that does not replay
+vc.ack-own-collision-excused; 3 unknown (also --timeout, --mem-limit,
+--max-nodes / --max-rss: budget: hit); 4 (--seam) sat that does not replay
 because the program leaves an object with the model's inputs: A-INB does not
 hold (A-SEP or A-NULL may: the check is of bounds, not of separation, so a
 run that only leaves into a gap is reported here as well, though it keeps
@@ -5060,6 +5259,30 @@ int main(int argc, char **argv) {
     return fail("--reach-rlimit is a z3 limit (--solver=z3)");
   if (memLimitPlant && !memLimit)
     return fail("--mem-limit-plant needs --mem-limit");
+  // --mem-trace / --max-nodes / --max-rss: the watch of every VC run's
+  // factory (MemWatch.h)
+  std::optional<sea::MemWatch> memWatch;
+  if (logMem.on(sea::log::Flow) || maxNodes || maxRss) {
+    if (memTraceInterval < 0)
+      return fail("--mem-trace-interval: a number of seconds >= 0");
+    sea::MemWatchOptions mo;
+    mo.interval = memTraceInterval;
+    mo.top = memTop;
+    mo.maxNodes = maxNodes;
+    mo.maxRssMB = maxRss;
+    if (memWatchStep == 0)
+      return fail("--mem-watch-step: a number > 0");
+    mo.step = memWatchStep;
+    memWatch.emplace(logMem, mo,
+                     [&memWatch](sea::MemWatch::Budget b, uint64_t limit,
+                                 const sea::MemWatch::Census &c) {
+                       budgetHit(b, limit, c, memWatch->stats());
+                     });
+    gMemWatch = &*memWatch;
+  }
+  struct ClearWatch {
+    ~ClearWatch() { gMemWatch = nullptr; }
+  } clearWatch;
   if (memLimit) {
     memPhaseNote.set("mem-limit-phase: none");
     rlim_t bytes = rlim_t(memLimit) << 30;
@@ -6210,6 +6433,20 @@ int main(int argc, char **argv) {
     sea::SeaOpSem sem(efac, names, nativeMulOverflow, seam, &seamOpts);
     if (originsOn)
       sem.setOrigins(&origins);
+    // --mem-trace / budgets: this run's factory and rewriter, until the end
+    // of the run (declared after efac and sem: detached before they go)
+    struct WatchRun {
+      WatchRun(expr::ExprFactory &efac, sea::SeaOpSem &sem) {
+        if (!gMemWatch)
+          return;
+        expr::SeaMRewriter *rw = sem.seamRewriter();
+        gMemWatch->attach(efac, sem.seamStats(), rw ? &rw->cache() : nullptr);
+      }
+      ~WatchRun() {
+        if (gMemWatch)
+          gMemWatch->detach();
+      }
+    } watchRun(efac, sem);
     sem.setAddressMode(addressMode);
     sem.setPtrCompanion(companionMode != CompanionMode::Off,
                         companionMode == CompanionMode::Assume,
@@ -6334,7 +6571,7 @@ int main(int argc, char **argv) {
     lap("setup");
     Phase encodePhase("encode", vcRuns);
     std::optional<EncodeMeter> meter;
-    if (logPhase.on(sea::log::Flow) || memLimit) {
+    if (logPhase.on(sea::log::Flow) || memLimit || gMemWatch) {
       meter.emplace(efac, vcRuns);
       vcgen.setProgress(
           [&meter](const sea::EncodeProgress &p) { (*meter)(p); });
