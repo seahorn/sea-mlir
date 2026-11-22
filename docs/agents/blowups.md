@@ -111,16 +111,17 @@ configuration `--lower --seam --widen-memory=4`, died after about 800 s at
   A first hypothesis, one read per word and index leaf, does not hold:
   the memory is byte-indexed, so an 8-byte load makes 8 byte reads
   whatever the word size, a constant factor.
-- So the size is reads x memory versions x open entries: the expanded ite
-  chains of two versions are different terms, and the read index differs
-  from one load to the next, so nothing is shared across loads.
+- So the size is, per load, the memory versions behind it x open entries,
+  summed over the loads: the expanded ite chains of two versions are
+  different terms, and the read index differs from one load to the next,
+  so nothing is shared across loads.
 - The cause the recipe led to: the ring buffer is moved into `tx_buf` by
   `memmove`, and the range tests of those moves are undecided on
-  destination leaves that have no single-object view. The branch that hits
-  reads a multi-object index that is dead there, and the read then
-  R-ABORTs through every older memory operation and store-map. The terms
-  grow with the number of memory versions behind the load, not with the
-  loads.
+  destination leaves that have no single-object view. On the branch where
+  a move's range test is undecided, the load reads the move's source at an
+  index that mixes two objects and is dead under A-SEP, and that read then
+  R-ABORTs through every older memory operation and store-map. Per load,
+  the terms grow with the number of memory versions behind it.
 - The test: `--seam-row-expand=0` (keep such a read as a select over the
   store chain) finishes `encode` and `simplify` in 1.3 s with 0.15 M terms.
   The growth moves to `solver-term`: `--max-rss=12000` stops it after 53 s
