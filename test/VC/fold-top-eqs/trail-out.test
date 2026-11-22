@@ -12,5 +12,15 @@
 # FILE: "kind":"cell"
 # NEEDS: --model-trail-out needs --vc-fold-top-eqs
 
+# The file is not stdout (the report is); the part loop and --check-inb do
+# not share one file between parts.
+# RUN: not sea-vc %S/post-store.mlir --program=trail --lower --seam --vc-fold-top-eqs --model-trail-out=- 2>&1 | FileCheck %s --check-prefix=STDOUT
+# STDOUT: --model-trail-out needs a file (stdout is the report)
+# RUN: not sea-vc %S/post-store.mlir --program=trail --check-inb --lower --seam --ackermannize=off --vc-fold-top-eqs --model-trail-out=%t.inb 2>&1 | FileCheck %s --check-prefix=INB
+# INB: --model-trail-out writes one output that every part would share
+# RUN: sea-vc %S/post-store.mlir --program=trail --lower --seam --vc-fold-top-eqs --split-auto --vcgen-only --model-trail-out=%t.split > /dev/null
+# RUN: FileCheck %s --check-prefix=FILE < %t.split.part0
+# RUN: not test -e %t.split
+
 # SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

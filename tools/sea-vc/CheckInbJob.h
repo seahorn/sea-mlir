@@ -290,9 +290,9 @@ inline bool partArguments(llvm::ArrayRef<const char *> args,
       "log-file", "info-output-file", "mlir-pass-pipeline-crash-reproducer",
       "mlir-print-ir-tree-dir", "crash-diagnostics-dir"};
   // options that write one file (or stdout) every part would share
-  static const llvm::StringSet<> shared = {"smt2",           "print-lowered",
-                                           "seam-trail",     "ack-dump-pairs",
-                                           "ack-relax-smt2", "split-smt2"};
+  static const llvm::StringSet<> shared = {
+      "smt2",           "print-lowered", "seam-trail",     "ack-dump-pairs",
+      "ack-relax-smt2", "split-smt2",    "model-trail-out"};
   auto &registered = llvm::cl::getRegisteredOptions();
   bool positional = false;
   for (size_t i = 0; i < args.size(); ++i) {

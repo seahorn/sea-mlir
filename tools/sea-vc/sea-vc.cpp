@@ -847,7 +847,8 @@ static cl::opt<bool> modelTrailPlantSkip(
 
 static cl::opt<std::string> modelTrailOut(
     "model-trail-out",
-    cl::desc("With --vc-fold-top-eqs: write the model trail to this file, "
+    cl::desc("With --vc-fold-top-eqs: write the model trail to this file "
+             "(not stdout; with --split, <file>.part<N> per part), "
              "JSON lines, one elimination per line in order, terms in "
              "SMT-LIB over the symbols of the query (--smt2) "
              "(docs/design/FoldTopEqs.md, \"Model trail\")"),
@@ -4970,6 +4971,8 @@ int main(int argc, char **argv) {
     return fail("--place-in and --place-out exclude each other");
   if (printLowered == "-")
     return fail("--print-lowered needs a file (stdout is the report)");
+  if (modelTrailOut == "-")
+    return fail("--model-trail-out needs a file (stdout is the report)");
   if (reachSeed.getNumOccurrences() && !reachFuzz)
     return fail("--reach-seed is the seed of --reach-fuzz");
   if (!reachPrograms.empty() &&
@@ -7375,8 +7378,10 @@ int main(int argc, char **argv) {
           }
           return success();
         };
-        if (failed(sea::writeFileAtomic(modelTrailOut, body,
-                                        "vc.model-trail-out",
+        const std::string trailPath =
+            splitOn ? modelTrailOut + ".part" + std::to_string(splitPartId)
+                    : modelTrailOut;
+        if (failed(sea::writeFileAtomic(trailPath, body, "vc.model-trail-out",
                                         "--model-trail-out")))
           return 1;
       }
@@ -7704,6 +7709,7 @@ int main(int argc, char **argv) {
       if (foldTopEqsStats) {
         const sea::FoldTopEqsStats &f = *foldTopEqsStats;
         r.line("vc.fold-top-eqs")
+            .brunch(sea::stats::Brunch::Parts)
             .kv("facts", f.facts)
             .kv("term", f.termFacts)
             .kv("split", f.splitFacts)
@@ -7714,6 +7720,7 @@ int main(int argc, char **argv) {
             .kv("skipped-masked", f.skippedMasked)
             .kv("skipped-untyped", f.skippedUntyped);
         r.line("vc.model-trail")
+            .brunch(sea::stats::Brunch::Parts)
             .kv("cells", trailCells)
             .kv("defs", trailDefs)
             .kv("rounds", trailElim.rounds());

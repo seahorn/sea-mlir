@@ -61,6 +61,12 @@ def main():
         )
         if r.stdout.strip() != "sat":
             sys.exit("z3 does not parse the terms: %s" % (r.stdout + r.stderr))
+    if a.smt2:
+        text = open(a.smt2).read()
+        for e in entries:
+            for d in ("declare-fun", "declare-const"):
+                if "(%s %s " % (d, e["var"]) in text:
+                    sys.exit("eliminated variable declared: %s" % e["var"])
     print("trail: entries=%d cells=%d defs=%d ok" % (len(entries), *got.values()))
 
 

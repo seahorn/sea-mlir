@@ -120,8 +120,8 @@ replay fails the assertion and validates, without it (the testing switch
 
 ### On disk: `--model-trail-out=<file>`
 
-With `--vc-fold-top-eqs`, the trail is written to the file (`-`: stdout),
-JSON lines, one entry per elimination, in order:
+With `--vc-fold-top-eqs`, the trail is written to the file (not
+stdout; with `--split`, `<file>.part<N>` per part), JSON lines, one entry per elimination, in order:
 
     {"kind":"def","var":"obj.global.ws","value":"#x0000000008048000"}
     {"kind":"cell","var":"ack.nd.2_0.6","array":"nd.2_0",
@@ -163,7 +163,7 @@ against the counters and the `--smt2` query).
 skipped-masked= skipped-untyped=` and `vc.model-trail: cells= defs= rounds=`
 (stdout, stderr with `--smt2`):
 
-- `facts`: distinct keys substituted (term + split + bool);
+- `facts`: distinct keys registered (facts found) (term + split + bool);
 - `uses`: (parent node, operand) pairs replaced, summed over the rounds;
 - `rounds`: rounds of step 1 that changed the query;
 - `concat-ite`: concats made ites;

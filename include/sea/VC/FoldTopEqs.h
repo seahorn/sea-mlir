@@ -37,7 +37,7 @@
 namespace sea {
 
 struct FoldTopEqsStats {
-  /// distinct keys substituted, by kind (`facts` is their sum)
+  /// distinct keys registered (facts found), by kind (`facts` is their sum)
   uint64_t facts = 0, termFacts = 0, splitFacts = 0, boolFacts = 0;
   /// (parent node, operand) pairs replaced by a fact's value, summed over
   /// the rounds
