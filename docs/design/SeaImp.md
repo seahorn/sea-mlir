@@ -13,13 +13,16 @@ pass `sea-erase-mem-ssa` (`lib/Transforms/EraseMemSsa.cpp`) goes the other
 way for a program's one memory. Tests: `test/Dialect/SeaImp/roundtrip.mlir`,
 `test/Dialect/SeaImp/invalid.mlir`, `test/Transforms/lower-seaimp.mlir`,
 `test/Transforms/lower-seaimp-mem.mlir`, `test/Transforms/erase-mem-ssa.mlir`,
-`test/Transforms/erase-mem-ssa-invalid.mlir`, `test/VC/seaimp.mlir`,
+`test/Transforms/erase-mem-ssa-invalid.mlir`, `test/Dialect/SeaImp/mem-fill.mlir`,
+`test/Dialect/SeaImp/mem-fill-invalid.mlir`, `test/Transforms/lower-seaimp-fill.mlir`,
+`test/VC/seaimp.mlir`,
 `test/VC/seaimp-mem.mlir`, `test/VC/erase-mem-ssa-corpus.test`.
 
 Status: variables of register types (integers, pointers, structs) and of
 memory type (regions) with the region accesses (including modification
 tracking and counterexample prints) and allocation in a region (stack,
-heap, global); erasing the memory SSA of a program with one memory. Not
+heap, global), constant data (`seaimp.mem.fill`) and a constant start
+(`init`); erasing the memory SSA of a program with one memory. Not
 yet: see the end of this page.
 
 ## Ops
@@ -47,11 +50,17 @@ seaimp.set %x, %v : !seaimp.var<i32>
     `sea.struct.nondet`);
   - pointers: `sea.ptr.null`;
   - memories: `sea.mem.nondet "<name>" [<site>]` (unconstrained contents,
-    as SeaHorn's export starts each region).
+    as SeaHorn's export starts each region), or a constant start, below.
 
   Integers start nondet; pointers start null. Programs are expected to set
   a variable before they get it; a pointer read before it is set is not
   given a meaning beyond null.
+- A memory variable may start constant: `seaimp.var "<name>" init %v
+  (shadow)? : !seaimp.var<!sea.mem<...>>` starts as `sea.mem.const %v`
+  (every cell holds the cell value `%v`; `shadow` is the sea.mem.const
+  flag, docs/design/SeaM-null.md). It has no site, as it makes no input.
+  Only a memory takes `init`; a variable without it has a site. Integer
+  and pointer variables have no init form (they are set explicitly).
 - Effects: `var` allocates its result, `get` reads and `set` writes the
   handle. An unused `get` is dead to upstream DCE; CSE does not merge
   `get`s across a `set`.
@@ -71,6 +80,7 @@ seaimp.store %mem[%p], %v align 4 : !seaimp.var<!m>, i32
 seaimp.memset %mem[%buf], %z8, %c16 : !seaimp.var<!m>
 seaimp.memmove %mem[%dst], %mem[%buf], %c8 : !seaimp.var<!m>
 seaimp.memhavoc %mem[%buf], %c16 [5] : !seaimp.var<!m>
+seaimp.mem.fill %mem[%g], dense<[1, 2, 3]> : tensor<3xi8> : !seaimp.var<!m>
 %f = seaimp.is_modified %mem[%p] : !seaimp.var<!m>
 seaimp.reset_modified %mem[%p] : !seaimp.var<!m>
 seaimp.print.mem "v" %mem[%p], %n fmt "x" : !seaimp.var<!m>, i64 -> i8
@@ -87,11 +97,14 @@ seaimp.print.mem "v" %mem[%p], %n fmt "x" : !seaimp.var<!m>, i64 -> i8
   the source's version is read and only the destination's chain changes.
 - `seaimp.memhavoc` keeps its site; it is unique with the other nondet
   sites.
+- `seaimp.mem.fill` writes constant cells of the region's cell type from
+  an address (a global's initializer; docs/design/MemFill.md).
 - Modification tracking is part of the specification language (SeaHorn's
   `sea_is_modified` / `sea_reset_modified`; SeaHorn exports produce
   them): `seaimp.is_modified` reads the region, `seaimp.reset_modified`
   updates it (the contents and the other objects' state stay). `tracked`
-  on `store` / `memset` / `memmove` / `memhavoc` is kept as written; a
+  on `store` / `memset` / `memmove` / `memhavoc` / `mem.fill` is kept as
+  written; a
   program usually marks tracking with `sea.tracking_on` / `tracking_off`,
   which are positional, and `sea-apply-tracking` sets `tracked` after the
   lowering.
@@ -220,7 +233,9 @@ Then it collects the `seaimp.var` ops and calls `tryToPromoteMemorySlots`
 once with all of them. The interfaces:
 
 - `seaimp.var`: `PromotableAllocationOpInterface`, one slot `{handle, T}`;
-  `getDefaultValue` makes the initial value above;
+  `getDefaultValue` makes the initial value above (at the start of the
+  entry block; a constant start `sea.mem.const %v` right after the
+  variable, which `%v` dominates);
   `handlePromotionComplete` erases an unused initial value and the
   variable.
 - `seaimp.get`: `PromotableMemOpInterface`, loads; its result is replaced
@@ -315,25 +330,29 @@ the current one. Refused, with an error and no change:
   with two memory arguments;
 - `erase-mem-ssa.regions`: more than one memory (several regions come
   from a partition, later);
-- `erase-mem-ssa.unsupported`: a memory that does not start at one
-  `sea.mem.nondet` in the entry block (a `sea.mem.const` root, a second
-  root, no root: a region starts as its variable's nondet initial value,
-  and seaimp code cannot set a memory), a memory value made by an op that
-  is no root or update or in a nested region, a reader without a region
-  form.
+- `erase-mem-ssa.unsupported`: a memory that does not start at one root
+  in the entry block (a second root, no root, a root elsewhere: a region
+  starts as its variable's initial value, and seaimp code cannot set a
+  memory), a `sea.mem.const` root whose value is not a constant, a memory
+  value made by an op that is no root or update or in a nested region, a
+  reader without a region form.
 
 The rewrite gives every reader and update its region op, so the output
 holds no memory value:
 
-- `sea.load` / `store` / `memset` / `memmove` / `memhavoc` (`tracked`
-  kept), `sea.mem.is_modified` / `reset_modified`, a strong
+- `sea.load` / `store` / `memset` / `memmove` / `memhavoc` / `mem.fill`
+  (`tracked` kept), `sea.mem.is_modified` / `reset_modified`, a strong
   `sea.print.mem` -> the region op (`inplace` dropped; the lowering puts
   it back, and linearity is what makes it true);
 - a `sea.load` / `sea.mem.is_modified` in a `sea.box.all` body -> the
   region op in the body;
 - the root, a `sea.mem.nondet` in the entry block: the variable takes its
   name and site (the lowering makes the same op at the start of the entry
-  block);
+  block); a `sea.mem.const %v` root in the entry block: the variable
+  `"mem"` with `init %v` (shadow kept). The variable is first in the entry
+  block, ahead of every access (an allocation may precede the root), so
+  `%v` must be a constant, which moves there with it (the lowering makes
+  the same `sea.mem.const` right after the variable);
 - `sea.alloca` whose pointer type indexes the memory -> `seaimp.alloca
   %mem`. `sea.malloc` and `sea.global` stay as they are for now; erase may
   turn them into `seaimp.malloc` / `seaimp.global` later, when the stack /
@@ -344,7 +363,10 @@ Unreachable blocks are rewritten but not checked. Postcondition
 
 `test/VC/erase-mem-ssa-corpus.test` runs a fixed sample of the VC tests
 with one memory through the pass and compares the queries with
-`utils/encoding-diff.py` (identical).
+`utils/encoding-diff.py` (identical). Over all single-program VC tests
+with a memory (at the time of writing), 88 erase (identical queries, but one whose
+placement fails on both sides), 10 are non-linear, 4 have several
+memories.
 
 ## Not supported
 
@@ -360,7 +382,6 @@ with one memory through the pass and compares the queries with
 - Several regions in `sea-erase-mem-ssa` (from a partition, later).
 - A region on `sea.alloca` itself (the region of an object in sea; from
   the memory SSA form this is direct).
-- Whole-region havoc, and a region form for a memory that starts as
-  `sea.mem.const` (the erase pass refuses such programs).
+- Whole-region havoc.
 - `sea-erase-mem-ssa` turning `sea.malloc` / `sea.global` into
   `seaimp.malloc` / `seaimp.global`.

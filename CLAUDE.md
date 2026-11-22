@@ -37,17 +37,18 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   imperative layer over sea: variables (`seaimp.var` / `get` / `set`),
   lowered to SSA values by `sea-lower-seaimp` (MLIR Mem2Reg; first in the
   VC lowering; a read before any set = `sea.nondet "<name>" [<site>]` for integers,
-  `sea.ptr.null` for pointers, `sea.mem.nondet` for memories). A memory
+  `sea.ptr.null` for pointers, `sea.mem.nondet` for memories, or
+  `sea.mem.const %v` for `seaimp.var "m" init %v`). A memory
   variable is a region, reached only through region ops (no get / set of
   a memory: every lowered version is used linearly): `seaimp.load` /
-  `store` / `memset` / `memmove` / `memhavoc` / `is_modified` /
+  `store` / `memset` / `memmove` / `memhavoc` / `mem.fill` / `is_modified` /
   `reset_modified` / `print.mem` (the sea op without the Mem-SSA plumbing,
   expanded to get / op inplace / set before Mem2Reg; load / is_modified
   also in a box.all body, read before the box) and `seaimp.alloca` /
   `malloc` / `global %region` (allocation names its region; lowered to
   the sea op). `sea-erase-mem-ssa` is the inverse for a program's one
-  memory (linear chains from one entry `sea.mem.nondet` only; converts
-  sea.alloca, not malloc / global).
+  memory (linear chains from one entry `sea.mem.nondet` or constant
+  `sea.mem.const` root only; converts sea.alloca, not malloc / global).
   No runtime semantics, on purpose: an exception to the new-op rule below
   (no `Semantics.cpp`, no `check-semantics.py`, no interpreter tests);
   sea-run refuses seaimp ops, sea-vc lowers them first under `--lower` and
@@ -84,6 +85,11 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   checked, `sea-vc --place-out` / `--place-in`), `sea-scalarize-structs`
   (register structs -> their leaves; runs first), `sea-expand-memset`
   (symbolic length -> bounded store chain + explicit assume),
+  `sea-expand-mem-fill` (`sea.mem.fill`, constant cells written from an
+  address, e.g. a global initializer -> one store per cell of the
+  memory's cell type; in the lowering right after sea-widen-memory, which
+  packs a widened memory's fill bytes into words; the VC encodes no fill:
+  `vc.mem-fill`; docs/design/MemFill.md),
   `sea-expand-small-memmove` (constant length <= K -> all source loads,
   then the stores: exact; `sea-vc --expand-memmove=K`, off by default,
   for --seam reads whose mcopy range test stays open;
@@ -147,7 +153,7 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   expanded first; first in the lowering; docs/design/SeaImp.md),
   `sea-erase-mem-ssa` (sea -> seaimp: the Mem-SSA chain of a program's one
   memory -> the region `%mem` and region ops; refuses non-linear chains,
-  several memories and a memory not rooted at one entry sea.mem.nondet;
+  several memories and a memory not rooted at one entry root;
   erase then lower = an equivalent program,
   test/VC/erase-mem-ssa-corpus.test),
   `sea-print-strengthen` / `sea-print-weaken` (counterexample print ops,
@@ -237,7 +243,8 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
 - Memory: read `docs/design/Memory.md` and `docs/design/Memory-Step2.md`.
   Mem-SSA chains (memory is a value); `inplace` on updates; the interpreter
   executes in place only; the VC uses the array encoding (load/store;
-  constant-length memset/memmove/memhavoc as store chains; a symbolic
+  constant-length memset/memmove/memhavoc as store chains; `sea.mem.fill`
+  (constant data) expanded into cell stores by a pass; a symbolic
   memset length is expanded by a pass with an explicit bound; other
   symbolic lengths are errors). The memory type names its layout
   (`!sea.mem<I, iC[, aligned|unaligned]>`): exact (default) = one cell per

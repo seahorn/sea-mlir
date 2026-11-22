@@ -287,6 +287,42 @@ Interfaces: `Sea_NondetSiteOpInterface`
 
 
 
+### `seaimp.mem.fill` (::sea::imp::MemFillOp)
+
+_Write constant cells to a region from an address_
+
+Syntax:
+
+```
+operation ::= `seaimp.mem.fill` $var `[` $addr `]` `,` $data (`tracked` $tracked^)? attr-dict `:`
+              qualified(type($var))
+```
+
+`sea.mem.fill` on the memory the variable holds: `get`, fill `inplace`,
+`set`. `data` is a 1-D dense integer attribute of the region's cell
+type, at least one cell (a global's initializer, for example).
+
+```mlir
+seaimp.mem.fill %mem[%g], dense<[1, 2, 3]> : tensor<3xi8> : !seaimp.var<!m>
+```
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>data</code></td><td>::mlir::DenseIntElementsAttr</td><td>integer elements attribute</td></tr>
+<tr><td><code>tracked</code></td><td>::mlir::UnitAttr</td><td>unit attribute</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `var` | seaimp variable holding a memory |
+| `addr` | address or pointer |
+
+
+
 ### `seaimp.memhavoc` (::sea::imp::MemHavocOp)
 
 _Make `len` cells of a region nondeterministic_
@@ -554,7 +590,8 @@ _Declare a variable_
 Syntax:
 
 ```
-operation ::= `seaimp.var` $name ` ` `[` $site `]` attr-dict `:` qualified(type($result))
+operation ::= `seaimp.var` $name (` ` `[` $site^ `]`)? (`init` $init^)? (`shadow` $shadow^)?
+              attr-dict `:` qualified(type($result))
 ```
 
 A variable holding one value of type `T`, read and written whole. A
@@ -569,6 +606,11 @@ read before it is set is not given a meaning beyond null. Every read
 before a write sees the same value. `site` is unique with
 the program's other nondet sites.
 
+A memory variable may start constant instead: `init %v` (a cell value)
+makes its initial value `sea.mem.const %v` (every cell holds `%v`;
+`shadow` is the sea.mem.const flag), with no site (no nondet). Only a
+memory has `init`; a variable without `init` has a site.
+
 The op is in the entry block of a `sea.program`. Its result is used
 only as the variable operand of seaimp ops (`get`, `set`, the region
 accesses and allocations) in the same region, or of a region read in a
@@ -579,6 +621,7 @@ lowering. A memory variable (a region) has no `get` / `set`.
 ```mlir
 %x = seaimp.var "x" [7] : !seaimp.var<i32>
 %mem = seaimp.var "mem" [0] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+%zero = seaimp.var "zero" init %z8 : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
 ```
 
 Interfaces: `PromotableAllocationOpInterface`, `Sea_NondetSiteOpInterface`
@@ -589,7 +632,14 @@ Interfaces: `PromotableAllocationOpInterface`, `Sea_NondetSiteOpInterface`
 <tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
 <tr><td><code>name</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
 <tr><td><code>site</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is non-negative</td></tr>
+<tr><td><code>shadow</code></td><td>::mlir::UnitAttr</td><td>unit attribute</td></tr>
 </table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `init` | signless integer |
 
 #### Results:
 
