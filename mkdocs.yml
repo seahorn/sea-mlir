@@ -105,6 +105,7 @@ nav:
       - Profiles: agents/profiles.md
       - Minimizing a problem: agents/minimizing.md
       - Diagnosing a slow VC: agents/slow-vc.md
+      - Diagnosing a VC blowup: agents/blowups.md
       - Steering the fuzzer: agents/fuzzing.md
   - Contributing to Sea-MLIR:
       - Contributor gates: agents/gates.md
