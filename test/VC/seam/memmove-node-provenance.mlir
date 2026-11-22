@@ -11,12 +11,17 @@
 // RUN: sea-vc %s --lower | FileCheck %s --check-prefix=PLAIN
 // RUN: sea-vc %s --lower --seam --seam-stats 2>&1 | FileCheck %s
 // RUN: sea-vc %s --lower --seam --seam-check 2>&1 | FileCheck %s --check-prefix=CHK
+// The bounds job checks the move against B (the offset companion of a
+// ptr.add is its operand's plus the offset), so it discharges A-SEP here.
+// RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off --timeout=60 2>&1 | FileCheck %s --check-prefix=INB
 // CHECK: seam.rule.cmp.diff-base: {{[1-9]}}
 // CHECK-NOT: seam.rule.row.mcopy:
 // CHECK: seam.rule.row.mcopy-skip: 1
 // CHECK: seam.rule.view.node: {{[1-9]}}
 // CHECK: result: unsat
 // PLAIN: result: unsat
+// INB: check-inb.discharges: a-inb a-sep
+// INB: result: unsat
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @ring {
