@@ -23,7 +23,10 @@
 //
 // @bytes: a 16-bit value stored on two paths and loaded as two bytes: the
 // operand is a concat of two ites over one condition (path-merged).
-// RUN: sea-vc %s --program=bytes --lower --seam --vcgen-only --arith-stats | FileCheck %s --check-prefix=BYTES
+// Without the fold of --vc-fold-top-eqs (on by default): its concat-ite
+// hoist rebuilds the product, and the origins do not follow the rebuilt
+// node (unattributed=1).
+// RUN: sea-vc %s --program=bytes --lower --seam --vc-fold-top-eqs=false --vcgen-only --arith-stats | FileCheck %s --check-prefix=BYTES
 // BYTES: arith.op: op=bvmul width=16 operands=ite-num count=1 unattributed=0 conds=1 conds-max=1
 // BYTES: arith.loc: op=bvmul width=16 operands=ite-num count=1 conds-max=1 loc=k.c:15:3
 //

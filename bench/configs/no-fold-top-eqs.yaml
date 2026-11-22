@@ -1,0 +1,2 @@
+# --vc-fold-top-eqs=false (docs/design/FoldTopEqs.md): the A/B baseline of the fold and the model trail, on by default
+args: [--vc-fold-top-eqs=false]

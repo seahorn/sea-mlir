@@ -1,17 +1,17 @@
 // RUN: sea-vc %s --program=fold --lower --seam --vc-fold-top-eqs --smt2 2>%t.fold.err | FileCheck %s --check-prefix=FOLD
 // RUN: FileCheck %s --check-prefix=FOLD-STATS < %t.fold.err
-// RUN: sea-vc %s --program=fold --lower --seam --smt2 2>/dev/null | FileCheck %s --check-prefix=OFF
+// RUN: sea-vc %s --program=fold --lower --seam --vc-fold-top-eqs=false --smt2 2>/dev/null | FileCheck %s --check-prefix=OFF
 // RUN: sea-vc %s --program=fold --lower --seam --vc-fold-top-eqs 2>&1 | FileCheck %s --check-prefix=FOLD-UNSAT
 // RUN: sea-vc %s --program=trail --lower --seam --vc-fold-top-eqs 2>&1 | FileCheck %s --check-prefix=TRAIL
 // RUN: bash -c 'sea-vc %s --program=trail --lower --seam --vc-fold-top-eqs --x-model-trail-plant-skip > %t.skip 2>&1; test $? -eq 2'
 // RUN: FileCheck %s --check-prefix=SKIP < %t.skip
-// RUN: sea-vc %s --program=trail --lower --seam 2>&1 | FileCheck %s --check-prefix=HEAD
+// RUN: sea-vc %s --program=trail --lower --seam --vc-fold-top-eqs=false 2>&1 | FileCheck %s --check-prefix=HEAD
 // RUN: not sea-vc %s --program=trail --lower --seam --vc-fold-top-eqs --reach 2>&1 | FileCheck %s --check-prefix=NOREACH
 // NOREACH: --vc-fold-top-eqs: not with --reach
 // RUN: not sea-vc %s --program=trail --lower --seam --vc-fold-top-eqs --ack-relax=all 2>&1 | FileCheck %s --check-prefix=NORELAX
 // NORELAX: --vc-fold-top-eqs: not with --ack-relax
-// RUN: not sea-vc %s --program=fold --lower --seam --vc-fold-concat-ite=all 2>&1 | FileCheck %s --check-prefix=NOFOLD
-// NOFOLD: --vc-fold-concat-ite needs --vc-fold-top-eqs
+// RUN: not sea-vc %s --program=fold --lower --seam --vc-fold-top-eqs=false --vc-fold-concat-ite=all 2>&1 | FileCheck %s --check-prefix=NOFOLD
+// NOFOLD: --vc-fold-concat-ite needs the fold of --vc-fold-top-eqs (vc.fold-top-eqs-status: off-flag)
 // RUN: not sea-vc %s --program=fold --vc-fold-top-eqs --seam-simplify=0 --lower --seam 2>&1 | FileCheck %s --check-prefix=NOSIMP
 // sea-vc --vc-fold-top-eqs (docs/design/FoldTopEqs.md).
 //

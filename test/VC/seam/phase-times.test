@@ -13,17 +13,20 @@ CHECK: vc.exec-time:
 CHECK: vc.join-time:
 
 The laps of the words boundary, each once and in order (a lap name is
-used at most once per run: solver-term is lapped on two exclusive paths).
+used at most once per run: solver-term is lapped on two exclusive paths),
+with the two of the fold of --vc-fold-top-eqs (on by default).
 RUN: sea-vc %S/initial-words.mlir --program=eq --lower --seam --seam-wide --seam-words=all --words-check --seam-stats 2>&1 | FileCheck %s --check-prefix=WORDS
 WORDS: vc.setup-time:
 WORDS-NEXT: vc.encode-time:
 WORDS-NEXT: vc.simplify-sides-time:
 WORDS-NEXT: vc.mkquery-time:
 WORDS-NEXT: vc.simplify-query-time:
+WORDS-NEXT: vc.fold-top-eqs-time:
 WORDS-NEXT: vc.solver-term-time:
 WORDS-NEXT: vc.words-check-time:
 WORDS-NEXT: vc.unique-names-time:
 WORDS-NEXT: vc.ackermannize-time:
+WORDS-NEXT: vc.model-trail-time:
 WORDS-NEXT: vc.exec-time:
 WORDS-NEXT: vc.join-time:
 

@@ -835,13 +835,19 @@ static cl::opt<bool> vcFoldTopEqs(
              "definitions x = c of constants (the Ackermann reads among "
              "them) into a model trail that extends the solver's model. "
              "Exact; needs --simplify (on under --seam); not with --reach "
-             "or --ack-relax; counted vc.fold-top-eqs, vc.model-trail. Off "
-             "by default (docs/design/FoldTopEqs.md)"),
+             "or --ack-relax; counted vc.fold-top-eqs, vc.model-trail. "
+             "Default: on where it applies (simplify on, no --reach, no "
+             "--ack-relax, no --smt2 / --split-smt2: a written query keeps "
+             "its constants), else off, the reason in "
+             "vc.fold-top-eqs-status; "
+             "=true where it does not apply is an error, =false turns it "
+             "off (docs/design/FoldTopEqs.md)"),
     cl::init(false));
 
 static cl::opt<sea::ConcatIte> vcFoldConcatIte(
     "vc-fold-concat-ite",
-    cl::desc("With --vc-fold-top-eqs: the concat-ite hoist of each round, "
+    cl::desc("With the fold of --vc-fold-top-eqs on: the concat-ite hoist "
+             "of each round, "
              "concat of numerals and ites on one condition -> ite of concats "
              "(counted vc.fold-top-eqs concat-ite=, refused "
              "concat-ite-refused=; docs/design/FoldTopEqs.md, \"The "
@@ -863,7 +869,8 @@ static cl::opt<bool> modelTrailPlantSkip(
 
 static cl::opt<std::string> modelTrailOut(
     "model-trail-out",
-    cl::desc("With --vc-fold-top-eqs: write the model trail to this file "
+    cl::desc("With the fold of --vc-fold-top-eqs on: write the model "
+             "trail to this file "
              "(not stdout; with --split, <file>.part<N> per part), "
              "JSON lines, one elimination per line in order, terms in "
              "SMT-LIB over the symbols of the query (--smt2) "
@@ -2679,14 +2686,20 @@ TYPICAL:
                                  #   the model's arrays are rebuilt as for
                                  #   the lowering. A no-op when the lowering
                                  #   runs. Default array.
-  sea-vc p.mlir --seam --vc-fold-top-eqs  # the query's top-level facts
-                                 #   T = c substituted (concat facts by part,
-                                 #   Boolean constants), simplified again to
-                                 #   a fixpoint; after Ackermann the
+  sea-vc p.mlir --seam --vc-fold-top-eqs=false  # the A/B baseline: by
+                                 #   default (on where it applies: simplify
+                                 #   on, no --reach, no --ack-relax, no
+                                 #   --smt2 / --split-smt2;
+                                 #   vc.fold-top-eqs-status) the query's
+                                 #   top-level facts T = c are substituted
+                                 #   (concat facts by part, Boolean
+                                 #   constants), simplified again to a
+                                 #   fixpoint; after Ackermann the
                                  #   definitions x = c of constants leave
                                  #   the query for a model trail that
-                                 #   extends the model (exact; not with
-                                 #   --reach or --ack-relax; off by default;
+                                 #   extends the model (exact; an explicit
+                                 #   --vc-fold-top-eqs with --reach,
+                                 #   --ack-relax or no simplify is an error;
                                  #   --model-trail-out=<file>: the trail as
                                  #   JSON lines; --vc-fold-concat-ite=
                                  #   numeral|all|off: where the concat-ite
@@ -3252,10 +3265,18 @@ OUTPUT (stdout, `key: value` lines):
   vc.ack-relax-mode: incremental  (--ack-relax-mode=incremental only)
   vc.ack-relax-time: <s>          (--ack-relax-mode=incremental only: the
                                   rounds, the fallback and the assertions)
+  vc.fold-top-eqs-status: on|off-flag|off-smt2|off-reach|off-ack-relax|
+      off-no-simplify             (--vc-fold-top-eqs: whether the fold ran:
+                                  on by default where it applies; off by
+                                  =false, by default under --smt2 /
+                                  --split-smt2 (the written query keeps its
+                                  constants; =true folds it), under
+                                  --reach, under --ack-relax, without the
+                                  simplifier)
   vc.fold-top-eqs: facts=<n> term=<n> split=<n> bool=<n> uses=<n>
       rounds=<n> concat-ite=<n> concat-ite-refused=<n> skipped-masked=<n>
       skipped-untyped=<n>
-                                  (--vc-fold-top-eqs: keys substituted, by
+                                  (fold on: keys substituted, by
                                   kind (T = c, concat parts, Boolean
                                   constants); operand uses replaced; rounds
                                   that changed the query; concats of ites
@@ -3269,7 +3290,7 @@ OUTPUT (stdout, `key: value` lines):
                                   unknown width; warning
                                   vc.fold-top-eqs-rounds: the round bound
                                   stopped it)
-  vc.model-trail: cells=<n> defs=<n> rounds=<n>  (--vc-fold-top-eqs:
+  vc.model-trail: cells=<n> defs=<n> rounds=<n>  (fold on:
                                   constants eliminated after Ackermann into
                                   the model trail: Ackermann reads (cells)
                                   and other constants (defs))
@@ -5020,10 +5041,6 @@ int main(int argc, char **argv) {
   if (vcFoldTopEqs && reach)
     return fail("--vc-fold-top-eqs: not with --reach (its targets are "
                 "block guards the trail may eliminate)");
-  if (!modelTrailOut.empty() && !vcFoldTopEqs)
-    return fail("--model-trail-out needs --vc-fold-top-eqs");
-  if (vcFoldConcatIte.getNumOccurrences() && !vcFoldTopEqs)
-    return fail("--vc-fold-concat-ite needs --vc-fold-top-eqs");
   if (reach && sinkAssumes)
     return fail("--reach: --sink-assumes moves every assume before the "
                 "assertion, which changes what reaches a target");
@@ -5244,6 +5261,36 @@ int main(int argc, char **argv) {
   if (vcFoldTopEqs && relaxSel)
     return fail("--vc-fold-top-eqs: not with --ack-relax (its rounds "
                 "rebuild the lowered query)");
+  if (vcFoldTopEqs && !simplify)
+    return fail("--vc-fold-top-eqs needs --simplify (on under --seam): "
+                "the substituted query is simplified again");
+  // --vc-fold-top-eqs: on by default where it applies; an explicit =true
+  // where it does not is an error above, =false turns it off. Not by
+  // default in a written query (--smt2, --split-smt2): its second step
+  // removes constants, so that query would be equisatisfiable with the VC,
+  // not equivalent, and the query comparisons (utils/query-diff.py,
+  // encoding-diff.py, cover-diff.py) would not see the eliminated facts;
+  // =true writes the folded query (docs/design/FoldTopEqs.md, "Default")
+  const char *foldTopEqsStatus = "on";
+  if (vcFoldTopEqs.getNumOccurrences())
+    foldTopEqsStatus = vcFoldTopEqs ? "on" : "off-flag";
+  else if (smt2 || !splitSmt2.empty())
+    foldTopEqsStatus = "off-smt2";
+  else if (reach)
+    foldTopEqsStatus = "off-reach";
+  else if (relaxSel)
+    foldTopEqsStatus = "off-ack-relax";
+  else if (!simplify)
+    foldTopEqsStatus = "off-no-simplify";
+  const bool foldTopEqs = StringRef(foldTopEqsStatus) == "on";
+  if (!modelTrailOut.empty() && !foldTopEqs)
+    return fail(std::string("--model-trail-out needs the fold of "
+                            "--vc-fold-top-eqs (vc.fold-top-eqs-status: ") +
+                foldTopEqsStatus + ")");
+  if (vcFoldConcatIte.getNumOccurrences() && !foldTopEqs)
+    return fail(std::string("--vc-fold-concat-ite needs the fold of "
+                            "--vc-fold-top-eqs (vc.fold-top-eqs-status: ") +
+                foldTopEqsStatus + ")");
   if ((splitOn || splitCandidatesOpt) && relaxSel)
     return fail("--ack-relax: not with --split, --split-leaves, --split-auto "
                 "or --split-candidates");
@@ -6401,7 +6448,7 @@ int main(int argc, char **argv) {
     std::optional<sea::FoldTopEqsStats> foldTopEqsStats;
     // its second step, after the Ackermann lowering; the model trail
     sea::TopConstEliminator trailElim;
-    if (vcFoldTopEqs) {
+    if (foldTopEqs) {
       if (!sem.simplifies())
         return fail("--vc-fold-top-eqs needs --simplify (on under --seam): "
                     "the substituted query is simplified again");
@@ -7371,7 +7418,7 @@ int main(int argc, char **argv) {
     // constants (the Ackermann reads of the facts among them) leave the
     // query for the model trail (docs/design/FoldTopEqs.md, "Model trail")
     uint64_t trailCells = 0, trailDefs = 0;
-    if (vcFoldTopEqs) {
+    if (foldTopEqs) {
       query = trailElim.eliminate(query);
       if (originsOn)
         origins = origins.through(
@@ -7734,6 +7781,8 @@ int main(int argc, char **argv) {
         lstats.report(r, "lambda.", lambdaFinalSimplify);
       if (words)
         words->report(r, "words.");
+      // --vc-fold-top-eqs: whether the fold ran (and why not)
+      r.line("vc.fold-top-eqs-status").value(foldTopEqsStatus);
       if (foldTopEqsStats) {
         const sea::FoldTopEqsStats &f = *foldTopEqsStats;
         r.line("vc.fold-top-eqs")

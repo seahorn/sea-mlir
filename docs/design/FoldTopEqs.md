@@ -1,9 +1,11 @@
 # Folding the top-level facts of the VC
 
 `include/sea/VC/FoldTopEqs.h`, `lib/VC/FoldTopEqs.cpp`; `sea-vc
---vc-fold-top-eqs`, off by default. Tests: `test/VC/fold-top-eqs/`.
+--vc-fold-top-eqs`, on by default where it applies (section Default).
+Tests: `test/VC/fold-top-eqs/`.
 
-Status: implemented, off by default (exact; the default is open).
+Status: implemented, exact, on by default; `--vc-fold-top-eqs=false` is the
+A/B baseline (`bench/configs/no-fold-top-eqs.yaml`).
 
 ## Why
 
@@ -160,7 +162,7 @@ replay fails the assertion and validates, without it (the testing switch
 
 ### On disk: `--model-trail-out=<file>`
 
-With `--vc-fold-top-eqs`, the trail is written to the file (not
+With the fold on, the trail is written to the file (not
 stdout; with `--split`, `<file>.part<N>` per part), JSON lines, one entry per elimination, in order:
 
     {"kind":"def","var":"obj.global.ws","value":"#x0000000008048000"}
@@ -183,13 +185,55 @@ is not built: it also needs the Ackermann read map and the name map
 (`test/VC/fold-top-eqs/trail-out.test` reads the file back and checks it
 against the counters and the `--smt2` query).
 
+## Default
+
+The maintainer's decision: the fold is on by default. A default must not
+turn a valid command line into an error, so it applies where the fold
+does; elsewhere it is off and says why. `vc.fold-top-eqs-status` (every
+run, stdout; stderr with `--smt2`):
+
+| status | when |
+|---|---|
+| `on` | the default where it applies, or `--vc-fold-top-eqs` |
+| `off-flag` | `--vc-fold-top-eqs=false` |
+| `off-smt2` | `--smt2` or `--split-smt2` without the flag |
+| `off-reach` | `--reach` |
+| `off-ack-relax` | `--ack-relax` |
+| `off-no-simplify` | no simplifier (no `--seam`, no `--simplify`; `--seam-simplify=0`; `--mem=lambda`) |
+
+An explicit `--vc-fold-top-eqs` (=true) keeps the errors of the excluded
+modes (section Where it runs). `--model-trail-out` and
+`--vc-fold-concat-ite` need the fold on, by default or by the flag; off,
+they are errors that name the status.
+
+Why not under `--smt2` by default. Step 2 removes constants from the
+query, so the written query is equisatisfiable with the VC, not
+equivalent to it. The query comparisons read `--smt2` queries as the VC:
+`utils/query-diff.py` (the gate of a change that must not change
+queries), `encoding-diff.py`, `cover-diff.py` level 1, `memops-equiv.py`.
+With the fold, two queries that differ only in an eliminated fact are
+identical: in `test/Tools/cover-diff-layout.test` a program input that
+only one side assumes (`x == 5`) became a pass instead of a DIFF. A
+written query therefore keeps its constants unless `--vc-fold-top-eqs` is
+given; the solved query (no `--smt2`) is folded. A consequence: query-diff
+on this default sees the unfolded query, so the fold's own change to what
+the solver gets is measured by the benchmarks (default against
+`no-fold-top-eqs`), not by query-diff. Open: writing the trail with the
+query (definitions the comparisons could substitute back) would let a
+written query be folded by default too.
+
+`--check-inb` runs each part as a sea-vc process of its own with the
+options passed on: the parts get the default.
+
 ## Where it runs, and what it does not do
 
-- `--reach`: refused. Its targets are block guards, checked as
-  assumptions outside the query; step 2 could eliminate one.
-- `--ack-relax`: refused. Its rounds rebuild the lowered query from the
-  body and the constraints.
-- Needs the simplifier (`--simplify`, on under `--seam`).
+- `--reach`: refused with the flag, off by default. Its targets are block
+  guards, checked as assumptions outside the query; step 2 could
+  eliminate one.
+- `--ack-relax`: refused with the flag, off by default. Its rounds rebuild
+  the lowered query from the body and the constraints.
+- Needs the simplifier (`--simplify`, on under `--seam`): refused with the
+  flag, off by default.
 - Without the Ackermann lowering (Bitwuzla, a stored array, `--ackermannize=off`)
   step 2 eliminates constants only; a read's fact stays as a conjunct.
 - Reads the boundary makes (a memory operation's read equations) exist
@@ -249,7 +293,19 @@ built in).
 
 ## Open
 
-- The default (off): not measured beyond the jobs above.
+- The default (on): measured on the jobs above only; the A/B is
+  `no-fold-top-eqs` against the default.
+- `--seam-check` cannot state the premise of a SeaM rule that fires in
+  the fold's re-simplification outside a memory access (context
+  `fold-top-eqs`; `cmp.diff-base` on a pointer comparison whose operands
+  the fold made numerals): such a firing is counted
+  `seam-check: unexpressible=`, never valid. The firings are under the
+  run's premises and counted in the ledger (`assume.a-sep`). Seen in the
+  wide fuzz runs (`test/VC/seam/fuzz-check.test`, seed 5: 12).
+- `--arith-stats`: the origins do not follow a product the concat-ite
+  hoist rebuilds (`unattributed=`; `test/VC/arith-stats.mlir` @bytes).
+- `--vc-defs`: the fold eliminates the object bases, so the address sums
+  become numerals plus offsets and few names are made.
 - The fold's memory on the large jobs (section Memory).
 - Definitions x = e with e not a numeral (solve-eqs proper): the trail
   takes them, evaluated in reverse order.

@@ -1,2 +1,0 @@
-# --vc-fold-top-eqs (docs/design/FoldTopEqs.md): the A/B of the fold and the model trail
-args: [--vc-fold-top-eqs]

@@ -1,0 +1,38 @@
+# The default of --vc-fold-top-eqs (docs/design/FoldTopEqs.md, "Default"):
+# the fold runs where it applies, vc.fold-top-eqs-status says whether it
+# ran and why not; a mode it does not apply to runs without it, not into an
+# error; an explicit --vc-fold-top-eqs there stays an error (post-store.mlir).
+# RUN: sea-vc %S/post-store.mlir --program=trail --lower --seam 2>&1 | FileCheck %s --check-prefix=ON
+# ON: vc.fold-top-eqs-status: on
+# ON: vc.model-trail: cells=1
+# ON: result: sat
+# ON: replay: assert-failed
+# ON: validate: checked={{[0-9]+}} mismatches=0
+# RUN: sea-vc %S/post-store.mlir --program=trail --lower --seam --vc-fold-top-eqs=false 2>&1 | FileCheck %s --check-prefix=FLAG
+# FLAG: vc.fold-top-eqs-status: off-flag
+# FLAG-NOT: vc.model-trail:
+# FLAG: result: sat
+# RUN: sea-vc %S/post-store.mlir --program=trail --lower --seam --reach 2>&1 | FileCheck %s --check-prefix=REACH
+# REACH: vc.fold-top-eqs-status: off-reach
+# REACH: reach: {{.*}} reachable op=sea.assert
+# RUN: sea-vc %S/post-store.mlir --program=trail --lower --seam --ack-relax=all 2>&1 | FileCheck %s --check-prefix=RELAX
+# RELAX: vc.fold-top-eqs-status: off-ack-relax
+# RELAX: result: sat
+# RUN: sea-vc %S/post-store.mlir --program=trail --lower 2>&1 | FileCheck %s --check-prefix=NOSIMP
+# NOSIMP: vc.fold-top-eqs-status: off-no-simplify
+# RUN: not sea-vc %S/post-store.mlir --program=trail --lower --seam --reach --model-trail-out=%t.x 2>&1 | FileCheck %s --check-prefix=TRAIL-REACH
+# TRAIL-REACH: --model-trail-out needs the fold of --vc-fold-top-eqs (vc.fold-top-eqs-status: off-reach)
+
+# A written query keeps its constants by default (the second step would
+# make it equisatisfiable, not equivalent, to the VC: the query comparisons
+# read it); --vc-fold-top-eqs folds it. @fold: the fold makes it false.
+# RUN: sea-vc %S/post-store.mlir --program=fold --lower --seam --smt2 2>%t.err | FileCheck %s --check-prefix=SMT2
+# RUN: FileCheck %s --check-prefix=SMT2-STAT < %t.err
+# SMT2-NOT: (assert false)
+# SMT2: (check-sat)
+# SMT2-STAT: vc.fold-top-eqs-status: off-smt2
+# RUN: sea-vc %S/post-store.mlir --program=fold --lower --seam --smt2 --vc-fold-top-eqs 2>/dev/null | FileCheck %s --check-prefix=SMT2-ON
+# SMT2-ON: (assert false)
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
