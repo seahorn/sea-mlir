@@ -54,14 +54,40 @@ Conditional soundness (Conway,
 Dams, Namjoshi, Barrett, SAS 2008). Rules may rely on assumptions we do not
 model in the VC, as long as each one is checked separately or stated.
 
-Terms. An access address that normalizes to `obj.k + off` (a pointer into
-object k: `off` mentions no registered base) is an access *through
-provenance k*. The syntactic view is deliberate: `obj.a + (obj.b - obj.a)`
-from integer casts is not a pointer into a, so it has no view, no rule
-decides anything about it and no premise is used for it. An offset whose
-value is only known through memory (a loaded integer) has a view. The
-fat-pointer `sea.ptr.dereferenceable` checks are about provenance and do not
-cover from_int pointers.
+Terms. An access address has *provenance k* (a pointer into object k, its
+view, `Rules::view`) in two ways:
+
+- Pointer arithmetic keeps its operand's provenance. A node chain
+  `PTR_INDEX*(p, x_k, ...)` (`sea.ptr.index`, `addr.add`) whose pointer
+  operand p is `obj.k`, or an ite whose leaves all have provenance k (at
+  most maxDecideLeaves distinct leaves; counter `view.node-ite-cap` over
+  it), has provenance k whatever its indices mention, other objects'
+  addresses included (`view.node`, `view.node-ite`). Its offset is p's
+  offset (the ite of the leaves' offsets) plus the index sum, and may then
+  mention registered bases: the rules that build terms from an offset
+  (sub.same-base, diff.same-base, the compare reduction, the in-bounds
+  conditions) are exact algebra on it, and ARM gives such a term top
+  (its offset mentions a base through an operator ARM does not read), so
+  across objects it is the base, through `cmp.diff-base` under A-SEP, that
+  decides. So `p + (q - p)` written as pointer arithmetic on p is a pointer
+  into p's object: if it reaches q's cells, the access breaks A-INB of p's
+  object, and the bounds job (`sea-lower-fat-pointers`: the offset
+  companion of `ptr.index` / `ptr.add` is the operand's plus the index)
+  reports it.
+- A sum: `obj.k + off` with `off` mentioning no registered base (through
+  the flat form of nodes and observation markers; `to_int(obj.k) + j` is
+  read as a pointer into k, PtrSort S1.6c). Integer arithmetic does not
+  give provenance: `from_int(to_int(a) + (to_int(b) - to_int(a)))` is
+  `PTR_FROM_INT`, no view, and a sum `obj.a + (obj.b - obj.a)` mentions two
+  bases, no view; no rule decides anything about such an address and no
+  premise is used for it. No rule turns a cast sum into a node (a unit
+  check in `sea-seam-rules-test`, node-view and random). A node chain
+  over an operand with no view (a loaded pointer, from_int) keeps the sum
+  reading of its flat form.
+
+An offset whose value is only known through memory (a loaded integer) has
+a view. The fat-pointer `sea.ptr.dereferenceable` checks are about
+provenance and do not cover from_int pointers.
 
 The encoding of `sea-vc --seam` rests on three named premises about the
 program (v0.2.0; before, on the one premise A-INB):

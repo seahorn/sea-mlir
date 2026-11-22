@@ -1288,8 +1288,132 @@ public:
     return v;
   }
 
-  /// view without the memo.
+  /// view without the memo: the sum form (viewSum); for a node chain that
+  /// form does not read, the chain's pointer operand (viewNode).
   std::optional<PtrView> viewOnce(const Expr &e0) const {
+    std::optional<PtrView> v = viewSum(e0);
+    if (!v && op::ptr::isPtrIndex(e0))
+      v = viewNode(e0);
+    return v;
+  }
+
+  /// The ite tree \p it (ites that are not registered bases), every leaf a
+  /// pointer into one object: that object in \p base and the ite of the
+  /// leaves' offsets (same conditions, the DAG kept: each ite node and leaf
+  /// mapped once). Null when a leaf has no view or another base, or when
+  /// there are more than \p cap distinct leaves (\p overCap set). Exact: on
+  /// every path the ite selects one leaf L = base + off_L, and the result
+  /// selects off_L.
+  Expr iteLeafOffsets(const Expr &it, Expr &base, unsigned cap,
+                      bool &overCap) const {
+    std::unordered_map<ENode *, Expr> memo;
+    unsigned leaves = 0;
+    bool fail = false;
+    std::function<Expr(const Expr &)> map = [&](const Expr &e) -> Expr {
+      if (fail)
+        return Expr();
+      auto known = memo.find(e.get());
+      if (known != memo.end())
+        return known->second;
+      Expr r;
+      if (isOpX<ITE>(e) && !m_bases.lookup(e)) {
+        Expr t = map(e->arg(1));
+        Expr f = fail ? Expr() : map(e->arg(2));
+        if (fail)
+          return Expr();
+        r = t == f ? t : mk<ITE>(e->arg(0), t, f);
+      } else {
+        if (++leaves > cap) {
+          overCap = true;
+          fail = true;
+          return Expr();
+        }
+        std::optional<PtrView> v = view(e);
+        if (!v || (base && v->base != base)) {
+          fail = true;
+          return Expr();
+        }
+        base = v->base;
+        r = offSum(v->off);
+      }
+      memo.emplace(e.get(), r);
+      return r;
+    };
+    Expr r = map(it);
+    return fail ? Expr() : r;
+  }
+
+  /// The view of a node chain PTR_INDEX*(p, x_k, ...) from its pointer
+  /// operand p (docs/design/SeaM.md, "Soundness stance"): pointer
+  /// arithmetic keeps p's provenance whatever its indices mention (bases
+  /// included). p is a registered base b, or an ite whose leaves are all
+  /// pointers into one object b (at most maxDecideLeaves distinct leaves;
+  /// counter view.node-ite-cap over it); the view is b with offset
+  /// off(p) + sum x_k * s_k + c + K (off(p) the ite of the leaves' offsets
+  /// for an ite). Exact: a node is its operand plus its index sum
+  /// (PtrIndex.md). Only for a chain viewSum does not read (an index that
+  /// mentions a base, an ite operand); a chain over another operand (a
+  /// loaded pointer, from_int) has none here. Counters (once per node while
+  /// view's memo is on): view.node, view.node-ite.
+  std::optional<PtrView> viewNode(const Expr &e) const {
+    llvm::SmallVector<Expr, 4> chain;
+    Expr p = e;
+    while (op::ptr::isPtrIndex(p)) {
+      chain.push_back(p);
+      p = op::ptr::base(p);
+    }
+    Expr base, off;
+    if (m_bases.isBase(p)) {
+      base = p;
+    } else if (isOpX<ITE>(p) && !m_bases.lookup(p)) {
+      bool overCap = false;
+      off = iteLeafOffsets(p, base, m_opts.maxDecideLeaves, overCap);
+      if (!off) {
+        if (overCap)
+          m_stats.rules["view.node-ite-cap"]++;
+        return std::nullopt;
+      }
+    } else {
+      return std::nullopt;
+    }
+    // the offset as the add rule normalizes a sum (as viewSum's node case)
+    unsigned w = widthOf(base);
+    llvm::SmallVector<Expr, 8> terms;
+    mpz_class c = 0;
+    auto take = [&](const Expr &t) {
+      llvm::SmallVector<Expr, 4> parts;
+      if (isOpX<BADD>(t))
+        parts.append(t->args_begin(), t->args_end());
+      else
+        parts.push_back(t);
+      for (const Expr &x : parts) {
+        unsigned tw;
+        if (op::bv::isBvNum(x, tw))
+          smallarith::addTo(c, numVal(x));
+        else
+          terms.push_back(x);
+      }
+    };
+    if (off)
+      take(off);
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+      for (size_t k = 0; k < op::ptr::numIndices(*it); ++k)
+        take(indexSummand(op::ptr::index(*it, k), op::ptr::stride(*it, k), w));
+      smallarith::addTo(c, op::ptr::constant(*it));
+      smallarith::addTo(c, op::ptr::byteOffset(*it));
+    }
+    if (m_opts.simplify)
+      m_bv.sortSum(terms);
+    c = modPow2(c, w);
+    if (c != 0)
+      terms.push_back(num(c, w));
+    m_stats.rules[off ? "view.node-ite" : "view.node"]++;
+    return PtrView{base, sumOf(terms, w)};
+  }
+
+  /// The sum form of view: a base, or a bvadd of one base and base-free
+  /// terms (through nodes' flat forms and observation markers).
+  std::optional<PtrView> viewSum(const Expr &e0) const {
     // a node is read through its flat form, a bvadd a rule built over one
     // (splitRead's j + k) too. Shallow: the offset keeps the nodes of the
     // loads in it (rules build terms from it: sub.same-base, the compare
