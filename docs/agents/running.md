@@ -102,6 +102,7 @@ unsupported is skipped silently: an operation, layout or form that
 | 3 | `unknown`, including a timeout or a memory limit |
 | 4 | `--seam`: a `sat` whose replay leaves an object; the answer is inconclusive and the program has a memory-safety error |
 | 5 | `--seam-check`: an invalid rewrite; a bug, do not trust the verdict |
+| 8 | `--max-nodes` / `--max-rss` exceeded: `result: unknown` and `budget: hit` ([Diagnosing a VC blowup](blowups.md)) |
 
 Exit statuses 2 and 5 are always bugs in sea-mlir, and so is a crash or a
 `<pass>.postcondition` error. Reduce and report them; do not interpret the

@@ -22,7 +22,8 @@ sea-vc job.mlir <the job's flags> --vcgen-only --progress \
 - `--max-rss=<MiB>` (resident memory) or `--max-nodes=<n>` (live terms)
   turns the out-of-memory kill into a stop: `result: unknown`, a
   `budget: hit` line, the census of that moment (`budget.*` lines), error
-  `vc.node-budget` or `vc.rss-budget`, exit status 3. `--max-nodes` is
+  `vc.node-budget` or `vc.rss-budget`, exit status 8 (own status: not the 3
+  of a timeout or `--mem-limit`). `--max-nodes` is
   deterministic: the same budget stops at the same term on every run, so
   two variants of a job can be compared at the same size. The budgets
   bound encoding and solving: once the solver has answered `sat` or

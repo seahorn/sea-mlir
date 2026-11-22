@@ -45,17 +45,20 @@
 // MAP-DAG: run: default s.fam.badalloc-after-sat memout
 // MAP-DAG: run: default s.fam.memlimit unknown
 // MAP-DAG: run: default s.fam.memlimit-after-sat unknown
+// MAP-DAG: run: default s.fam.budget budget
+// MAP-DAG: run: default s.fam.budget-sat budget
 // MAP-DAG: run: default s.fam.split unknown
 // MAP-DAG: run: default s.fam.split-jsonl unknown
 // MAP-DAG: run: default s.fam.jsonl unsat
 // MAP-DAG: run: default s.fam.replayed sat
 // MAP: FAIL: unsolved s.fam.abort-after-sat config=default verdict=error expected=sat
+// MAP-NEXT: FAIL: unsolved s.fam.budget-sat config=default verdict=budget expected=sat
 // MAP-NEXT: FAIL: error s.fam.segv-after-sat config=default expected=unknown-ok
 // MAP-NEXT: FAIL: unsolved s.fam.split config=default verdict=unknown expected=unsat
 // MAP-NEXT: FAIL: unsolved s.fam.split-jsonl config=default verdict=unknown expected=unsat
 // MAP-NOT: FAIL:
 // MAP: replayed: s.fam.replayed config=default verdict=sat (manifest replay: impossible)
-// MAP: failures: 4
+// MAP: failures: 5
 // MAP: counter-bounds: 1
 // MAP: counter-failures: 0
 

@@ -1483,7 +1483,7 @@ static cl::opt<uint64_t> maxNodes(
              "encoding and solving (not after the solver answered): when "
              "exceeded, stop with `result: unknown`, `budget: hit "
              "resource=nodes` and the census (budget.* lines), error "
-             "vc.node-budget, status 3; checked every n/8 (at most 4096) "
+             "vc.node-budget, status 8; checked every n/8 (at most 4096) "
              "nodes made and at phase boundaries (deterministic)"),
     cl::init(0), cl::value_desc("n"));
 
@@ -1949,7 +1949,8 @@ static uint64_t countOps(Operation *op) {
 /// --max-nodes / --max-rss exceeded (MemWatch): `result: unknown`, the
 /// `budget: hit` line and the census (budget.* lines), with --seam-stats the
 /// rewriter's counters, BRUNCH_STAT result / budget / status; error
-/// vc.node-budget / vc.rss-budget; exit 3 (an unknown, as --mem-limit). The
+/// vc.node-budget / vc.rss-budget; exit 8 (a status of its own: not a verdict,
+/// and not the unknown 3 of a timeout or --mem-limit). The
 /// run is inside Expr construction: it ends here, without unwinding.
 [[noreturn]] static void budgetHit(sea::MemWatch::Budget b, uint64_t limit,
                                    const sea::MemWatch::Census &c,
@@ -2007,7 +2008,7 @@ static uint64_t countOps(Operation *op) {
         .value(nodes ? "nodes" : "rss")
         .brunch(sea::stats::Brunch::Value)
         .brunchOnly();
-    r.line("status").value(3).brunch(sea::stats::Brunch::Value).brunchOnly();
+    r.line("status").value(8).brunch(sea::stats::Brunch::Value).brunchOnly();
   });
   gOut->flush();
   sea::diag::error(nodes ? "vc.node-budget" : "vc.rss-budget",
@@ -2022,7 +2023,7 @@ static uint64_t countOps(Operation *op) {
                                "lines");
   sea::diag::printSummary();
   errs().flush();
-  ::_exit(3);
+  ::_exit(8);
 }
 
 static cl::list<std::string> configFiles(
@@ -2380,7 +2381,7 @@ TYPICAL:
   sea-vc p.mlir --mem-trace --max-nodes=50000000  # a VC blowup: a
                                  #   heartbeat of what grows (vc.mem beats on
                                  #   stderr) and a diagnosed stop (budget:
-                                 #   hit, the census, status 3) instead of
+                                 #   hit, the census, status 8) instead of
                                  #   an out-of-memory kill;
                                  #   docs/agents/blowups.md
   sea-vc p.mlir --lower --reach  # REACH: per check site (sea.assume,
@@ -3688,7 +3689,7 @@ OUTPUT (stdout, `key: value` lines):
                                   Then, with --seam-stats, the seam.*
                                   counters; with --brunch-stats
                                   BRUNCH_STAT result unknown, budget
-                                  nodes|rss, status 3. Error
+                                  nodes|rss, status 8. Error
                                   vc.node-budget / vc.rss-budget
   mem-limit-op: <op> ops=<n> at=<where>   (a hit in encode: the op being
                                   encoded, n-th in encoding order; where:
@@ -4202,7 +4203,7 @@ the sea ops (encode) that made the most nodes. Lists: --mem-top=<n> items
 made, so a phase that makes none (solve) has its phase-end line only.
 Budgets: --max-nodes=<n> (live nodes), --max-rss=<MiB>, checked at the
 same points and at phase boundaries: exceeded, the run stops with
-result: unknown, budget: hit and the census (OUTPUT FORMATS), status 3.
+result: unknown, budget: hit and the census (OUTPUT FORMATS), status 8.
 The budgets bound encoding and solving: once the solver has answered
 (sat, unsat) they are off, so a verdict is never replaced (the replay is
 bounded by --mem-limit only).
@@ -4695,8 +4696,8 @@ is not a function on an array (vc.ackermann-inconsistent), except (--ack-own,
 --ack-arm) when every such pair is one the ownership drop (or ARM's premise
 classes: across bases, size 0) dropped and the replay fails
 the assertion with mismatches=0: then 0, warning
-vc.ack-own-collision-excused; 3 unknown (also --timeout, --mem-limit,
---max-nodes / --max-rss: budget: hit); 4 (--seam) sat that does not replay
+vc.ack-own-collision-excused; 3 unknown (also --timeout, --mem-limit);
+4 (--seam) sat that does not replay
 because the program leaves an object with the model's inputs: A-INB does not
 hold (A-SEP or A-NULL may: the check is of bounds, not of separation, so a
 run that only leaves into a gap is reported here as well, though it keeps
@@ -4731,8 +4732,10 @@ the property (premise.failed, vc.premise-failed): an allocation's size
 exceeds its room; inconclusive, before --replay-original (the input
 program has no premise assert). Under --check-inb a part that fails one
 makes the job's status 4, its premise.failed line on the job's output.
-Split (--split*): the status of the verdict (0 sat or unsat, 3 unknown); a
-part's status 1, 2, 4, 5 or 6 stops the split with that status; 5 also for
+8 --max-nodes / --max-rss exceeded (budget: hit, after result: unknown;
+the run stops there, also in a split or --reach; never after the solver's
+answer). Split (--split*): the status of the verdict (0 sat or unsat, 3
+unknown); a part's status 1, 2, 4, 5 or 6 stops the split with that status; 5 also for
 a failed --split-check.
 )";
 

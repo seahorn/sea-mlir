@@ -3,7 +3,7 @@
 // `result: unknown`, `budget: hit resource=nodes` and the census of that moment
 // (budget.* lines: the op being encoded, the operators with the most live
 // nodes, the rules by firings, the sea ops by nodes made), error
-// vc.node-budget, status 3. Shapes only: which op or rule leads is not
+// vc.node-budget, status 8. Shapes only: which op or rule leads is not
 // pinned.
 // RUN: not sea-vc %s --lower --seam --max-nodes=150 --brunch-stats 2>%t.err | FileCheck %s
 // RUN: FileCheck %s --check-prefix=ERR < %t.err
@@ -14,10 +14,10 @@
 // CHECK: budget.site: sea.{{[a-z.]+}} nodes={{[0-9]+}} at={{.+}}{{$}}
 // CHECK: BRUNCH_STAT result unknown
 // CHECK-NEXT: BRUNCH_STAT budget nodes
-// CHECK-NEXT: BRUNCH_STAT status 3
+// CHECK-NEXT: BRUNCH_STAT status 8
 // CHECK-NOT: result:
 // ERR: Error: more than 150 live Expr nodes (--max-nodes) in phase encode: stopped, the census is in the budget.* lines [vc.node-budget]
-// RUN: sh -c 'sea-vc "$0" --lower --seam --max-nodes=150 >/dev/null 2>&1; test $? -eq 3' %s
+// RUN: sh -c 'sea-vc "$0" --lower --seam --max-nodes=150 >/dev/null 2>&1; test $? -eq 8' %s
 
 // The rules: a budget hit once the first rules have fired (most of the way
 // through encode; shapes only: which rules, how often and which op was in
