@@ -14,13 +14,13 @@ way for a program's one memory. Tests: `test/Dialect/SeaImp/roundtrip.mlir`,
 `test/Dialect/SeaImp/invalid.mlir`, `test/Transforms/lower-seaimp.mlir`,
 `test/Transforms/lower-seaimp-mem.mlir`, `test/Transforms/erase-mem-ssa.mlir`,
 `test/Transforms/erase-mem-ssa-invalid.mlir`, `test/VC/seaimp.mlir`,
-`test/VC/seaimp-mem.mlir`.
+`test/VC/seaimp-mem.mlir`, `test/VC/erase-mem-ssa-corpus.test`.
 
 Status: variables of register types (integers, pointers, structs) and of
-memory type (regions) with the region accesses and allocation in a region;
-erasing the memory SSA of a program with one memory. Not yet: several
-regions from a partition, a global form of allocation, `is_modified` /
-`reset_modified` / whole-region havoc as region ops.
+memory type (regions) with the region accesses (including modification
+tracking and counterexample prints) and allocation in a region (stack,
+heap, global); erasing the memory SSA of a program with one memory. Not
+yet: see the end of this page.
 
 ## Ops
 
@@ -35,7 +35,9 @@ seaimp.set %x, %v : !seaimp.var<i32>
   region, below). `!sea.addr` is refused (sea has no nondet address op for
   the initial value).
 - `seaimp.var "<name>" [<site>]` declares a variable. `get` reads the whole
-  value, `set` replaces it.
+  value, `set` replaces it. A memory variable (a region) has no `get` /
+  `set` (the verifier refuses them): seaimp code never holds a memory
+  version, and memory is reached only through the region ops below.
 - A `get` that no `set` reaches reads the variable's initial value, the
   same at every such read (like LLVM's `freeze undef`, not `undef`; sea has
   no undef). The lowering makes it:
@@ -69,40 +71,78 @@ seaimp.store %mem[%p], %v align 4 : !seaimp.var<!m>, i32
 seaimp.memset %mem[%buf], %z8, %c16 : !seaimp.var<!m>
 seaimp.memmove %mem[%dst], %mem[%buf], %c8 : !seaimp.var<!m>
 seaimp.memhavoc %mem[%buf], %c16 [5] : !seaimp.var<!m>
+%f = seaimp.is_modified %mem[%p] : !seaimp.var<!m>
+seaimp.reset_modified %mem[%p] : !seaimp.var<!m>
+seaimp.print.mem "v" %mem[%p], %n fmt "x" : !seaimp.var<!m>, i64 -> i8
 ```
 
 - Each op is defined by a local expansion: `get` the memory, apply the sea
-  op `inplace`, `set` the result (`seaimp.load`: `get`, then load). The
-  index, length and unit types are the region's (`TypesMatchWith` on the
-  variable's memory type); a loaded or stored value spans whole cells and
-  `align` is a power of two, as for the sea ops.
+  op `inplace`, `set` the result (the reads `seaimp.load`, `is_modified`,
+  `print.mem`: `get`, then the sea op). The index, length and unit types
+  are the region's (`TypesMatchWith` on the variable's memory type); a
+  loaded or stored value spans whole cells and `align` is a power of two,
+  as for the sea ops.
 - `seaimp.memmove` names a destination and a source variable of the same
   type. With one region they are the same variable (one `get`); with two
   the source's version is read and only the destination's chain changes.
 - `seaimp.memhavoc` keeps its site; it is unique with the other nondet
   sites.
-- `tracked` is not written in seaimp: `sea.tracking_on` / `tracking_off`
-  are positional and `sea-apply-tracking` sets it after the lowering.
-  `is_modified`, `reset_modified` and whole-region havoc have no region
-  form; a program writes them on a `get` (and `set`s the result).
-- `inplace`: a chain made of region ops is linear by construction, so every
-  lowered update is `inplace`. A `get` of a memory whose value is used
-  after a later region op on the same variable breaks that promise, as
-  hand-written sea can; seaimp has no checker for it (the interpreter
-  checks the lowered program on the path it runs).
+- Modification tracking is part of the specification language (SeaHorn's
+  `sea_is_modified` / `sea_reset_modified`; SeaHorn exports produce
+  them): `seaimp.is_modified` reads the region, `seaimp.reset_modified`
+  updates it (the contents and the other objects' state stay). `tracked`
+  on `store` / `memset` / `memmove` / `memhavoc` is kept as written; a
+  program usually marks tracking with `sea.tracking_on` / `tracking_off`,
+  which are positional, and `sea-apply-tracking` sets `tracked` after the
+  lowering.
+- `seaimp.print.mem` is the strong `sea.print.mem` (docs/design/Print.md)
+  on the region: it shows the contents at its point. `fmt`, `count` and
+  `offset` are keywords here; the weak `sea.print.mem` names memories,
+  not versions, and is used as it is.
+- `seaimp.load` and `seaimp.is_modified` may stand in a `sea.box.all` body
+  directly in the variable's region (the body only reads). Their lowering
+  puts the `get` right before the box op, in the variable's region: the
+  body cannot write memory, so the version before the box is the one
+  every index reads, and Mem2Reg sees no access in a nested region. A box
+  admits them through the sea interface `BoxBodyReadOpInterface`.
+- Whole-region havoc has no region form.
+
+### Every version is used linearly
+
+`inplace` on an update promises that the consumed version is dead
+afterwards. The lowering writes it on every update it makes, and it is
+true by construction: seaimp code never holds a memory version (no `get` /
+`set` of a memory variable in input), so the only memory values in the
+expanded program are the ones the expansion makes. Each `get` it makes is
+used by exactly one op, the sea op made with it, right after it (or in
+the box body right after it), with no `set` between; each `set` stores the
+result of a fresh update. Mem2Reg then replaces each `get` by the reaching
+definition at its point. If an update at point P consumes version V, the
+`set` right after P makes the new version the reaching definition on
+every path from P, so no `get` reached from P sees V again, and no branch
+operand passes V on (a branch forwards the reaching definition at its
+end). A memmove reads its source before it writes, as the sea op does.
+A hand-written `get` used after a later region update would have broken
+this; that is why `get` / `set` of a memory variable are refused.
 
 ### Allocation names its region
 
 `seaimp.alloca %region, %n align A [site] (label L)?` allocates a stack
-object whose cells are in `%region`; its result is the pointer type that
-indexes the region (so the region is pointer-indexed). It lowers to
-`sea.alloca` with the same size, alignment, site and label: sea allocation
-takes no memory operand (pointers are object + offset, not tied to a
-memory), so the region is dropped. The region is the information a later
-partition into several regions checks accesses against (the premise that
-every object is accessed through its region only). `sea.alloca`,
-`sea.malloc` and `sea.global` stay usable in seaimp programs as they are;
-a global form of `seaimp.alloca` comes when a program needs one.
+object whose cells are in `%region`; `seaimp.malloc` (same operands) a
+heap object; `seaimp.global %region @g size N align A (label L)?` denotes
+the object of global `@g`. The result is the pointer type that indexes the
+region (so the region is pointer-indexed). They lower to `sea.alloca` /
+`sea.malloc` / `sea.global` with the same operands and attributes: sea
+allocation takes no memory operand (pointers are object + offset, not
+tied to a memory), so the region is dropped. The region is the
+information a later partition into several regions checks accesses
+against (the premise that every object is accessed through its region
+only). The verifiers are the sea ops' (size of the pointer width,
+alignment a power of 2, sites unique); the uses of one global name agree
+in size and alignment over `sea.global` and `seaimp.global` alike
+(`sea.program`'s verifier, through `GlobalObjectOpInterface`).
+`sea.alloca`, `sea.malloc` and `sea.global` stay usable in seaimp
+programs as they are.
 
 ### Why an expansion, not Mem2Reg interfaces on the region ops
 
@@ -157,11 +197,14 @@ variables it promotes:
 - `seaimp.var` is in the entry block of a `sea.program`. The initial value
   is made at the start of that block and dominates every use.
 - The handle is used only as the variable operand of seaimp ops (`get`,
-  `set`, the region ops, `alloca`; no block argument, no select, no print,
-  no op of another dialect).
+  `set`, the region ops, the allocations; no block argument, no select,
+  no print, no op of another dialect).
 - seaimp ops take a handle defined by a `seaimp.var` in their own region
-  (not in a nested region such as a `sea.box.all` body).
-- The value types of `get` and `set` are the variable's `T`.
+  (not in a nested region), except the region reads `seaimp.load` /
+  `is_modified` in a `sea.box.all` body directly in it, which the
+  expansion moves out of the body.
+- The value types of `get` and `set` are the variable's `T`, which is not
+  a memory.
 
 The program's region is a CFG of `sea.br` / `sea.cond_br`, which implement
 `BranchOpInterface`, so Mem2Reg can add the block arguments it needs at
@@ -170,9 +213,11 @@ the joins.
 ## Lowering
 
 `sea-lower-seaimp` (an `OperationPass<ProgramOp>`) first expands every
-region op into `get` / the sea op `inplace` / `set` and every
-`seaimp.alloca` into `sea.alloca`. Then it collects the `seaimp.var` ops
-and calls `tryToPromoteMemorySlots` once with all of them. The interfaces:
+region op into `get` / the sea op `inplace` / `set` (a read in a
+`sea.box.all` body: its `get` before the box) and every allocation into
+its sea op. These `get` / `set` of memory exist only inside the pass.
+Then it collects the `seaimp.var` ops and calls `tryToPromoteMemorySlots`
+once with all of them. The interfaces:
 
 - `seaimp.var`: `PromotableAllocationOpInterface`, one slot `{handle, T}`;
   `getDefaultValue` makes the initial value above;
@@ -260,48 +305,62 @@ The chain must be linear. The pass computes the current version at every
 point (a forward dataflow over the CFG: a block's memory argument, else
 the version all its reachable predecessors leave, else none; a root or an
 update makes a new one) and requires that every op that reads or consumes
-a version, and every branch operand, uses the current one. Refused, with
-an error and no change:
+a version (also in a `sea.box.all` body), and every branch operand, uses
+the current one. Refused, with an error and no change:
 
-- `erase-mem-ssa.non-linear`: a load of an earlier version, a version
-  consumed twice on one path, a version read after a join whose
-  predecessors leave different versions with no block argument, a block
+- `erase-mem-ssa.non-linear`: a load (or is_modified, strong print.mem)
+  of an earlier version, a version consumed twice on one path, a version
+  read after a join whose predecessors leave different versions with no
+  block argument, an earlier version passed to a block argument, a block
   with two memory arguments;
 - `erase-mem-ssa.regions`: more than one memory (several regions come
   from a partition, later);
-- `erase-mem-ssa.unsupported`: a memory value made by an op that is no
-  root or update, or in a nested region.
+- `erase-mem-ssa.unsupported`: a memory that does not start at one
+  `sea.mem.nondet` in the entry block (a `sea.mem.const` root, a second
+  root, no root: a region starts as its variable's nondet initial value,
+  and seaimp code cannot set a memory), a memory value made by an op that
+  is no root or update or in a nested region, a reader without a region
+  form.
 
-The rewrite:
+The rewrite gives every reader and update its region op, so the output
+holds no memory value:
 
-- `sea.load` / `store` / `memset` / `memmove` / `memhavoc` -> the region
-  op (`inplace` dropped; the lowering puts it back, and linearity is what
-  makes it true);
-- a `tracked` update and `sea.mem.reset_modified` -> `seaimp.get`, the op
-  on that value, `seaimp.set` of the result (no region form keeps
-  `tracked`);
-- any other reader (`sea.mem.is_modified`, a strong `sea.print.mem`, a
-  `sea.load` in a `sea.box.all` body) reads a `seaimp.get` put before it
-  (before the top-level op that holds it: the body only reads);
-- the root: if the only root is a `sea.mem.nondet` in the entry block, the
-  variable takes its name and site (the lowering makes the same op at the
-  start of the entry block). Otherwise every root (`sea.mem.const`, a
-  `sea.mem.nondet` in a loop, several roots) stays and is followed by
-  `seaimp.set`; the variable is `"mem"` with a fresh site and its initial
-  value is not read;
+- `sea.load` / `store` / `memset` / `memmove` / `memhavoc` (`tracked`
+  kept), `sea.mem.is_modified` / `reset_modified`, a strong
+  `sea.print.mem` -> the region op (`inplace` dropped; the lowering puts
+  it back, and linearity is what makes it true);
+- a `sea.load` / `sea.mem.is_modified` in a `sea.box.all` body -> the
+  region op in the body;
+- the root, a `sea.mem.nondet` in the entry block: the variable takes its
+  name and site (the lowering makes the same op at the start of the entry
+  block);
 - `sea.alloca` whose pointer type indexes the memory -> `seaimp.alloca
-  %mem`. `sea.malloc` and `sea.global` stay (no region form yet).
+  %mem`. `sea.malloc` and `sea.global` stay as they are for now; erase may
+  turn them into `seaimp.malloc` / `seaimp.global` later, when the stack /
+  heap distinction is supported.
 
 Unreachable blocks are rewritten but not checked. Postcondition
-(`sea-erase-mem-ssa.postcondition`): no memory block argument is left, and
-every remaining memory value is a `seaimp.get` result or is used only by
-`seaimp.set`.
+(`sea-erase-mem-ssa.postcondition`): no memory value is left.
+
+`test/VC/erase-mem-ssa-corpus.test` runs a fixed sample of the VC tests
+with one memory through the pass and compares the queries with
+`utils/encoding-diff.py` (identical).
 
 ## Not supported
 
 - Address variables (`!sea.addr`).
 - An address-of: a variable whose address is taken is an object in a
   region (`seaimp.alloca`).
-- Uses in nested regions (`sea.box.all` bodies).
-- Several regions in `sea-erase-mem-ssa`; a global or heap form of
-  allocation in a region.
+- `get` / `set` of a memory variable.
+- Region accesses in nested regions other than reads in a `sea.box.all`
+  body.
+
+## Not yet
+
+- Several regions in `sea-erase-mem-ssa` (from a partition, later).
+- A region on `sea.alloca` itself (the region of an object in sea; from
+  the memory SSA form this is direct).
+- Whole-region havoc, and a region form for a memory that starts as
+  `sea.mem.const` (the erase pass refuses such programs).
+- `sea-erase-mem-ssa` turning `sea.malloc` / `sea.global` into
+  `seaimp.malloc` / `seaimp.global`.

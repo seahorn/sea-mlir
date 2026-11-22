@@ -929,7 +929,7 @@ must agree between uses.
 
 Traits: `AlwaysSpeculatableImplTrait`
 
-Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`
+Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`, `Sea_GlobalObjectOpInterface`
 
 Effects: `MemoryEffects::Effect{}`
 

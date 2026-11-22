@@ -9,7 +9,10 @@ _Imperative layer over sea: variables, lowered to sea._
 (`seaimp.var`, read and written whole by `seaimp.get` / `seaimp.set`),
 and, on a variable that holds a memory (a region), the sea memory ops
 without the memory operand (`seaimp.load` / `store` / `memset` /
-`memmove` / `memhavoc`) and allocation in the region (`seaimp.alloca`).
+`memmove` / `memhavoc` / `is_modified` / `reset_modified` /
+`print.mem`) and allocation in the region (`seaimp.alloca` / `malloc`
+/ `global`). A memory variable has no `get` / `set`: seaimp code never
+holds a memory version.
 It has no runtime semantics of its own: a program means what its
 lowering to sea means (`sea-lower-seaimp`, MLIR's Mem2Reg). The
 interpreter and the VC generator refuse seaimp ops
@@ -31,13 +34,13 @@ operation ::= `seaimp.alloca` $var `,` $size `align` $align ` ` `[` $site `]` (`
               qualified(type($result))
 ```
 
-`sea.alloca` of an object whose cells are in the region `var`: each
-execution creates a new object of `size` units, aligned to `align`.
-The lowering is `sea.alloca` with the same operands and attributes
-(sea allocation takes no memory: pointers are not tied to a memory);
-the region is what a later partition into regions checks accesses
-against. `site` is unique with the program's other nondet sites; the
-result is a pointer that indexes the region.
+`sea.alloca` of an object whose cells are in the region `var`:
+each execution creates a new object of `size` units, aligned to
+`align`. The lowering is `sea.alloca` with the same operands and
+attributes (sea allocation takes no memory: pointers are not tied to a
+memory); the region is what a later partition into regions checks
+accesses against. `site` is unique with the program's other nondet
+sites; the result is a pointer that indexes the region.
 
 ```mlir
 %p = seaimp.alloca %mem, %c4 align 4 [1] : !seaimp.var<!m>, i64 -> !sea.ptr<64>
@@ -80,7 +83,9 @@ operation ::= `seaimp.get` $var attr-dict `:` qualified(type($var))
 ```
 
 The value the variable holds: the last `seaimp.set` before it on the
-path, or the variable's initial value.
+path, or the variable's initial value. Not on a memory variable (a
+region): memory is read only through the region ops, so seaimp code
+never holds a memory version.
 
 ```mlir
 %v = seaimp.get %x : !seaimp.var<i32>
@@ -102,6 +107,93 @@ Interfaces: `PromotableMemOpInterface`
 
 
 
+### `seaimp.global` (::sea::imp::GlobalOp)
+
+_The object of a global variable, in a region_
+
+Syntax:
+
+```
+operation ::= `seaimp.global` $var $name `size` $size `align` $align (`label` $label^)? attr-dict `:`
+              qualified(type($var)) `->` qualified(type($result))
+```
+
+`sea.global` of an object whose cells are in the region `var`. Every
+use of the same `name` denotes the same object (with the `sea.global`s
+of the name); `size` and `align` must agree between uses. The lowering
+is `sea.global` with the same attributes; the region is dropped, as
+for `seaimp.alloca`. The result is a pointer that indexes the region.
+
+```mlir
+%g = seaimp.global %mem @counter size 4 align 4 : !seaimp.var<!m> -> !sea.ptr<64>
+```
+
+Traits: `AlwaysSpeculatableImplTrait`
+
+Interfaces: `ConditionallySpeculatable`, `NoMemoryEffect (MemoryEffectOpInterface)`, `Sea_GlobalObjectOpInterface`
+
+Effects: `MemoryEffects::Effect{}`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>name</code></td><td>::mlir::FlatSymbolRefAttr</td><td>flat symbol reference attribute</td></tr>
+<tr><td><code>size</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is non-negative</td></tr>
+<tr><td><code>align</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is positive</td></tr>
+<tr><td><code>label</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `var` | seaimp variable holding a memory |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | pointer |
+
+
+
+### `seaimp.is_modified` (::sea::imp::IsModifiedOp)
+
+_1 if a tracked update wrote to `ptr`'s object in a region_
+
+Syntax:
+
+```
+operation ::= `seaimp.is_modified` $var `[` $ptr `]` attr-dict `:` qualified(type($var))
+```
+
+`sea.mem.is_modified` on the memory the variable holds: `get`, then
+is_modified. Part of the specification language (SeaHorn's
+`sea_is_modified`), not a debugging op. May stand in a `sea.box.all`
+body directly in the variable's region, as `seaimp.load`.
+
+```mlir
+%f = seaimp.is_modified %mem[%p] : !seaimp.var<!m>
+```
+
+Interfaces: `Sea_BoxBodyReadOpInterface`
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `var` | seaimp variable holding a memory |
+| `ptr` | pointer |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | 1-bit signless integer |
+
+
+
 ### `seaimp.load` (::sea::imp::LoadOp)
 
 _Read the cells at an address of a region_
@@ -113,11 +205,15 @@ operation ::= `seaimp.load` $var `[` $addr `]` (`align` $align^)? attr-dict `:` 
               `->` qualified(type($result))
 ```
 
-`sea.load` on the memory the variable holds: `get`, then load.
+`sea.load` on the memory the variable holds: `get`, then load. It may
+stand in a `sea.box.all` body directly in the variable's region (the
+body only reads); the memory is then read before the box.
 
 ```mlir
 %x = seaimp.load %mem[%p] align 4 : !seaimp.var<!m> -> i32
 ```
+
+Interfaces: `Sea_BoxBodyReadOpInterface`
 
 #### Attributes:
 
@@ -141,6 +237,56 @@ operation ::= `seaimp.load` $var `[` $addr `]` (`align` $align^)? attr-dict `:` 
 
 
 
+### `seaimp.malloc` (::sea::imp::MallocOp)
+
+_Allocate a new heap object in a region_
+
+Syntax:
+
+```
+operation ::= `seaimp.malloc` $var `,` $size `align` $align ` ` `[` $site `]` (`label` $label^)?
+              attr-dict `:` qualified(type($var)) `,` type($size) `->`
+              qualified(type($result))
+```
+
+`sea.malloc` of an object whose cells are in the region `var`:
+each execution creates a new object of `size` units, aligned to
+`align`. The lowering is `sea.malloc` with the same operands and
+attributes (sea allocation takes no memory: pointers are not tied to a
+memory); the region is what a later partition into regions checks
+accesses against. `site` is unique with the program's other nondet
+sites; the result is a pointer that indexes the region.
+
+```mlir
+%p = seaimp.malloc %mem, %c4 align 4 [1] : !seaimp.var<!m>, i64 -> !sea.ptr<64>
+```
+
+Interfaces: `Sea_NondetSiteOpInterface`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>align</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is positive</td></tr>
+<tr><td><code>site</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is non-negative</td></tr>
+<tr><td><code>label</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `var` | seaimp variable holding a memory |
+| `size` | integer |
+
+#### Results:
+
+| Result | Description |
+| :----: | ----------- |
+| `result` | pointer |
+
+
+
 ### `seaimp.memhavoc` (::sea::imp::MemHavocOp)
 
 _Make `len` cells of a region nondeterministic_
@@ -148,8 +294,8 @@ _Make `len` cells of a region nondeterministic_
 Syntax:
 
 ```
-operation ::= `seaimp.memhavoc` $var `[` $addr `]` `,` $len ` ` `[` $site `]` attr-dict `:`
-              qualified(type($var))
+operation ::= `seaimp.memhavoc` $var `[` $addr `]` `,` $len ` ` `[` $site `]` (`tracked` $tracked^)?
+              attr-dict `:` qualified(type($var))
 ```
 
 `sea.memhavoc` on the memory the variable holds: `get`, memhavoc
@@ -167,6 +313,7 @@ Interfaces: `Sea_NondetSiteOpInterface`
 <table>
 <tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
 <tr><td><code>site</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is non-negative</td></tr>
+<tr><td><code>tracked</code></td><td>::mlir::UnitAttr</td><td>unit attribute</td></tr>
 </table>
 
 #### Operands:
@@ -187,8 +334,8 @@ Syntax:
 
 ```
 operation ::= `seaimp.memmove` $var `[` $addr `]` `,` $src `[` $srcAddr `]` `,` $len
-              (`align` $align^)? (`src_align` $src_align^)? attr-dict `:`
-              qualified(type($var))
+              (`align` $align^)? (`src_align` $src_align^)? (`tracked` $tracked^)?
+              attr-dict `:` qualified(type($var))
 ```
 
 `sea.memmove` on the memories the variables hold: `get` both (one
@@ -206,6 +353,7 @@ seaimp.memmove %mem[%dst], %mem[%buf], %c8 : !seaimp.var<!m>
 <tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
 <tr><td><code>align</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is positive</td></tr>
 <tr><td><code>src_align</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is positive</td></tr>
+<tr><td><code>tracked</code></td><td>::mlir::UnitAttr</td><td>unit attribute</td></tr>
 </table>
 
 #### Operands:
@@ -227,8 +375,8 @@ _Set `len` index units of a region to a unit value_
 Syntax:
 
 ```
-operation ::= `seaimp.memset` $var `[` $addr `]` `,` $value `,` $len (`align` $align^)? attr-dict `:`
-              qualified(type($var))
+operation ::= `seaimp.memset` $var `[` $addr `]` `,` $value `,` $len (`align` $align^)?
+              (`tracked` $tracked^)? attr-dict `:` qualified(type($var))
 ```
 
 `sea.memset` on the memory the variable holds: `get`, memset
@@ -243,6 +391,7 @@ seaimp.memset %mem[%buf], %z8, %c16 : !seaimp.var<!m>
 <table>
 <tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
 <tr><td><code>align</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is positive</td></tr>
+<tr><td><code>tracked</code></td><td>::mlir::UnitAttr</td><td>unit attribute</td></tr>
 </table>
 
 #### Operands:
@@ -256,6 +405,84 @@ seaimp.memset %mem[%buf], %z8, %c16 : !seaimp.var<!m>
 
 
 
+### `seaimp.print.mem` (::sea::imp::PrintMemOp)
+
+_Show the contents of a region in a counterexample_
+
+Syntax:
+
+```
+operation ::= `seaimp.print.mem` $tag $var `[` $addr `]` (`,` $countValue^)? (`fmt` $fmt^)?
+              (`count` $count^)? (`offset` $offset^)? attr-dict `:`
+              qualified(type($var)) (`,` type($countValue)^)? `->` $type
+```
+
+The strong `sea.print.mem` on the memory the variable holds: `get`,
+then print.mem with that version as its memory operand. It shows the
+region's contents at the print's point. `type`, `fmt`, `count`,
+`offset` and the optional count operand are those of `sea.print.mem`
+(docs/design/Print.md), written as keywords. The weak `sea.print.mem` names memories, not
+versions, and stays as it is in seaimp programs.
+
+```mlir
+seaimp.print.mem "bal" %mem[%p] : !seaimp.var<!m> -> i64
+seaimp.print.mem "buf" %mem[%p], %n fmt "hexdump" : !seaimp.var<!m>, i64 -> i8
+seaimp.print.mem "v" %mem[%p] count 4 offset 8 : !seaimp.var<!m> -> i32
+```
+
+Interfaces: `MemoryEffectOpInterface (MemoryEffectOpInterface)`
+
+Effects: `MemoryEffects::Effect{MemoryEffects::Write on ::sea::PrintResource}`
+
+#### Attributes:
+
+<table>
+<tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
+<tr><td><code>tag</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+<tr><td><code>type</code></td><td>::mlir::TypeAttr</td><td>any type attribute</td></tr>
+<tr><td><code>fmt</code></td><td>::mlir::StringAttr</td><td>string attribute</td></tr>
+<tr><td><code>count</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is positive</td></tr>
+<tr><td><code>offset</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute</td></tr>
+</table>
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `var` | seaimp variable holding a memory |
+| `addr` | address or pointer |
+| `countValue` | integer |
+
+
+
+### `seaimp.reset_modified` (::sea::imp::ResetModifiedOp)
+
+_Forget that `ptr`'s object in a region was modified_
+
+Syntax:
+
+```
+operation ::= `seaimp.reset_modified` $var `[` $addr `]` attr-dict `:` qualified(type($var))
+```
+
+`sea.mem.reset_modified` on the memory the variable holds: `get`,
+reset_modified `inplace`, `set`. The contents and the modified state of
+the other objects stay. Part of the specification language (SeaHorn's
+`sea_reset_modified`).
+
+```mlir
+seaimp.reset_modified %mem[%p] : !seaimp.var<!m>
+```
+
+#### Operands:
+
+| Operand | Description |
+| :-----: | ----------- |
+| `var` | seaimp variable holding a memory |
+| `addr` | pointer |
+
+
+
 ### `seaimp.set` (::sea::imp::SetOp)
 
 _Write a variable_
@@ -266,7 +493,8 @@ Syntax:
 operation ::= `seaimp.set` $var `,` $value attr-dict `:` qualified(type($var))
 ```
 
-Replaces the value the variable holds.
+Replaces the value the variable holds. Not on a memory variable (a
+region): memory is written only through the region ops.
 
 ```mlir
 seaimp.set %x, %v : !seaimp.var<i32>
@@ -290,8 +518,8 @@ _Write a value to a region_
 Syntax:
 
 ```
-operation ::= `seaimp.store` $var `[` $addr `]` `,` $value (`align` $align^)? attr-dict `:`
-              qualified(type($var)) `,` qualified(type($value))
+operation ::= `seaimp.store` $var `[` $addr `]` `,` $value (`align` $align^)? (`tracked` $tracked^)?
+              attr-dict `:` qualified(type($var)) `,` qualified(type($value))
 ```
 
 `sea.store` on the memory the variable holds: `get`, store `inplace`,
@@ -306,6 +534,7 @@ seaimp.store %mem[%p], %v align 4 : !seaimp.var<!m>, i32
 <table>
 <tr><th>Attribute</th><th>MLIR Type</th><th>Description</th></tr>
 <tr><td><code>align</code></td><td>::mlir::IntegerAttr</td><td>64-bit signless integer attribute whose value is positive</td></tr>
+<tr><td><code>tracked</code></td><td>::mlir::UnitAttr</td><td>unit attribute</td></tr>
 </table>
 
 #### Operands:
@@ -342,9 +571,10 @@ the program's other nondet sites.
 
 The op is in the entry block of a `sea.program`. Its result is used
 only as the variable operand of seaimp ops (`get`, `set`, the region
-accesses, `alloca`) in the same region (not as a block argument, a
-select operand or a stored value): every verified variable is promoted
-by the lowering.
+accesses and allocations) in the same region, or of a region read in a
+`sea.box.all` body directly in it (not as a block argument, a select
+operand or a stored value): every verified variable is promoted by the
+lowering. A memory variable (a region) has no `get` / `set`.
 
 ```mlir
 %x = seaimp.var "x" [7] : !seaimp.var<i32>
