@@ -643,6 +643,34 @@ LogicalResult MemHavocOp::verify() {
   return verifyAccess(*this, getMem().getType(), getAddr(), getLen());
 }
 
+LogicalResult sea::verifyMemFillData(Operation *op, MemType mem,
+                                     DenseIntElementsAttr data) {
+  auto t = cast<ShapedType>(data.getType());
+  if (t.getRank() != 1)
+    return op->emitOpError("data must be a 1-D list of cells, got ") << t;
+  if (t.getElementType() != mem.getCell())
+    return op->emitOpError("data cells ")
+           << t.getElementType() << " are not the memory's cells "
+           << mem.getCell();
+  uint64_t n = data.getNumElements();
+  if (n == 0)
+    return op->emitOpError("data must have at least one cell");
+  // the cells written, in index units, fit the index space (no wrap onto
+  // the fill's own cells)
+  unsigned w = mem.getIndexWidth();
+  APInt units = APInt(128, n) * APInt(128, mem.getCellUnits());
+  if (w < 128 && units.getActiveBits() > w)
+    return op->emitOpError("data of ")
+           << n << " cells does not fit the " << w << "-bit index space";
+  return success();
+}
+
+LogicalResult MemFillOp::verify() {
+  if (failed(verifyAccess(*this, getMem().getType(), getAddr())))
+    return failure();
+  return verifyMemFillData(*this, getMem().getType(), getData());
+}
+
 //===----------------------------------------------------------------------===//
 // Abstract pointers and allocation
 //===----------------------------------------------------------------------===//

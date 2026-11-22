@@ -168,7 +168,8 @@ public:
           (*dst)[*d + off] = v;
       return;
     }
-    if (isa<MemSetOp, MemHavocOp>(op)) {
+    // a fill writes integers: as its expansion's integer stores, kept
+    if (isa<MemSetOp, MemHavocOp, MemFillOp>(op)) {
       handOn(op.getOperand(0), op.getResult(0)); // kept
       return;
     }
@@ -456,7 +457,8 @@ private:
         root = def;
         continue;
       }
-      if (!isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(def))
+      if (!isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, MemFillOp,
+               ResetModifiedOp>(def))
         return nullptr;
       work.push_back(def->getOperand(0));
     }

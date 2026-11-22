@@ -1,0 +1,14 @@
+// A 4 KiB initializer (sea.mem.fill of 4096 bytes): the expansion makes one
+// store per byte (4096), and the array VC of the lowered program is built
+// (query size, docs/design/MemFill.md: about 17k DAG nodes; lambda memory
+// takes about 23 s to build it, a quadratic simplification of long store
+// chains, so it is not run here).
+// RUN: rm -rf %t && mkdir -p %t
+// RUN: %python %S/Inputs/mem-fill-4k.py > %t/fill4k.mlir
+// RUN: sea-opt %t/fill4k.mlir --sea-expand-mem-fill | grep -c 'sea.store' | FileCheck %s --check-prefix=STORES
+// RUN: sea-vc %t/fill4k.mlir --lower --vcgen-only --dag-stats | FileCheck %s --check-prefix=VC
+// STORES: 4096
+// VC: vc.dag-size:
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

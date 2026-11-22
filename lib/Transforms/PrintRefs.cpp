@@ -68,7 +68,8 @@ public:
               classes.insert(a.getAsOpaquePointer());
     });
     program.walk([&](Operation *op) {
-      if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(op))
+      if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, MemFillOp,
+              ResetModifiedOp>(op))
         unite(op->getOperand(0), op->getResult(0));
       if (auto br = dyn_cast<BranchOpInterface>(op))
         for (unsigned i = 0, n = op->getNumSuccessors(); i < n; ++i) {

@@ -87,6 +87,12 @@ mlir::LogicalResult verifyPrintMemShape(mlir::Operation *op,
                                         llvm::StringRef tag, mlir::Type t,
                                         std::optional<llvm::StringRef> fmt);
 
+/// The data of sea.mem.fill on a memory of type `mem`: a 1-D list of at
+/// least one cell of the memory's cell type, whose cells fit the index
+/// space. Shared with seaimp.mem.fill.
+mlir::LogicalResult verifyMemFillData(mlir::Operation *op, MemType mem,
+                                      mlir::DenseIntElementsAttr data);
+
 /// True if `program` uses the abstract memory level (!sea.ptr anywhere):
 /// it must be placed (sea-place-static) before concrete tools run it.
 bool isAbstract(ProgramOp program);

@@ -2190,6 +2190,9 @@ TYPICAL:
                                  #   structs; if abstract: tracking and
                                  #   fat-pointer metadata to memories, then
                                  #   place; widen (--widen-memory=k); expand
+                                 #   fills into cell stores (every memory
+                                 #   mode; without --lower a fill is
+                                 #   refused: vc.mem-fill); expand
                                  #   symbolic memsets (not with --seam);
                                  #   merge asserts, split wide accesses
                                  #   (kept whole with --seam --seam-wide),

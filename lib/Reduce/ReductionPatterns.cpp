@@ -52,7 +52,8 @@ static uint64_t freshSite(Operation *op) {
 }
 
 static bool isMemUpdate(Operation *op) {
-  return isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(op);
+  return isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, MemFillOp,
+             ResetModifiedOp>(op);
 }
 
 /// memory-bypass: an update's result -> its incoming memory.

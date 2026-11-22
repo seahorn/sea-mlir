@@ -237,6 +237,8 @@ void CheckPtrIndexPass::runOnOperation() {
       check(op, st.getAddr());
     else if (auto ms = dyn_cast<MemSetOp>(op))
       check(op, ms.getAddr());
+    else if (auto mf = dyn_cast<MemFillOp>(op))
+      check(op, mf.getAddr());
     else if (auto mv = dyn_cast<MemMoveOp>(op)) {
       check(op, mv.getAddr());
       check(op, mv.getSrcAddr());

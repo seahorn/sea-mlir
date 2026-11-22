@@ -320,6 +320,7 @@ void registerPasses() {
   registerPass([] { return createPlaceStaticPass(); });
   registerPass([] { return createScalarizeStructsPass(); });
   registerPass([] { return createExpandMemSetPass(); });
+  registerPass([] { return createExpandMemFillPass(); });
   registerPass([] { return createExpandSmallMemMovePass(); });
   registerPass([] { return createSplitCriticalEdgesPass(); });
   registerPass([] { return createSplitAtChecksPass(); });
@@ -425,6 +426,10 @@ void addVCLowerMemory(OpPassManager &prog, const VCLowerConfig &c) {
       llvm::report_fatal_error("sea-widen-memory: bad k");
     prog.addPass(std::move(widen));
   }
+  // fills as one store per cell (the VC encodes no fill: every memory mode
+  // sees stores): after widening, which packs a widened memory's fill data
+  // into words, so the stores have the final cell type
+  prog.addPass(createExpandMemFillPass());
   // short constant memmoves as explicit copies (exact): after the metadata
   // lowerings (a keyed companion memmove is expanded only with its data
   // memmove) and widening (word layouts are kept); before

@@ -145,6 +145,11 @@ std::unique_ptr<mlir::Pass> createScalarizeStructsPass();
 /// chain of stores (option max-length, default 16) with an explicit
 /// assume / assert of the bound.
 std::unique_ptr<mlir::Pass> createExpandMemSetPass();
+
+/// sea-expand-mem-fill: each sea.mem.fill -> one store per cell of the
+/// memory's cell type, in order (the VC encodes no fill;
+/// docs/design/MemFill.md).
+std::unique_ptr<mlir::Pass> createExpandMemFillPass();
 /// On the sea.program after sea-expand-memset (mode=assume): the bounded
 /// expansions, each a sea.assume(n <= K), a dictionary {count = <n>, bound
 /// = <K>} of i64 (K the largest; absent: none). Counted where the bound is

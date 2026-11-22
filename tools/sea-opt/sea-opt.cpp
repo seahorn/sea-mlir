@@ -40,6 +40,9 @@ TYPICAL:
   sea-opt p.mlir --sea-scalarize-structs  # struct values -> their leaves
   sea-opt p.mlir --sea-expand-memset      # symbolic-length memset -> bounded
                                           #   store chain + assume(n <= 16)
+  sea-opt p.mlir --sea-expand-mem-fill    # sea.mem.fill -> one store per cell
+                                          #   (cell type of the memory; the
+                                          #   VC encodes no fill: vc.mem-fill)
   sea-opt p.mlir --pass-pipeline='builtin.module(sea.program(sea-wrap-flags{mode=assume}))'
                                           # nsw/nuw promises -> assume|assert|drop
   sea-opt p.mlir --sea-widen-memory="k=8 report=true"

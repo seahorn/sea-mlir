@@ -99,7 +99,8 @@ void LowerTrackingPass::runOnOperation() {
   bool any = false;
   program.walk([&](Operation *op) {
     any = any || isTrackingUse(op);
-    if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(op))
+    if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, MemFillOp,
+            ResetModifiedOp>(op))
       unite(op->getOperand(0), op->getResult(0));
     if (auto br = dyn_cast<BranchOpInterface>(op))
       for (unsigned i = 0, n = op->getNumSuccessors(); i < n; ++i) {
@@ -187,7 +188,8 @@ void LowerTrackingPass::runOnOperation() {
         toErase.push_back(op);
         continue;
       }
-      if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(op) &&
+      if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, MemFillOp,
+              ResetModifiedOp>(op) &&
           needs(op->getOperand(0))) {
         Value s = shadow.lookup(op->getOperand(0));
         Value data = op->getResult(0);
@@ -201,8 +203,8 @@ void LowerTrackingPass::runOnOperation() {
         Value mark;
         if (isa<ResetModifiedOp>(op)) {
           mark = cst(loc, i8, 0);
-        } else if (isa<StoreOp>(op)) {
-          mark = cst(loc, i8, 1);
+        } else if (isa<StoreOp, MemFillOp>(op)) {
+          mark = cst(loc, i8, 1); // writes at least one cell
         } else {
           Value len = isa<MemSetOp>(op)    ? cast<MemSetOp>(op).getLen()
                       : isa<MemMoveOp>(op) ? cast<MemMoveOp>(op).getLen()

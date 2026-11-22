@@ -62,7 +62,7 @@ void ApplyTrackingPass::runOnOperation() {
   DominanceInfo dom(program);
   bool ok = true;
   auto isUpdate = [](Operation *op) {
-    return isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp>(op);
+    return isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, MemFillOp>(op);
   };
   // Every update a marker can reach must come after it on every path (be
   // dominated by it): then whether an update is tracked does not depend on
@@ -98,7 +98,7 @@ void ApplyTrackingPass::runOnOperation() {
 
   MLIRContext *ctx = &getContext();
   program.walk([&](Operation *op) {
-    if (!isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp>(op))
+    if (!isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, MemFillOp>(op))
       return;
     // the markers dominating op lie on its dominator path: take the last
     Operation *closest = nullptr;

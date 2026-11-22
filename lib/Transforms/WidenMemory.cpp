@@ -19,7 +19,9 @@
 //     constant offsets that are multiples of k; select / block arguments
 //     whose inputs all are; a sea.segment (placed object) whose base is);
 //   - memset / memmove / memhavoc: the length is a constant multiple of k
-//     (run sccp first: sea-vc-lower does).
+//     (run sccp first: sea-vc-lower does);
+//   - mem.fill: a multiple of k bytes of data (a fill that ends inside a
+//     word keeps the memory bytes, as a narrow store does).
 // Each class gets the largest k that it qualifies for among k = K, K/2,
 // ..., 2 (K: the option `k`, the maximum); with `per-class=false` only
 // K is tried (one word size for the program). A class that qualifies for
@@ -35,8 +37,9 @@
 //   Produces: every member of a class widened to k has type
 //     !sea.mem<I, i(8k), aligned> (checked); a sea.mem.const at the root
 //     of a widened class gets the word of k copies of its byte (exact: every
-//     cell of the memory holds the byte); no other op changes (memset's
-//     value is still one byte, repeated per word).
+//     cell of the memory holds the byte); a sea.mem.fill of a widened
+//     memory gets its bytes packed into words (little-endian); no other op
+//     changes (memset's value is still one byte, repeated per word).
 //   Reports: the counters (kWidenMemoryStatsAttr on the program): k (the
 //     maximum), classes (memory classes), widened-8 / widened-4 /
 //     widened-2 (classes widened to each size; other sizes as
@@ -179,6 +182,24 @@ bool WidenMemoryPass::provenAligned(Value v, unsigned depth) {
   return r;
 }
 
+/// The bytes of `data` (i8 cells, a multiple of k of them) as k-byte words,
+/// little-endian: byte i of word j is byte j*k + i of the data.
+static DenseIntElementsAttr packFillData(DenseIntElementsAttr data,
+                                         uint64_t k) {
+  SmallVector<APInt> bytes(data.getValues<APInt>());
+  unsigned bits = 8 * k;
+  SmallVector<APInt> words;
+  for (size_t j = 0; j < bytes.size(); j += k) {
+    APInt w = APInt::getZero(bits);
+    for (uint64_t i = 0; i < k; ++i)
+      w.insertBits(bytes[j + i], 8 * i);
+    words.push_back(w);
+  }
+  auto t = RankedTensorType::get({int64_t(words.size())},
+                                 IntegerType::get(data.getContext(), bits));
+  return DenseIntElementsAttr::get(t, words);
+}
+
 /// An exact byte memory (i8 cells, byte addresses): a candidate.
 static bool isByteMemory(Value v) {
   auto t = cast<MemType>(v.getType());
@@ -243,6 +264,16 @@ void WidenMemoryPass::analyze(
                op);
       else if (!aligned(mh.getAddr(), std::nullopt))
         refuse(mh.getMem(), "a memhavoc not provably word-aligned", op);
+    } else if (auto mf = dyn_cast<MemFillOp>(op)) {
+      // whole aligned words only, as a store: a fill that starts or ends
+      // inside a word keeps the memory bytes (no partial word write)
+      if (mf.getNumCells() % wordBytes != 0)
+        refuse(mf.getMem(),
+               "a fill length not a multiple of a word (it ends inside "
+               "one)",
+               op);
+      else if (!aligned(mf.getAddr(), std::nullopt))
+        refuse(mf.getMem(), "a fill not provably word-aligned", op);
     } else if (isa<PrintMemOp>(op)) {
       // a strong print reads bytes out of whatever cells the memory has (no
       // alignment needed): never a reason to keep bytes
@@ -283,7 +314,8 @@ void WidenMemoryPass::runOnOperation() {
           }
   });
   getOperation().walk([&](Operation *op) {
-    if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, ResetModifiedOp>(op))
+    if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, MemFillOp,
+            ResetModifiedOp>(op))
       unite(op->getOperand(0), op->getResult(0));
     if (auto mv = dyn_cast<MemMoveOp>(op))
       unite(mv.getSrc(), mv.getMem());
@@ -371,6 +403,10 @@ void WidenMemoryPass::runOnOperation() {
       }
       mc.getValueMutable().assign(word);
     }
+    // a fill's bytes, packed into the words they make (little-endian, as
+    // a k-byte store of them)
+    if (auto mf = v.getDefiningOp<MemFillOp>())
+      mf.setDataAttr(packFillData(mf.getData(), k));
     if (first) {
       ++widened[k];
       if (report) {
@@ -390,6 +426,8 @@ void WidenMemoryPass::runOnOperation() {
     bool bad = t.getCellUnits() != it->second || !t.isWordLayout();
     if (auto mc = v.getDefiningOp<MemConstOp>())
       bad |= mc.getValue().getType() != t.getCell();
+    if (auto mf = v.getDefiningOp<MemFillOp>())
+      bad |= mf.getData().getElementType() != t.getCell();
     if (bad) {
       (void)postconditionFailed("sea-widen-memory",
                                 "a member of a widened memory not widened",
