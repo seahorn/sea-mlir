@@ -17,7 +17,7 @@ import subprocess
 NO_FOLD = "--vc-fold-top-eqs=false"
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def knows(binary, name="vc-fold-top-eqs"):
     """Whether `binary --help-hidden` lists the option `name`."""
     try:
