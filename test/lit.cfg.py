@@ -59,6 +59,7 @@ llvm_config.add_tool_substitutions(
         "sea-join-cases-test",
         "sea-int-ranges-test",
         "sea-diff-decider-test",
+        "sea-fold-top-eqs-test",
     ],
     [sea_test_bin_dir],
 )

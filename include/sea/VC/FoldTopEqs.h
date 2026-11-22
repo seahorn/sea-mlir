@@ -45,7 +45,10 @@ struct FoldTopEqsStats {
   /// rounds that changed the query
   uint64_t rounds = 0;
   /// concats of ites on one condition (and numerals) made ites of concats
-  uint64_t hoisted = 0;
+  /// (distinct concat nodes, the inner ones of a hoist included); top-level
+  /// concats the hoist applies to but the mode refused (ConcatIte::Numeral:
+  /// a leaf not a numeral, or more new ites than the parts have)
+  uint64_t hoisted = 0, hoistRefused = 0;
   /// facts not used: masked (`bvand(x, m) = c`), a concat part of unknown
   /// width
   uint64_t skippedMasked = 0, skippedUntyped = 0;
@@ -53,12 +56,35 @@ struct FoldTopEqsStats {
   bool roundCap = false;
 };
 
+/// The concat-ite hoist of the fold (docs/design/FoldTopEqs.md, "The
+/// concat-ite hoist"): concat(p1, .., pn) whose parts are numerals or ites
+/// on one condition c becomes ite(c, concat(then-parts),
+/// concat(else-parts)), again on the arms.
+enum class ConcatIte {
+  Off,
+  /// only when every leaf of the result is a concat of numerals and the
+  /// result has no more ite nodes than the parts' ite spines (the default)
+  Numeral,
+  /// wherever it applies (leaves of any kind)
+  All,
+};
+
+/// \p e with the concat-ite hoist applied at every concat, under \p mode;
+/// counts into \p st (hoisted, hoistRefused). Exact: concat is a function
+/// of its parts. Memoized per concat node: linear in the distinct concats
+/// it makes.
+expr::Expr hoistConcatItes(const expr::Expr &e, ConcatIte mode,
+                           FoldTopEqsStats &st);
+
 class TopEqFolder {
 public:
   using Simplify = std::function<expr::Expr(expr::Expr)>;
   /// \p simplify: the normalization run after each substitution
-  explicit TopEqFolder(Simplify simplify, unsigned maxRounds = 64)
-      : simplify(std::move(simplify)), maxRounds(maxRounds) {}
+  explicit TopEqFolder(Simplify simplify,
+                       ConcatIte concatIte = ConcatIte::Numeral,
+                       unsigned maxRounds = 64)
+      : simplify(std::move(simplify)), concatIte(concatIte),
+        maxRounds(maxRounds) {}
 
   /// \p query with every fact substituted; the facts themselves kept
   expr::Expr fold(expr::Expr query);
@@ -86,6 +112,7 @@ private:
                   const Map &m, Cache &cache, bool root);
 
   Simplify simplify;
+  ConcatIte concatIte;
   unsigned maxRounds;
   FoldTopEqsStats st;
   /// every key and its value (all rounds)

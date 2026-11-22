@@ -1,0 +1,16 @@
+// The concat-ite hoist of --vc-fold-top-eqs (hoistConcatItes,
+// include/sea/VC/FoldTopEqs.h; docs/design/FoldTopEqs.md): a DAG of shared
+// ite arms is hoisted once per distinct concat, not once per path, and does
+// not grow; the numeral mode refuses a non-numeral leaf and a hoist that
+// makes more ites than the parts hold (counted); every hoist z3-exact.
+RUN: sea-fold-top-eqs-test | FileCheck %s
+CHECK: shared: mode=numeral concat-ite=47 refused=0
+CHECK: test: shared ok
+CHECK: leaves: numeral concat-ite=0 refused=1
+CHECK: test: leaves ok
+CHECK: budget: numeral concat-ite=0 refused=1
+CHECK: test: budget ok
+CHECK: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

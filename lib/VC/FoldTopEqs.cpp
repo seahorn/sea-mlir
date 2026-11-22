@@ -89,37 +89,110 @@ Expr substMap(const Expr &e, const Map &m, Map &cache, uint64_t *uses) {
   return cache.at(e.get()).second;
 }
 
-/// concat(p1, .., pn) whose parts are numerals or ites on one condition c
-/// -> ite(c, concat(then-parts), concat(else-parts)), again on the arms
-/// (exact: concat is a function of its parts). The decider of the Ackermann
-/// lowering takes ite leaves, not concat ones.
-Expr hoistConcat(const Expr &t, uint64_t &hoisted) {
-  Expr c;
-  for (size_t i = 0; i < t->arity(); ++i) {
-    ENode *p = t->arg(i);
-    if (isNumeral(Expr(p)))
-      continue;
-    if (!isOpX<ITE>(p) || (c && p->arg(0) != c.get()))
-      return t;
-    c = Expr(p->arg(0));
-  }
-  if (!c)
-    return t;
-  llvm::SmallVector<Expr, 4> th, el;
-  for (size_t i = 0; i < t->arity(); ++i) {
-    ENode *p = t->arg(i);
-    th.push_back(isOpX<ITE>(p) ? Expr(p->arg(1)) : Expr(p));
-    el.push_back(isOpX<ITE>(p) ? Expr(p->arg(2)) : Expr(p));
-  }
-  ++hoisted;
-  ExprFactory &efac = t->efac();
-  Expr a = hoistConcat(efac.mkNary(t->op(), th.begin(), th.end()), hoisted);
-  Expr b = hoistConcat(efac.mkNary(t->op(), el.begin(), el.end()), hoisted);
-  return mk<ITE>(c, a, b);
-}
+/// The concat-ite hoist (ConcatIte), memoized per concat node over one
+/// hoistConcatItes call. A memo key is held: the concat of the arms is made
+/// here and a freed node's address may be reused by another node.
+class ConcatIteHoister {
+public:
+  ConcatIteHoister(ConcatIte mode, FoldTopEqsStats &st) : mode(mode), st(st) {}
 
-/// hoistConcat at every concat of \p e
-Expr hoistConcats(const Expr &e, uint64_t &hoisted) {
+  /// the hoisted form of the concat \p t (t itself when the hoist does not
+  /// apply or the mode refuses it)
+  Expr top(const Expr &t) {
+    if (!condOf(t))
+      return t;
+    // the ite nodes the parts hold along their ite spines: the bound on the
+    // ites a Numeral hoist may make (it does not grow the term)
+    budget = UINT64_MAX;
+    if (mode == ConcatIte::Numeral) {
+      std::unordered_set<ENode *> seen;
+      std::vector<ENode *> stack(t->args_begin(), t->args_end());
+      while (!stack.empty()) {
+        ENode *n = stack.back();
+        stack.pop_back();
+        if (!isOpX<ITE>(n) || !seen.insert(n).second)
+          continue;
+        stack.push_back(n->arg(1));
+        stack.push_back(n->arg(2));
+      }
+      budget = seen.size();
+    }
+    made = kept = 0;
+    Expr r = hoist(t);
+    if (!r) {
+      ++st.hoistRefused;
+      return t;
+    }
+    st.hoisted += kept;
+    return r;
+  }
+
+private:
+  /// the condition c when every part of the concat \p t is a numeral or an
+  /// ite on c, and one is an ite; else null (\p other: a part is neither)
+  static Expr condOf(const Expr &t, bool *other = nullptr) {
+    Expr c;
+    for (size_t i = 0; i < t->arity(); ++i) {
+      ENode *p = t->arg(i);
+      if (isNumeral(Expr(p)))
+        continue;
+      if (!isOpX<ITE>(p) || (c && p->arg(0) != c.get())) {
+        if (other)
+          *other = true;
+        return Expr();
+      }
+      c = Expr(p->arg(0));
+    }
+    return c;
+  }
+
+  /// \p t hoisted; null: refused (Numeral: a leaf not a concat of
+  /// numerals, or over the budget)
+  Expr hoist(const Expr &t) {
+    if (auto it = memo.find(t.get()); it != memo.end())
+      return it->second.second;
+    bool other = false;
+    Expr c = condOf(t, &other);
+    Expr res;
+    if (!c)
+      // a leaf: numerals only, or a part neither a numeral nor an ite on
+      // the condition of the others (Numeral refuses it)
+      res = other && mode == ConcatIte::Numeral ? Expr() : t;
+    else if (++made <= budget) {
+      llvm::SmallVector<Expr, 4> th, el;
+      for (size_t i = 0; i < t->arity(); ++i) {
+        ENode *p = t->arg(i);
+        th.push_back(isOpX<ITE>(p) ? Expr(p->arg(1)) : Expr(p));
+        el.push_back(isOpX<ITE>(p) ? Expr(p->arg(2)) : Expr(p));
+      }
+      ExprFactory &efac = t->efac();
+      Expr a = hoist(efac.mkNary(t->op(), th.begin(), th.end()));
+      Expr b = a ? hoist(efac.mkNary(t->op(), el.begin(), el.end())) : Expr();
+      if (a && b) {
+        ++kept;
+        res = mk<ITE>(c, a, b);
+      }
+    }
+    // a refusal over the budget is not memoized: another top concat has
+    // its own budget
+    if (res || made <= budget)
+      memo.emplace(t.get(), std::make_pair(t, res));
+    return res;
+  }
+
+  ConcatIte mode;
+  FoldTopEqsStats &st;
+  Map memo;
+  /// the current top concat: its bound, the concats it tried, those it
+  /// made ites (counted when it is kept)
+  uint64_t budget = 0, made = 0, kept = 0;
+};
+} // namespace
+
+Expr hoistConcatItes(const Expr &e, ConcatIte mode, FoldTopEqsStats &st) {
+  if (mode == ConcatIte::Off)
+    return e;
+  ConcatIteHoister ch(mode, st);
   Map cache;
   std::vector<std::pair<ENode *, bool>> stack{{e.get(), false}};
   while (!stack.empty()) {
@@ -143,12 +216,13 @@ Expr hoistConcats(const Expr &e, uint64_t &hoisted) {
     Expr r =
         changed ? n->efac().mkNary(n->op(), kids.begin(), kids.end()) : Expr(n);
     if (isOpX<BCONCAT>(r))
-      r = hoistConcat(r, hoisted);
+      r = ch.top(r);
     cache.emplace(n, std::make_pair(Expr(n), r));
   }
   return cache.at(e.get()).second;
 }
 
+namespace {
 bool isVar(const Expr &e) {
   return bind::isBoolConst(e) || op::bv::isBvConst(e);
 }
@@ -361,7 +435,7 @@ Expr TopEqFolder::fold(Expr query) {
                          : keep(conj[i], own[i], facts, cache, true));
     Expr q = simplify(boolop::land(next, query->efac()));
     uint64_t hoisted = st.hoisted;
-    Expr h = hoistConcats(q, st.hoisted);
+    Expr h = hoistConcatItes(q, concatIte, st);
     if (st.hoisted != hoisted)
       q = simplify(h);
     if (q == query)

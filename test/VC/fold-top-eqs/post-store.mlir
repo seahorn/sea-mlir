@@ -10,6 +10,8 @@
 // NOREACH: --vc-fold-top-eqs: not with --reach
 // RUN: not sea-vc %s --program=trail --lower --seam --vc-fold-top-eqs --ack-relax=all 2>&1 | FileCheck %s --check-prefix=NORELAX
 // NORELAX: --vc-fold-top-eqs: not with --ack-relax
+// RUN: not sea-vc %s --program=fold --lower --seam --vc-fold-concat-ite=all 2>&1 | FileCheck %s --check-prefix=NOFOLD
+// NOFOLD: --vc-fold-concat-ite needs --vc-fold-top-eqs
 // RUN: not sea-vc %s --program=fold --vc-fold-top-eqs --seam-simplify=0 --lower --seam 2>&1 | FileCheck %s --check-prefix=NOSIMP
 // sea-vc --vc-fold-top-eqs (docs/design/FoldTopEqs.md).
 //

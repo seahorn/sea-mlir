@@ -839,6 +839,22 @@ static cl::opt<bool> vcFoldTopEqs(
              "by default (docs/design/FoldTopEqs.md)"),
     cl::init(false));
 
+static cl::opt<sea::ConcatIte> vcFoldConcatIte(
+    "vc-fold-concat-ite",
+    cl::desc("With --vc-fold-top-eqs: the concat-ite hoist of each round, "
+             "concat of numerals and ites on one condition -> ite of concats "
+             "(counted vc.fold-top-eqs concat-ite=, refused "
+             "concat-ite-refused=; docs/design/FoldTopEqs.md, \"The "
+             "concat-ite hoist\")"),
+    cl::values(clEnumValN(sea::ConcatIte::Off, "off", "no hoist"),
+               clEnumValN(sea::ConcatIte::Numeral, "numeral",
+                          "only when every leaf is a concat of numerals and "
+                          "it makes no more ites than the parts have "
+                          "(default)"),
+               clEnumValN(sea::ConcatIte::All, "all",
+                          "wherever it applies (leaves of any kind)")),
+    cl::init(sea::ConcatIte::Numeral));
+
 static cl::opt<bool> modelTrailPlantSkip(
     "x-model-trail-plant-skip", cl::Hidden,
     cl::desc("Test only: with --vc-fold-top-eqs, the model is not extended "
@@ -2672,7 +2688,10 @@ TYPICAL:
                                  #   extends the model (exact; not with
                                  #   --reach or --ack-relax; off by default;
                                  #   --model-trail-out=<file>: the trail as
-                                 #   JSON lines, docs/design/FoldTopEqs.md)
+                                 #   JSON lines; --vc-fold-concat-ite=
+                                 #   numeral|all|off: where the concat-ite
+                                 #   hoist fires, default numeral,
+                                 #   docs/design/FoldTopEqs.md)
   sea-vc p.mlir --seam --vc-defs=hidden  # named address sums, after
                                  #   Ackermann: index sums that share a
                                  #   prefix (a parser cursor) become fresh
@@ -3234,12 +3253,15 @@ OUTPUT (stdout, `key: value` lines):
   vc.ack-relax-time: <s>          (--ack-relax-mode=incremental only: the
                                   rounds, the fallback and the assertions)
   vc.fold-top-eqs: facts=<n> term=<n> split=<n> bool=<n> uses=<n>
-      rounds=<n> concat-ite=<n> skipped-masked=<n> skipped-untyped=<n>
+      rounds=<n> concat-ite=<n> concat-ite-refused=<n> skipped-masked=<n>
+      skipped-untyped=<n>
                                   (--vc-fold-top-eqs: keys substituted, by
                                   kind (T = c, concat parts, Boolean
                                   constants); operand uses replaced; rounds
                                   that changed the query; concats of ites
-                                  on one condition made ites; facts not
+                                  on one condition made ites (distinct
+                                  nodes), top concats the
+                                  --vc-fold-concat-ite mode refused; facts not
                                   used: bvand(x, m) = c, a concat part of
                                   unknown width; warning
                                   vc.fold-top-eqs-rounds: the round bound
@@ -4997,6 +5019,8 @@ int main(int argc, char **argv) {
                 "block guards the trail may eliminate)");
   if (!modelTrailOut.empty() && !vcFoldTopEqs)
     return fail("--model-trail-out needs --vc-fold-top-eqs");
+  if (vcFoldConcatIte.getNumOccurrences() && !vcFoldTopEqs)
+    return fail("--vc-fold-concat-ite needs --vc-fold-top-eqs");
   if (reach && sinkAssumes)
     return fail("--reach: --sink-assumes moves every assume before the "
                 "assertion, which changes what reaches a target");
@@ -6379,7 +6403,8 @@ int main(int argc, char **argv) {
         return fail("--vc-fold-top-eqs needs --simplify (on under --seam): "
                     "the substituted query is simplified again");
       sem.setTrailContext("fold-top-eqs");
-      sea::TopEqFolder folder([&](expr::Expr e) { return sem.simplify(e); });
+      sea::TopEqFolder folder([&](expr::Expr e) { return sem.simplify(e); },
+                              vcFoldConcatIte);
       query = folder.fold(query);
       if (originsOn)
         origins = origins.through(
@@ -7717,6 +7742,7 @@ int main(int argc, char **argv) {
             .kv("uses", f.uses)
             .kv("rounds", f.rounds)
             .kv("concat-ite", f.hoisted)
+            .kv("concat-ite-refused", f.hoistRefused)
             .kv("skipped-masked", f.skippedMasked)
             .kv("skipped-untyped", f.skippedUntyped);
         r.line("vc.model-trail")

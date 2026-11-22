@@ -54,11 +54,49 @@ defining conjunct stays, rebuilt with its own T kept (`T = c` never
 becomes `c = c`); the other facts are substituted inside it too. Then the
 whole query is simplified again (the same rewriter, so ites, read guards
 and comparisons fold), concats whose parts are numerals and ites on one
-condition become ites of concats (`concat-ite`; the Ackermann decider
-takes the leaves of ites, not of concats), and the round repeats until the
-query does not change, collecting new facts each round (`rounds`). A bound
-of 64 rounds stops it with the warning `vc.fold-top-eqs-rounds` (exact
-either way).
+condition become ites of concats (`concat-ite`, below), and the round
+repeats until the query does not change, collecting new facts each round
+(`rounds`). A bound of 64 rounds stops it with the warning
+`vc.fold-top-eqs-rounds` (exact either way).
+
+### The concat-ite hoist
+
+`concat(p1, .., pn)` whose parts are numerals or ites on one condition c
+becomes `ite(c, concat(then-parts), concat(else-parts))`, again on the
+arms. The Ackermann decider takes the leaves of ites, not of concats: a
+wide load of cells that conditional stores set to numerals becomes an ite
+of numerals, and an index made of it is decided leaf by leaf. Exact:
+concat is a function of its parts. The hoist is memoized per concat node
+(the key held: the arm concats are made by the hoist, and a freed node's
+address can come back as another node), so its work is linear in the
+distinct concats it makes; `concat-ite` counts those.
+
+`--vc-fold-concat-ite` selects where it fires:
+
+- `numeral` (default): only when every leaf of the result is a concat of
+  numerals and the hoist makes no more ites than the parts hold along
+  their ite spines (no growth). A top concat it refuses is counted
+  (`concat-ite-refused`).
+- `all`: wherever it applies, leaves of any kind.
+- `off`.
+
+Why `numeral`. On the step jobs below the pair counts are the same under
+`numeral` and `all` (436 / 436 / 161 / 146); the win came from one or two
+concats whose leaves are numerals (`numeral` hoists 2 / 1 / 0 / 0, `all`
+92 / 59 / 47 / 20), and `off` leaves 608 pairs on step-vs-frag and
+step-vs-cancel. On the large firedancer jobs `all` changes no pair count
+and costs memory: on h2fc-rx-data-reach1 it hoists 4010 concats with
+non-numeral leaves, the indices that hold them reach the decider as ites
+of many leaves (328646 pairs hit its leaf budget, none without), the
+re-simplification of the rebuilt query takes 30 s more, and sea-vc's peak
+RSS before the solver is 11.5 GB against 9.7 GB (`numeral`) and 5.7 GB
+without the fold. On h2fc-blowup-rx-end the lowering alone grew by 8 GB
+(19.0 GB peak against 12.4 GB with `numeral`), past the 16 GB address
+space of the benchmark runs: sea-vc stopped with an out-of-memory error
+in the Ackermann lowering. Without the memo the hoist walked the ite
+DAG as a tree: 2578556 hoists counted on reach1 for 4010 distinct concats.
+Open: whether a non-numeral hoist pays off elsewhere (`all` keeps it
+selectable).
 
 **2. The elimination** (after the Ackermann lowering, before `--vc-defs`;
 `TopConstEliminator`). A conjunct that defines uninterpreted constants as
@@ -160,13 +198,15 @@ against the counters and the `--smt2` query).
 ## Counters
 
 `vc.fold-top-eqs: facts= term= split= bool= uses= rounds= concat-ite=
-skipped-masked= skipped-untyped=` and `vc.model-trail: cells= defs= rounds=`
+concat-ite-refused= skipped-masked= skipped-untyped=` and `vc.model-trail: cells= defs= rounds=`
 (stdout, stderr with `--smt2`):
 
 - `facts`: distinct keys registered (facts found) (term + split + bool);
 - `uses`: (parent node, operand) pairs replaced, summed over the rounds;
 - `rounds`: rounds of step 1 that changed the query;
-- `concat-ite`: concats made ites;
+- `concat-ite`: distinct concats made ites, inner ones included;
+  `concat-ite-refused`: top concats the hoist applies to and
+  `--vc-fold-concat-ite=numeral` refused;
 - `cells` / `defs`: trail entries, Ackermann reads / other constants;
   `rounds`: rounds of step 2 that eliminated a constant.
 
@@ -192,9 +232,23 @@ pair by pair: the decider does not reach the leaves of an ite under those
 operators, and a decider that lifted ites through them would settle more
 pairs. That is the Ackermann lowering's work, not this fold's.
 
+## Memory
+
+The fold rebuilds every ancestor of a substituted read, which on the large
+jobs is most of the query, and simplifies the rebuilt query again; the
+query before the fold stays alive (the side conditions and guarantees
+hold it). On h2fc-rx-data-reach1 (`numeral`) this is +3.0 GB of RSS
+during the fold (substitution 1.25 GB, re-simplification 1.6 GB), and the
+peak before the solver is 9.7 GB against 5.7 GB without the fold; on
+h2fc-blowup-rx-end 12.4 GB against 9.5 GB. Under a fixed address-space
+limit this is room the solver no longer has. Clearing the rewriter's cache
+around the fold saved about 0.6 GB of the peak on reach1 (measured, not
+built in).
+
 ## Open
 
 - The default (off): not measured beyond the jobs above.
+- The fold's memory on the large jobs (section Memory).
 - Definitions x = e with e not a numeral (solve-eqs proper): the trail
   takes them, evaluated in reverse order.
 - The masked facts.
