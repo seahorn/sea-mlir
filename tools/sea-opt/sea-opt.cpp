@@ -81,15 +81,26 @@ TYPICAL:
                                           #   (memories: sea.mem.nondet;
                                           #   pointers: null); region ops
                                           #   (seaimp.load / store / memset
-                                          #   / memmove / memhavoc / alloca)
-                                          #   -> the sea op on the chain;
+                                          #   / memmove / memhavoc /
+                                          #   is_modified / reset_modified
+                                          #   / print.mem / alloca / malloc
+                                          #   / global) -> the sea op on the
+                                          #   chain; no get / set of a
+                                          #   memory variable (verifier);
                                           #   sea-run needs this first
                                           #   (docs/design/SeaImp.md)
   sea-opt p.mlir --sea-erase-mem-ssa      # the program's one memory chain ->
                                           #   seaimp region %mem (inverse of
                                           #   the above); errors
-                                          #   erase-mem-ssa.non-linear /
-                                          #   .regions (several memories)
+                                          #   erase-mem-ssa.non-linear (an
+                                          #   earlier version used, two
+                                          #   memory block arguments),
+                                          #   .regions (several memories),
+                                          #   .unsupported (the memory does
+                                          #   not start at one
+                                          #   sea.mem.nondet in the entry
+                                          #   block: sea.mem.const, a second
+                                          #   root, none)
   sea-opt p.mlir --sea-vc-lower           # what sea-vc --lower runs (placed input)
   sea-opt p.mlir --sea-vc-lower='reach=true'
                                           # what sea-vc --lower --reach runs:

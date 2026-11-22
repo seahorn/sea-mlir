@@ -9,7 +9,8 @@
 
 !m = !sea.mem<!sea.ptr<64>, i8>
 
-// Section 10, example 2: one store on each path, a load at the join. The
+// int o; int *p = &o; *p = 5; if (c) *p = 7; assert(*p >= 5): one store
+// on each path, a load at the join. The
 // region starts as sea.mem.nondet with the variable's name and site; the
 // join gets a memory block argument.
 // CHECK-LABEL: sea.program @ptr
@@ -41,8 +42,9 @@ sea.program @ptr {
   sea.halt
 }
 
-// Section 10, example 3: bulk ops form a linear chain; memmove reads and
-// writes the same version; memhavoc keeps its site.
+// memset(buf, 0, 16); memcpy(dst, buf, 8); havoc(buf, 16): bulk ops form
+// a linear chain; memmove reads and writes the same version; memhavoc
+// keeps its site.
 // CHECK-LABEL: sea.program @bulk
 // CHECK-NEXT: %[[M0:.*]] = sea.mem.nondet "mem" [0]
 // CHECK: %[[M1:.*]] = sea.memset %[[M0]][%[[BUF:.*]]], %{{.*}}, %{{.*}} inplace : !sea.mem<!sea.ptr<64>, i8>
@@ -66,8 +68,9 @@ sea.program @bulk {
   sea.halt
 }
 
-// Section 10, example 4: a memmove across two regions reads the source's
-// version and updates the destination's chain only.
+// memcpy(dst, buf, 8) with dst in the region "heap" and buf in "stack": a
+// memmove across two regions reads the source's version and updates the
+// destination's chain only.
 // CHECK-LABEL: sea.program @two_regions
 // CHECK-DAG: %[[H0:.*]] = sea.mem.nondet "heap" [0]
 // CHECK-DAG: %[[S0:.*]] = sea.mem.nondet "stack" [1]

@@ -6,6 +6,18 @@
 // sea-erase-mem-ssa on the plain sea programs: the same verdicts.
 // RUN: sea-opt %s --sea-erase-mem-ssa | sea-vc - --lower --program=sea_safe | FileCheck %s --check-prefix=UNSAT
 // RUN: sea-opt %s --sea-erase-mem-ssa | sea-vc - --lower --program=sea_bug | FileCheck %s --check-prefix=SAT
+// The verdicts alone do not pin the property: the queries must be the same.
+// Each seaimp program against its sea twin, and each sea program against
+// its sea-erase-mem-ssa output.
+// REQUIRES: z3
+// DEFINE: %{ed} = %python %sea_src_root/utils/encoding-diff.py --sea-vc %sea_vc --z3 %z3
+// RUN: sea-opt %s --sea-erase-mem-ssa -o %t.erased.mlir
+// RUN: %{ed} %s %s --left-flags=--program=imp_safe --right-flags=--program=sea_safe | FileCheck %s --check-prefix=IDENT
+// RUN: %{ed} %s %s --left-flags=--program=imp_bug --right-flags=--program=sea_bug | FileCheck %s --check-prefix=IDENT
+// RUN: %{ed} %s %t.erased.mlir --left-flags=--program=sea_safe --right-flags=--program=sea_safe | FileCheck %s --check-prefix=IDENT
+// RUN: %{ed} %s %t.erased.mlir --left-flags=--program=sea_bug --right-flags=--program=sea_bug | FileCheck %s --check-prefix=IDENT
+// IDENT: result: identical
+// IDENT: total: identical=1
 
 // A region (a memory variable) gives the verdicts of the same program
 // written with explicit memory SSA (docs/design/SeaImp.md).

@@ -1,5 +1,14 @@
 // RUN: sea-opt %s --sea-erase-mem-ssa | FileCheck %s
 // RUN: sea-opt %s --sea-erase-mem-ssa | sea-opt --sea-lower-seaimp | FileCheck %s --check-prefix=LOW
+// The VC of each program with an assert is the original's (erase, then
+// sea-vc --lower): the region forms of tracking, box reads, unreachable code.
+// DEFINE: %{ed} = %python %sea_src_root/utils/encoding-diff.py --sea-vc %sea_vc --z3 %z3
+// RUN: sea-opt %s --sea-erase-mem-ssa -o %t.erased.mlir
+// RUN: %if z3 %{ %{ed} %s %t.erased.mlir --left-flags=--program=tracking --right-flags=--program=tracking | FileCheck %s --check-prefix=IDENT %}
+// RUN: %if z3 %{ %{ed} %s %t.erased.mlir --left-flags=--program=box --right-flags=--program=box | FileCheck %s --check-prefix=IDENT %}
+// RUN: %if z3 %{ %{ed} %s %t.erased.mlir --left-flags=--program=unreachable --right-flags=--program=unreachable | FileCheck %s --check-prefix=IDENT %}
+// RUN: %if z3 %{ %{ed} %s %t.erased.mlir --left-flags=--program=ptr --right-flags=--program=ptr | FileCheck %s --check-prefix=IDENT %}
+// IDENT: result: identical
 
 // sea-erase-mem-ssa: the Mem-SSA chain of the program's memory becomes the
 // region %mem; sea-lower-seaimp builds the chain again
@@ -7,9 +16,10 @@
 
 !m = !sea.mem<!sea.ptr<64>, i8>
 
-// Section 10, example 2, written in sea. The sea.mem.nondet in the entry
-// block becomes the variable (name and site); the join's memory argument
-// and the branch operands go away; the allocation names the region.
+// int o; int *p = &o; *p = 5; if (c) *p = 7; assert(*p >= 5), written in
+// sea. The sea.mem.nondet in the entry block becomes the variable (name and
+// site); the join's memory argument and the branch operands go away; the
+// allocation names the region.
 // CHECK-LABEL: sea.program @ptr
 // CHECK-NEXT: %[[MEM:.*]] = seaimp.var "mem" [0] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
 // CHECK-NOT: sea.mem.nondet
@@ -48,8 +58,8 @@ sea.program @ptr {
   sea.halt
 }
 
-// Section 10, example 3: bulk ops; memmove reads and writes one region;
-// memhavoc keeps its site.
+// memset(buf, 0, 16); memcpy(dst, buf, 8); havoc(buf, 16): bulk ops;
+// memmove reads and writes one region; memhavoc keeps its site.
 // CHECK-LABEL: sea.program @bulk
 // CHECK: seaimp.memset %[[MEM:.*]][%{{.*}}], %{{.*}}, %{{.*}} : !seaimp.var
 // CHECK-NEXT: seaimp.memmove %[[MEM]][%{{.*}}], %[[MEM]][%{{.*}}], %{{.*}} src_align 8 : !seaimp.var
