@@ -90,6 +90,9 @@ struct JobOptions {
   /// the pointer mode resolved on the input (--ptr-mode for each part,
   /// which sees a lowered program)
   std::string ptrMode;
+  /// the parts' solver and why (`check-inb.solver:`), and the read-only
+  /// array mode when the job chose it (partDefaults)
+  std::string solverName, solverReason, roArraysNote;
 };
 
 /// What one part's run said.
@@ -341,6 +344,50 @@ inline bool partArguments(llvm::ArrayRef<const char *> args,
   return true;
 }
 
+/// The defaults of the parts' solver (docs/design/CheckInb.md, "The parts'
+/// solver"), applied to \p args (the parts' options, partArguments'
+/// output): the solver is Yices when the binary has it (\p haveYices), else
+/// z3 (said in \p reason); an explicit --solver= of the command line wins
+/// and is passed through. With z3, `--ro-arrays=uf` unless the command line
+/// gave --ro-arrays=. It is exact and cuts z3's time on the parts' read-only
+/// arrays; it is not passed for Yices and Bitwuzla, which handle the arrays
+/// themselves (not measured with the option). \p roNote: what happened to
+/// --ro-arrays.
+inline void partDefaults(std::vector<std::string> &args, bool haveYices,
+                         std::string &solver, std::string &reason,
+                         std::string &roNote) {
+  std::string explicitRo;
+  bool hasSolver = false, hasRo = false;
+  for (const std::string &a : args) {
+    llvm::StringRef r(a);
+    if (r.consume_front("--solver=")) {
+      solver = r.str();
+      hasSolver = true;
+    } else if (r.consume_front("--ro-arrays=")) {
+      explicitRo = r.str();
+      hasRo = true;
+    }
+  }
+  if (hasSolver) {
+    reason = "--solver";
+  } else if (haveYices) {
+    solver = "yices";
+    reason = "default";
+    args.push_back("--solver=yices");
+  } else {
+    solver = "z3";
+    reason = "no yices in this build";
+    args.push_back("--solver=z3");
+  }
+  if (hasRo)
+    roNote = explicitRo + " (--ro-arrays)";
+  else if (solver == "z3") {
+    args.push_back("--ro-arrays=uf");
+    roNote = "uf (default)";
+  } else
+    roNote = "array (default)";
+}
+
 /// One part as the manifest describes it: everything an outside runner
 /// needs to run it (docs/design/CheckInb.md, "The manifest").
 struct PartSpec {
@@ -525,6 +572,15 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     });
     trivial.push_back(t);
     trivialN += t;
+  }
+  {
+    out::Record rec("check-inb.solver");
+    rec.str("solver", o.solverName)
+        .str("reason", o.solverReason)
+        .str("ro_arrays", o.roArraysNote);
+    rec.text = ("check-inb.solver: " + o.solverName + " (" + o.solverReason +
+                ") ro-arrays=" + o.roArraysNote);
+    out.emit(rec);
   }
   {
     out::Record rec("check-inb.split");

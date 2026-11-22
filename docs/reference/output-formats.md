@@ -353,6 +353,7 @@ for the check jobs (`--check-align`, `--check-ptr-index`,
 
 ```text
 check-inb: checks=<n> static=<n> left=<n> zero-length=<n>
+check-inb.solver: <name> (<reason>) ro-arrays=<mode> (<reason>)
 check-inb.split: folded=<n> parts=<n> trivial=<n> to-solve=<n>
 check-inb-dir: <path>                       (a kept directory only)
 check-inb.manifest: <path> parts=<k>        (--vcgen-only only)
@@ -377,7 +378,8 @@ assert (`--symbolic-size=assert`, status 4 with a `premise.failed:` line)
 is `premise-failed`, counted as `premise`, and its `premise.failed:` line
 follows, with `part=<i>`: the job prints `result: sat` and exits 4 (the
 premise class; with a sat part too, the same). In jsonl the records are
-`check-inb`, `check-inb.split` (folded, parts, trivial, to_solve),
+`check-inb`, `check-inb.solver` (solver, reason, ro_arrays),
+`check-inb.split` (folded, parts, trivial, to_solve),
 `check-inb-dir` (path), `check-inb.manifest` (path,
 parts), `check-inb.part`, `premise` (the part's fields and `part`),
 `check-inb.parts`, `check-inb.part-diags`

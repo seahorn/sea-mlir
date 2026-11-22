@@ -20,7 +20,7 @@
 // RUN: sea-vc %s --program=prior --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=PRIOR
 // RUN: printf -- '--check-inb\n--lower\n--seam\n--ackermannize=off\n' > %t.cfg
 // RUN: sea-vc %s --program=oob --config=%t.cfg | FileCheck %s --check-prefix=CFG
-// RUN: not sea-vc %s --program=oob --check-inb --lower --seam --ackermannize=off --z3-tactic=no-such-tactic | FileCheck %s --check-prefix=PERR
+// RUN: not sea-vc %s --program=oob --check-inb --lower --seam --ackermannize=off --solver=z3 --z3-tactic=no-such-tactic | FileCheck %s --check-prefix=PERR
 // RUN: not sea-vc %s --program=inb --check-inb --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=CONFIG
 // RUN: not sea-vc %s --program=inb --check-inb --lower --seam --ackermannize=off --ptr-companion=check 2>&1 | FileCheck %s --check-prefix=JOBS
 // RUN: not sea-vc %s --program=inb --check-inb --lower --seam 2>&1 | FileCheck %s --check-prefix=CONFIG

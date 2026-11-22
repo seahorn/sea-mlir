@@ -23,8 +23,7 @@ without them.
 ## How to run it
 
 ```bash
-sea-vc p.mlir --check-inb --lower --seam --ackermannize=off \
-    --solver=yices --timeout=60
+sea-vc p.mlir --check-inb --lower --seam --ackermannize=off --timeout=60
 ```
 
 The input is an abstract program (`!sea.ptr`). The job:
@@ -35,12 +34,13 @@ The input is an abstract program (`!sea.ptr`). The job:
 3. makes one program per check left (`sea-split-asserts`): part i keeps
    check i and assumes every other check on the paths to it;
 4. runs each part as an ordinary safety job, in a process of its own,
-   with the options of the command line.
+   with the options of the command line (the solver: see below).
 
 Every part prints one line, then the job prints a summary and the verdict:
 
 ```text
 check-inb: checks=5 static=3 left=2 zero-length=0
+check-inb.solver: yices (default) ro-arrays=array (default)
 check-inb.split: folded=0 parts=2 trivial=0 to-solve=2
 check-inb.part: 0 id=1 at=p.mlir:50:9 result=unsat status=0 time=0.024 solve-time=0.000
 check-inb.part: 1 id=3 at=p.mlir:53:9 result=sat status=0 time=0.035 solve-time=0.000 fail-at=p.mlir:53:9
@@ -50,6 +50,8 @@ check-inb.discharges: none under=addr0-is-null
 result: sat
 ```
 
+- `check-inb.solver`: the parts' solver and why (`default`, `--solver`,
+  or `no yices in this build`), and the read-only array mode and why.
 - `checks`: the access spans checked (a memmove has two); `static`: the
   checks proved by static discharge, never solved; `left`: the checks
   left after it; `zero-length`: ranges of constant length 0, which are
@@ -141,6 +143,29 @@ run it on one part instead. `--ptr-companion=check` is refused with the
 other check jobs: it replaces the property of a query (the guard of every
 split pointer load, not the program's assertions), so a part would no
 longer check its bounds check.
+
+## The parts' solver
+
+The job's own options go to every part, with two defaults of the job:
+
+- Solver: Yices when the binary has it, else z3 (release binaries before
+  v0.4.0 are built without Yices), said on the `check-inb.solver:` line
+  (`yices (default)`, `z3 (no yices in this build)`, `z3 (--solver)`). An
+  explicit `--solver=` on the job's command line (or in its profile) wins
+  and is passed through, whatever it is.
+- With z3 as the parts' solver, `--ro-arrays=uf` is passed unless the
+  command line gave `--ro-arrays=`. The option is exact: it states the
+  read-only arrays as uninterpreted functions at the Expr level, for any
+  backend (`docs/design/Ackermann.md`, "Read-only arrays as functions").
+  It is passed for z3 only, where it helped; for Yices and Bitwuzla it is
+  not passed (they were not measured with it).
+
+Measured (`h2fc-blowup-tx-reach-ring.mlir`, `--check-inb --lower --seam
+--widen-memory=4 --ackermannize=off --timeout=300`, 141 parts): z3 took
+more than 1200 s for 101 parts; Yices 336 s for all 141 (120 unsat, 21
+sat). Part 27: z3 18.8 s, z3 with `--ro-arrays=uf` 1.48 s, Yices 0.09 s.
+The defaults are those measurements, not tuned further. The chosen options
+are in `parts.cfg` and each part's manifest argv.
 
 ## The manifest
 

@@ -3085,6 +3085,9 @@ TYPICAL:
                                  #   check-inb.discharges: the premises
                                  #   an unsat discharges; unsat iff every
                                  #   part is unsat (docs/design/CheckInb.md)
+                                 #   the parts' solver: Yices if built in
+                                 #   (else z3), --solver= wins; z3 gets
+                                 #   --ro-arrays=uf (check-inb.solver:)
   sea-vc p.mlir --check-inb ... --vcgen-only --check-inb-dir=d
                                  # write d/part-<i>.mlir, d/parts.cfg
                                  #   (the expanded part options) and
@@ -3628,6 +3631,11 @@ OUTPUT (stdout, `key: value` lines):
                                   (--check-inb: the bounds checks, those
                                   proved statically, those left, ranges of
                                   constant length 0)
+  check-inb.solver: <name> (<reason>) ro-arrays=<mode> (<reason>)
+                                  (--check-inb: the parts' solver: yices
+                                  if the binary has it (default), else z3
+                                  (no yices in this build); --solver= wins;
+                                  z3 gets --ro-arrays=uf unless given)
   check-inb.split: folded= parts= trivial= to-solve=
                                   (checks the optimize stages removed
                                   before the split; parts; parts folded to
@@ -4570,6 +4578,8 @@ Kinds and fields:
                 name=), order, objkind, base, size, align
   result        value: sat|unsat|unknown|none
   check-inb     (--check-inb) checks, static, left, zero_length
+  check-inb.solver solver, reason (default | --solver | no yices in this
+                build), ro_arrays (`<mode> (default)` | `<mode> (--ro-arrays)`)
   check-inb.split folded (checks the optimize stages removed before the
                 split), parts, trivial (folded to true in their own
                 optimize: not run), to_solve
@@ -5741,6 +5751,13 @@ int main(int argc, char **argv) {
         sea::diag::error("check-inb.unsupported", "--check-inb: " + bad);
         return 1;
       }
+#ifdef WITH_YICES2
+      constexpr bool haveYices = true;
+#else
+      constexpr bool haveYices = false;
+#endif
+      sea::checkinb::partDefaults(jo.partArgs, haveYices, jo.solverName,
+                                  jo.solverReason, jo.roArraysNote);
     }
     return sea::checkinb::runJob(*module, program, jo, *gOut);
   }
