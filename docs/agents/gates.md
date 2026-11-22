@@ -275,7 +275,12 @@ sides fail alike, which compares identical.
 `seam-stats`, `smt2`, `run` and `fuzz`, and defaults `--timeout` to 30
 seconds (300 otherwise); a timeout still makes the status `incomplete`. Each
 excluded program is a `quick-excluded:` line, and the `skipped:` line counts
-the jobs left out. The full mode runs everything. The list was measured once
+the jobs left out. The full mode runs everything except four known non-terminating jobs
+(`NONTERMINATING`: `lambda` on `nki-dyn-add-M4H4-good`, `nki-dyn-add-M4H4-nopre`
+and `nki-scatter-K4-int8`, `reach` on `array_list_swap`; each runs past 1200 s
+and takes up to 96 GB). They show as `nonterminating-skipped:` lines and a
+`skipped-nonterminating: <n>` line; `--include-nonterminating` runs them. The
+list was measured once
 (one side, text, `--timeout 30`); re-measure when the quick run
 over `test/VC` and `test/Interp` grows well past ten minutes.
 

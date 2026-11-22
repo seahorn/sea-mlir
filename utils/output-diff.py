@@ -33,7 +33,7 @@ WHY: the gate of a refactoring that must not change output (timers, the
   masking timings and memory sizes, and keep its stat and BRUNCH_STAT keys.
 USAGE:
   utils/output-diff.py --old <bin-dir> --new <bin-dir> [inputs...]
-      [--quick] [--par 2] [--timeout 300 (30 with --quick)] [--jobs REGEX] [--sample N]
+      [--quick] [--include-nonterminating] [--par 2] [--timeout 300 (30 with --quick)] [--jobs REGEX] [--sample N]
       [--exclude REGEX (default ^VC/limits/: the --timeout tests)]
       [--matrix FILE] [--entry 'NAME TOOL [FLAGS]: ARGS']... [--select A,B]
       [--formats text,jsonl] [--vc-common ARGS] [--run-common ARGS]
@@ -52,7 +52,9 @@ CORPUS (no inputs): $SEA_BENCH_SUITES/vcc, and the standalone programs of
   VC/seam/Inputs/{array_list_swap,nki-scatter-K4-int8,nki-dyn-add-M4H4-nopre,
   nki-dyn-add-M4H4-good}, VC/intrinsics-unsat: 40-215 s each over the matrix),
   every entry but seam-stats, smt2, run and fuzz, and defaults --timeout to 30
-  (a timeout still makes the status incomplete). The full mode runs them all.
+  (a timeout still makes the status incomplete). The full mode runs them all,
+  except the four jobs of NONTERMINATING (lambda on nki-dyn-add-M4H4-good,
+  nki-dyn-add-M4H4-nopre and nki-scatter-K4-int8; reach on array_list_swap).
   Measured once; re-measure (one side, text, --timeout 30) when the
   quick run grows past ~10 min.
   An input that is neither a directory nor a file: `error: no input <path>`.
@@ -90,6 +92,9 @@ OUTPUT (stdout):
   quick-excluded: <input> entries=<e>,...   [--quick: a QUICK_SLOW program]
   skipped: <entry>=<n>,... (--quick: jobs left out: heavy entries on bench
       inputs, QUICK_SLOW programs)   [only with --quick]
+  nonterminating-skipped: <input> entries=<e>,...   [a NONTERMINATING job]
+  skipped-nonterminating: <n>   (entries skipped; always printed;
+      --include-nonterminating runs them: up to 96 GB each, never end)
   wall: <s>
   status: pass | fail | incomplete
   entry: <name> all-failed   (every job of the entry failed alike on both
@@ -114,6 +119,21 @@ QUICK_SLOW = (
     "VC/seam/Inputs/nki-dyn-add-M4H4-good",
     "VC/intrinsics-unsat",
 )
+# Full mode: jobs (entry, program) that do not terminate. Each ran past 1200 s
+# with identical progress on two builds, and costs up to 96 GB of memory.
+#   nki-dyn-add in lambda: still encoding at 1200 s (memmove encoding, 25M
+#     nodes, 44 GB peak).
+#   nki-scatter-K4-int8 in lambda: stalls in the eager Ackermann phase
+#     (88-96 GB).
+#   array_list_swap in reach: stalls (1 GB).
+# Their other entries (default, seam, smt2, ...) stay compared. The lit tests
+# never run these modes on these inputs. --include-nonterminating runs them.
+NONTERMINATING = {
+    ("lambda", "VC/seam/Inputs/nki-dyn-add-M4H4-good"),
+    ("lambda", "VC/seam/Inputs/nki-dyn-add-M4H4-nopre"),
+    ("lambda", "VC/seam/Inputs/nki-scatter-K4-int8"),
+    ("reach", "VC/seam/Inputs/array_list_swap"),
+}
 QUICK_LIGHT = ("seam-stats", "smt2", "run", "fuzz")
 QUICK_TIMEOUT = 30
 
@@ -807,6 +827,11 @@ def main():
         action="store_true",
         help="skip the heavy entries for the inputs of $SEA_BENCH_SUITES",
     )
+    ap.add_argument(
+        "--include-nonterminating",
+        action="store_true",
+        help="also run the jobs of NONTERMINATING (up to 96 GB each, never end)",
+    )
     ap.add_argument("--formats", default="text,jsonl")
     ap.add_argument("--vc-common", default="--log=vc.phase,lower.pass,vc.solve")
     ap.add_argument("--run-common", default="")
@@ -900,6 +925,7 @@ def main():
         a.timeout = QUICK_TIMEOUT if a.quick else 300
     tasks, skipped = [], collections.Counter()
     excluded = collections.defaultdict(list)
+    nonterm = collections.defaultdict(list)
     for e in matrix:
         for j in jobs:
             if a.quick and e.heavy and is_bench(j[1]):
@@ -908,6 +934,9 @@ def main():
             if a.quick and j[0] in QUICK_SLOW and e.name not in QUICK_LIGHT:
                 skipped[e.name] += len(e.formats(formats))
                 excluded[j[0]].append(e.name)
+                continue
+            if not a.include_nonterminating and (e.name, j[0]) in NONTERMINATING:
+                nonterm[j[0]].append(e.name)
                 continue
             tasks += [(j, e, f) for f in e.formats(formats)]
     t0 = time.monotonic()
@@ -953,6 +982,9 @@ def main():
         for j, names in excluded.items():
             print(f"quick-excluded: {j} entries={','.join(names)}")
         print("skipped: " + (",".join(f"{k}={v}" for k, v in skipped.items()) or "-"))
+    for j, names in nonterm.items():
+        print(f"nonterminating-skipped: {j} entries={','.join(names)}")
+    print(f"skipped-nonterminating: {sum(len(v) for v in nonterm.values())}")
     print(f"wall: {time.monotonic() - t0:.0f}")
     if tot["DIFF"]:
         status, rc = "fail", 1

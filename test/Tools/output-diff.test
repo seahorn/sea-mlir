@@ -57,6 +57,17 @@ QSLOW: quick-excluded: VC/intrinsics-unsat entries=other
 QSLOW: skipped: other=2
 QSLOW: status: pass
 
+// Full mode skips the NONTERMINATING jobs (reach on array_list_swap) and
+// says so; --include-nonterminating runs them.
+RUN: mkdir -p %t/nt/VC/seam/Inputs && cp %sea_src_root/test/VC/abs.mlir %t/nt/VC/seam/Inputs/array_list_swap.mlir
+RUN: %{od} --old %sea_bin --new %sea_bin --matrix %t/nonterm %t/nt/VC | FileCheck %s --check-prefix=NT2
+NT2: entry: reach tool=sea-run jobs=0
+NT2: nonterminating-skipped: VC/seam/Inputs/array_list_swap entries=reach
+NT2: skipped-nonterminating: 1
+RUN: %{od} --include-nonterminating --old %sea_bin --new %sea_bin --matrix %t/nonterm %t/nt/VC | FileCheck %s --check-prefix=NT3
+NT3: entry: reach tool=sea-run jobs=2
+NT3: skipped-nonterminating: 0
+
 // An entry whose every job fails on both sides checked nothing: incomplete.
 RUN: not %{od} --old %sea_bin --new %sea_bin --matrix %t/runonly %t/bad.mlir | FileCheck %s --check-prefix=ALLF
 ALLF: bad run text identical rc=1
@@ -88,6 +99,8 @@ plain sea-vc: --brunch-stats
 run sea-run: --missing=zero
 //--- heavy
 h sea-run heavy: --missing=zero
+//--- nonterm
+reach sea-run: --missing=zero
 //--- quickslow
 other sea-vc: --lower
 seam-stats sea-vc: --lower --seam --seam-stats
