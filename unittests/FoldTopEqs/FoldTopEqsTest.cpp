@@ -15,6 +15,8 @@
 //    refused by the numeral mode (counted) and hoisted by the all mode;
 //  - budget: interleaved chains whose hoist would make more ites than the
 //    parts hold: refused by the numeral mode, hoisted by the all mode;
+//  - refused-memo: a top concat refused for budget leaves no memo entries,
+//    so a hoistable concat among its arms is counted in either conjunct order;
 //  - every hoist is checked equal to its input by z3.
 //
 //===----------------------------------------------------------------------===//
@@ -190,6 +192,54 @@ void testBudget() {
   CHECK(st.hoisted > parts, "budget: all makes more ites than the parts");
   CHECK(equal(env, t, h), "budget: exact");
 }
+/// the two bytes of testBudget (the numeral mode refuses their concat), with
+/// condition names prefixed by \p pfx
+std::pair<Expr, Expr> budgetBytes(Env &env, const std::string &pfx) {
+  const unsigned n = 8, w = 4;
+  const unsigned map[4][4] = {
+      {1, 3, 2, 0}, {1, 0, 0, 2}, {3, 0, 1, 2}, {2, 1, 0, 2}};
+  std::vector<std::vector<Expr>> lv(2, std::vector<Expr>(w));
+  for (unsigned j = 0; j < 2; ++j)
+    for (unsigned i = 0; i < w; ++i)
+      lv[j][i] = env.num(10 * j + i);
+  for (unsigned k = n; k-- > 0;) {
+    Expr c = env.cond(pfx + std::to_string(k));
+    std::vector<std::vector<Expr>> next(2, std::vector<Expr>(w));
+    for (unsigned j = 0; j < 2; ++j)
+      for (unsigned i = 0; i < w; ++i)
+        next[j][i] = mk<ITE>(c, lv[j][map[2 * j][i]], lv[j][map[2 * j + 1][i]]);
+    lv = next;
+  }
+  return {lv[0][0], lv[1][0]};
+}
+
+/// T1 = concat(ite(c, P, Q), ite(c, P', Q')) is refused for budget; T2 =
+/// concat(P, P') is T1's then-arm concat, hoistable on its own. A refusal
+/// leaves its tried concats uncounted, so T2 is counted as the one ite made
+/// in either order of the conjuncts.
+void testRefusedMemo() {
+  Env env;
+  Expr c = env.cond("top"), d = env.cond("d");
+  Expr p = mk<ITE>(d, env.num(1), env.num(2));
+  Expr pp = mk<ITE>(d, env.num(3), env.num(4));
+  auto [q, qp] = budgetBytes(env, "q");
+  Expr t1 = env.concat(mk<ITE>(c, p, q), mk<ITE>(c, pp, qp));
+  Expr t2 = env.concat(p, pp);
+  Expr k = op::bv::bvnum(mpz_class(7L), 16, env.efac);
+  sea::FoldTopEqsStats st;
+  for (int order = 0; order < 2; ++order) {
+    Expr e1 = mk<EQ>(t1, k), e2 = mk<EQ>(t2, k);
+    Expr in = order ? mk<AND>(e1, e2) : mk<AND>(e2, e1);
+    Expr h = hoist(in, ConcatIte::Numeral, st);
+    llvm::outs() << "refused-memo: order " << order
+                 << " concat-ite=" << st.hoisted
+                 << " refused=" << st.hoistRefused << "\n";
+    CHECK(st.hoisted == 1 && st.hoistRefused == 1,
+          "refused-memo: counts independent of the order");
+    CHECK(h != in, "refused-memo: the hoisted conjunct is kept");
+    CHECK(equal(env, in, h), "refused-memo: exact");
+  }
+}
 } // namespace
 
 int main() {
@@ -199,6 +249,8 @@ int main() {
   llvm::outs() << "test: leaves ok\n";
   testBudget();
   llvm::outs() << "test: budget ok\n";
+  testRefusedMemo();
+  llvm::outs() << "test: refused-memo ok\n";
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

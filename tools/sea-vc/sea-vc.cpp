@@ -3261,7 +3261,10 @@ OUTPUT (stdout, `key: value` lines):
                                   that changed the query; concats of ites
                                   on one condition made ites (distinct
                                   nodes), top concats the
-                                  --vc-fold-concat-ite mode refused; facts not
+                                  --vc-fold-concat-ite mode refused (both
+                                  summed over the rounds: a concat refused
+                                  in one round and still in the query is
+                                  counted again); facts not
                                   used: bvand(x, m) = c, a concat part of
                                   unknown width; warning
                                   vc.fold-top-eqs-rounds: the round bound

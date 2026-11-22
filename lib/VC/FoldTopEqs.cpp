@@ -118,8 +118,13 @@ public:
       budget = seen.size();
     }
     made = kept = 0;
+    added.clear();
     Expr r = hoist(t);
     if (!r) {
+      // the concats this top tried are not counted: a later top counts them
+      // with its own budget (the count does not depend on the visit order)
+      for (ENode *n : added)
+        memo.erase(n);
       ++st.hoistRefused;
       return t;
     }
@@ -176,13 +181,16 @@ private:
     // a refusal over the budget is not memoized: another top concat has
     // its own budget
     if (res || made <= budget)
-      memo.emplace(t.get(), std::make_pair(t, res));
+      if (memo.emplace(t.get(), std::make_pair(t, res)).second)
+        added.push_back(t.get());
     return res;
   }
 
   ConcatIte mode;
   FoldTopEqsStats &st;
   Map memo;
+  /// the memo keys added since the current top concat began
+  std::vector<ENode *> added;
   /// the current top concat: its bound, the concats it tried, those it
   /// made ites (counted when it is kept)
   uint64_t budget = 0, made = 0, kept = 0;
@@ -434,9 +442,8 @@ Expr TopEqFolder::fold(Expr query) {
                          ? subst(conj[i], facts, cache, true)
                          : keep(conj[i], own[i], facts, cache, true));
     Expr q = simplify(boolop::land(next, query->efac()));
-    uint64_t hoisted = st.hoisted;
     Expr h = hoistConcatItes(q, concatIte, st);
-    if (st.hoisted != hoisted)
+    if (h != q)
       q = simplify(h);
     if (q == query)
       break;

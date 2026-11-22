@@ -10,6 +10,9 @@ CHECK: leaves: numeral concat-ite=0 refused=1
 CHECK: test: leaves ok
 CHECK: budget: numeral concat-ite=0 refused=1
 CHECK: test: budget ok
+CHECK: refused-memo: order 0 concat-ite=1 refused=1
+CHECK: refused-memo: order 1 concat-ite=1 refused=1
+CHECK: test: refused-memo ok
 CHECK: failures: 0
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors

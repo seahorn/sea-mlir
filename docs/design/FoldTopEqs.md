@@ -69,7 +69,9 @@ of numerals, and an index made of it is decided leaf by leaf. Exact:
 concat is a function of its parts. The hoist is memoized per concat node
 (the key held: the arm concats are made by the hoist, and a freed node's
 address can come back as another node), so its work is linear in the
-distinct concats it makes; `concat-ite` counts those.
+distinct concats it makes; `concat-ite` counts those. `concat-ite` and
+`concat-ite-refused` are summed over the fold rounds: a concat refused in one
+round and still in the query is counted again.
 
 `--vc-fold-concat-ite` selects where it fires:
 
