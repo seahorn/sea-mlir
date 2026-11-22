@@ -188,8 +188,10 @@ The model in the counterexample also chose entries of
 memread: site=7 addr=134541392 width=8 value=0 obj=&global.huff_decode_table[16432]
 ```
 
-The table is a constant in nghttp2, but the exporter drops initializers
-over 16 KiB, and the table has 16448 bytes. The exported program leaves
+The table is a constant in nghttp2, but the exporter used for this
+tutorial dropped initializers over 16 KiB, and the table has 16448 bytes.
+(SeaHorn from dev18 commit 67474bf6 on exports such initializers as
+`sea.mem.fill`.) The exported program leaves
 the table unconstrained. The proof assumes, at each read, the one property
 of an entry that it needs: the entry's next state is valid. This property
 was checked natively over all entries of the real table. The proof

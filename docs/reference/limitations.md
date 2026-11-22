@@ -135,9 +135,12 @@ affected.
   jobs (`--check-ptr-index`, `--check-align`) then report spurious
   failures.
 - **Exporter gaps.** The exporter drops or mishandles some constructs:
-  initializers over 16 KiB, small constant tables, `llvm.cttz`,
-  `llvm.ctlz` and `llvm.expect`. Check the export's warnings
-  ([example](../tutorials/firedancer.md#the-decode-table)).
+  global initializers that hold pointers or constant expressions, small
+  constant tables, `llvm.cttz`, `llvm.ctlz` and `llvm.expect`. Check the
+  export's warnings
+  ([example](../tutorials/firedancer.md#the-decode-table)). SeaHorn
+  before dev18 commit 67474bf6 also dropped initializers over 16 KiB;
+  later versions export them as `sea.mem.fill`.
 - **Type-based alias annotations are trusted.** SeaHorn's memory analysis
   uses C and C++ TBAA. Code that writes an object through one type and
   reads it through an unrelated one (a strict-aliasing violation, for
