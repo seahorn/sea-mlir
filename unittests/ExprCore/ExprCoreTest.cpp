@@ -24,6 +24,7 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#include <vector>
 
 namespace expr {
 struct ExprCoreTestAccess {
@@ -207,6 +208,43 @@ void testLookup() {
   llvm::outs() << "test: lookup ok\n";
 }
 
+/// The watch of node creation (ExprFactory::setWatch): every step nodes
+/// made, not on a lookup hit; it reads the live nodes; none after removal.
+void testWatch() {
+  ExprFactory f;
+  struct W : ExprFactory::Watch {
+    unsigned calls = 0;
+    size_t live = 0, census = 0;
+    void onNodes(ExprFactory &fac) override {
+      ++calls;
+      live = fac.nodesLive();
+      census = 0;
+      fac.forEachLive([&](const ENode *) { ++census; });
+    }
+  } w;
+  std::vector<Expr> keep;
+  keep.push_back(var(f, "x"));
+  const unsigned made0 = f.nodesMade();
+  f.setWatch(&w, 3);
+  for (int i = 0; i < 4; ++i) // 4 new nodes each: a string, its bv const
+    keep.push_back(var(f, ("v" + std::to_string(i)).c_str()));
+  const unsigned made = f.nodesMade() - made0;
+  CHECK(w.calls == made / 3,
+        "one call per 3 nodes made: " << w.calls << " of " << made);
+  CHECK(w.live == w.census && w.live > 0,
+        "the census sees the live nodes: " << w.live << " " << w.census);
+  const unsigned c0 = w.calls;
+  for (int i = 0; i < 10; ++i)
+    (void)var(f, "x"); // lookup hits: nothing made
+  CHECK(w.calls == c0, "no call on a lookup hit");
+  f.setWatch(nullptr, 0);
+  for (int i = 0; i < 10; ++i)
+    keep.push_back(var(f, ("u" + std::to_string(i)).c_str()));
+  CHECK(w.calls == c0, "no call after removal");
+  CHECK(f.nodesLive() > 0, "live count without a watch");
+  llvm::outs() << "test: watch ok\n";
+}
+
 int crash(const char *mode) {
   ExprFactory f;
   if (!std::strcmp(mode, "refcount-overflow")) {
@@ -235,6 +273,7 @@ int main(int argc, char **argv) {
   testLifecycle();
   testReclamation();
   testLookup();
+  testWatch();
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

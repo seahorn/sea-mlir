@@ -425,6 +425,9 @@ protected:
       assert(inserted);
     }
     v->setId(uniqueId());
+    // the watch (setWatch); off: watchAt is the largest id, never reached
+    if (LLVM_UNLIKELY(idCount >= watchAt))
+      fireWatch();
     return v;
   }
 
@@ -475,7 +478,36 @@ protected:
     }
   }
 
+public:
+  /// An observer of node creation (sea-vc --mem-trace, --max-nodes): its
+  /// onNodes runs in mkNode, after a new node got its id, every \p step
+  /// nodes made. It may read the factory (nodesLive, forEachLive) and must
+  /// not make or release nodes (the factory is inside mkNode); it may end
+  /// the process. Off: one compare per node made.
+  class Watch {
+  public:
+    virtual ~Watch() = default;
+    virtual void onNodes(ExprFactory &f) = 0;
+  };
+
 private:
+  Watch *watch = nullptr;
+  unsigned watchStep = 0;
+  /// the id at which the watch runs next; the largest id: never (the
+  /// last id, after which uniqueId stops the process; reaching it without
+  /// a watch does nothing)
+  unsigned watchAt = std::numeric_limits<unsigned>::max();
+  [[gnu::cold]] LLVM_ATTRIBUTE_NOINLINE void fireWatch() {
+    watchAt = std::numeric_limits<unsigned>::max(); // no reentry
+    Watch *w = watch;
+    if (!w) // no watch: the last id (the largest) was handed out
+      return;
+    w->onNodes(*this);
+    if (watch == w &&
+        idCount < std::numeric_limits<unsigned>::max() - watchStep)
+      watchAt = idCount + watchStep;
+  }
+
 #define FREE_LIST_MAX_SIZE 1024 * 4
   std::vector<ENode *> freeList;
   /// nodes whose count reached 0, to remove (Deref)
@@ -489,6 +521,25 @@ public:
   /// The nodes made so far, freed ones included (the ids handed out): a
   /// constant-time measure of the terms built, for flow logs.
   unsigned nodesMade() const { return idCount; }
+  /// The live hash-consed nodes (the unique table; nodes of mutable
+  /// operators are not in it): constant time.
+  size_t nodesLive() const { return unique.size(); }
+  /// Calls \p f on every live hash-consed node (a census: makes nothing).
+  template <typename F>
+  void forEachLive(F &&f) const {
+    for (const UniqueKey &k : unique)
+      f(static_cast<const ENode *>(k.node));
+  }
+  /// Installs \p w (null: none), run every \p step (> 0) nodes made from
+  /// now on.
+  void setWatch(Watch *w, unsigned step) {
+    assert((!w || step > 0) && "a watch needs a step");
+    watch = w;
+    watchStep = step;
+    watchAt = w && idCount < std::numeric_limits<unsigned>::max() - step
+                  ? idCount + step
+                  : std::numeric_limits<unsigned>::max();
+  }
   /// Destroys the recycled nodes kept on the free list (their argument
   /// vectors); every Expr of this factory must be gone before.
   ~ExprFactory();
