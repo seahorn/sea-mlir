@@ -93,6 +93,15 @@ more than two weeks gets recreated or killed.
 Before a disable or kill, check that the oracles still pass. A disposable
 test failing alongside an oracle is a bug report, not friction.
 
+## Optional solvers
+
+A test that needs a part of the build that is optional (`REQUIRES: yices`,
+`bitwuzla`, `z3` or `sea-git-tree`), or the build without it
+(`UNSUPPORTED: yices`), is not collected when the build cannot run it
+(test/lit.cfg.py), so a good run is all passes. Only a disabled test shows
+as UNSUPPORTED. A test that needs Yices for one RUN line only uses
+`%if yices %{ ... %}` instead.
+
 ## Writing tests that do not get in the way
 
 - Check the property, not the whole output: `CHECK: status: assert-failed`,

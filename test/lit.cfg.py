@@ -88,3 +88,43 @@ if lit_config.params.get("run_disabled"):
 # The source tree is a git checkout (utils/spdx.py lists its files with git).
 if os.path.exists(os.path.join(config.sea_src_root, ".git")) and shutil.which("git"):
     config.available_features.add("sea-git-tree")
+
+# A test that this build cannot run (a solver it was built without, or the
+# build without one: `UNSUPPORTED: yices`) is not collected at all, so a good
+# run reports passes only. Only the build's optional parts count here;
+# `REQUIRES: disabled-test` still shows as UNSUPPORTED, on purpose. lit
+# excludes by file name, so a name used twice is left to lit.
+BUILD_FEATURES = {"z3", "bitwuzla", "yices", "sea-git-tree"}
+
+
+def _not_for_this_build(path):
+    with open(path, errors="replace") as f:
+        for line in f:
+            for key, wanted in (("REQUIRES:", True), ("UNSUPPORTED:", False)):
+                _, sep, rest = line.partition(key)
+                if not sep:
+                    continue
+                names = {n.strip() for n in rest.split(",")}
+                if not names <= BUILD_FEATURES:
+                    continue  # an expression, or not a build feature
+                have = names <= config.available_features
+                hit = names & config.available_features
+                if (wanted and not have) or (not wanted and hit):
+                    return True
+    return False
+
+
+def _excluded_for_this_build(root):
+    seen, skip = {}, set()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in config.excludes]
+        for name in filenames:
+            if os.path.splitext(name)[1] not in config.suffixes:
+                continue
+            seen[name] = seen.get(name, 0) + 1
+            if _not_for_this_build(os.path.join(dirpath, name)):
+                skip.add(name)
+    return sorted(n for n in skip if seen[n] == 1)
+
+
+config.excludes += _excluded_for_this_build(config.test_source_root)
