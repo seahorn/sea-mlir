@@ -329,32 +329,62 @@ def SeaImp_PrintMemOp : SeaImp_Op<"print.mem", [
 // Allocation in a region
 //===----------------------------------------------------------------------===//
 
-def SeaImp_AllocaOp : SeaImp_Op<"alloca", [Sea_NondetSiteOpInterface]> {
-  let summary = "Allocate a new stack object in a region";
+class SeaImp_AllocOp<string mnemonic, string what, string seaop>
+    : SeaImp_Op<mnemonic, [Sea_NondetSiteOpInterface]> {
+  let summary = "Allocate a new " # what # " object in a region";
   let description = [{
-    `sea.alloca` of an object whose cells are in the region `var`: each
-    execution creates a new object of `size` units, aligned to `align`.
-    The lowering is `sea.alloca` with the same operands and attributes
-    (sea allocation takes no memory: pointers are not tied to a memory);
-    the region is what a later partition into regions checks accesses
-    against. `site` is unique with the program's other nondet sites; the
-    result is a pointer that indexes the region.
+    `}] # seaop # [{` of an object whose cells are in the region `var`:
+    each execution creates a new object of `size` units, aligned to
+    `align`. The lowering is `}] # seaop # [{` with the same operands and
+    attributes (sea allocation takes no memory: pointers are not tied to a
+    memory); the region is what a later partition into regions checks
+    accesses against. `site` is unique with the program's other nondet
+    sites; the result is a pointer that indexes the region.
 
     ```mlir
-    %p = seaimp.alloca %mem, %c4 align 4 [1] : !seaimp.var<!m>, i64 -> !sea.ptr<64>
+    %p = seaimp.}] # mnemonic # [{ %mem, %c4 align 4 [1] : !seaimp.var<!m>, i64 -> !sea.ptr<64>
     ```
   }];
   let arguments = (ins SeaImp_MemVar:$var, SeaImp_BV:$size,
                    ConfinedAttr<I64Attr, [IntPositive]>:$align,
                    ConfinedAttr<I64Attr, [IntNonNegative]>:$site,
                    OptionalAttr<StrAttr>:$label);
-  // no declared effects, as sea.alloca: an unused allocation stays (it
-  // names an object of the program, by its site)
+  // no declared effects, as the sea allocations: an unused allocation stays
+  // (it names an object of the program, by its site)
   let results = (outs SeaImp_Ptr:$result);
   let assemblyFormat = [{
     $var `,` $size `align` $align ` ` `[` $site `]` (`label` $label^)?
     attr-dict `:` qualified(type($var)) `,` type($size) `->`
     qualified(type($result))
+  }];
+  let hasVerifier = 1;
+}
+
+def SeaImp_AllocaOp : SeaImp_AllocOp<"alloca", "stack", "sea.alloca">;
+def SeaImp_MallocOp : SeaImp_AllocOp<"malloc", "heap", "sea.malloc">;
+
+def SeaImp_GlobalOp : SeaImp_Op<"global", [Pure,
+                                           Sea_GlobalObjectOpInterface]> {
+  let summary = "The object of a global variable, in a region";
+  let description = [{
+    `sea.global` of an object whose cells are in the region `var`. Every
+    use of the same `name` denotes the same object (with the `sea.global`s
+    of the name); `size` and `align` must agree between uses. The lowering
+    is `sea.global` with the same attributes; the region is dropped, as
+    for `seaimp.alloca`. The result is a pointer that indexes the region.
+
+    ```mlir
+    %g = seaimp.global %mem @counter size 4 align 4 : !seaimp.var<!m> -> !sea.ptr<64>
+    ```
+  }];
+  let arguments = (ins SeaImp_MemVar:$var, FlatSymbolRefAttr:$name,
+                   ConfinedAttr<I64Attr, [IntNonNegative]>:$size,
+                   ConfinedAttr<I64Attr, [IntPositive]>:$align,
+                   OptionalAttr<StrAttr>:$label);
+  let results = (outs SeaImp_Ptr:$result);
+  let assemblyFormat = [{
+    $var $name `size` $size `align` $align (`label` $label^)? attr-dict `:`
+    qualified(type($var)) `->` qualified(type($result))
   }];
   let hasVerifier = 1;
 }

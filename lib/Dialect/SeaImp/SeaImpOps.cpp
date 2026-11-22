@@ -70,7 +70,8 @@ LogicalResult VarOp::verify() {
     // variable operand (the others are typed as sea values), except set's
     // stored value
     bool ok = isa<GetOp, LoadOp, StoreOp, MemSetOp, MemMoveOp, MemHavocOp,
-                  IsModifiedOp, ResetModifiedOp, PrintMemOp, AllocaOp>(user) ||
+                  IsModifiedOp, ResetModifiedOp, PrintMemOp, AllocaOp, MallocOp,
+                  GlobalOp>(user) ||
               (isa<SetOp>(user) && use.getOperandNumber() == 0);
     if (!ok) {
       InFlightDiagnostic diag =
@@ -287,18 +288,37 @@ LogicalResult PrintMemOp::verify() {
 // Allocation in a region
 //===----------------------------------------------------------------------===//
 
-LogicalResult AllocaOp::verify() {
+/// The result is the pointer type that indexes the region.
+static LogicalResult verifyObjectPtr(Operation *op, Value var, Type result) {
+  sea::MemType mem = regionOf(var.getType());
+  if (result != mem.getIndex())
+    return op->emitOpError("result must be the pointer type that indexes the "
+                           "region (")
+           << mem.getIndex() << "), got " << result;
+  return success();
+}
+
+/// As sea.alloca / sea.malloc (Sea_AllocOp's verifier), plus the region.
+template <typename Op>
+static LogicalResult verifyAlloc(Op op) {
+  if (failed(verifyAccess(op, op.getVar())) ||
+      failed(verifyObjectPtr(op, op.getVar(), op.getResult().getType())))
+    return failure();
+  auto ptr = cast<sea::PtrType>(op.getResult().getType());
+  if (sea::bitWidthOf(op.getSize().getType()) != ptr.getWidth())
+    return op.emitOpError("size must have the pointer width");
+  if (!llvm::isPowerOf2_64(op.getAlign()))
+    return op.emitOpError("alignment must be a power of 2");
+  return success();
+}
+
+LogicalResult AllocaOp::verify() { return verifyAlloc(*this); }
+LogicalResult MallocOp::verify() { return verifyAlloc(*this); }
+
+// sea.global has no verifier of its own (the program's verifier checks
+// that the uses of a name agree, over seaimp.global too)
+LogicalResult GlobalOp::verify() {
   if (failed(verifyAccess(*this, getVar())))
     return failure();
-  sea::MemType mem = regionOf(getVar().getType());
-  auto ptr = cast<sea::PtrType>(getResult().getType());
-  if (ptr != mem.getIndex())
-    return emitOpError("result must be the pointer type that indexes the "
-                       "region (")
-           << mem.getIndex() << "), got " << getResult().getType();
-  if (sea::bitWidthOf(getSize().getType()) != ptr.getWidth())
-    return emitOpError("size must have the pointer width");
-  if (!llvm::isPowerOf2_64(getAlign()))
-    return emitOpError("alignment must be a power of 2");
-  return success();
+  return verifyObjectPtr(*this, getVar(), getResult().getType());
 }

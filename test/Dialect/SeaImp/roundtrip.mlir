@@ -106,6 +106,14 @@ sea.program @alloca {
   %p = seaimp.alloca %mem, %c4 align 4 [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> !sea.ptr<64>
   // CHECK: seaimp.alloca %[[M]], %{{.*}} align 8 [2] label "buf" : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> !sea.ptr<64>
   %q = seaimp.alloca %mem, %c4 align 8 [2] label "buf" : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> !sea.ptr<64>
+  // CHECK: seaimp.malloc %[[M]], %{{.*}} align 16 [3] label "heap" : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> !sea.ptr<64>
+  %h = seaimp.malloc %mem, %c4 align 16 [3] label "heap" : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> !sea.ptr<64>
+  // CHECK: seaimp.global %[[M]] @g size 4 align 4 : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> !sea.ptr<64>
+  %g = seaimp.global %mem @g size 4 align 4 : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> !sea.ptr<64>
+  // CHECK: seaimp.global %[[M]] @g size 4 align 4 label "counter" : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> !sea.ptr<64>
+  %g2 = seaimp.global %mem @g size 4 align 4 label "counter" : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> !sea.ptr<64>
+  // the same object as a sea.global of the name
+  %g3 = sea.global @g size 4 align 4 : !sea.ptr<64>
   sea.halt
 }
 

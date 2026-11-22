@@ -32,4 +32,20 @@ def Sea_BoxBodyReadOpInterface : OpInterface<"BoxBodyReadOpInterface"> {
   let cppNamespace = "::sea";
 }
 
+def Sea_GlobalObjectOpInterface : OpInterface<"GlobalObjectOpInterface"> {
+  let description = [{
+    An op that denotes the object of a global variable by its symbol name:
+    `sea.global`, and `seaimp.global` of the dialect lowered to sea. Every
+    use of one name denotes one object; `sea.program`'s verifier checks
+    that size and alignment agree over all of them.
+  }];
+  let cppNamespace = "::sea";
+  let methods = [
+    InterfaceMethod<"The global's symbol name.", "::mlir::FlatSymbolRefAttr",
+                    "getNameAttr">,
+    InterfaceMethod<"The object's size in units.", "uint64_t", "getSize">,
+    InterfaceMethod<"The object's alignment.", "uint64_t", "getAlign">,
+  ];
+}
+
 #endif // SEA_INTERFACES

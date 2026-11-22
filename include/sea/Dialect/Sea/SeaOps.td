@@ -832,7 +832,7 @@ class Sea_AllocOp<string mnemonic, string what>
 def Sea_AllocaOp : Sea_AllocOp<"alloca", "stack">;
 def Sea_MallocOp : Sea_AllocOp<"malloc", "heap">;
 
-def Sea_GlobalOp : Sea_Op<"global", [Pure]> {
+def Sea_GlobalOp : Sea_Op<"global", [Pure, Sea_GlobalObjectOpInterface]> {
   let summary = "The object of a global variable";
   let description = [{
     Every use of the same `name` denotes the same object; `size` and `align`

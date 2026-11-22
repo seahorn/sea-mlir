@@ -349,5 +349,47 @@ sea.program @print_hexdump {
   sea.halt
 }
 
+// -----
+
+sea.program @malloc_width {
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  %c4 = sea.const 4 : i32
+  // expected-error@+1 {{size must have the pointer width}}
+  %p = seaimp.malloc %m, %c4 align 4 [2] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i32 -> !sea.ptr<64>
+  sea.halt
+}
+
+// -----
+
+sea.program @malloc_site {
+  // expected-note@+1 {{previous use here}}
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  %c4 = sea.const 4 : i64
+  // expected-error@+1 {{duplicate nondet site 1}}
+  %p = seaimp.malloc %m, %c4 align 4 [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>, i64 -> !sea.ptr<64>
+  sea.halt
+}
+
+// -----
+
+sea.program @global_type {
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  // expected-error@+1 {{result must be the pointer type that indexes the region ('!sea.ptr<64>'), got '!sea.ptr<32>'}}
+  %g = seaimp.global %m @g size 4 align 4 : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> !sea.ptr<32>
+  sea.halt
+}
+
+// -----
+
+// The uses of a global name agree, sea.global and seaimp.global alike.
+sea.program @global_size {
+  %m = seaimp.var "m" [1] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+  // expected-note@+1 {{other use here}}
+  %g = sea.global @g size 4 align 4 : !sea.ptr<64>
+  // expected-error@+1 {{size or alignment differs from another use of @g}}
+  %h = seaimp.global %m @g size 8 align 4 : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>> -> !sea.ptr<64>
+  sea.halt
+}
+
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

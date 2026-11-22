@@ -7,7 +7,7 @@
 // expanded in place: `get` the memory, apply the sea op `inplace`, `set`
 // the result (the reads seaimp.load / is_modified / print.mem: `get` and
 // the sea op; a read in a sea.box.all body: its `get` before the box;
-// seaimp.alloca: sea.alloca, the region dropped). These
+// seaimp.alloca / malloc / global: the sea op, the region dropped). These
 // get / set of memory exist only inside the pass (the verifier refuses
 // them in input): each get's value is used by the one op made with it, and
 // each set stores the result of a fresh update, so every version is used
@@ -78,7 +78,7 @@ static void expandRegionAccesses(ProgramOp program) {
   program.walk([&](Operation *op) {
     if (isa<imp::LoadOp, imp::StoreOp, imp::MemSetOp, imp::MemMoveOp,
             imp::MemHavocOp, imp::IsModifiedOp, imp::ResetModifiedOp,
-            imp::PrintMemOp, imp::AllocaOp>(op))
+            imp::PrintMemOp, imp::AllocaOp, imp::MallocOp, imp::GlobalOp>(op))
       accesses.push_back(op);
   });
   for (Operation *op : accesses) {
@@ -150,6 +150,16 @@ static void expandRegionAccesses(ProgramOp program) {
                                  al.getAlignAttr(), al.getSiteAttr(),
                                  al.getLabelAttr());
       al.getResult().replaceAllUsesWith(r);
+    } else if (auto ma = dyn_cast<imp::MallocOp>(op)) {
+      Value r = MallocOp::create(b, loc, ma.getType(), ma.getSize(),
+                                 ma.getAlignAttr(), ma.getSiteAttr(),
+                                 ma.getLabelAttr());
+      ma.getResult().replaceAllUsesWith(r);
+    } else if (auto gl = dyn_cast<imp::GlobalOp>(op)) {
+      Value r = GlobalOp::create(b, loc, gl.getType(), gl.getNameAttr(),
+                                 gl.getSizeAttr(), gl.getAlignAttr(),
+                                 gl.getLabelAttr());
+      gl.getResult().replaceAllUsesWith(r);
     }
     op->erase();
   }

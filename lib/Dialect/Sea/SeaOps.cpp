@@ -51,17 +51,18 @@ LogicalResult ProgramOp::verifyRegions() {
   if (res.wasInterrupted())
     return failure();
 
-  // All uses of a global denote one object: size and alignment must agree.
-  llvm::DenseMap<StringAttr, GlobalOp> globals;
-  res = body.walk([&](GlobalOp g) {
+  // All uses of a global denote one object: size and alignment must agree
+  // (sea.global and the global forms of dialects lowered to sea).
+  llvm::DenseMap<StringAttr, GlobalObjectOpInterface> globals;
+  res = body.walk([&](GlobalObjectOpInterface g) {
     auto [it, inserted] = globals.try_emplace(g.getNameAttr().getAttr(), g);
     if (inserted || (it->second.getSize() == g.getSize() &&
                      it->second.getAlign() == g.getAlign()))
       return WalkResult::advance();
     InFlightDiagnostic diag =
-        g.emitOpError("size or alignment differs from another use of ")
+        g->emitOpError("size or alignment differs from another use of ")
         << g.getNameAttr();
-    diag.attachNote(it->second.getLoc()) << "other use here";
+    diag.attachNote(it->second->getLoc()) << "other use here";
     return WalkResult::interrupt();
   });
   return failure(res.wasInterrupted());

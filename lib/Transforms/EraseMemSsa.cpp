@@ -36,7 +36,8 @@
 //     (its name and site; the lowering makes the same sea.mem.nondet at the
 //     start of the entry block);
 //   - sea.alloca whose pointer indexes the memory -> seaimp.alloca %mem.
-//     sea.malloc and sea.global stay (no region form yet).
+//     sea.malloc and sea.global stay (seaimp.malloc / seaimp.global exist;
+//     converting them is later work, with the stack / heap distinction).
 //
 // Contract.
 //   Accepts: a program with at most one memory (one class of memory values

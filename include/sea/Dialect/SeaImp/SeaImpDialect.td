@@ -16,7 +16,10 @@ def SeaImp_Dialect : Dialect {
     (`seaimp.var`, read and written whole by `seaimp.get` / `seaimp.set`),
     and, on a variable that holds a memory (a region), the sea memory ops
     without the memory operand (`seaimp.load` / `store` / `memset` /
-    `memmove` / `memhavoc`) and allocation in the region (`seaimp.alloca`).
+    `memmove` / `memhavoc` / `is_modified` / `reset_modified` /
+    `print.mem`) and allocation in the region (`seaimp.alloca` / `malloc`
+    / `global`). A memory variable has no `get` / `set`: seaimp code never
+    holds a memory version.
     It has no runtime semantics of its own: a program means what its
     lowering to sea means (`sea-lower-seaimp`, MLIR's Mem2Reg). The
     interpreter and the VC generator refuse seaimp ops

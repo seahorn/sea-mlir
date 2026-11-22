@@ -145,8 +145,8 @@ sea.program @loop {
 sea.program @spec {
   %mem = seaimp.var "mem" [0] : !seaimp.var<!m>
   %c4 = sea.const 4 : i64
-  %p = sea.malloc %c4 align 4 [1] : i64 -> !sea.ptr<64>
-  %q = sea.malloc %c4 align 4 [2] : i64 -> !sea.ptr<64>
+  %p = seaimp.malloc %mem, %c4 align 4 [1] : !seaimp.var<!m>, i64 -> !sea.ptr<64>
+  %q = seaimp.global %mem @g size 4 align 4 : !seaimp.var<!m> -> !sea.ptr<64>
   %z = sea.const 0 : i8
   seaimp.store %mem[%p], %z tracked : !seaimp.var<!m>, i8
   seaimp.memset %mem[%p], %z, %c4 tracked : !seaimp.var<!m>
@@ -165,6 +165,22 @@ sea.program @spec {
     sea.yield %o
   }
   %ok = sea.and %all, %f : i1
+  sea.assert %ok
+  sea.halt
+}
+
+// The allocation forms: seaimp.malloc and seaimp.global become sea.malloc
+// and sea.global with their attributes; the region is dropped.
+// CHECK-LABEL: sea.program @objects
+// CHECK-NOT: sea.mem.nondet
+// CHECK: sea.malloc %{{.*}} align 8 [1] label "heap" : i64 -> !sea.ptr<64>
+// CHECK: sea.global @g size 4 align 4 label "g" : !sea.ptr<64>
+sea.program @objects {
+  %mem = seaimp.var "mem" [0] : !seaimp.var<!m>
+  %c4 = sea.const 4 : i64
+  %p = seaimp.malloc %mem, %c4 align 8 [1] label "heap" : !seaimp.var<!m>, i64 -> !sea.ptr<64>
+  %g = seaimp.global %mem @g size 4 align 4 label "g" : !seaimp.var<!m> -> !sea.ptr<64>
+  %ok = sea.ptr.cmp ne, %p, %g : !sea.ptr<64>
   sea.assert %ok
   sea.halt
 }
