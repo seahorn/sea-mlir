@@ -2035,9 +2035,9 @@ INPUT FORM (checked; anything else is an error, never approximated):
   them into assumes or asserts.
   seaimp variables (seaimp.var / get / set, region ops on memory
   variables, docs/design/SeaImp.md) need --lower: sea-lower-seaimp makes
-  them SSA values right after parsing (a read before any set is the
-  nondet of the var's site; pointers start null); without --lower they
-  are error vc.seaimp.
+  them SSA values right after parsing, one program after the other (a
+  read before any set is the nondet of the var's site; pointers start
+  null); without --lower they are error vc.seaimp.
   sea.box.all (a claim over a box of 1-2 i64 indices, docs/design/BoxAll.md)
   needs --lower: sea-lower-box-all replaces it by its body at one
   arbitrary index (nondet box.all.<tag>.<d>, assume t <u trip count; a box
@@ -4840,10 +4840,16 @@ int main(int argc, char **argv) {
                        imp->getLoc());
       return 1;
     }
-    PassManager pm(&context);
-    pm.nest<sea::ProgramOp>().addPass(sea::createLowerSeaImpPass());
-    if (failed(configurePM(pm)) || failed(pm.run(*module)))
+    // one program at a time, in module order: a nested pipeline would
+    // lower the programs in parallel and interleave their lower.pass
+    // events (every other pipeline of sea-vc runs on the one program)
+    PassManager pm(&context, sea::ProgramOp::getOperationName());
+    pm.addPass(sea::createLowerSeaImpPass());
+    if (failed(configurePM(pm)))
       return 1;
+    for (auto p : module->getOps<sea::ProgramOp>())
+      if (failed(pm.run(p)))
+        return 1;
   }
 
   sea::ProgramOp program;
