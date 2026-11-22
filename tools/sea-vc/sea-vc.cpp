@@ -8963,6 +8963,9 @@ int main(int argc, char **argv) {
       int rc =
           sea::runReach(program, reachTargets, vcgen, query, sem, ctx, ropts,
                         hooks, *gOut, reachRuns ? &*reachRuns : nullptr);
+      // reach has answered: a budget never replaces its targets
+      if (gMemWatch)
+        gMemWatch->disarm();
       SEA_PHASE_END(reachPhase).kv("targets", reachTargets.size());
       return rc;
     }

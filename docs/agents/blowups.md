@@ -30,7 +30,9 @@ sea-vc job.mlir <the job's flags> --vcgen-only --progress \
   `unsat` they are off, so a budget never replaces a verdict (the replay
   of a `sat` is bounded by `--mem-limit` only). `--max-rss` needs
   `/proc/self/statm`; where it cannot be read the run stops at startup with
-  error `vc.rss-budget-unsupported`.
+  error `vc.rss-budget-unsupported`. The parts of `--check-inb` inherit
+  `--max-nodes`, `--max-rss` and `--mem-trace`; of the parts' statuses,
+  8 ranks just above 3.
 - `--vcgen-only` keeps the solver out when the blowup is in the query.
 
 What a beat says (fields in [Logging](../reference/logging.md)):

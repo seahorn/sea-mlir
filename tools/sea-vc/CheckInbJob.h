@@ -239,7 +239,8 @@ inline mlir::LogicalResult postconditionFailedNoAssert(ProgramOp part) {
 }
 
 /// The worst of two exit statuses of parts: a bug or an error (5, 2, 6, 4,
-/// 1, in that order) over unknown (3) over a decided part (0).
+/// 1, in that order) over a budget stop (8) over unknown (3) over a decided
+/// part (0).
 inline int worseStatus(int a, int b) {
   auto rank = [](int s) {
     switch (s) {
@@ -247,18 +248,20 @@ inline int worseStatus(int a, int b) {
       return 0;
     case 3:
       return 1;
+    case 8:
+      return 2;
     case 1:
-      return 2;
-    case 4:
       return 3;
-    case 6:
+    case 4:
       return 4;
-    case 2:
+    case 6:
       return 5;
-    case 5:
+    case 2:
       return 6;
+    case 5:
+      return 7;
     default:
-      return 2;
+      return 3;
     }
   };
   return rank(a) >= rank(b) ? a : b;

@@ -612,13 +612,14 @@ other output is unchanged. The benchmark harness runs with it.
 | 3 | `unknown`, including a timeout or a memory limit |
 | 4 | with `--seam`: a `sat` whose replay leaves an object; the in-bounds assumption does not hold, the answer is inconclusive, and the program has a memory-safety error. With `--replay-original`: the original program's run makes a memory-safety violation and does not fail the same assertion. With `--symbolic-size=assert`: the replayed run fails a premise assert (`premise.failed`), not the property; inconclusive (decided before `--replay-original`: the input program has no premise assert). With `--ack-stride`: a `sat` whose model puts two executed reads whose constraint the stride rule dropped at one index, and whose replay fails and breaks a GEP promise at an access (`vc.ack-stride-promise-broken`): the answer is that run; it takes precedence over 2 (a mismatch the Mem-SSA no-clobber claim explains, `replay: no-clobber-violated`, is printed too) and, as for the in-bounds case, can hide a bug on that run |
 | 5 | with `--seam-check`: an invalid rewrite; a bug, and the verdict is not to be trusted. It takes precedence over 0, 2, 3 and 4, not over 1 |
-| 8 | `--max-nodes` or `--max-rss` exceeded in encoding or solving: `result: unknown` and `budget: hit` with the census; also in a split or `--reach` run. Not an answer of the solver (never printed after its `sat` / `unsat`) and not the `unknown` 3 of a timeout or memory limit |
 | 6 | with `--replay-original`: `sat` confirmed on the lowered program, but the original program on the same inputs does not fail the same assertion: the lowering changed what the program does (a bug in a pass, or a program whose behavior depends on where placement puts its objects) |
+| 8 | `--max-nodes` or `--max-rss` exceeded in encoding or solving: `result: unknown` and `budget: hit` with the census; also in a split or `--reach` run. Not an answer of the solver (never printed after its `sat` / `unsat`) and not the `unknown` 3 of a timeout or memory limit |
 
 With `--reach` the status is not a verdict: 0 when every target is
 decided and every reachable one replays to it; 3 when some target is
 `unknown`; 4 when a replay stops at a memory-safety violation before its
-target; 2 for a replay that disagrees with the model; 1 for an error. Each
+target; 2 for a replay that disagrees with the model; 1 for an error; 8 when a
+budget stops the run (before the reach summary). Each
 takes precedence over the ones before it in this list.
 
 | tool | exit codes |

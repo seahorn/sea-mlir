@@ -133,7 +133,7 @@ SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SE
   bench.py establish <SEL>... [--par N] [--sea-vc PATH] [--jobs REGEX] [--resume RESULTSDIR [--no-run]]
        [--record-counters KEY,... [--counters-only]]
     runs the default configuration and writes expected / tier / time into the manifests (curation; review the
-    diff in the benchmark repo; sat/unsat -> expected, timeout/unknown/memout -> unknown-ok + hard).
+    diff in the benchmark repo; sat/unsat -> expected, timeout/unknown/memout/budget -> unknown-ok + hard).
     --record-counters: for each solved job and KEY without a deliberate bound, writes the observed value as
     {max: value, seeded: <date> <sea-vc sha>} (replacing an older seeded bound); a deliberate bound (no
     `seeded`) is never changed: a run that breaks it prints COUNTER-OVER. --counters-only: only that.
