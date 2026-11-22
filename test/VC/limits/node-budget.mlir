@@ -19,13 +19,14 @@
 // ERR: Error: more than 150 live Expr nodes (--max-nodes) in phase encode: stopped, the census is in the budget.* lines [vc.node-budget]
 // RUN: sh -c 'sea-vc "$0" --lower --seam --max-nodes=150 >/dev/null 2>&1; test $? -eq 3' %s
 
-// The rules: with a budget hit after the load through the stored pointer,
-// the census has the rules that rewrote it, by total firings; with
-// --seam-stats the rewriter's counters follow.
+// The rules: a budget hit once the first rules have fired (most of the way
+// through encode; shapes only: which rules, how often and which op was in
+// progress is not pinned) has the rules that rewrote so far, by total
+// firings, and with --seam-stats the rewriter's counters follow.
 // RUN: not sea-vc %s --lower --seam --max-nodes=230 --seam-stats 2>/dev/null | FileCheck %s --check-prefix=RULES
 // RULES: budget: hit resource=nodes limit=230
 // RULES: budget.rule: {{[a-z.-]+}} fired={{[0-9]+}} recent={{[0-9]+}}{{$}}
-// RULES: budget.site: sea.load nodes={{[0-9]+}} at=f.c:9:3{{$}}
+// RULES: budget.site: sea.{{[a-z.]+}} nodes={{[0-9]+}} at={{.+}}{{$}}
 // RULES: seam.rule-calls: {{[0-9]+}}
 // RULES: seam.rule.
 

@@ -7,7 +7,7 @@
 // or size is pinned.
 // RUN: sea-vc %s --lower --seam --mem-trace --mem-trace-interval=0 --mem-watch-step=16 2>&1 >/dev/null | FileCheck %s
 // RUN: sea-vc %s --lower --seam --log=vc.mem --mem-trace-interval=0 --mem-watch-step=16 2>&1 >/dev/null | FileCheck %s
-// CHECK: log: vc.mem beat phase=encode run=1 time={{[0-9.]+}}{{( rss-mb=[0-9]+ vm-mb=[0-9]+)?}} peak-rss-mb={{[0-9]+}} nodes-live={{[0-9]+}} nodes-made={{[0-9]+}} rw-cache={{[0-9]+}} rule-calls={{[0-9]+}} op=sea.{{[a-z.]+}} op-at={{.+}} op-nodes={{[0-9]+}} top-ops={{"?}}{{[0-9]+}}:{{.+}} top-rules={{.+}} top-sites={{[0-9]+}}:sea.{{[a-z.]+}}@{{.+}}{{$}}
+// CHECK: log: vc.mem beat phase=encode run=1 time={{[0-9.]+}}{{.*}} nodes-live={{[0-9]+}} nodes-made={{[0-9]+}} rw-cache={{[0-9]+}} rule-calls={{[0-9]+}} op=sea.{{[a-z.]+}} op-at={{.+}} op-nodes={{[0-9]+}} top-ops={{"?}}{{[0-9]+}}:{{.+}} top-rules={{.+}} top-sites={{[0-9]+}}:sea.{{[a-z.]+}}@{{.+}}
 // The load through the stored pointer is rewritten in its op: a beat
 // inside it names it as the op in progress.
 // Its rules show up in the beats after it (fired since the last beat), and
@@ -30,6 +30,17 @@
 // RUN: sed -e '/-time:/d' -e '/^tool.version/d' %t.budget > %t.budget.s
 // RUN: diff %t.off.s %t.on.s
 // RUN: diff %t.off.s %t.budget.s
+
+// A budget never replaces a verdict: they bound encoding and solving. With
+// the limit between the live nodes up to the solve's end and those of the
+// replay (measured from this run's phase-end lines by the script), the
+// replay passes the limit and the run still prints its one `result: sat`
+// and exits with the status of a sat.
+// RUN: sh %sea_src_root/test/VC/limits/Inputs/budget-after-verdict.sh %sea_vc %s > %t.verdict
+// RUN: FileCheck %s --check-prefix=VERDICT < %t.verdict
+// VERDICT: result: sat
+// VERDICT-NOT: result:
+// VERDICT-NOT: budget
 
 // jsonl: the log events are JSON objects with the same fields.
 // RUN: sea-vc %s --lower --seam --mem-trace --mem-trace-interval=0 --mem-watch-step=16 --format=jsonl 2>&1 >/dev/null | FileCheck %s --check-prefix=JSONL

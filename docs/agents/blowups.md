@@ -24,7 +24,12 @@ sea-vc job.mlir <the job's flags> --vcgen-only --progress \
   `budget: hit` line, the census of that moment (`budget.*` lines), error
   `vc.node-budget` or `vc.rss-budget`, exit status 3. `--max-nodes` is
   deterministic: the same budget stops at the same term on every run, so
-  two variants of a job can be compared at the same size.
+  two variants of a job can be compared at the same size. The budgets
+  bound encoding and solving: once the solver has answered `sat` or
+  `unsat` they are off, so a budget never replaces a verdict (the replay
+  of a `sat` is bounded by `--mem-limit` only). `--max-rss` needs
+  `/proc/self/statm`; where it cannot be read the run stops at startup with
+  error `vc.rss-budget-unsupported`.
 - `--vcgen-only` keeps the solver out when the blowup is in the query.
 
 What a beat says (fields in [Logging](../reference/logging.md)):
@@ -67,7 +72,11 @@ there; the census says which phase and which operators.
 
 A smaller program with the same curve makes the analysis fast:
 `--max-nodes` makes the interestingness test cheap and deterministic
-(`budget: hit` within a phase, [the reducer](../reference/reducer.md)).
+(`budget: hit` within a phase). `utils/reduce-test.py` does not recognize
+`budget: hit` yet: its `slow` mode with `--metric mem` accepts a kill,
+`mem-limit: hit` or an out-of-memory message, so for a budget write a
+custom interestingness test that looks for `budget: hit` in the output
+([the reducer](../reference/reducer.md)).
 
 ## Example: an h2 flow-control job
 

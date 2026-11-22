@@ -51,6 +51,7 @@
 #include "mlir/IR/Operation.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -67,7 +68,8 @@ struct MemWatchOptions {
   double interval = 10;
   /// the length of each top list
   unsigned top = 8;
-  /// budgets, 0: none: live hash-consed nodes; resident memory in MiB
+  /// budgets, 0: none: live hash-consed nodes; resident memory in MiB (they
+  /// bound encoding and solving: disarm() at the solver's answer)
   uint64_t maxNodes = 0;
   uint64_t maxRssMB = 0;
   /// the checks run every this many nodes made (a node budget lowers it)
@@ -129,6 +131,7 @@ public:
   /// from its creation on; detach() before the factory goes.
   void attach(expr::ExprFactory &f, const expr::RewriteStats *stats,
               const expr::RewriteCache *cache) {
+    armed = true;
     fac = &f;
     rwStats = stats;
     rwCache = cache;
@@ -146,6 +149,11 @@ public:
     rwCache = nullptr;
     curOp = nullptr;
   }
+
+  /// The solver answered (sat / unsat): the budgets check no more, so a
+  /// budget never replaces a verdict (the heartbeat goes on; the next
+  /// attach, a retry's run, arms them again).
+  void disarm() { armed = false; }
 
   /// the rule counters of the attached run (null: none)
   const expr::RewriteStats *stats() const { return rwStats; }
@@ -181,6 +189,8 @@ public:
   /// The budgets, now (also at each phase start and end: the memory a
   /// phase that makes no nodes took, the solver's, is seen at its end).
   void checkBudgets() {
+    if (!armed)
+      return;
     if (opts.maxNodes && fac && fac->nodesLive() > opts.maxNodes)
       onHit(Budget::Nodes, opts.maxNodes, census());
     if (opts.maxRssMB) {
@@ -207,8 +217,8 @@ public:
       return;
     const double cost = secondsBetween(now, after);
     nextBeat = after + std::chrono::duration_cast<SteadyClock::duration>(
-                           std::chrono::duration<double>(std::max(
-                               opts.interval, cost * kCensusSpacing)));
+                           std::chrono::duration<double>(
+                               std::max(opts.interval, cost * kCensusSpacing)));
   }
 
   /// The census now (see the file comment).
@@ -229,8 +239,7 @@ public:
           byType;
       fac->forEachLive([&](const expr::ENode *n) {
         const expr::Operator &op = n->op();
-        auto &slot =
-            byType[*reinterpret_cast<const void *const *>(&op)];
+        auto &slot = byType[*reinterpret_cast<const void *const *>(&op)];
         if (!slot.first)
           slot.first = &op;
         ++slot.second;
@@ -250,14 +259,23 @@ public:
       c.cacheEntries = int64_t(rwCache->size());
     if (rwStats) {
       c.ruleCalls = std::max(rwStats->ruleCalls, lastRuleCalls);
+      // never less than the last beat's total (a nested scratch set of
+      // counters is swapped in: file comment); a rule of the last beat the
+      // counters lack is still listed
+      llvm::StringSet<> seen;
       for (auto &kv : rwStats->rules) {
-        if (!kv.getValue())
-          continue;
+        seen.insert(kv.getKey());
         auto it = lastRules.find(kv.getKey());
         const uint64_t last = it == lastRules.end() ? 0 : it->getValue();
-        const uint64_t recent = kv.getValue() > last ? kv.getValue() - last : 0;
-        c.rules.push_back({kv.getKey().str(), kv.getValue(), recent});
+        const uint64_t total = std::max<uint64_t>(kv.getValue(), last);
+        if (!total)
+          continue;
+        c.rules.push_back(
+            {kv.getKey().str(), total, total > last ? total - last : 0});
       }
+      for (auto &kv : lastRules)
+        if (kv.getValue() && !seen.count(kv.getKey()))
+          c.rules.push_back({kv.getKey().str(), kv.getValue(), 0});
       std::sort(c.rules.begin(), c.rules.end(),
                 [](const auto &a, const auto &b) {
                   if (a.recent != b.recent)
@@ -402,6 +420,7 @@ private:
   uint64_t lastRuleCalls = 0;
   std::string phase;
   unsigned phaseRun = 0;
+  bool armed = true;
   llvm::DenseMap<mlir::Operation *, uint64_t> sites;
   mlir::Operation *curOp = nullptr;
   uint64_t curOpStart = 0;

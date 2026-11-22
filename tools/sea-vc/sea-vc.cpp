@@ -1479,7 +1479,8 @@ static cl::opt<unsigned> memWatchStep(
 
 static cl::opt<uint64_t> maxNodes(
     "max-nodes",
-    cl::desc("Budget of live Expr nodes (hash-consed, 0: none): when "
+    cl::desc("Budget of live Expr nodes (hash-consed, 0: none), for "
+             "encoding and solving (not after the solver answered): when "
              "exceeded, stop with `result: unknown`, `budget: hit "
              "resource=nodes` and the census (budget.* lines), error "
              "vc.node-budget, status 3; checked every n/8 (at most 4096) "
@@ -1489,7 +1490,9 @@ static cl::opt<uint64_t> maxNodes(
 static cl::opt<uint64_t> maxRss(
     "max-rss",
     cl::desc("Budget of resident memory in MiB (0: none): as --max-nodes, "
-             "`budget: hit resource=rss`, error vc.rss-budget; checked every "
+             "`budget: hit resource=rss`, error vc.rss-budget (an error "
+             "vc.rss-budget-unsupported at startup where the process's "
+             "memory cannot be read); checked every "
              "4096 Expr nodes made and at phase boundaries (not inside the "
              "solver's check: --mem-limit bounds that)"),
     cl::init(0), cl::value_desc("MiB"));
@@ -4200,6 +4203,9 @@ made, so a phase that makes none (solve) has its phase-end line only.
 Budgets: --max-nodes=<n> (live nodes), --max-rss=<MiB>, checked at the
 same points and at phase boundaries: exceeded, the run stops with
 result: unknown, budget: hit and the census (OUTPUT FORMATS), status 3.
+The budgets bound encoding and solving: once the solver has answered
+(sat, unsat) they are off, so a verdict is never replaced (the replay is
+bounded by --mem-limit only).
 Off (no flag): one compare per node made.
 
 PROGRESS (--progress = --log=vc.phase, --progress=false = vc.phase:0; on
@@ -5270,6 +5276,12 @@ int main(int argc, char **argv) {
     mo.top = memTop;
     mo.maxNodes = maxNodes;
     mo.maxRssMB = maxRss;
+    if (maxRss && !sea::readProcMem().hasCurrent) {
+      sea::diag::error("vc.rss-budget-unsupported",
+                       "--max-rss needs the process's resident size "
+                       "(/proc/self/statm), which cannot be read here");
+      return 1;
+    }
     if (memWatchStep == 0)
       return fail("--mem-watch-step: a number > 0");
     mo.step = memWatchStep;
@@ -9188,6 +9200,11 @@ int main(int argc, char **argv) {
                                                                 : "unknown")
         .kv("time", solveSec)
         .kv("nodes-made", efac.nodesMade());
+    // a verdict is never replaced by a budget hit: the budgets bound
+    // encoding and solving (replay is bounded by --mem-limit only)
+    if (gMemWatch && (res == sea::solver::SolverResult::SAT ||
+                      res == sea::solver::SolverResult::UNSAT))
+      gMemWatch->disarm();
     SEA_PHASE_END(solvePhase);
     splitPart.solveSeconds = solveSec;
     {
