@@ -8,6 +8,10 @@
 // RUN: sea-opt %s --sea-widen-memory=k=8 --sea-expand-mem-fill 2>/dev/null | sea-run - --program=unaligned_start --missing=zero | FileCheck %s --check-prefix=OK
 // RUN: sea-opt %s --sea-widen-memory=k=8 --sea-expand-mem-fill 2>/dev/null | sea-run - --program=unaligned_end --missing=zero | FileCheck %s --check-prefix=OK
 // RUN: sea-opt %s --sea-expand-mem-fill | sea-run - --program=words --missing=zero | FileCheck %s --check-prefix=OK
+// RUN: sea-opt %s --sea-widen-memory="k=8 report=true" -o /dev/null 2>&1 | FileCheck %s --check-prefix=CLS
+// RUN: sea-opt %s --sea-widen-memory=k=8 2>/dev/null | FileCheck %s --check-prefix=CLSPACK
+// RUN: sea-opt %s --sea-widen-memory=k=8 --sea-expand-mem-fill 2>/dev/null | sea-run - --program=percls --missing=zero | FileCheck %s --check-prefix=OK
+// RUN: sea-opt %s --sea-widen-memory=k=8 --sea-expand-mem-fill 2>/dev/null | sea-run - --program=join --missing=zero | FileCheck %s --check-prefix=OK
 
 // sea-expand-mem-fill: one store of the memory's cell type per cell, at
 // addr + k * (units per cell), in order; no fill left. sea-widen-memory
@@ -118,6 +122,7 @@ sea.program @unaligned_start {
 // WIDE-NOT: sea.mem.fill
 // WIDE-COUNT-13: sea.store {{.*}} : !sea.mem<!sea.ptr<64>, i8>, i8
 // WIDE-NOT: sea.store
+// WIDE: sea.load
 sea.program @unaligned_end {
   %m0 = sea.mem.nondet "m" [3] : !m
   %g = sea.global @uend size 16 align 8 : !sea.ptr<64>
@@ -128,6 +133,54 @@ sea.program @unaligned_end {
   // bytes 8..15 = 9, 10, 11, 12, 13, then the zero contents
   %e = sea.const 56036624905 : i64
   %ok = sea.icmp eq, %x, %e : i64
+  sea.assert %ok
+  sea.halt
+}
+
+// Widening is per class: the 12-byte fill is not a multiple of 8, so the
+// align 4 global gets 4-byte words.
+// CLS: remark: sea-widen-memory: memory widened to 4-byte words (not 8: a fill length not a multiple of a word
+// CLSPACK-LABEL: sea.program @percls
+// CLSPACK: dense<[67305985, 134678021, 202050057]> : tensor<3xi32>
+sea.program @percls {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %g = sea.global @t size 16 align 4 : !sea.ptr<64>
+  %m1 = sea.mem.fill %m0[%g], dense<[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]> : tensor<12xi8> inplace : !m
+  %i = sea.nondet "i" [1] : i64
+  %c2 = sea.const 2 : i64
+  %j = sea.and %i, %c2 : i64
+  %c2b = sea.const 2 : i64
+  %off = sea.mul %j, %c2b : i64
+  %q = sea.ptr.add %g, %off : !sea.ptr<64>, i64
+  %x = sea.load %m1[%q] align 4 : !m -> i32
+  %e = sea.const 67305985 : i32
+  %ok = sea.icmp eq, %x, %e : i32
+  sea.assert %ok
+  sea.halt
+}
+
+// Two fills on two branches reach one memory block argument: widened to 8.
+sea.program @join {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %g = sea.global @t size 16 align 8 : !sea.ptr<64>
+  %c = sea.nondet "c" [1] : i1
+  sea.cond_br %c, ^a, ^b
+^a:
+  %m1 = sea.mem.fill %m0[%g], dense<[1, 2, 3, 4, 5, 6, 7, 8]> : tensor<8xi8> inplace : !m
+  sea.br ^j(%m1 : !m)
+^b:
+  %c8 = sea.const 8 : i64
+  %q = sea.ptr.add %g, %c8 : !sea.ptr<64>, i64
+  %m2 = sea.mem.fill %m0[%q], dense<[-1, -2, -3, -4, -5, -6, -7, -8]> : tensor<8xi8> inplace : !m
+  sea.br ^j(%m2 : !m)
+^j(%m : !m):
+  %x = sea.load %m[%g] align 8 : !m -> i64
+  %c8b = sea.const 8 : i64
+  %q2 = sea.ptr.add %g, %c8b : !sea.ptr<64>, i64
+  %y = sea.load %m[%q2] align 8 : !m -> i64
+  %s = sea.add %x, %y : i64
+  %e = sea.const 578437695752307201 : i64
+  %ok = sea.icmp ne, %s, %e : i64
   sea.assert %ok
   sea.halt
 }

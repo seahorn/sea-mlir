@@ -4845,7 +4845,9 @@ int main(int argc, char **argv) {
     }
     // one program at a time, in module order: a nested pipeline would
     // lower the programs in parallel and interleave their lower.pass
-    // events (every other pipeline of sea-vc runs on the one program)
+    // events. Only this seaimp pre-pass is serialized, in module order; the
+    // main lowering still runs per program, in parallel, so its lower.pass
+    // log order across programs is not deterministic.
     PassManager pm(&context, sea::ProgramOp::getOperationName());
     pm.addPass(sea::createLowerSeaImpPass());
     if (failed(configurePM(pm)))

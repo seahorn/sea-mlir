@@ -40,6 +40,10 @@ The interpreter writes the cells in place, after the range check of the
 whole fill (an out-of-bounds fill is a memory-safety error); the A-INB
 job (`sea-check-inb`) checks its range once, and `sea-check-ptr-index`
 treats it as an access of its address.
+Under deferred memory errors an out-of-object fill writes nothing, while
+its store expansion writes the in-object cells. Memset and its expansion
+differ the same way; this only matters for runs that are already
+inconclusive.
 
 ## The VC: stores of the memory's cells
 

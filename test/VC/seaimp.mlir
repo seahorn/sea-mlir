@@ -4,9 +4,13 @@
 // RUN: sea-vc %s --lower --program=uninit | FileCheck %s --check-prefix=SAT
 // RUN: sea-opt %s --sea-lower-seaimp | sea-vc - --lower --program=uninit | FileCheck %s --check-prefix=SAT
 // RUN: sea-vc %s --lower --program=uninit --replay-original | FileCheck %s --check-prefix=ORIG
+// RUN: sea-vc %s --lower --program=max --log=lower.pass:1 2>&1 | FileCheck %s --check-prefix=ORDER
 
 // seaimp has meaning only through its lowering: sea-vc refuses it without
 // --lower, sea-run always (docs/design/SeaImp.md).
+// The seaimp pre-pass lowers the programs one at a time, in module order.
+// ORDER: pass=sea-lower-seaimp on=sea.program program=@max
+// ORDER-NEXT: pass=sea-lower-seaimp on=sea.program program=@uninit
 // RAW: vc.seaimp
 // INTERP: run.seaimp
 
