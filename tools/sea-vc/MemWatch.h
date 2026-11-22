@@ -57,6 +57,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -74,11 +75,14 @@ struct MemWatchOptions {
   uint64_t maxRssMB = 0;
   /// the checks run every this many nodes made (a node budget lowers it)
   unsigned step = 4096;
+  /// testing only: the budgets report a hit at the end of this phase (if
+  /// armed); empty: none
+  std::string testHitPhase;
 };
 
 class MemWatch : public expr::ExprFactory::Watch {
 public:
-  enum class Budget { Nodes, Rss };
+  enum class Budget { Nodes, Rss, Test };
 
   struct OpCount {
     std::string op;
@@ -101,6 +105,8 @@ public:
     /// rewriter cache entries; -1: no rewriter
     int64_t cacheEntries = -1;
     uint64_t ruleCalls = 0;
+    /// the rewriter's counters (the budget stop's seam.* lines)
+    std::optional<expr::RewriteStats> stats;
     std::vector<OpCount> ops;
     /// every rule fired so far, by recent firings
     std::vector<RuleCount> rules;
@@ -112,6 +118,9 @@ public:
 
   /// \p onHit: a budget is exceeded, with the census of that moment; it
   /// must not return (sea-vc prints the stop and exits).
+  /// The rule counters of the attached run now, nested scratch counts
+  /// included (null function: none).
+  using StatsFn = std::function<std::optional<expr::RewriteStats>()>;
   using HitFn = std::function<void(Budget, uint64_t limit, const Census &)>;
 
   MemWatch(const log::Tag &tag, MemWatchOptions opts, HitFn onHit)
@@ -129,11 +138,11 @@ public:
 
   /// The factory of a VC run and its rewriter (stats, cache; null: none),
   /// from its creation on; detach() before the factory goes.
-  void attach(expr::ExprFactory &f, const expr::RewriteStats *stats,
+  void attach(expr::ExprFactory &f, StatsFn stats,
               const expr::RewriteCache *cache) {
     armed = true;
     fac = &f;
-    rwStats = stats;
+    statsFn = std::move(stats);
     rwCache = cache;
     lastRules.clear();
     lastRuleCalls = 0;
@@ -145,7 +154,7 @@ public:
     if (fac)
       fac->setWatch(nullptr, 0);
     fac = nullptr;
-    rwStats = nullptr;
+    statsFn = nullptr;
     rwCache = nullptr;
     curOp = nullptr;
   }
@@ -154,9 +163,6 @@ public:
   /// budget never replaces a verdict (the heartbeat goes on; the next
   /// attach, a retry's run, arms them again).
   void disarm() { armed = false; }
-
-  /// the rule counters of the attached run (null: none)
-  const expr::RewriteStats *stats() const { return rwStats; }
 
   /// A phase starts (the vc.phase start event's name and run).
   void phaseStart(const char *name, unsigned run) {
@@ -169,6 +175,8 @@ public:
   /// A phase ends: a `phase-end` line with the census (vc.mem on).
   void phaseEnd(const char *name) {
     checkBudgets();
+    if (armed && !opts.testHitPhase.empty() && opts.testHitPhase == name)
+      onHit(Budget::Test, 0, census());
     if (!tag.on(log::Flow))
       return;
     Census c = census();
@@ -257,13 +265,16 @@ public:
     }
     if (rwCache)
       c.cacheEntries = int64_t(rwCache->size());
-    if (rwStats) {
-      c.ruleCalls = std::max(rwStats->ruleCalls, lastRuleCalls);
+    if (statsFn)
+      c.stats = statsFn();
+    if (c.stats) {
+      const expr::RewriteStats &st = *c.stats;
+      c.ruleCalls = std::max(st.ruleCalls, lastRuleCalls);
       // never less than the last beat's total (a nested scratch set of
       // counters is swapped in: file comment); a rule of the last beat the
       // counters lack is still listed
       llvm::StringSet<> seen;
-      for (auto &kv : rwStats->rules) {
+      for (auto &kv : st.rules) {
         seen.insert(kv.getKey());
         auto it = lastRules.find(kv.getKey());
         const uint64_t last = it == lastRules.end() ? 0 : it->getValue();
@@ -373,7 +384,7 @@ private:
     e.kv("nodes-live", c.nodesLive).kv("nodes-made", c.nodesMade);
     if (c.cacheEntries >= 0)
       e.kv("rw-cache", uint64_t(c.cacheEntries));
-    if (rwStats)
+    if (c.stats)
       e.kv("rule-calls", c.ruleCalls);
     if (!c.curOp.empty())
       e.kv("op", c.curOp).kv("op-at", c.curOpAt).kv("op-nodes", c.curOpNodes);
@@ -382,7 +393,7 @@ private:
     e.kv("top-ops", list(c.ops, [](const OpCount &o) {
            return std::to_string(o.live) + ":" + o.op;
          }));
-    if (rwStats) {
+    if (c.stats) {
       std::vector<RuleCount> fired;
       for (const RuleCount &r : c.rules)
         if (r.recent && fired.size() < opts.top)
@@ -400,10 +411,13 @@ private:
   /// the rule counts the next beat's recent counts start from: never
   /// lower than before (a nested scratch set of counters, file comment)
   void lastBeatRulesSnapshot() {
-    if (!rwStats)
+    if (!statsFn)
       return;
-    lastRuleCalls = std::max(lastRuleCalls, rwStats->ruleCalls);
-    for (auto &kv : rwStats->rules) {
+    const std::optional<expr::RewriteStats> st = statsFn();
+    if (!st)
+      return;
+    lastRuleCalls = std::max(lastRuleCalls, st->ruleCalls);
+    for (auto &kv : st->rules) {
       uint64_t &last = lastRules[kv.getKey()];
       last = std::max(last, kv.getValue());
     }
@@ -414,7 +428,7 @@ private:
   HitFn onHit;
   SteadyClock::time_point t0, nextBeat;
   expr::ExprFactory *fac = nullptr;
-  const expr::RewriteStats *rwStats = nullptr;
+  StatsFn statsFn;
   const expr::RewriteCache *rwCache = nullptr;
   llvm::StringMap<uint64_t> lastRules;
   uint64_t lastRuleCalls = 0;

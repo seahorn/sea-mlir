@@ -212,6 +212,10 @@ public:
   /// The per-rule counters of the rewriter (null unless seam() or
   /// simplifies()).
   const expr::RewriteStats *seamStats() const;
+  /// seamStats() with the counts a nested rewrite in progress holds aside
+  /// (a copy; empty unless seam() or simplifies()): for a report from inside
+  /// a rewrite (--mem-trace, the budgets).
+  std::optional<expr::RewriteStats> seamStatsTotal() const;
   /// Seconds spent rewriting loads and stores so far (0 unless seam()): the
   /// pre-processing of the thesis' Table 8.4.
   double seamRewriteSeconds() const;

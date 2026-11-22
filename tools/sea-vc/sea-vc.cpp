@@ -1477,6 +1477,14 @@ static cl::opt<unsigned> memWatchStep(
              "m/8)"),
     cl::init(4096), cl::value_desc("n"), cl::Hidden);
 
+static cl::opt<std::string> budgetTestHit(
+    "budget-test-hit",
+    cl::desc("Testing only: the budgets report a hit (resource=test, error "
+             "vc.test-budget, status 8) at the end of the named phase, if "
+             "they are still armed (not after the solver answered or reach "
+             "decided)"),
+    cl::init(""), cl::value_desc("phase"), cl::Hidden);
+
 static cl::opt<uint64_t> maxNodes(
     "max-nodes",
     cl::desc("Budget of live Expr nodes (hash-consed, 0: none), for "
@@ -1953,9 +1961,12 @@ static uint64_t countOps(Operation *op) {
 /// and not the unknown 3 of a timeout or --mem-limit). The
 /// run is inside Expr construction: it ends here, without unwinding.
 [[noreturn]] static void budgetHit(sea::MemWatch::Budget b, uint64_t limit,
-                                   const sea::MemWatch::Census &c,
-                                   const expr::RewriteStats *rw) {
+                                   const sea::MemWatch::Census &c) {
+  // the rewriter's counters of the moment, nested scratch counts included
+  const expr::RewriteStats *rw = c.stats ? &*c.stats : nullptr;
   const bool nodes = b == sea::MemWatch::Budget::Nodes;
+  const bool test = b == sea::MemWatch::Budget::Test;
+  const char *resource = nodes ? "nodes" : test ? "test" : "rss";
   sea::out::Record res("result");
   res.str("value", "unknown");
   res.text = "result: unknown";
@@ -1964,7 +1975,7 @@ static uint64_t countOps(Operation *op) {
   printStats(os, [&](sea::stats::Report &r) {
     sea::stats::Line &l = r.line("budget")
                               .value("hit")
-                              .kv("resource", nodes ? "nodes" : "rss")
+                              .kv("resource", resource)
                               .kv("limit", limit)
                               .kv("nodes-live", c.nodesLive)
                               .kv("nodes-made", c.nodesMade);
@@ -2005,22 +2016,25 @@ static uint64_t countOps(Operation *op) {
       rw->report(r, "seam.");
     resultLine(r, "unknown");
     r.line("budget")
-        .value(nodes ? "nodes" : "rss")
+        .value(resource)
         .brunch(sea::stats::Brunch::Value)
         .brunchOnly();
     r.line("status").value(8).brunch(sea::stats::Brunch::Value).brunchOnly();
   });
   gOut->flush();
-  sea::diag::error(nodes ? "vc.node-budget" : "vc.rss-budget",
-                   nodes ? "more than " + std::to_string(limit) +
-                               " live Expr nodes (--max-nodes) in phase " +
-                               c.phase +
-                               ": stopped, the census is in the "
-                               "budget.* lines"
-                         : "resident memory above " + std::to_string(limit) +
-                               " MiB (--max-rss) in phase " + c.phase +
-                               ": stopped, the census is in the budget.* "
-                               "lines");
+  sea::diag::error(
+      test    ? "vc.test-budget"
+      : nodes ? "vc.node-budget"
+              : "vc.rss-budget",
+      test    ? "--budget-test-hit: a hit at the end of phase " + c.phase
+      : nodes ? "more than " + std::to_string(limit) +
+                    " live Expr nodes (--max-nodes) in phase " + c.phase +
+                    ": stopped, the census is in the "
+                    "budget.* lines"
+              : "resident memory above " + std::to_string(limit) +
+                    " MiB (--max-rss) in phase " + c.phase +
+                    ": stopped, the census is in the budget.* "
+                    "lines");
   sea::diag::printSummary();
   errs().flush();
   ::_exit(8);
@@ -5271,7 +5285,8 @@ int main(int argc, char **argv) {
   // --mem-trace / --max-nodes / --max-rss: the watch of every VC run's
   // factory (MemWatch.h)
   std::optional<sea::MemWatch> memWatch;
-  if (logMem.on(sea::log::Flow) || maxNodes || maxRss) {
+  if (logMem.on(sea::log::Flow) || maxNodes || maxRss ||
+      !budgetTestHit.empty()) {
     if (memTraceInterval < 0)
       return fail("--mem-trace-interval: a number of seconds >= 0");
     sea::MemWatchOptions mo;
@@ -5279,6 +5294,7 @@ int main(int argc, char **argv) {
     mo.top = memTop;
     mo.maxNodes = maxNodes;
     mo.maxRssMB = maxRss;
+    mo.testHitPhase = budgetTestHit;
     if (maxRss && !sea::readProcMem().hasCurrent) {
       sea::diag::error("vc.rss-budget-unsupported",
                        "--max-rss needs the process's resident size "
@@ -5291,7 +5307,7 @@ int main(int argc, char **argv) {
     memWatch.emplace(logMem, mo,
                      [&memWatch](sea::MemWatch::Budget b, uint64_t limit,
                                  const sea::MemWatch::Census &c) {
-                       budgetHit(b, limit, c, memWatch->stats());
+                       budgetHit(b, limit, c);
                      });
     gMemWatch = &*memWatch;
   }
@@ -6455,7 +6471,12 @@ int main(int argc, char **argv) {
         if (!gMemWatch)
           return;
         expr::SeaMRewriter *rw = sem.seamRewriter();
-        gMemWatch->attach(efac, sem.seamStats(), rw ? &rw->cache() : nullptr);
+        gMemWatch->attach(efac,
+                          sem.seamStats() ? sea::MemWatch::StatsFn([&sem] {
+                            return sem.seamStatsTotal();
+                          })
+                                          : nullptr,
+                          rw ? &rw->cache() : nullptr);
       }
       ~WatchRun() {
         if (gMemWatch)

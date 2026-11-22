@@ -14,18 +14,6 @@
 // RUN: sea-vc %t/multi.mlir --lower --reach --format=jsonl 2>/dev/null | FileCheck %s --check-prefix=JSON
 // JSON: "kind":"reach"{{.*}}"site":1
 
-// A budget never replaces the targets: with a --max-rss that only the check
-// at the end of the reach phase exceeds (the script measures it), all the
-// reach lines and the summary are printed, no budget line, status 0.
-// RUN: sh %S/../limits/Inputs/budget-after-reach.sh %sea_vc %t/multi.mlir > %t.budget
-// RUN: FileCheck %s --check-prefix=BUDGET < %t.budget
-// BUDGET: reach: m.c:3:1 reachable
-// BUDGET: reach: m.c:5:1 reachable
-// BUDGET: reach: multi.mlir:1:1 reachable
-// BUDGET: reach.summary
-// BUDGET-NOT: budget
-// BUDGET-NOT: result: unknown
-
 // Without canonicalize the dead assume stays (site 2, unreachable).
 // RUN: sea-vc %t/multi.mlir --lower --lower-disable=canonicalize --reach 2>/dev/null | FileCheck %s --check-prefix=NOCANON
 // NOCANON: reach: m.c:5:1 reachable op=sea.assume {{.*}} site=1

@@ -25,9 +25,12 @@ sea-vc job.mlir <the job's flags> --vcgen-only --progress \
   `vc.node-budget` or `vc.rss-budget`, exit status 8 (own status: not the 3
   of a timeout or `--mem-limit`). `--max-nodes` is
   deterministic: the same budget stops at the same term on every run, so
-  two variants of a job can be compared at the same size. The budgets
+  two variants of a job can be compared at the same size. Give both
+  budgets: the terms of some configurations are large (under
+  `--seam-row-group=0` an n-ary `||` node averages about 2.5 KB, so 5 M live
+  nodes reached 14 GB and an out-of-memory kill before the node budget). The budgets
   bound encoding and solving: once the solver has answered `sat` or
-  `unsat` they are off, so a budget never replaces a verdict (the replay
+  `unsat`, or `--reach` has decided its targets, they are off, so a budget never replaces a verdict (the replay
   of a `sat` is bounded by `--mem-limit` only). `--max-rss` needs
   `/proc/self/statm`; where it cannot be read the run stops at startup with
   error `vc.rss-budget-unsupported`. The parts of `--check-inb` inherit
@@ -105,12 +108,19 @@ configuration `--lower --seam --widen-memory=4`, died after about 800 s at
   both sides of a memory ite, fires about 0.3 times per R-ABORT). The
   program has about 3,400 store-map versions in all (the run with
   `--seam-row-expand=0` below), fewer than the R-ABORTs of one late load.
-  Hypothesis: a load reads a version once per word and index leaf (an
-  8-byte pointer over 4-byte words is two reads; an ite index can be split
-  into its leaves).
+  A first hypothesis, one read per word and index leaf, does not hold:
+  the memory is byte-indexed, so an 8-byte load makes 8 byte reads
+  whatever the word size, a constant factor.
 - So the size is reads x memory versions x open entries: the expanded ite
   chains of two versions are different terms, and the read index differs
   from one load to the next, so nothing is shared across loads.
+- The cause the recipe led to: the ring buffer is moved into `tx_buf` by
+  `memmove`, and the range tests of those moves are undecided on
+  destination leaves that have no single-object view. The branch that hits
+  reads a multi-object index that is dead there, and the read then
+  R-ABORTs through every older memory operation and store-map. The terms
+  grow with the number of memory versions behind the load, not with the
+  loads.
 - The test: `--seam-row-expand=0` (keep such a read as a select over the
   store chain) finishes `encode` and `simplify` in 1.3 s with 0.15 M terms.
   The growth moves to `solver-term`: `--max-rss=12000` stops it after 53 s

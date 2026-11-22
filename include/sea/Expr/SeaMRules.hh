@@ -383,6 +383,44 @@ public:
 
   const SeaMOptions &options() const { return m_opts; }
   RewriteStats &stats() { return m_stats; }
+
+  /// A nested rewrite counts into a scratch set (the counts it keeps are
+  /// merged by the caller, the rest dropped): the current counters move
+  /// into \p scratch for its time, and scratchLeave moves them back.
+  void scratchEnter(RewriteStats &scratch) const {
+    std::swap(scratch, m_stats);
+    m_outer.push_back(&scratch);
+  }
+  void scratchLeave(RewriteStats &scratch) const {
+    m_outer.pop_back();
+    std::swap(scratch, m_stats);
+  }
+  /// The counters with those moved aside by the nested rewrites in
+  /// progress: what a progress or budget report from inside one shows
+  /// (a copy, no trail; at most the counts a nested rewrite will drop more).
+  RewriteStats totals() const {
+    RewriteStats t;
+    t.rules = m_stats.rules;
+    t.ruleCalls = m_stats.ruleCalls;
+    t.rulesFired = m_stats.rulesFired;
+    t.cacheHits = m_stats.cacheHits;
+    t.cacheInserts = m_stats.cacheInserts;
+    t.chainHops = m_stats.chainHops;
+    t.chainStarts = m_stats.chainStarts;
+    t.chainStartCaches = m_stats.chainStartCaches;
+    for (const RewriteStats *o : m_outer) {
+      t.ruleCalls += o->ruleCalls;
+      t.rulesFired += o->rulesFired;
+      t.cacheHits += o->cacheHits;
+      t.cacheInserts += o->cacheInserts;
+      t.chainHops += o->chainHops;
+      t.chainStarts += o->chainStarts;
+      t.chainStartCaches += o->chainStartCaches;
+      for (auto &kv : o->rules)
+        t.rules[kv.getKey()] += kv.getValue();
+    }
+    return t;
+  }
   const AddrRangeAnalysis &arm() const { return m_arm; }
   /// The normalization rules of BvRules.hh (used when options().simplify).
   bvnorm::Rules &bv() { return m_bv; }
@@ -649,9 +687,9 @@ public:
     // the flat forms run normalization rules: their counts go to a scratch
     // set, not into the firing being made (its rule list is the trail's)
     RewriteStats scratch;
-    std::swap(scratch, m_stats);
+    scratchEnter(scratch);
     const bool same = cmpErase(a) == cmpErase(b);
-    std::swap(scratch, m_stats);
+    scratchLeave(scratch);
     if (same) {
       ++m_stats.rules["cmp.refl-erase"]; // bookkeeping: not in the trail
       return true;
@@ -3909,10 +3947,10 @@ public:
         // resolved leaves are counted by buildEq; roll nothing back if none
         // resolves: the built term is dropped
         RewriteStats scratch;
-        std::swap(scratch, m_stats);
+        scratchEnter(scratch);
         Expr res = buildEq(a, b, depth, resolved, /*diffBase=*/false, reduced,
                            premises, /*shadow=*/false, ptrLeaf);
-        std::swap(scratch, m_stats);
+        scratchLeave(scratch);
         if (resolved) {
           m_stats.merge(scratch);
           m_stats.count("cmp.ite-push");
@@ -4015,11 +4053,11 @@ public:
         unsigned depth = 0, resolved = 0, premises = PremNone;
         bool reduced = false;
         RewriteStats scratch;
-        std::swap(scratch, m_stats);
+        scratchEnter(scratch);
         Expr built = buildEq(as, bs, depth, resolved, /*diffBase=*/true,
                              reduced, premises, /*shadow=*/false,
                              /*ptrLeaf=*/true);
-        std::swap(scratch, m_stats);
+        scratchLeave(scratch);
         if (resolved) {
           m_stats.merge(scratch);
           m_stats.count("ptr.overlap.ite-push");
@@ -5271,11 +5309,11 @@ public:
       if (eqPairs(i, idx, pairs, m_opts.maxDecideLeaves)) {
         unsigned resolved = 0;
         RewriteStats scratch;
-        std::swap(scratch, m_stats);
+        scratchEnter(scratch);
         unsigned used = PremNone;
         Expr built = buildEq(i, idx, depth, resolved, /*diffBase=*/!shadow,
                              reduced, used, shadow, /*ptrLeaf=*/true);
-        std::swap(scratch, m_stats);
+        scratchLeave(scratch);
         if (resolved) {
           m_stats.merge(scratch);
           cmp = built;
@@ -5809,11 +5847,11 @@ public:
       unsigned resolved = 0, premises = PremNone;
       llvm::SmallVector<Expr, 4> openIn;
       RewriteStats scratch;
-      std::swap(scratch, m_stats);
+      scratchEnter(scratch);
       Expr built =
           buildIn(idx, d, memOpLen(t), haveN, nlo, nhi,
                   /*inb=*/!shadowMemory(t), resolved, premises, openIn);
-      std::swap(scratch, m_stats);
+      scratchLeave(scratch);
       if (resolved) {
         m_stats.merge(scratch);
         m_stats.count("mem.in-push");
@@ -6011,9 +6049,9 @@ public:
           unsigned dp2, pr2;
           bool red2;
           RewriteStats scratch;
-          std::swap(scratch, m_stats);
+          scratchEnter(scratch);
           Expr c2 = rowCompare(cur->arg(1), idx, dp2, red2, pr2, shadow);
-          std::swap(scratch, m_stats);
+          scratchLeave(scratch);
           if (pr2 != PremNone)
             break; // its counts are dropped with it
           m_stats.merge(scratch);
@@ -6052,6 +6090,9 @@ private:
   ExprFactory &m_efac;
   const BaseRegistry &m_bases;
   RewriteStats &m_stats;
+  /// the counters moved aside by the nested rewrites in progress
+  /// (scratchEnter), outermost first
+  mutable std::vector<RewriteStats *> m_outer;
   /// the ordered maps of the store-maps (a side table: Expr is immutable)
   StoreMapTable m_smaps;
   SeaMOptions m_opts;
@@ -6503,6 +6544,8 @@ public:
 
   const RewriteStats &stats() const { return m_stats; }
   RewriteStats &stats() { return m_stats; }
+  /// stats() with the counts a nested rewrite in progress holds aside
+  RewriteStats totalStats() const { return m_config.rules().totals(); }
   RewriteCache &cache() { return m_cache; }
 };
 

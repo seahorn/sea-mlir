@@ -70,6 +70,12 @@ const RewriteStats *SeaOpSem::seamStats() const {
   return seamRw ? &seamRw->stats() : nullptr;
 }
 
+std::optional<RewriteStats> SeaOpSem::seamStatsTotal() const {
+  if (!seamRw)
+    return std::nullopt;
+  return seamRw->totalStats();
+}
+
 double SeaOpSem::seamRewriteSeconds() const {
   return seamRw ? seamRw->rewriteSeconds() : 0;
 }
