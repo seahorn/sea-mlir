@@ -17,7 +17,9 @@ def Sea_NondetSiteOpInterface : OpInterface<"NondetSiteOpInterface"> {
   }];
   let cppNamespace = "::sea";
   let methods = [
-    InterfaceMethod<"The nondet site of the op.", "uint64_t", "getSite">,
+    InterfaceMethod<"The nondet site of the op; none for an op that makes "
+                    "no input (a `seaimp.var` with a constant initial "
+                    "value).", "std::optional<uint64_t>", "getSite">,
   ];
 }
 

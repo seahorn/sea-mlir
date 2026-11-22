@@ -26,6 +26,9 @@ namespace sea::imp {
 mlir::Type regionIndexType(mlir::Type varType);
 mlir::Type regionLenType(mlir::Type varType);
 mlir::Type regionUnitType(mlir::Type varType);
+/// The cell type of the memory a variable holds (NoneType for a variable
+/// that holds no memory).
+mlir::Type regionCellType(mlir::Type varType);
 } // namespace sea::imp
 
 #define GET_OP_CLASSES

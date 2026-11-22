@@ -40,7 +40,10 @@ LogicalResult ProgramOp::verifyRegions() {
   // they must be unique.
   llvm::DenseMap<uint64_t, Operation *> sites;
   WalkResult res = body.walk([&](NondetSiteOpInterface op) {
-    uint64_t site = op.getSite();
+    std::optional<uint64_t> s = op.getSite();
+    if (!s)
+      return WalkResult::advance();
+    uint64_t site = *s;
     auto [it, inserted] = sites.try_emplace(site, op);
     if (inserted)
       return WalkResult::advance();

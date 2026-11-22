@@ -52,6 +52,12 @@ Type sea::imp::regionUnitType(Type varType) {
   return NoneType::get(varType.getContext());
 }
 
+Type sea::imp::regionCellType(Type varType) {
+  if (sea::MemType m = regionOf(varType))
+    return m.getCell();
+  return NoneType::get(varType.getContext());
+}
+
 #define GET_OP_CLASSES
 #include "sea/Dialect/SeaImp/SeaImpOps.cpp.inc"
 
@@ -64,14 +70,28 @@ LogicalResult VarOp::verify() {
     return emitOpError("must be in a sea.program");
   if (!(*this)->getBlock()->isEntryBlock())
     return emitOpError("must be in the entry block of its sea.program");
+  // the initial value: a site (a nondet input), or a constant memory
+  if (getInit()) {
+    if (!isa<sea::MemType>(getValueType()))
+      return emitOpError("init is only for a memory variable (a region)");
+    if (getSite())
+      return emitOpError("a variable with init has no site (it starts "
+                         "constant, not nondet)");
+  } else {
+    if (!getSite())
+      return emitOpError("needs a site (its nondet initial value), or init "
+                         "for a memory");
+    if (getShadow())
+      return emitOpError("shadow is a flag of init");
+  }
   for (OpOperand &use : getResult().getUses()) {
     Operation *user = use.getOwner();
     // every operand of a seaimp access that may hold a handle is a
     // variable operand (the others are typed as sea values), except set's
     // stored value
     bool ok = isa<GetOp, LoadOp, StoreOp, MemSetOp, MemMoveOp, MemHavocOp,
-                  IsModifiedOp, ResetModifiedOp, PrintMemOp, AllocaOp, MallocOp,
-                  GlobalOp>(user) ||
+                  MemFillOp, IsModifiedOp, ResetModifiedOp, PrintMemOp,
+                  AllocaOp, MallocOp, GlobalOp>(user) ||
               (isa<SetOp>(user) && use.getOperandNumber() == 0);
     if (!ok) {
       InFlightDiagnostic diag =
@@ -91,6 +111,15 @@ SmallVector<MemorySlot> VarOp::getPromotableSlots() {
 Value VarOp::getDefaultValue(const MemorySlot &slot, OpBuilder &builder) {
   Location loc = getLoc();
   Type t = slot.valueType;
+  if (Value init = getInit()) {
+    // a constant memory: made right after the variable, which its init
+    // value dominates (Mem2Reg's builder is at the start of the entry
+    // block); the variable dominates every access
+    builder.setInsertionPointAfter(*this);
+    auto c = sea::MemConstOp::create(builder, loc, t, init);
+    c.setShadow(getShadow());
+    return c;
+  }
   if (isa<IntegerType>(t))
     return sea::NondetOp::create(builder, loc, t, getNameAttr(), getSiteAttr());
   if (isa<sea::StructType>(t))
@@ -268,6 +297,12 @@ LogicalResult MemMoveOp::verify() {
 }
 
 LogicalResult MemHavocOp::verify() { return verifyAccess(*this, getVar()); }
+
+LogicalResult MemFillOp::verify() {
+  if (failed(verifyAccess(*this, getVar())))
+    return failure();
+  return sea::verifyMemFillData(*this, regionOf(getVar().getType()), getData());
+}
 
 LogicalResult IsModifiedOp::verify() { return verifyAccess(*this, getVar()); }
 

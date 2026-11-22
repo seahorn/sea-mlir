@@ -14,6 +14,8 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 
 def SeaImp_VarOp : SeaImp_Op<"var", [
     Sea_NondetSiteOpInterface,
+    OptionalTypesMatchWith<"init is a cell of the memory", "result", "init",
+                           "::sea::imp::regionCellType($_self)">,
     DeclareOpInterfaceMethods<PromotableAllocationOpInterface>]> {
   let summary = "Declare a variable";
   let description = [{
@@ -29,6 +31,11 @@ def SeaImp_VarOp : SeaImp_Op<"var", [
     before a write sees the same value. `site` is unique with
     the program's other nondet sites.
 
+    A memory variable may start constant instead: `init %v` (a cell value)
+    makes its initial value `sea.mem.const %v` (every cell holds `%v`;
+    `shadow` is the sea.mem.const flag), with no site (no nondet). Only a
+    memory has `init`; a variable without `init` has a site.
+
     The op is in the entry block of a `sea.program`. Its result is used
     only as the variable operand of seaimp ops (`get`, `set`, the region
     accesses and allocations) in the same region, or of a region read in a
@@ -39,13 +46,17 @@ def SeaImp_VarOp : SeaImp_Op<"var", [
     ```mlir
     %x = seaimp.var "x" [7] : !seaimp.var<i32>
     %mem = seaimp.var "mem" [0] : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+    %zero = seaimp.var "zero" init %z8 : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
     ```
   }];
   let arguments = (ins StrAttr:$name,
-                   ConfinedAttr<I64Attr, [IntNonNegative]>:$site);
+                   OptionalAttr<ConfinedAttr<I64Attr, [IntNonNegative]>>:$site,
+                   Optional<AnySignlessInteger>:$init, UnitAttr:$shadow);
   let results = (outs Res<SeaImp_Var, "", [MemAlloc]>:$result);
-  let assemblyFormat =
-      "$name ` ` `[` $site `]` attr-dict `:` qualified(type($result))";
+  let assemblyFormat = [{
+    $name (` ` `[` $site^ `]`)? (`init` $init^)? (`shadow` $shadow^)?
+    attr-dict `:` qualified(type($result))
+  }];
   let hasVerifier = 1;
   let extraClassDeclaration = [{
     ::mlir::Type getValueType() {
@@ -247,6 +258,27 @@ def SeaImp_MemHavocOp : SeaImp_Op<"memhavoc", [
   let assemblyFormat = [{
     $var `[` $addr `]` `,` $len ` ` `[` $site `]` (`tracked` $tracked^)?
     attr-dict `:` qualified(type($var))
+  }];
+  let hasVerifier = 1;
+}
+
+def SeaImp_MemFillOp : SeaImp_Op<"mem.fill", [SeaImp_IndexOf<"var", "addr">]> {
+  let summary = "Write constant cells to a region from an address";
+  let description = [{
+    `sea.mem.fill` on the memory the variable holds: `get`, fill `inplace`,
+    `set`. `data` is a 1-D dense integer attribute of the region's cell
+    type, at least one cell (a global's initializer, for example).
+
+    ```mlir
+    seaimp.mem.fill %mem[%g], dense<[1, 2, 3]> : tensor<3xi8> : !seaimp.var<!m>
+    ```
+  }];
+  let arguments = (ins Arg<SeaImp_MemVar, "", [MemRead, MemWrite]>:$var,
+                   SeaImp_Index:$addr, AnyIntElementsAttr:$data,
+                   UnitAttr:$tracked);
+  let assemblyFormat = [{
+    $var `[` $addr `]` `,` $data (`tracked` $tracked^)? attr-dict `:`
+    qualified(type($var))
   }];
   let hasVerifier = 1;
 }

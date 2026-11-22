@@ -81,11 +81,13 @@ TYPICAL:
                                           #   arguments (Mem2Reg); a read
                                           #   before any set = sea.nondet
                                           #   "<name>" [<site>] of the var
-                                          #   (memories: sea.mem.nondet;
+                                          #   (memories: sea.mem.nondet, or
+                                          #   sea.mem.const %v for
+                                          #   `seaimp.var "m" init %v`;
                                           #   pointers: null); region ops
                                           #   (seaimp.load / store / memset
-                                          #   / memmove / memhavoc /
-                                          #   is_modified / reset_modified
+                                          #   / memmove / memhavoc / mem.fill
+                                          #   / is_modified / reset_modified
                                           #   / print.mem / alloca / malloc
                                           #   / global) -> the sea op on the
                                           #   chain; no get / set of a

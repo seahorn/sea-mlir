@@ -18,7 +18,9 @@
 // dominance frontier of the sets), and a get that no set reaches reads the
 // variable's initial value, one nondet op made at the start of the entry block
 // from the variable's name and site (sea.nondet / sea.struct.nondet /
-// sea.mem.nondet; pointers start as sea.ptr.null). The variable owned the site
+// sea.mem.nondet; pointers start as sea.ptr.null; a memory variable with
+// `init %v` starts as sea.mem.const %v, made right after the variable, which
+// %v dominates, and has no site). The variable owned the site
 // (unique per program, sea.program's verifier): the nondet op takes it over,
 // made once per variable and only if some get reads it, so the lowered
 // program's sites stay unique.
@@ -77,8 +79,9 @@ static void expandRegionAccesses(ProgramOp program) {
   SmallVector<Operation *> accesses;
   program.walk([&](Operation *op) {
     if (isa<imp::LoadOp, imp::StoreOp, imp::MemSetOp, imp::MemMoveOp,
-            imp::MemHavocOp, imp::IsModifiedOp, imp::ResetModifiedOp,
-            imp::PrintMemOp, imp::AllocaOp, imp::MallocOp, imp::GlobalOp>(op))
+            imp::MemHavocOp, imp::MemFillOp, imp::IsModifiedOp,
+            imp::ResetModifiedOp, imp::PrintMemOp, imp::AllocaOp, imp::MallocOp,
+            imp::GlobalOp>(op))
       accesses.push_back(op);
   });
   for (Operation *op : accesses) {
@@ -126,6 +129,12 @@ static void expandRegionAccesses(ProgramOp program) {
           MemHavocOp::create(b, loc, m.getType(), m, mh.getAddr(), mh.getLen(),
                              mh.getSiteAttr(), inplace, mh.getTrackedAttr());
       imp::SetOp::create(b, loc, mh.getVar(), r);
+    } else if (auto mf = dyn_cast<imp::MemFillOp>(op)) {
+      Value m = get(mf.getVar());
+      Value r =
+          MemFillOp::create(b, loc, m.getType(), m, mf.getAddr(),
+                            mf.getDataAttr(), inplace, mf.getTrackedAttr());
+      imp::SetOp::create(b, loc, mf.getVar(), r);
     } else if (auto im = dyn_cast<imp::IsModifiedOp>(op)) {
       Value m = get(im.getVar());
       Value r = IsModifiedOp::create(b, loc, b.getI1Type(), m, im.getPtr());

@@ -457,7 +457,8 @@ void Eraser::rewrite() {
   auto root = cast<MemNondetOp>(roots.front());
   auto varType = imp::VarType::get(ctx, memType);
   Value var = imp::VarOp::create(b, root.getLoc(), varType, root.getNameAttr(),
-                                 root.getSiteAttr());
+                                 root.getSiteAttr(), /*init=*/Value(),
+                                 /*shadow=*/UnitAttr());
 
   SmallVector<Operation *> erase{root};
   // a read: the region op in place of `op` (top level or in a sea.box.all
