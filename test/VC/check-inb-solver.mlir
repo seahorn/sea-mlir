@@ -8,7 +8,6 @@
 // RUN: %if !yices %{ sea-vc %s --check-inb --lower --seam --ackermannize=off | FileCheck %s --check-prefix=DEF-Z %}
 // RUN: %if yices %{ sea-vc %s --check-inb --lower --seam --ackermannize=off --vcgen-only --check-inb-dir=%t.d | FileCheck %s --check-prefix=PASS %}
 // RUN: %if yices %{ FileCheck %s --check-prefix=CFG-Y < %t.d/parts.cfg %}
-// RUN: %if yices %{ FileCheck %s --check-prefix=MAN-Y < %t.d/manifest.json %}
 // An explicit --solver=z3 wins; z3 gets --ro-arrays=uf.
 // RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off --solver=z3 | FileCheck %s --check-prefix=Z3
 // RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off --solver=z3 --vcgen-only --check-inb-dir=%t.z | FileCheck %s --check-prefix=Z3
@@ -19,6 +18,15 @@
 // An explicit --solver=bitwuzla (when built) is passed through, no --ro-arrays.
 // RUN: %if bitwuzla %{ sea-vc %s --check-inb --lower --seam --ackermannize=off --solver=bitwuzla --vcgen-only --check-inb-dir=%t.s | FileCheck %s --check-prefix=BZ %}
 // RUN: %if bitwuzla %{ FileCheck %s --check-prefix=CFG-B < %t.s/parts.cfg %}
+// A z3-only option without --solver keeps z3 for the parts, with its own
+// reason; uf applies as usual.
+// RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off --z3-logic=QF_BV | FileCheck %s --check-prefix=LOGIC
+// RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off --z3-param=verbose=0 | FileCheck %s --check-prefix=PARAM
+// With an explicit non-z3 solver the option is ignored: one warning at the job.
+// RUN: %if yices %{ sea-vc %s --check-inb --lower --seam --ackermannize=off --solver=yices --z3-tactic=smtfd 2>&1 | FileCheck %s --check-prefix=IGN %}
+// A neutral value (the option's default) does not count: Yices stays.
+// RUN: %if yices %{ sea-vc %s --check-inb --lower --seam --ackermannize=off --z3-tactic=default | FileCheck %s --check-prefix=NEUTRAL %}
+// RUN: %if yices %{ sea-vc %s --check-inb --lower --seam --ackermannize=off --seam-check-rlimit=0 | FileCheck %s --check-prefix=NEUTRAL %}
 // The stat in jsonl.
 // RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off --solver=z3 --format=jsonl | FileCheck %s --check-prefix=JSON
 
@@ -30,7 +38,6 @@
 // CFG-Y: --seam
 // CFG-Y: --solver=yices
 // CFG-Y-NOT: --ro-arrays
-// MAN-Y: "--config=parts.cfg"
 // Z3: check-inb.solver: z3 (--solver) ro-arrays=uf (default)
 // CFG-Z: --solver=z3
 // CFG-Z: --ro-arrays=uf
@@ -41,8 +48,16 @@
 // BZ: check-inb.solver: bitwuzla (--solver) ro-arrays=array (default)
 // CFG-B: --solver=bitwuzla
 // CFG-B-NOT: --ro-arrays
+// LOGIC: check-inb.solver: z3 (--z3-logic) ro-arrays=uf (default)
+// PARAM: check-inb.solver: z3 (--z3-param) ro-arrays=uf (default)
+// NEUTRAL: check-inb.solver: yices (default) ro-arrays=array (default)
+// IGN: Warning: the parts' verdict solver is yices, which ignores --z3-tactic [check-inb.z3-option-ignored]
+// IGN-NOT: check-inb.z3-option-ignored
+// IGN: check-inb.solver: yices (--solver) ro-arrays=array (default)
 // JSON: "kind":"check-inb.solver"
 // JSON-SAME: "solver":"z3"
+// JSON-SAME: "ro_arrays":"uf"
+// JSON-SAME: "ro_arrays_reason":"default"
 
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @ag {

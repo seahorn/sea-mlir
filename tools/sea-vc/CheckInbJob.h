@@ -346,17 +346,24 @@ inline bool partArguments(llvm::ArrayRef<const char *> args,
 
 /// The defaults of the parts' solver (docs/design/CheckInb.md, "The parts'
 /// solver"), applied to \p args (the parts' options, partArguments'
-/// output): the solver is Yices when the binary has it (\p haveYices), else
-/// z3 (said in \p reason); an explicit --solver= of the command line wins
-/// and is passed through. With z3, `--ro-arrays=uf` unless the command line
-/// gave --ro-arrays=. It is exact and cuts z3's time on the parts' read-only
-/// arrays; it is not passed for Yices and Bitwuzla, which handle the arrays
-/// themselves (not measured with the option). \p roNote: what happened to
-/// --ro-arrays.
+/// output). An explicit --solver= of the command line wins and is passed
+/// through. Else a z3-only option (--z3-tactic, --z3-logic, --z3-param,
+/// --z3-plant-error, --seam-check-rlimit) keeps z3 (reason: the option);
+/// else the solver is Yices when the binary has it (\p haveYices), z3
+/// otherwise (said in \p reason). With z3, `--ro-arrays=uf` unless the
+/// command line gave --ro-arrays=: exact, and it cuts z3's time on the
+/// parts' read-only arrays; not passed for Yices and Bitwuzla (not
+/// measured with it). \p roNote: what happened to --ro-arrays. \p ignored:
+/// the z3-only options an explicit non-z3 solver ignores.
 inline void partDefaults(std::vector<std::string> &args, bool haveYices,
                          std::string &solver, std::string &reason,
-                         std::string &roNote) {
+                         std::string &roNote,
+                         std::vector<std::string> &ignored) {
+  static const llvm::StringSet<> z3Only = {"z3-tactic", "z3-logic", "z3-param",
+                                           "z3-plant-error",
+                                           "seam-check-rlimit"};
   std::string explicitRo;
+  std::vector<std::string> z3Opts;
   bool hasSolver = false, hasRo = false;
   for (const std::string &a : args) {
     llvm::StringRef r(a);
@@ -366,10 +373,35 @@ inline void partDefaults(std::vector<std::string> &args, bool haveYices,
     } else if (r.consume_front("--ro-arrays=")) {
       explicitRo = r.str();
       hasRo = true;
+    } else if (r.starts_with("--")) {
+      auto [name, value] = r.drop_front(2).split('=');
+      // a value that leaves the option off (its default, as in sea-vc.cpp)
+      // does not count: --z3-tactic=default, --z3-logic=, --z3-param=,
+      // --z3-plant-error=false|0, --seam-check-rlimit=0
+      bool neutral = false;
+      if (name == "z3-tactic")
+        neutral = value == "default";
+      else if (name == "z3-logic" || name == "z3-param")
+        neutral = r.contains('=') && value.empty();
+      else if (name == "z3-plant-error")
+        neutral =
+            r.contains('=') &&
+            llvm::is_contained({"false", "False", "FALSE", "0", ""}, value);
+      else if (name == "seam-check-rlimit")
+        neutral = value == "0";
+      if (z3Only.contains(name) && !neutral &&
+          !llvm::is_contained(z3Opts, "--" + name.str()))
+        z3Opts.push_back("--" + name.str());
     }
   }
   if (hasSolver) {
     reason = "--solver";
+    if (solver != "z3")
+      ignored = z3Opts;
+  } else if (!z3Opts.empty()) {
+    solver = "z3";
+    reason = z3Opts.front();
+    args.push_back("--solver=z3");
   } else if (haveYices) {
     solver = "yices";
     reason = "default";
@@ -380,12 +412,13 @@ inline void partDefaults(std::vector<std::string> &args, bool haveYices,
     args.push_back("--solver=z3");
   }
   if (hasRo)
-    roNote = explicitRo + " (--ro-arrays)";
+    roNote = explicitRo;
   else if (solver == "z3") {
     args.push_back("--ro-arrays=uf");
-    roNote = "uf (default)";
+    roNote = "uf";
   } else
-    roNote = "array (default)";
+    roNote = "array";
+  roNote += hasRo ? " (--ro-arrays)" : " (default)";
 }
 
 /// One part as the manifest describes it: everything an outside runner
@@ -577,7 +610,11 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     out::Record rec("check-inb.solver");
     rec.str("solver", o.solverName)
         .str("reason", o.solverReason)
-        .str("ro_arrays", o.roArraysNote);
+        .str("ro_arrays",
+             llvm::StringRef(o.roArraysNote).split(' ').first.str())
+        .str(
+            "ro_arrays_reason",
+            llvm::StringRef(o.roArraysNote).split(' ').second.trim("()").str());
     rec.text = ("check-inb.solver: " + o.solverName + " (" + o.solverReason +
                 ") ro-arrays=" + o.roArraysNote);
     out.emit(rec);

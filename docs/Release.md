@@ -29,7 +29,9 @@ include it (see [Reporting a bug](#reporting-a-bug)).
   secondary: they work and are smoke-tested, the best solver differs per
   workload (Yices wins on some, times out on others), and both are
   optional at build time. Release binaries do not include Yices (see
-  [Runtime requirements](#runtime-requirements)). It includes:
+  [Runtime requirements](#runtime-requirements)). In a build with Yices,
+  the parts of `--check-inb` default to Yices (see
+  [CheckInb.md](design/CheckInb.md)). It includes:
   - the VC lowering (`--lower`): placement, tracking, fat pointers,
     struct scalarization and the other passes of `lib/Transforms`;
   - SeaM (`--seam`), the object-aware rewriting of loads and stores

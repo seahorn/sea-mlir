@@ -153,6 +153,23 @@ The job's own options go to every part, with two defaults of the job:
   (`yices (default)`, `z3 (no yices in this build)`, `z3 (--solver)`). An
   explicit `--solver=` on the job's command line (or in its profile) wins
   and is passed through, whatever it is.
+- A z3-only option (`--z3-tactic`, `--z3-logic`, `--z3-param`,
+  `--z3-plant-error`, `--seam-check-rlimit`) without `--solver` keeps z3
+  for the parts (a neutral value does not count: `--z3-tactic=default`,
+  an empty `--z3-logic=` or `--z3-param=`, `--z3-plant-error=false`,
+  `--seam-check-rlimit=0`); the line gives the option as the reason
+  (`z3 (--z3-tactic)`). With an explicit `--solver=yices` or `bitwuzla` the
+  option is ignored by the parts' verdict solver (`--z3-param` sets global
+  z3 parameters, which the auxiliary z3 checks of a part may still see),
+  and the job warns once
+  (`check-inb.z3-option-ignored`; `--z3-logic` with another solver is an
+  error of sea-vc as everywhere).
+- The job's lowering follows the parts' solver, not the job's own: the
+  choice that depends on the solver is mul overflow (`sea.umulo` /
+  `sea.smulo` stay for z3 and Bitwuzla, are expanded for Yices), decided
+  after the parts' solver. The other solver-dependent choices (the
+  Ackermann auto mode, `--seam-check` limits) are made inside each part's
+  own sea-vc process, which knows its solver.
 - With z3 as the parts' solver, `--ro-arrays=uf` is passed unless the
   command line gave `--ro-arrays=`. The option is exact: it states the
   read-only arrays as uninterpreted functions at the Expr level, for any

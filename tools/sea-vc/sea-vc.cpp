@@ -3632,10 +3632,13 @@ OUTPUT (stdout, `key: value` lines):
                                   proved statically, those left, ranges of
                                   constant length 0)
   check-inb.solver: <name> (<reason>) ro-arrays=<mode> (<reason>)
-                                  (--check-inb: the parts' solver: yices
-                                  if the binary has it (default), else z3
-                                  (no yices in this build); --solver= wins;
-                                  z3 gets --ro-arrays=uf unless given)
+                                  (--check-inb: the parts' solver: --solver=
+                                  wins; else z3 if a z3-only option is
+                                  given (--z3-tactic ...: reason is the
+                                  option); else yices if the binary has it
+                                  (default), else z3 (no yices in this
+                                  build). z3 gets --ro-arrays=uf unless
+                                  given. The lowering follows it.)
   check-inb.split: folded= parts= trivial= to-solve=
                                   (checks the optimize stages removed
                                   before the split; parts; parts folded to
@@ -4578,8 +4581,9 @@ Kinds and fields:
                 name=), order, objkind, base, size, align
   result        value: sat|unsat|unknown|none
   check-inb     (--check-inb) checks, static, left, zero_length
-  check-inb.solver solver, reason (default | --solver | no yices in this
-                build), ro_arrays (`<mode> (default)` | `<mode> (--ro-arrays)`)
+  check-inb.solver solver, reason (default | --solver | --z3-<option> | no
+                yices in this build), ro_arrays (uf | array),
+                ro_arrays_reason (default | --ro-arrays)
   check-inb.split folded (checks the optimize stages removed before the
                 split), parts, trivial (folded to true in their own
                 optimize: not run), to_solve
@@ -5691,10 +5695,46 @@ int main(int argc, char **argv) {
     jo.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
     jo.maxSeconds = checkInbMaxTime;
     jo.boxAllExpand = boxAllExpandOpt;
+    // the part's options and solver, before the lowering below: the
+    // lowering follows the parts' solver (mul overflow). The EXPANDED command
+    // line (--config files and response files read, every option one
+    // `--name[=value]` token, paths absolute), without the input and the
+    // options of the job itself, so a part runs the same from any directory and
+    // with any profile path
+    {
+      SmallVector<const char *> expanded(args.begin(), args.end());
+      cl::ExpansionContext ectx(configAlloc, cl::TokenizeGNUCommandLine);
+      if (Error e = ectx.expandResponseFiles(expanded)) {
+        sea::diag::error("vc.config-read", toString(std::move(e)));
+        return 1;
+      }
+      std::string bad;
+      if (!sea::checkinb::partArguments(
+              ArrayRef<const char *>(expanded).drop_front(), jo.partArgs,
+              bad)) {
+        sea::diag::error("check-inb.unsupported", "--check-inb: " + bad);
+        return 1;
+      }
+#ifdef WITH_YICES2
+      constexpr bool haveYices = true;
+#else
+      constexpr bool haveYices = false;
+#endif
+      std::vector<std::string> ignored;
+      sea::checkinb::partDefaults(jo.partArgs, haveYices, jo.solverName,
+                                  jo.solverReason, jo.roArraysNote, ignored);
+      // once, at the job: z3-only options given with another solver
+      if (!ignored.empty())
+        sea::diag::warn("check-inb.z3-option-ignored",
+                        "the parts' verdict solver is " + jo.solverName +
+                            ", which ignores " + llvm::join(ignored, ", "));
+    }
     // the lowering's options, as the --lower below would take them; the
     // job runs its stages (docs/design/CheckInb.md)
     jo.lower.abstract = true;
-    jo.lower.nativeMulOverflow = nativeMulOverflow;
+    // the parts' solver, not the job's: Yices gets the mul overflow
+    // expansion
+    jo.lower.nativeMulOverflow = jo.solverName != "yices";
     jo.lower.fold = true;
     jo.lower.widenMemory = widenMemory;
     jo.lower.expandMemSet = !seam && !lambdaMem;
@@ -5733,32 +5773,6 @@ int main(int argc, char **argv) {
     jo.source = inputFilename;
     for (int i = 1; i < argc; ++i)
       jo.jobArgs.push_back(argv[i]);
-    // the part's options: the EXPANDED command line (--config files and
-    // response files read, every option one `--name[=value]` token, paths
-    // absolute), without the input and the options of the job itself, so
-    // a part runs the same from any directory and with any profile path
-    {
-      SmallVector<const char *> expanded(args.begin(), args.end());
-      cl::ExpansionContext ectx(configAlloc, cl::TokenizeGNUCommandLine);
-      if (Error e = ectx.expandResponseFiles(expanded)) {
-        sea::diag::error("vc.config-read", toString(std::move(e)));
-        return 1;
-      }
-      std::string bad;
-      if (!sea::checkinb::partArguments(
-              ArrayRef<const char *>(expanded).drop_front(), jo.partArgs,
-              bad)) {
-        sea::diag::error("check-inb.unsupported", "--check-inb: " + bad);
-        return 1;
-      }
-#ifdef WITH_YICES2
-      constexpr bool haveYices = true;
-#else
-      constexpr bool haveYices = false;
-#endif
-      sea::checkinb::partDefaults(jo.partArgs, haveYices, jo.solverName,
-                                  jo.solverReason, jo.roArraysNote);
-    }
     return sea::checkinb::runJob(*module, program, jo, *gOut);
   }
   // With --seam the answer rests on the premises. A sat whose replay fails may
