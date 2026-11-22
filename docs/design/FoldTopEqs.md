@@ -49,7 +49,8 @@ other than the entry is `guard -> c`). The facts:
   (b := false): the guard of the exit block, Boolean nondets.
 
 Skipped and counted: `bvand(x, m) = c` with a numeral mask (`skipped-masked`):
-it fixes the bits of x under m only.
+it fixes the bits of x under m only; T the address of a pointer
+(`skipped-ptr`, section Pointer observations).
 
 Every occurrence of a fact's T in the other conjuncts becomes c. The
 defining conjunct stays, rebuilt with its own T kept (`T = c` never
@@ -111,6 +112,31 @@ conjunct is such a definition. The constants it removes are the
 Ackermann reads r_k of the facts' reads (`cells`), the placement's object
 bases, the exit guard, nondets (`defs`). A conjunct that defines x as two
 values is not removed (substituted, it is false).
+
+### Pointer observations
+
+A fact whose T is the address of a pointer (`addr(p)`, `to_int(p)`,
+`to_bits(p)`) is not substituted. These are mostly the placement's layout
+facts `addr(obj.k) = c`, conjuncts of every placed query. Substituted,
+they change what SeaM's object rules read: an address that mentions two
+objects becomes a pointer into one, with a base no access gave it. The
+case that showed it (`test/VC/fold-top-eqs/layout-facts.mlir`, from the
+wide fuzz programs, `utils/fuzz-seam.py --seed 5 --accesses=wide`,
+program 2): a memmove read equation reads its source at
+`obj.5 + (addr(q) - addr(obj.4))`, q = `ite(c, obj.4 + 4, obj.5)`. SeaM
+has no view of that term (two bases) and leaves its alias questions with
+the store-map's bytes in `obj.3` open. With the layout facts substituted
+and the ite pushed, one leaf is `obj.5 + 0xffffffc0`, a pointer into
+`obj.5` 64 bytes before it, and `cmp.diff-base` decided its alias
+question under A-SEP in the fold's round, outside any access: a premise
+`--seam-check` cannot state (unexpressible, 12 firings in
+`test/VC/seam/fuzz-check.test`), about a term that is no access and whose
+A-INB is false wherever its leaf is selected: the decision rests on a
+base the program does not give the term. Without the substitution the layout facts stay conjuncts; the
+boundary erases them to `obj.k = c`, and step 2 eliminates the bases after
+the Ackermann lowering, as before. On the step jobs below the Ackermann
+constraints are unchanged (436 / 436 / 161 / 146, `--vcgen-only`); there
+the layout facts had no other use in the query.
 
 ## Exact
 
@@ -244,7 +270,7 @@ options passed on: the parts get the default.
 ## Counters
 
 `vc.fold-top-eqs: facts= term= split= bool= uses= rounds= concat-ite=
-concat-ite-refused= skipped-masked= skipped-untyped=` and `vc.model-trail: cells= defs= rounds=`
+concat-ite-refused= skipped-masked= skipped-untyped= skipped-ptr=` and `vc.model-trail: cells= defs= rounds=`
 (stdout, stderr with `--smt2`):
 
 - `facts`: distinct keys registered (facts found) (term + split + bool);
@@ -295,13 +321,15 @@ built in).
 
 - The default (on): measured on the jobs above only; the A/B is
   `no-fold-top-eqs` against the default.
-- `--seam-check` cannot state the premise of a SeaM rule that fires in
-  the fold's re-simplification outside a memory access (context
-  `fold-top-eqs`; `cmp.diff-base` on a pointer comparison whose operands
-  the fold made numerals): such a firing is counted
-  `seam-check: unexpressible=`, never valid. The firings are under the
-  run's premises and counted in the ledger (`assume.a-sep`). Seen in the
-  wide fuzz runs (`test/VC/seam/fuzz-check.test`, seed 5: 12).
+- A premise rule firing in a round of the fold (trail context
+  `fold-top-eqs`, outside any access) has no premise `--seam-check` can
+  state: it is counted `unexpressible=`, never valid. With the pointer
+  observations not substituted none was seen (`utils/fuzz-seam.py
+  --seam-check`, modes wide / cells / bases, seeds 1, 2, 3, 5, 7, three
+  programs each). If a value fact makes one appear, its alias question is
+  over the images of recorded accesses (equal to them in every model of
+  the query): recording the images with their units would let the
+  premise be stated.
 - `--arith-stats`: the origins do not follow a product the concat-ite
   hoist rebuilds (`unattributed=`; `test/VC/arith-stats.mlir` @bytes).
 - `--vc-defs`: the fold eliminates the object bases, so the address sums

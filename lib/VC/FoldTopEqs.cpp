@@ -12,6 +12,7 @@
 #include "sea/Expr/ExprOpBind.hh"
 #include "sea/Expr/ExprOpBool.hh"
 #include "sea/Expr/ExprOpBv.hh"
+#include "sea/Expr/ExprOpPtr.hh"
 #include "sea/Expr/TypeChecker.hh"
 
 #include <algorithm>
@@ -371,6 +372,16 @@ void TopEqFolder::factsOf(const Expr &c,
           std::any_of(t->args_begin(), t->args_end(),
                       [](ENode *a) { return isNumeral(a); })) {
         ++st.skippedMasked;
+        return;
+      }
+      // the address of a pointer (addr / to_int / to_bits; the
+      // placement's layout facts addr(obj.k) = c): substituted, a sum of
+      // two objects' addresses reads as one object's pointer, and SeaM's
+      // object rules (cmp.diff-base) would decide alias questions about a
+      // term no access made (docs/design/FoldTopEqs.md, "Pointer
+      // observations"). Step 2 eliminates the bases after the boundary.
+      if (op::ptr::isObservation(t)) {
+        ++st.skippedPtr;
         return;
       }
       out.emplace_back(t, v, Kind::Term);

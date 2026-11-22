@@ -3275,7 +3275,7 @@ OUTPUT (stdout, `key: value` lines):
                                   simplifier)
   vc.fold-top-eqs: facts=<n> term=<n> split=<n> bool=<n> uses=<n>
       rounds=<n> concat-ite=<n> concat-ite-refused=<n> skipped-masked=<n>
-      skipped-untyped=<n>
+      skipped-untyped=<n> skipped-ptr=<n>
                                   (fold on: keys substituted, by
                                   kind (T = c, concat parts, Boolean
                                   constants); operand uses replaced; rounds
@@ -3287,7 +3287,9 @@ OUTPUT (stdout, `key: value` lines):
                                   in one round and still in the query is
                                   counted again); facts not
                                   used: bvand(x, m) = c, a concat part of
-                                  unknown width; warning
+                                  unknown width, the address of a pointer
+                                  (addr(obj.k) = c: step 2 eliminates
+                                  the bases after the boundary); warning
                                   vc.fold-top-eqs-rounds: the round bound
                                   stopped it)
   vc.model-trail: cells=<n> defs=<n> rounds=<n>  (fold on:
@@ -7796,7 +7798,8 @@ int main(int argc, char **argv) {
             .kv("concat-ite", f.hoisted)
             .kv("concat-ite-refused", f.hoistRefused)
             .kv("skipped-masked", f.skippedMasked)
-            .kv("skipped-untyped", f.skippedUntyped);
+            .kv("skipped-untyped", f.skippedUntyped)
+            .kv("skipped-ptr", f.skippedPtr);
         r.line("vc.model-trail")
             .brunch(sea::stats::Brunch::Parts)
             .kv("cells", trailCells)

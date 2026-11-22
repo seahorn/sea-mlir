@@ -52,6 +52,9 @@ struct FoldTopEqsStats {
   /// facts not used: masked (`bvand(x, m) = c`), a concat part of unknown
   /// width
   uint64_t skippedMasked = 0, skippedUntyped = 0;
+  /// facts not used: the key is the address of a pointer (addr / to_int /
+  /// to_bits of a pointer; the layout facts addr(obj.k) = c)
+  uint64_t skippedPtr = 0;
   /// the round bound stopped the iteration (not a fixpoint)
   bool roundCap = false;
 };
