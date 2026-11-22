@@ -476,7 +476,7 @@ def rt_programs(a, f, side_args, d, place=()):
 
 def smt2(a, rt):
     """(query, None) or (None, why) for R_T."""
-    cmd = [a.sea_vc, rt] + a.rt_args + ["--smt2"] + seavc_flags.no_fold(a.sea_vc)
+    cmd = [a.sea_vc, rt] + seavc_flags.no_fold(a.sea_vc) + a.rt_args + ["--smt2"]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=a.timeout)
     except subprocess.TimeoutExpired:

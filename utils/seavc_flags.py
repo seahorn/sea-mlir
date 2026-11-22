@@ -13,6 +13,7 @@ binary lists it in its --help-hidden output (probed once per binary).
 
 import functools
 import subprocess
+import sys
 
 NO_FOLD = "--vc-fold-top-eqs=false"
 
@@ -25,6 +26,13 @@ def knows(binary, name="vc-fold-top-eqs"):
             [binary, "--help-hidden"], capture_output=True, text=True, timeout=60
         )
     except (OSError, subprocess.SubprocessError):
+        p = None
+    if p is None or p.returncode != 0:
+        print(
+            f"seavc_flags: cannot probe {binary} (--help-hidden): "
+            f"--{name} is not passed",
+            file=sys.stderr,
+        )
         return False
     return ("--" + name) in p.stdout
 

@@ -669,7 +669,7 @@ INB = re.compile(r"seam\.(?:premises|inb): \S+ accesses=(\d+) conditions=(\d+)")
 def run(binary, f, args, timeout):
     try:
         p = subprocess.run(
-            [binary, f] + args + ["--smt2"] + seavc_flags.no_fold(binary),
+            [binary, f] + seavc_flags.no_fold(binary) + args + ["--smt2"],
             capture_output=True,
             text=True,
             timeout=timeout,
