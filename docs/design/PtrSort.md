@@ -47,6 +47,9 @@ Constructors (every way a pointer comes to exist):
 - `obj.k : ptr(w)` (`ptrConst`): a placed object (the segment), with SeaM.
   Its address is the layout side condition `ADDR(obj.k) = <numeral>`.
   Without SeaM a segment is `PTR_FROM_INT(<numeral>)`.
+  Planned: the constructor `PTR_SEGMENT(k, a)`, which carries the address
+  in the term and replaces `obj.k` and its side condition
+  ([PtrSegment.md](PtrSegment.md)).
 - ptr constants: registers of `!sea.addr` values (block arguments, nondet
   pointers after placement).
 - `PTR_INDEX*(p, x_k, s_k, c, K)`: the only pointer arithmetic
