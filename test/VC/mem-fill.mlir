@@ -20,10 +20,16 @@
 // Without --lower the VC refuses a fill.
 // RUN: not sea-vc %s --program=placed 2>&1 | FileCheck %s --check-prefix=REFUSE
 // RUN: sea-vc %s --lower --program=placed | FileCheck %s --check-prefix=UNSAT
+// sea-erase-mem-ssa maps the fill to seaimp.mem.fill: erase, then lower,
+// gives the same query.
+// RUN: sea-opt %s --sea-erase-mem-ssa -o %t.erased.mlir
+// RUN: %python %sea_src_root/utils/encoding-diff.py --sea-vc %sea_vc --z3 %z3 %s %t.erased.mlir --left-flags=--program=safe --right-flags=--program=safe | FileCheck %s --check-prefix=IDENT
+// RUN: %python %sea_src_root/utils/encoding-diff.py --sea-vc %sea_vc --z3 %z3 %s %t.erased.mlir --left-flags=--program=bug --right-flags=--program=bug | FileCheck %s --check-prefix=IDENT
 // REQUIRES: z3
 
 // WIDE: vc.widen-memory: {{.*}} widened-8=1
 // UNSAT: result: unsat
+// IDENT: result: identical
 // SAT: result: sat
 // SAT: replay: assert-failed
 // SAT: validate: {{.*}} mismatches=0

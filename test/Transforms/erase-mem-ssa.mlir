@@ -8,6 +8,8 @@
 // RUN: %if z3 %{ %{ed} %s %t.erased.mlir --left-flags=--program=box --right-flags=--program=box | FileCheck %s --check-prefix=IDENT %}
 // RUN: %if z3 %{ %{ed} %s %t.erased.mlir --left-flags=--program=unreachable --right-flags=--program=unreachable | FileCheck %s --check-prefix=IDENT %}
 // RUN: %if z3 %{ %{ed} %s %t.erased.mlir --left-flags=--program=ptr --right-flags=--program=ptr | FileCheck %s --check-prefix=IDENT %}
+// RUN: %if z3 %{ %{ed} %s %t.erased.mlir --left-flags=--program=fill --right-flags=--program=fill | FileCheck %s --check-prefix=IDENT %}
+// RUN: %if z3 %{ %{ed} %s %t.erased.mlir --left-flags=--program=const_root --right-flags=--program=const_root | FileCheck %s --check-prefix=IDENT %}
 // IDENT: result: identical
 
 // sea-erase-mem-ssa: the Mem-SSA chain of the program's memory becomes the
@@ -217,6 +219,48 @@ sea.program @unreachable {
   sea.halt
 ^dead:
   %y = sea.load %m0[%p] : !m -> i8
+  sea.halt
+}
+
+// sea.mem.fill -> seaimp.mem.fill (tracked kept, inplace dropped).
+// CHECK-LABEL: sea.program @fill
+// CHECK: %[[M:.*]] = seaimp.var "mem" [0]
+// CHECK: seaimp.mem.fill %[[M]][%{{.*}}], dense<[1, 2, 3, 4]> : tensor<4xi8> tracked : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+// LOW-LABEL: sea.program @fill
+// LOW: sea.mem.fill %{{.*}}, dense<[1, 2, 3, 4]> : tensor<4xi8> inplace tracked
+sea.program @fill {
+  %m0 = sea.mem.nondet "mem" [0] : !m
+  %g = sea.global @tab size 4 align 4 : !sea.ptr<64>
+  %m1 = sea.mem.fill %m0[%g], dense<[1, 2, 3, 4]> : tensor<4xi8> inplace tracked : !m
+  %x = sea.load %m1[%g] : !m -> i32
+  %e = sea.const 67305985 : i32
+  %ok = sea.icmp eq, %x, %e : i32
+  sea.assert %ok
+  sea.halt
+}
+
+// A sea.mem.const root in the entry block: the variable "mem" with init
+// (shadow kept); its constant value moves before the variable, which is
+// first in the entry block, before every access (here an alloca before
+// the root). The lowering makes the same sea.mem.const.
+// CHECK-LABEL: sea.program @const_root
+// CHECK-NEXT: %[[Z:.*]] = sea.const 7 : i8
+// CHECK-NEXT: %[[M:.*]] = seaimp.var "mem" init %[[Z]] shadow : !seaimp.var<!sea.mem<!sea.ptr<64>, i8>>
+// CHECK: seaimp.alloca %[[M]]
+// CHECK-NOT: sea.mem.const
+// LOW-LABEL: sea.program @const_root
+// LOW: sea.mem.const %{{.*}} shadow : !sea.mem<!sea.ptr<64>, i8>
+sea.program @const_root {
+  %n = sea.const 4 : i64
+  %p = sea.alloca %n align 4 [1] : i64 -> !sea.ptr<64>
+  %z = sea.const 7 : i8
+  %m0 = sea.mem.const %z shadow : !m
+  %v = sea.const 1 : i8
+  %m1 = sea.store %m0[%p], %v inplace : !m, i8
+  %x = sea.load %m1[%p] : !m -> i16
+  %e = sea.const 1793 : i16
+  %ok = sea.icmp eq, %x, %e : i16
+  sea.assert %ok
   sea.halt
 }
 

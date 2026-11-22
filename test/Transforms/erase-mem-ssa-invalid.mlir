@@ -135,12 +135,12 @@ sea.program @box_old {
 
 // -----
 
-// A sea.mem.const root: a region starts as its variable's nondet initial
-// value, and seaimp code cannot set a memory.
-// CHECK: sea.mem.const: a memory root other than sea.mem.nondet in the entry block{{.*}}[erase-mem-ssa.unsupported]
-sea.program @const_root {
-  %z = sea.const 0 : i8
-  %m0 = sea.mem.const %z : !sea.mem<!sea.ptr<64>, i8>
+// A sea.mem.const root whose value is no constant: the variable's init
+// value must dominate every access, from the start of the entry block.
+// CHECK: sea.mem.const: a sea.mem.const root whose value is not a constant{{.*}}[erase-mem-ssa.unsupported]
+sea.program @const_root_nondet {
+  %v = sea.nondet "nd" [2] : i8
+  %m0 = sea.mem.const %v : !sea.mem<!sea.ptr<64>, i8>
   %p = sea.ptr.nondet "p" [1] : !sea.ptr<64>
   %x = sea.load %m0[%p] : !sea.mem<!sea.ptr<64>, i8> -> i8
   sea.halt
@@ -149,7 +149,7 @@ sea.program @const_root {
 // -----
 
 // A sea.mem.nondet root outside the entry block.
-// CHECK: sea.mem.nondet: a memory root other than sea.mem.nondet in the entry block{{.*}}[erase-mem-ssa.unsupported]
+// CHECK: sea.mem.nondet: a memory root outside the entry block{{.*}}[erase-mem-ssa.unsupported]
 sea.program @late_root {
   sea.br ^b
 ^b:

@@ -25,7 +25,8 @@
 // its region op, so the output holds no memory value at all (seaimp code
 // never holds a memory version: seaimp.get / set of a memory variable are
 // refused by the verifier):
-//   - sea.load / store / memset / memmove / memhavoc (with `tracked`),
+//   - sea.load / store / memset / memmove / memhavoc / mem.fill (with
+//     `tracked`),
 //     sea.mem.is_modified / reset_modified, a strong sea.print.mem -> the
 //     seaimp region op (`inplace` is dropped: the lowering puts it back,
 //     and the check above is what makes it true);
@@ -34,7 +35,10 @@
 //     before the box);
 //   - the root, a sea.mem.nondet in the entry block, becomes the variable
 //     (its name and site; the lowering makes the same sea.mem.nondet at the
-//     start of the entry block);
+//     start of the entry block); a sea.mem.const root in the entry block
+//     becomes the variable "mem" with `init` (its value, which must be a
+//     constant, moved to the start of the entry block; shadow kept; the
+//     lowering makes the same sea.mem.const right after the variable);
 //   - sea.alloca whose pointer indexes the memory -> seaimp.alloca %mem.
 //     sea.malloc and sea.global stay (seaimp.malloc / seaimp.global exist;
 //     converting them is later work, with the stack / heap distinction).
@@ -45,8 +49,9 @@
 //     operand and its block argument); none: unchanged. Refused, with an
 //     error and no change: several memories (erase-mem-ssa.regions: one
 //     region only), a non-linear chain (erase-mem-ssa.non-linear), a memory
-//     that does not start at one sea.mem.nondet in the entry block (a
-//     sea.mem.const root, a second root, no root), a memory value made by
+//     that does not start at one root (sea.mem.nondet, or sea.mem.const of a
+//     constant) in the entry block (a second root, no root, a root
+//     elsewhere), a memory value made by
 //     an op that is no root or update or in a nested region, a reader with
 //     no region form (erase-mem-ssa.unsupported).
 //   Produces: no memory value (checked: sea-erase-mem-ssa.postcondition).
@@ -100,6 +105,8 @@ Value consumedMem(Operation *op) {
   if (auto s = dyn_cast<MemMoveOp>(op))
     return s.getMem();
   if (auto s = dyn_cast<MemHavocOp>(op))
+    return s.getMem();
+  if (auto s = dyn_cast<MemFillOp>(op))
     return s.getMem();
   if (auto s = dyn_cast<ResetModifiedOp>(op))
     return s.getMem();
@@ -270,8 +277,9 @@ LogicalResult Eraser::collect() {
   }
   memType = cast<MemType>(memValues.front().getType());
 
-  // the region starts as its variable's initial value, a sea.mem.nondet
-  // with the variable's name and site at the start of the entry block
+  // the region starts as its variable's initial value: a sea.mem.nondet
+  // with the variable's name and site, or a sea.mem.const of the
+  // variable's init value, in the entry block
   if (roots.size() > 1) {
     unsupported(roots[1], "a second root of the memory (restarting the "
                           "whole memory has no region form)");
@@ -281,12 +289,23 @@ LogicalResult Eraser::collect() {
     unsupported(program, "a memory without a root");
     return failure();
   }
-  if (!isa<MemNondetOp>(roots.front()) ||
-      roots.front()->getBlock() != &body.front()) {
-    unsupported(roots.front(), "a memory root other than sea.mem.nondet in "
-                               "the entry block (a region starts as its "
-                               "variable's nondet initial value)");
+  if (roots.front()->getBlock() != &body.front()) {
+    unsupported(roots.front(), "a memory root outside the entry block (a "
+                               "region starts as its variable's initial "
+                               "value)");
     return failure();
+  }
+  // init: the variable is made at the start of the entry block, before
+  // every access; a constant init value moves there with it
+  if (auto mc = dyn_cast<MemConstOp>(roots.front())) {
+    Operation *def = mc.getValue().getDefiningOp();
+    if (!def || def->getNumOperands() != 0 ||
+        !def->hasTrait<OpTrait::ConstantLike>()) {
+      unsupported(mc, "a sea.mem.const root whose value is not a constant "
+                      "(the variable's init value must dominate its "
+                      "accesses)");
+      return failure();
+    }
   }
 
   // every reader and update has a region form
@@ -314,7 +333,7 @@ LogicalResult Eraser::checkRegionForm(Operation *op) {
     return success();
   if (isa<LoadOp, IsModifiedOp, ResetModifiedOp, BranchOpInterface>(op))
     return success();
-  if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp>(op))
+  if (isa<StoreOp, MemSetOp, MemMoveOp, MemHavocOp, MemFillOp>(op))
     return success();
   if (auto pm = dyn_cast<PrintMemOp>(op); pm && pm.isStrong() &&
                                           isMem(pm.getMemValue()) &&
@@ -452,13 +471,25 @@ void Eraser::rewrite() {
   OpBuilder b(&entry, entry.begin());
   MLIRContext *ctx = program.getContext();
 
-  // the variable takes the root's name and site (collect: one root, a
-  // sea.mem.nondet in the entry block)
-  auto root = cast<MemNondetOp>(roots.front());
+  // the variable takes the root's name and site (a sea.mem.nondet), or
+  // starts as the root's constant (a sea.mem.const: init, shadow kept; its
+  // value, a constant, moved before the variable); collect: one root, in
+  // the entry block
+  Operation *root = roots.front();
   auto varType = imp::VarType::get(ctx, memType);
-  Value var = imp::VarOp::create(b, root.getLoc(), varType, root.getNameAttr(),
-                                 root.getSiteAttr(), /*init=*/Value(),
-                                 /*shadow=*/UnitAttr());
+  Value var;
+  if (auto mn = dyn_cast<MemNondetOp>(root)) {
+    var = imp::VarOp::create(b, mn.getLoc(), varType, mn.getNameAttr(),
+                             mn.getSiteAttr(), /*init=*/Value(),
+                             /*shadow=*/UnitAttr());
+  } else {
+    auto mc = cast<MemConstOp>(root);
+    Operation *def = mc.getValue().getDefiningOp();
+    def->moveBefore(&entry, entry.begin());
+    b.setInsertionPointAfter(def);
+    var = imp::VarOp::create(b, mc.getLoc(), varType, b.getStringAttr("mem"),
+                             IntegerAttr(), mc.getValue(), mc.getShadowAttr());
+  }
 
   SmallVector<Operation *> erase{root};
   // a read: the region op in place of `op` (top level or in a sea.box.all
@@ -507,6 +538,9 @@ void Eraser::rewrite() {
     } else if (auto mh = dyn_cast<MemHavocOp>(op)) {
       imp::MemHavocOp::create(ob, loc, var, mh.getAddr(), mh.getLen(),
                               mh.getSiteAttr(), mh.getTrackedAttr());
+    } else if (auto mf = dyn_cast<MemFillOp>(op)) {
+      imp::MemFillOp::create(ob, loc, var, mf.getAddr(), mf.getDataAttr(),
+                             mf.getTrackedAttr());
     } else if (auto rm = dyn_cast<ResetModifiedOp>(op)) {
       imp::ResetModifiedOp::create(ob, loc, var, rm.getAddr());
     } else if (auto pm = dyn_cast<PrintMemOp>(op);

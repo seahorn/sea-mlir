@@ -2,8 +2,8 @@
 // sample of the VC tests with one memory gives the query of the original
 // program (encoding-diff: identical). The sample covers joins, memset /
 // memmove / memhavoc, strong print.mem, malloc / alloca / global objects,
-// placed and abstract programs. Programs whose memory starts at
-// sea.mem.const are not in it (erase-mem-ssa.unsupported).
+// placed and abstract programs, memories that start at sea.mem.const
+// (a variable with init).
 // REQUIRES: z3
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: sea-opt %S/ackermann/sat.mlir --sea-erase-mem-ssa -o %t/ackermann_sat.mlir
@@ -26,6 +26,11 @@
 // RUN: sea-opt %S/segment-encoding.mlir --sea-erase-mem-ssa -o %t/segment-encoding.mlir
 // RUN: sea-opt %S/split/selectors.mlir --sea-erase-mem-ssa -o %t/split_selectors.mlir
 // RUN: sea-opt %S/vc-defs/cursor-unsat.mlir --sea-erase-mem-ssa -o %t/vc-defs_cursor-unsat.mlir
+// RUN: sea-opt %S/check-align-wide.mlir --sea-erase-mem-ssa -o %t/check-align-wide.mlir
+// RUN: sea-opt %S/drop-fresh-memhavoc-const.mlir --sea-erase-mem-ssa -o %t/drop-fresh-memhavoc-const.mlir
+// RUN: sea-opt %S/seam/arm.mlir --sea-erase-mem-ssa -o %t/seam_arm.mlir
+// RUN: sea-opt %S/seam/inb-ok.mlir --sea-erase-mem-ssa -o %t/seam_inb-ok.mlir
+// RUN: sea-opt %S/seam/zero-size.mlir --sea-erase-mem-ssa -o %t/seam_zero-size.mlir
 // RUN: %python %sea_src_root/utils/encoding-diff.py --sea-vc %sea_vc --z3 %z3 \
 // RUN:   %S/ackermann/sat.mlir %t/ackermann_sat.mlir \
 // RUN:   %S/ackermann/unsat.mlir %t/ackermann_unsat.mlir \
@@ -47,8 +52,13 @@
 // RUN:   %S/segment-encoding.mlir %t/segment-encoding.mlir \
 // RUN:   %S/split/selectors.mlir %t/split_selectors.mlir \
 // RUN:   %S/vc-defs/cursor-unsat.mlir %t/vc-defs_cursor-unsat.mlir \
+// RUN:   %S/check-align-wide.mlir %t/check-align-wide.mlir \
+// RUN:   %S/drop-fresh-memhavoc-const.mlir %t/drop-fresh-memhavoc-const.mlir \
+// RUN:   %S/seam/arm.mlir %t/seam_arm.mlir \
+// RUN:   %S/seam/inb-ok.mlir %t/seam_inb-ok.mlir \
+// RUN:   %S/seam/zero-size.mlir %t/seam_zero-size.mlir \
 // RUN:   | FileCheck %s
-// CHECK: total: identical=20 same-dag=0 equiv-parts=0 equiv=0 both-unsat=0 diff=0 unknown=0 error=0
+// CHECK: total: identical=25 same-dag=0 equiv-parts=0 equiv=0 both-unsat=0 diff=0 unknown=0 error=0
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

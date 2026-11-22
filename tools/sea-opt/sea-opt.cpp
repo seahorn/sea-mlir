@@ -102,10 +102,13 @@ TYPICAL:
                                           #   memory block arguments),
                                           #   .regions (several memories),
                                           #   .unsupported (the memory does
-                                          #   not start at one
-                                          #   sea.mem.nondet in the entry
-                                          #   block: sea.mem.const, a second
-                                          #   root, none)
+                                          #   not start at one root in the
+                                          #   entry block: a second root,
+                                          #   none, a sea.mem.const of a
+                                          #   non-constant); a sea.mem.const
+                                          #   root -> `seaimp.var "mem" init
+                                          #   %v`; sea.mem.fill ->
+                                          #   seaimp.mem.fill
   sea-opt p.mlir --sea-vc-lower           # what sea-vc --lower runs (placed input)
   sea-opt p.mlir --sea-vc-lower='reach=true'
                                           # what sea-vc --lower --reach runs:
