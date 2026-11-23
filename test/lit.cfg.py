@@ -80,6 +80,16 @@ if config.bitwuzla == "ON":
 if config.yices == "ON":
     config.available_features.add("yices")
 
+# The command-line solvers of those installs (reading a --smt2 query):
+# yices-smt2 in YICES2_ROOT/bin, bitwuzla in BITWUZLA_ROOT/bin.
+for feature, subst, path in (
+    ("yices-bin", "%yices_smt2", config.yices_smt2),
+    ("bitwuzla-bin", "%bitwuzla", config.bitwuzla_bin),
+):
+    if path and not path.endswith("NOTFOUND") and not path.startswith("@"):
+        config.available_features.add(feature)
+        config.substitutions.append((subst, path))
+
 # Disabled tests carry `REQUIRES: disabled-test` and show up as UNSUPPORTED.
 # `lit --param run_disabled=1` runs them anyway (to see if they pass again).
 if lit_config.params.get("run_disabled"):
@@ -94,7 +104,14 @@ if os.path.exists(os.path.join(config.sea_src_root, ".git")) and shutil.which("g
 # run reports passes only. Only the build's optional parts count here;
 # `REQUIRES: disabled-test` still shows as UNSUPPORTED, on purpose. lit
 # excludes by file name, so a name used twice is left to lit.
-BUILD_FEATURES = {"z3", "bitwuzla", "yices", "sea-git-tree"}
+BUILD_FEATURES = {
+    "z3",
+    "bitwuzla",
+    "yices",
+    "yices-bin",
+    "bitwuzla-bin",
+    "sea-git-tree",
+}
 
 
 def _not_for_this_build(path):

@@ -6,6 +6,7 @@
 
 #include "sea/Expr/ExprAPInt.hh"
 #include "sea/Expr/Smt/Model.hh"
+#include "sea/Expr/Smt/Smt2Dialect.hh"
 #include "llvm/ADT/iterator_range.h"
 
 #include <cstdint>
@@ -73,8 +74,11 @@ public:
   /** Clear all assertions */
   virtual void reset() = 0;
 
-  /** Write asserted formulas to SMT-LIB format **/
-  virtual void to_smt_lib(llvm::raw_ostream &o) = 0;
+  /// Write asserted formulas to SMT-LIB format, in \p dialect
+  /// (sea/Expr/Smt/Smt2Dialect.hh; z3's printer only: the others print
+  /// their own, whatever \p dialect)
+  virtual void to_smt_lib(llvm::raw_ostream &o,
+                          Smt2Dialect dialect = Smt2Dialect::Native) = 0;
 
   /// Why the last check answered unknown, as far as the backend says
   /// ("timeout", "memout", or the backend's own text); empty if not known.

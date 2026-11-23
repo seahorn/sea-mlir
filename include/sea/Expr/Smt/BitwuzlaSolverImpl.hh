@@ -100,7 +100,8 @@ public:
   void reset() override;
 
   /** Print asserted formulas to SMT-LIB format **/
-  void to_smt_lib(llvm::raw_ostream &o) override;
+  void to_smt_lib(llvm::raw_ostream &o,
+                  Smt2Dialect dialect = Smt2Dialect::Native) override;
 
   /// \p e with the inlined array definitions substituted (what the solver
   /// knows an inlined constant as): apply before evaluating in the model

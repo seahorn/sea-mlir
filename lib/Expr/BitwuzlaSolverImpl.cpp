@@ -189,7 +189,7 @@ bitwuzla_solver_impl::model_ref bitwuzla_solver_impl::get_model() {
   return model_ref(new bitwuzla_model_impl(*this, d_efac));
 }
 
-void bitwuzla_solver_impl::to_smt_lib(llvm::raw_ostream &o) {
+void bitwuzla_solver_impl::to_smt_lib(llvm::raw_ostream &o, Smt2Dialect) {
   std::ostringstream ss;
   d_bzla->print_formula(ss, "smt2");
   // the query as Bitwuzla gets it: such definitions are substituted, not

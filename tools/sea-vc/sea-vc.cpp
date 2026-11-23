@@ -108,6 +108,21 @@ static cl::opt<bool> smt2("smt2",
                           cl::desc("Print the query as SMT-LIB and exit"),
                           cl::init(false));
 
+static cl::opt<sea::solver::Smt2Dialect> smt2Dialect(
+    "smt2-dialect",
+    cl::desc("The SMT-LIB of --smt2, --split-smt2 and --ack-relax-smt2 "
+             "(z3's printer; include/sea/Expr/Smt/Smt2Dialect.hh)"),
+    cl::init(sea::solver::Smt2Dialect::Native),
+    cl::values(
+        clEnumValN(sea::solver::Smt2Dialect::Native, "z3",
+                   "the query z3 solves, under z3's names (default); a "
+                   "construct Yices or Bitwuzla does not read is named in "
+                   "the header and warned (smt2.nonportable.<name>)"),
+        clEnumValN(sea::solver::Smt2Dialect::Portable, "portable",
+                   "for z3, Yices and Bitwuzla: z3-only predicates (mul "
+                   "overflow, bvredor / bvredand) expanded exactly; what "
+                   "has no portable form is warned")));
+
 static cl::opt<bool>
     lower("lower",
           cl::desc("Run the VC lowering pipeline first (sea-opt "
@@ -2359,7 +2374,20 @@ TYPICAL:
   sea-vc p.mlir --solver=bitwuzla  # same with Bitwuzla (only if sea-mlir was
                                  #   built with -DBITWUZLA_ROOT=<install>;
                                  #   else an error)
-  sea-vc p.mlir --smt2           # print the query (SMT-LIB) only
+  sea-vc p.mlir --smt2           # print the query (SMT-LIB) only: a
+                                 #   header (; sea.smt2-dialect, one
+                                 #   ; sea.smt2-nonportable <name> line per
+                                 #   construct Yices or Bitwuzla does not
+                                 #   read, warned smt2.nonportable.<name>),
+                                 #   (set-logic ALL | --z3-logic), the query
+                                 #   z3 solves, under z3's names
+  sea-vc p.mlir --smt2 --smt2-dialect=portable  # for z3, Yices 2.8 and
+                                 #   Bitwuzla 0.9: mul overflow (z3's
+                                 #   bvumul_noovfl, ...) and bvredor /
+                                 #   bvredand expanded exactly; z3 then solves
+                                 #   another (equivalent) query. No portable
+                                 #   form: const-array (not Yices), lambda,
+                                 #   quantifiers, array-map/-default, as-array
   sea-vc p.mlir --lower --seam --split-leaves=@f.cc:768  # one part per leaf
                                  #   of the address loaded there, each with
                                  #   its counters, answer and time (SPLIT;
@@ -4679,8 +4707,8 @@ Kinds and fields:
                 [earlier_version_loads], [expected,
                 got, message] (not a match); skipped: status `skipped`,
                 reason; one record for the `replay.original:` lines
-  smt2          (--smt2) the query in text (and its `; sea.block-ids`
-                lines); the statistics follow as records on stdout (text
+  smt2          (--smt2) the query in text (its header, the query, its
+                `; sea.block-ids` lines); the statistics follow as records on stdout (text
                 mode: stderr)
   print         path (scope.tag[.leaf|[i]]), [scope], [at], [at_inlined],
                 [at_name], [depth] (tree),
@@ -5189,6 +5217,9 @@ int main(int argc, char **argv) {
                 "--yices-* are unavailable (configure with "
                 "-DSEA_ENABLE_YICES=ON -DYICES2_ROOT=<install>)");
 #endif
+  if (smt2Dialect.getNumOccurrences() && backend != Backend::Z3)
+    return fail("--smt2-dialect needs --solver=z3 (z3's printer; Bitwuzla "
+                "prints its own query)");
   if (vcgenOnly && smt2)
     return fail("--vcgen-only runs no solver; --smt2 prints the solver's "
                 "query: use one");
@@ -8096,7 +8127,7 @@ int main(int argc, char **argv) {
       if (failed(sea::writeFileAtomic(
               path,
               [&](llvm::raw_ostream &os) {
-                ps->to_smt_lib(os);
+                ps->to_smt_lib(os, smt2Dialect);
                 return success();
               },
               "vc.split-smt2", "--split-smt2")))
@@ -8815,13 +8846,13 @@ int main(int argc, char **argv) {
         // the query is one record
         sea::out::Record rec("smt2");
         raw_string_ostream qs(rec.text);
-        solver->to_smt_lib(qs);
+        solver->to_smt_lib(qs, smt2Dialect);
         blockIdLines(qs);
         if (StringRef(rec.text).ends_with("\n"))
           rec.text.pop_back();
         gOut->emit(rec);
       } else {
-        solver->to_smt_lib(outs());
+        solver->to_smt_lib(outs(), smt2Dialect);
         blockIdLines(outs());
       }
       gOut->flush();
@@ -9260,7 +9291,7 @@ int main(int argc, char **argv) {
           failed(sea::writeFileAtomic(
               ackRelaxSmt2,
               [&](llvm::raw_ostream &os) {
-                solver->to_smt_lib(os);
+                solver->to_smt_lib(os, smt2Dialect);
                 return success();
               },
               "vc.ack-relax-smt2", "--ack-relax-smt2")))
