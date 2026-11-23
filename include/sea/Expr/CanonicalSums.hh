@@ -21,7 +21,9 @@
 // as
 //     P,   (bvadd P c),   (bvadd (bvadd P (bvnot N)) c+1),
 //     (bvnot N),   (bvadd (bvnot N) c+1),   or the numeral c
-// (c+1 folded modulo 2^w; a zero numeral is not written), where
+// (c+1 folded modulo 2^w; a zero numeral is not written; NegForm::Sub
+// writes a negative chain as a subtraction instead: (bvsub P N),
+// (bvsub (bvadd P c) N), (bvsub c N) with c also 0), where
 //  - P is the n-ary bvadd of the positive leaves (one leaf: the leaf), N the
 //    n-ary bvadd of the negative ones; a coefficient k > 2^(w-1) goes into
 //    N as 2^w - k, every other coefficient k != 1 is (bvmul k leaf);
@@ -42,12 +44,12 @@
 //
 // Every step is an identity of SMT-LIB bit-vector arithmetic (no
 // assumption): the forms are equal to their terms modulo 2^w; P - N + c =
-// P + ~N + (c + 1); a = b iff a - b = 0 iff P + c = N; zext / concat 0 / low
-// extract of a leaf name its low bits. The unit test (sea-canonical-sums-
-// test) checks each case with a z3 miter, and random linear terms at several
-// widths with a miter (Yices, else Bitwuzla, else z3, with a limit) plus
-// random ground points checked in z3 (more, and corner values, when the
-// miter is unknown).
+// P + ~N + (c + 1) = (P + c) - N (Sub), -N + c = c - N; a = b iff a - b = 0 iff
+// P + c = N; zext / concat 0 / low extract of a leaf name its low bits. The
+// unit test (sea-canonical-sums-test) checks each case with a z3 miter, and
+// random linear terms at several widths with a miter (Yices, else Bitwuzla,
+// else z3, with a limit) plus random ground points checked in z3 (more, and
+// corner values, when the miter is unknown).
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/ExprOpBv.hh"
 #include "sea/Expr/SmallArith.hh"
@@ -67,6 +69,14 @@ namespace expr {
 
 class CanonicalSums {
 public:
+  /// How the negative chain N is written (sea-vc --vc-canonical-sums-neg):
+  /// Bvnot, P + ~N + (c+1): one adder chain, the negation as inverted bits;
+  /// Sub, (P + c) - N: the subtraction kept as such, for a solver that
+  /// reads sums as polynomials and ~N as a bit-array term.
+  enum class NegForm { Bvnot, Sub };
+
+  explicit CanonicalSums(NegForm neg = NegForm::Bvnot) : m_neg(neg) {}
+
   struct Stats {
     uint64_t sums = 0;        ///< maximal linear terms emitted (not a leaf)
     uint64_t sumsChanged = 0; ///< of them, a different node than the input
@@ -357,6 +367,15 @@ private:
     split(f, pos, neg);
     Expr acc = chain(pos, f.w);
     mpz_class c = f.c;
+    if (!neg.empty() && m_neg == NegForm::Sub) {
+      // P - N + c = (P + c) - N; -N + c = c - N
+      Expr l = acc;
+      if (!l)
+        l = num(c, f.w);
+      else if (c != 0)
+        l = mk<BADD>(l, num(c, f.w));
+      return mk<BSUB>(l, chain(neg, f.w));
+    }
     if (!neg.empty()) {
       Expr n = mk<BNOT>(chain(neg, f.w));
       acc = acc ? Expr(mk<BADD>(acc, n)) : n;
@@ -447,6 +466,7 @@ private:
     return r;
   }
 
+  NegForm m_neg;
   ExprFactory *m_efac = nullptr;
   TypeChecker m_tc;
   std::unordered_map<ENode *, Form> m_form;

@@ -46,6 +46,7 @@ The input is a module with a `sea.program` in BMC form, or a program that
 | `--ackermannize=auto|on|off` | replace reads of read-only arrays by fresh constants with consistency constraints |
 | `--vc-defs=inline|nest|eq|hidden` | name or share the address sums of the query (default `inline`, not tuned; [SumNames](../design/SumNames.md)) |
 | `--vc-canonical-sums` | the last encoding step of the query: every maximal bit-vector sum in one canonical linear form, equalities with a sum side balanced; exact; off by default (not tuned); not with `--vc-defs` ([CanonicalSums](../design/CanonicalSums.md)) |
+| `--vc-canonical-sums-neg=bvnot\|sub` | with `--vc-canonical-sums`: the negative leaves of a sum as `(P + ~N) + c+1` (`bvnot`, default, not tuned) or `(P + c) - N` (`sub`) ([CanonicalSums](../design/CanonicalSums.md#the-negation---vc-canonical-sums-neg)) |
 | `--narrow-offsets` | with `--seam` and the Ackermann lowering: compare reads of one object at the bits of its size; rests on A-INB (`assume.a-inb`; off by default; [Ackermann](../design/Ackermann.md), "Narrowed offsets") |
 | `--narrow-check`, `--narrow-check-rlimit=<n>` | with `--narrow-offsets`: prove that the A-INB of each narrowed read bounds its offset (exit 5 if one fails, 7 if one is unproven); z3's resource limit per obligation, default 50000000 (untuned), 64-bit and clamped as below; an exhausted one is `narrow-check-unknown: ... reason=rlimit` |
 | `--mem=array|lambda` | the memory encoding; `lambda` is SeaHorn's lambda encoding, z3 only |

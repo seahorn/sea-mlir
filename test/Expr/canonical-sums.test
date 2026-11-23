@@ -10,8 +10,11 @@ CHECK: test: eq ok
 CHECK: test: extract ok
 CHECK: test: bitwise ok
 CHECK: test: image ok
-CHECK: random: terms=200 {{.*}} unknown={{[0-9]$}}
+CHECK: test: sub ok
+CHECK: random: neg=bvnot terms=200 {{.*}} unknown={{[0-9]$}}
 CHECK: test: random ok
+CHECK: random: neg=sub terms=100 {{.*}} unknown={{[0-9]$}}
+CHECK: test: random-sub ok
 CHECK: failures: 0
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors

@@ -12,7 +12,7 @@
 // CHECK-DAG: (bvadd nd.0_0 (bvnot (bvmul #x38 nd.3_0)) #x01)
 // The VC keeps its meaning: the model replays (x - y - z + 5 = 7 is
 // reachable).
-// SOLVE: vc.canonical-sums: on
+// SOLVE: vc.canonical-sums: on neg=bvnot
 // SOLVE: vc.canonical-sums-sums: 2
 // SOLVE: replay: assert-failed
 // SOLVE: validate: checked={{[0-9]+}} mismatches=0

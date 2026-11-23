@@ -161,8 +161,9 @@ struct Fixture {
     return true;
   }
 
-  Expr canon(const Expr &e, CanonicalSums::Stats *st = nullptr) {
-    CanonicalSums c;
+  Expr canon(const Expr &e, CanonicalSums::Stats *st = nullptr,
+             CanonicalSums::NegForm neg = CanonicalSums::NegForm::Bvnot) {
+    CanonicalSums c(neg);
     Expr r = c.rewrite(e);
     if (st)
       *st = c.stats();
@@ -170,8 +171,9 @@ struct Fixture {
   }
 
   /// \p in (a formula) becomes \p expect, equivalently
-  void expect(const char *name, const Expr &in, const Expr &expect) {
-    Expr out = canon(in);
+  void expect(const char *name, const Expr &in, const Expr &expect,
+              CanonicalSums::NegForm neg = CanonicalSums::NegForm::Bvnot) {
+    Expr out = canon(in, nullptr, neg);
     CHECK(out == expect,
           name << ": got " << str(out) << ", expected " << str(expect));
     CHECK(equivalent(in, out), name << ": not equivalent: " << str(out));
@@ -218,6 +220,32 @@ void testShape() {
   // width 1: 1 = 2^0 is positive; x + x = 0
   Expr b = F.var("b", 1), d = F.var("d", 1);
   F.expect("w1", ctx(mk<BSUB>(b, d)), ctx(F.add({b, d})));
+}
+
+/// NegForm::Sub: the negative chain as a subtraction, (P + c) - N
+void testSub() {
+  Fixture F;
+  using NF = CanonicalSums::NegForm;
+  Expr x = F.var("x", 8), y = F.var("y", 8), z = F.var("z", 8);
+  auto c = [&](unsigned long v) { return F.num(v, 8); };
+  // x - y - z + 5 = (x + 5) - (y + z)
+  F.expect("sub.p-n-c", ctx(F.add({mk<BSUB>(mk<BSUB>(x, y), z), c(5)})),
+           ctx(mk<BSUB>(mk<BADD>(x, c(5)), F.add({y, z}))), NF::Sub);
+  // x - y = x - y (no constant)
+  F.expect("sub.p-n", ctx(F.add({x, mk<BNEG>(y)})), ctx(mk<BSUB>(x, y)),
+           NF::Sub);
+  // -x = 0 - x; -x - 1 = 255 - x; 129x = 0 - 127x
+  F.expect("sub.n", ctx(mk<BNEG>(x)), ctx(mk<BSUB>(c(0), x)), NF::Sub);
+  F.expect("sub.n-c", ctx(mk<BSUB>(mk<BNEG>(x), c(1))),
+           ctx(mk<BSUB>(c(255), x)), NF::Sub);
+  F.expect("sub.coef", ctx(mk<BMUL>(c(129), x)),
+           ctx(mk<BSUB>(c(0), mk<BMUL>(c(127), x))), NF::Sub);
+  // no negative leaf: the same as bvnot
+  F.expect("sub.p-c", ctx(F.add({c(3), y, x})),
+           ctx(mk<BADD>(F.add({x, y}), c(3))), NF::Sub);
+  // equalities have no negation: the same balanced form
+  F.expect("sub.eq", mk<EQ>(mk<BADD>(x, c(1)), mk<BSUB>(y, z)),
+           mk<EQ>(mk<BADD>(F.add({x, z}), c(1)), y), NF::Sub);
 }
 
 /// 2: one leaf order at every width; equal forms are one node
@@ -417,7 +445,8 @@ struct Gen {
   }
 };
 
-bool hasSubOrNeg(const Expr &e) {
+/// a bvneg, or (\p sub) a bvsub, in \p e
+bool hasSubOrNeg(const Expr &e, bool sub = true) {
   std::unordered_set<ENode *> seen;
   std::vector<ENode *> st{e.get()};
   while (!st.empty()) {
@@ -425,7 +454,7 @@ bool hasSubOrNeg(const Expr &e) {
     st.pop_back();
     if (!seen.insert(n).second)
       continue;
-    if (isOpX<BSUB>(n) || isOpX<BNEG>(n))
+    if ((sub && isOpX<BSUB>(n)) || isOpX<BNEG>(n))
       return true;
     for (size_t i = 0; i < n->arity(); ++i)
       st.push_back(n->arg(i));
@@ -433,7 +462,8 @@ bool hasSubOrNeg(const Expr &e) {
   return false;
 }
 
-void testRandom(unsigned count) {
+void testRandom(unsigned count, CanonicalSums::NegForm neg) {
+  const bool subForm = neg == CanonicalSums::NegForm::Sub;
   unsigned sums = 0, eqs = 0, unknown = 0;
   const char *backend = "";
   for (unsigned i = 0; i < count; ++i) {
@@ -446,7 +476,7 @@ void testRandom(unsigned count) {
       CanonicalSums::Stats st;
       if (getenv("CANON_TEST_TRACE"))
         llvm::errs() << "random " << i << ": " << str(q) << "\n";
-      Expr out = F.canon(q, &st);
+      Expr out = F.canon(q, &st, neg);
       text[run] = str(out);
       if (getenv("CANON_TEST_TRACE"))
         llvm::errs() << "  -> " << text[run] << "\n";
@@ -464,14 +494,14 @@ void testRandom(unsigned count) {
       CHECK(F.groundEqual(q, out, rng, undecided ? 64 : 8, undecided),
             "random " << i << ": differs at a ground point: " << str(q)
                       << " -> " << text[run]);
-      CHECK(!hasSubOrNeg(out),
+      CHECK(!hasSubOrNeg(out, !subForm),
             "random " << i << ": bvsub / bvneg left: " << text[run]);
     }
     CHECK(text[0] == text[1], "random " << i << ": not deterministic");
   }
-  llvm::outs() << "random: terms=" << count << " sums=" << sums
-               << " eqs=" << eqs << " miter=" << backend
-               << " unknown=" << unknown << "\n";
+  llvm::outs() << "random: neg=" << (subForm ? "sub" : "bvnot")
+               << " terms=" << count << " sums=" << sums << " eqs=" << eqs
+               << " miter=" << backend << " unknown=" << unknown << "\n";
 }
 
 } // namespace
@@ -485,7 +515,8 @@ int main(int argc, char **argv) {
     void (*fn)();
   } tests[] = {{"shape", testShape},     {"order", testOrder},
                {"eq", testEq},           {"extract", testExtract},
-               {"bitwise", testBitwise}, {"image", testImage}};
+               {"bitwise", testBitwise}, {"image", testImage},
+               {"sub", testSub}};
   for (const Test &t : tests) {
     int before = failures;
     t.fn();
@@ -493,8 +524,12 @@ int main(int argc, char **argv) {
                  << (failures == before ? "ok" : "FAILED") << "\n";
   }
   int before = failures;
-  testRandom(randomCount);
+  testRandom(randomCount, CanonicalSums::NegForm::Bvnot);
   llvm::outs() << "test: random " << (failures == before ? "ok" : "FAILED")
+               << "\n";
+  before = failures;
+  testRandom(randomCount / 2, CanonicalSums::NegForm::Sub);
+  llvm::outs() << "test: random-sub " << (failures == before ? "ok" : "FAILED")
                << "\n";
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;

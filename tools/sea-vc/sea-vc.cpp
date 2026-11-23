@@ -958,6 +958,18 @@ static cl::opt<bool> solverNarySums(
              "Off by default (not tuned)"),
     cl::init(false));
 
+static cl::opt<expr::CanonicalSums::NegForm> vcCanonicalSumsNeg(
+    "vc-canonical-sums-neg",
+    cl::desc("With --vc-canonical-sums: how a sum's negative leaves N are "
+             "written (docs/design/CanonicalSums.md, \"The negation\")"),
+    cl::values(clEnumValN(expr::CanonicalSums::NegForm::Bvnot, "bvnot",
+                          "(P + ~N) + (c+1): one adder chain (default; not "
+                          "tuned)"),
+               clEnumValN(expr::CanonicalSums::NegForm::Sub, "sub",
+                          "(P + c) - N: the subtraction kept, for a "
+                          "solver's polynomial view of sums")),
+    cl::init(expr::CanonicalSums::NegForm::Bvnot));
+
 static cl::opt<bool> dagStats(
     "dag-stats",
     cl::desc("Print the size of the query as a DAG (vc.dag-size) and the "
@@ -3089,6 +3101,10 @@ TYPICAL:
                                  #   run's configuration (verdict, --smt2,
                                  #   --split-smt2, --seam-check,
                                  #   --narrow-check, --reach)
+  sea-vc p.mlir --vc-canonical-sums --vc-canonical-sums-neg=sub
+                                 #   the negative leaves as (P + c) - N
+                                 #   instead of (P + ~N) + c+1 (bvnot, the
+                                 #   default, not tuned)
   sea-vc p.mlir --seam --narrow-offsets  # (off by default; rests on
                                  #   A-INB) a program load's read at its own
                                  #   address in an object of size N (also an
@@ -3698,7 +3714,7 @@ OUTPUT (stdout, `key: value` lines):
                                   vc-time, stderr with --smt2)
   vc.solver-nary-sums: on         (--solver-nary-sums; with vc-time,
                                   stderr with --smt2)
-  vc.canonical-sums: on            (--vc-canonical-sums; then
+  vc.canonical-sums: on neg=bvnot|sub  (--vc-canonical-sums; then
                                   vc.canonical-sums-sums / -changed /
                                   -leaves / -eqs / -eqs-changed: maximal
                                   sums emitted, of them changed, their
@@ -5528,6 +5544,8 @@ int main(int argc, char **argv) {
   if (vcFoldTopEqs && reach)
     return fail("--vc-fold-top-eqs: not with --reach (its targets are "
                 "block guards the trail may eliminate)");
+  if (vcCanonicalSumsNeg.getNumOccurrences() && !vcCanonicalSums)
+    return fail("--vc-canonical-sums-neg needs --vc-canonical-sums");
   if (reach && sinkAssumes)
     return fail("--reach: --sink-assumes moves every assume before the "
                 "assertion, which changes what reaches a target");
@@ -8101,7 +8119,7 @@ int main(int argc, char **argv) {
         return fail("--vc-canonical-sums is not combined with --vc-defs: "
                     "the canonical form flattens the nested and named sums "
                     "(docs/design/CanonicalSums.md)");
-      expr::CanonicalSums canon;
+      expr::CanonicalSums canon(vcCanonicalSumsNeg);
       const expr::Expr before = query;
       query = canon.rewrite(query);
       canonStats = canon.stats();
@@ -8519,7 +8537,11 @@ int main(int argc, char **argv) {
       if (solverNarySums)
         r.line("vc.solver-nary-sums").value("on");
       if (canonStats) {
-        r.line("vc.canonical-sums").value("on");
+        r.line("vc.canonical-sums")
+            .value("on")
+            .kv("neg", vcCanonicalSumsNeg == expr::CanonicalSums::NegForm::Sub
+                           ? "sub"
+                           : "bvnot");
         r.line("vc.canonical-sums-sums").value(canonStats->sums);
         r.line("vc.canonical-sums-changed").value(canonStats->sumsChanged);
         r.line("vc.canonical-sums-leaves").value(canonStats->leaves);

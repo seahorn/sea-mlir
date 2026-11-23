@@ -71,6 +71,27 @@ are the other bit-vector nodes, with their own kids rewritten first. A
 5. **Bitwise terms.** `bvnot`, `bvxor`, `bvand`, ... are leaves: `~x = y`
    stays as it is, and `~x + 1` stays the sum of the leaf `~x` and `1`.
 
+## The negation (`--vc-canonical-sums-neg`)
+
+How the negative chain `N` is written is a choice per solver, not a
+property of the form:
+
+- `bvnot` (default, not tuned): `(bvadd (bvadd P (bvnot N)) c+1)`, as
+  above. One adder chain; the negation is inverted bits and a carry-in.
+- `sub`: `(bvsub P N)`, `(bvsub (bvadd P c) N)`, or `(bvsub c N)` when `P`
+  is empty (also with `c = 0`). Exact: `P - N + c = (P + c) - N` and
+  `-N + c = c - N`, checked with z3 at widths 1 to 64.
+
+`sub` keeps the subtraction as an arithmetic operator for a solver that
+reads sums as polynomials (Yices builds `bvsub` as a polynomial
+difference; `bvnot` of a sum is a bit-array term to it, which hides `N`
+from that view) [hypothesis, to be measured]. Of the two spellings of the
+same subtraction, `(bvsub (bvadd P c) N)` and `(bvadd P (bvmul -1 N))`,
+`bvsub` is the plainer one: one operator, no multiplication node and no
+`2^w - 1` numeral. Equalities are not affected (a balanced equality has no
+negation). The stat line names the choice: `vc.canonical-sums: on
+neg=bvnot|sub`.
+
 Item 6 of the original list, no z3-only operator in the `--smt2` dump, is
 the portable dialect of `--smt2` (`--smt2-dialect=portable`), a separate
 change. The two are independent: this step makes no operator that is not
@@ -222,11 +243,12 @@ What the switch does not cover:
 ## Counters
 
 With the flag (with `vc-time`; stderr with `--smt2`): `vc.canonical-sums:
-on`, `vc.canonical-sums-sums` (maximal sums emitted, not counting numerals
-and single leaves), `-changed` (of them, a different node than the input),
-`-leaves` (leaves of the emitted chains, equalities included), `-eqs`
-(balanced equalities), `-eqs-changed`. A `bvsub` or `bvneg` of another
-arity is a leaf, with the warning `vc.canonical-sums-opaque`.
+on neg=bvnot|sub`, `vc.canonical-sums-sums` (maximal sums emitted, not
+counting numerals and single leaves), `-changed` (of them, a different
+node than the input), `-leaves` (leaves of the emitted chains, equalities
+included), `-eqs` (balanced equalities), `-eqs-changed`. A `bvsub` or
+`bvneg` of another arity is a leaf, with the warning
+`vc.canonical-sums-opaque`.
 
 ## Cost and limits
 
