@@ -149,9 +149,16 @@ std::unique_ptr<mlir::Pass> createScalarizeStructsPass();
 std::unique_ptr<mlir::Pass> createExpandMemSetPass();
 
 /// sea-expand-mem-fill: each sea.mem.fill -> one store per cell of the
-/// memory's cell type, in order (the VC encodes no fill;
-/// docs/design/MemFill.md).
+/// memory's cell type, in order (docs/design/MemFill.md). \p keepBytes
+/// (option keep-bytes; sea-vc --seam): the fills of byte memories
+/// (MemType::isByteCells) are kept, SeaM encodes them as terms.
 std::unique_ptr<mlir::Pass> createExpandMemFillPass();
+std::unique_ptr<mlir::Pass> createExpandMemFillPass(bool keepBytes);
+/// On the sea.program after sea-expand-mem-fill, when it has a fill: its
+/// counters (a dictionary of i64 attributes, the keys of
+/// `vc.expand-mem-fill`).
+inline constexpr llvm::StringLiteral kExpandMemFillStatsAttr =
+    "sea.expand_mem_fill";
 /// On the sea.program after sea-expand-memset (mode=assume): the bounded
 /// expansions, each a sea.assume(n <= K), a dictionary {count = <n>, bound
 /// = <K>} of i64 (K the largest; absent: none). Counted where the bound is
@@ -365,7 +372,9 @@ enum class RangeFoldMode { Off, Fold, Check };
 /// --ptr-companion is not off: every memmove kept). \p boxAllExpand:
 /// sea-lower-box-all{expand-max=K} (sea-vc --box-all-expand).
 /// \p widenPerClass: sea-widen-memory's per-class (false: one word size,
-/// k; sea-vc --widen-memory-per-class).
+/// k; sea-vc --widen-memory-per-class). \p expandByteFills: false keeps
+/// the fills of byte memories (sea-expand-mem-fill{keep-bytes}; sea-vc
+/// --seam encodes them as terms).
 void buildVCLoweringPipeline(
     mlir::OpPassManager &pm, bool abstract, bool nativeMulOverflow = false,
     bool fold = true, unsigned widenMemory = 0, bool expandMemSet = true,
@@ -374,7 +383,8 @@ void buildVCLoweringPipeline(
     bool memhavocNullNoop = true, unsigned disable = 0,
     const PlaceFiles &place = {}, RangeFoldMode rangeFold = RangeFoldMode::Off,
     unsigned expandMemMove = 0, bool ptrCompanion = false,
-    unsigned boxAllExpand = kBoxAllExpandDefault, bool widenPerClass = true);
+    unsigned boxAllExpand = kBoxAllExpandDefault, bool widenPerClass = true,
+    bool expandByteFills = true);
 
 /// The options of the VC lowering (buildVCLoweringPipeline's parameters,
 /// documented there), for its stages one by one.
@@ -397,6 +407,7 @@ struct VCLowerConfig {
   bool ptrCompanion = false;
   unsigned boxAllExpand = kBoxAllExpandDefault;
   bool widenPerClass = true;
+  bool expandByteFills = true;
 };
 /// The stages of the VC lowering, which buildVCLoweringPipeline runs in
 /// this order: prefix (sea-apply-tracking, sea-lower-box-all, sccp, cse,

@@ -137,6 +137,7 @@ are signed decimal.
 | `constMem` | the value of every cell |
 | `wselect`, `wstore` | memory, address[, value]; `bytes`, `alignment` |
 | `mset`, `mcopy`, `mhavoc` | the memory-operation terms |
+| `mfill` | memory, destination; `data` `[byte, ...]`: a constant-data fill (byte i at destination + i) |
 | `smap` | base memory, object; `entries` `[{offset, value}]`, newest first |
 | `addr`, `toInt`, `toBits`, `fromInt`, `fromBits` | one argument |
 | `diff`, `ptrEq` | two pointers |

@@ -819,7 +819,7 @@ private:
       if (isOpX<ITE>(m))
         m = m->arg(1);
       else if (isOpX<STORE_MAP>(m) || isOpX<MEM_COPY>(m) || isOpX<MEM_SET>(m) ||
-               isOpX<MEM_HAVOC>(m))
+               isOpX<MEM_HAVOC>(m) || isOpX<MEM_FILL>(m))
         m = m->arg(0);
       else
         break;

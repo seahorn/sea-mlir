@@ -426,10 +426,11 @@ void addVCLowerMemory(OpPassManager &prog, const VCLowerConfig &c) {
       llvm::report_fatal_error("sea-widen-memory: bad k");
     prog.addPass(std::move(widen));
   }
-  // fills as one store per cell (the VC encodes no fill: every memory mode
-  // sees stores): after widening, which packs a widened memory's fill data
-  // into words, so the stores have the final cell type
-  prog.addPass(createExpandMemFillPass());
+  // fills as one store per cell: after widening, which packs a widened
+  // memory's fill data into words, so the stores have the final cell type;
+  // with memory-operation terms (sea-vc --seam) the fills of byte memories
+  // stay, one term each (docs/design/MemFill.md)
+  prog.addPass(createExpandMemFillPass(!c.expandByteFills));
   // short constant memmoves as explicit copies (exact): after the metadata
   // lowerings (a keyed companion memmove is expanded only with its data
   // memmove) and widening (word layouts are kept); before
@@ -502,15 +503,13 @@ void addVCLowerTail(OpPassManager &prog, const VCLowerConfig &c) {
   // sea-lower-ptr-index provides a standalone arithmetic lowering.
 }
 
-void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
-                             bool nativeMulOverflow, bool fold,
-                             unsigned widenMemory, bool expandMemSet,
-                             bool widenReport, bool keepByteWide,
-                             bool checkAlign, unsigned checkPtrIndex, bool opt,
-                             bool memhavocNullNoop, unsigned disable,
-                             const PlaceFiles &place, RangeFoldMode rangeFold,
-                             unsigned expandMemMove, bool ptrCompanion,
-                             unsigned boxAllExpand, bool widenPerClass) {
+void buildVCLoweringPipeline(
+    OpPassManager &pm, bool abstract, bool nativeMulOverflow, bool fold,
+    unsigned widenMemory, bool expandMemSet, bool widenReport,
+    bool keepByteWide, bool checkAlign, unsigned checkPtrIndex, bool opt,
+    bool memhavocNullNoop, unsigned disable, const PlaceFiles &place,
+    RangeFoldMode rangeFold, unsigned expandMemMove, bool ptrCompanion,
+    unsigned boxAllExpand, bool widenPerClass, bool expandByteFills) {
   VCLowerConfig c;
   c.abstract = abstract;
   c.nativeMulOverflow = nativeMulOverflow;
@@ -530,6 +529,7 @@ void buildVCLoweringPipeline(OpPassManager &pm, bool abstract,
   c.ptrCompanion = ptrCompanion;
   c.boxAllExpand = boxAllExpand;
   c.widenPerClass = widenPerClass;
+  c.expandByteFills = expandByteFills;
   OpPassManager &prog = pm.nest<ProgramOp>();
   // the stages, in order: prefix, memory lowering, the fold of facts,
   // uniquing (merge), tail

@@ -216,7 +216,9 @@ OUTPUT (stdout, one JSON document, schema 5; keys sorted):
   firings (--firings): [{id, rules, premises, op, [loc], [units], lhs, rhs,
                         premise} | {id, rules, premises, op, unexpressible}]
   firings_unexpressible (--firings): count
-Terms: {sort: bv|bool|ptr|memory, [bits], op, args, ...}; an object is
+Terms: {sort: bv|bool|ptr|memory, [bits], op, args, ...}; a fill is
+{op: mfill, sort: memory, args: [memory, dst], data: [byte, ...]} (bytes as
+integers 0..255, byte i at dst + i; --seam lanes only); an object is
 {op: segment, sort: ptr, bits, name: obj.<k>, addr: <numeral>}; ops and their
 fields are listed in docs/SeamExport.md (bit-vector operators as in
 SMT-LIB, total: udiv x 0 = all ones, urem x 0 = x, shift >= width gives 0
@@ -451,6 +453,22 @@ struct Exporter {
       o["indices"] = std::move(indices);
       o["constant"] = getTerm<mpz_class>(e->arg(e->arity() - 2)).to_string();
       o["byte_offset"] = getTerm<mpz_class>(e->arg(e->arity() - 1)).to_string();
+    }
+    else if (isOpX<MEM_FILL>(e)) {
+      // seam-lean RangeExpr.mfill / MapExpr.mfill (m, dst, data): the
+      // length is the data's (the Expr term's n, a numeral, is checked)
+      o["op"] = "mfill";
+      const std::vector<uint8_t> &bytes = op::array::fillBytes(e);
+      unsigned nw;
+      if (!op::bv::isBvNum(e->arg(2), nw) ||
+          op::bv::toMpz(e->arg(2)) != mpz_class((unsigned long)bytes.size()))
+        bad("mfill length is not the data's");
+      args.push_back(rec(e->arg(0)));
+      args.push_back(rec(e->arg(1)));
+      llvm::json::Array data;
+      for (uint8_t byte : bytes)
+        data.push_back(int64_t(byte));
+      o["data"] = std::move(data);
     }
     else NODE(EQ, "eq") else NODE(BULT, "ult") else NODE(BULE, "ule") else NODE(BADD, "add") else NODE(BSUB, "sub") else NODE(BMUL, "mul") else NODE(BCONCAT, "concat") else NODE(
         SELECT,

@@ -122,6 +122,12 @@ def Sea_MemType : Sea_Type<"Mem", "mem"> {
     }
     /// keyed: a cell at every unit, independent
     bool isKeyed() const { return getLayout() == ::sea::MemLayout::keyed; }
+    /// A byte memory: i8 cells of one index unit, not keyed. SeaM encodes a
+    /// sea.mem.fill of such a memory as one term (docs/design/MemFill.md).
+    bool isByteCells() const {
+      return !isKeyed() && getCellUnits() == 1 &&
+             getCell().getWidth() == 8;
+    }
     /// How many copies of a unit (memset's value) make a cell.
     unsigned getUnitCopies() const;
     /// One index unit as an integer (memset's value): the cell for the

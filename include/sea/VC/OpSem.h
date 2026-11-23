@@ -370,6 +370,8 @@ private:
   mlir::LogicalResult execRangeOp(mlir::Operation &op, OpSemContext &ctx);
   /// With SeaM, a range op of a byte memory as one term (MemOps.hh).
   void execRangeTerm(mlir::Operation &op, mlir::Value len, OpSemContext &ctx);
+  /// With SeaM, a sea.mem.fill of a byte memory as one mfill term.
+  void execFillTerm(MemFillOp op, OpSemContext &ctx);
   /// A-INB bookkeeping of the range [d, d + n) of a memory operation;
   /// \p write: the range is written (not a memmove's source).
   void accessRange(expr::Expr d, expr::Expr n, bool write, OpSemContext &ctx);

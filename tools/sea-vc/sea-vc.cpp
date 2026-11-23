@@ -2482,9 +2482,13 @@ TYPICAL:
                                  #   structs; if abstract: tracking and
                                  #   fat-pointer metadata to memories, then
                                  #   place; widen (--widen-memory=k); expand
-                                 #   fills into cell stores (every memory
-                                 #   mode; without --lower a fill is
-                                 #   refused: vc.mem-fill); expand
+                                 #   fills into cell stores (with --seam:
+                                 #   only those of word / keyed memories;
+                                 #   without --lower and --seam a fill is
+                                 #   refused: vc.mem-fill; prints
+                                 #   vc.expand-mem-fill: expanded= cells=
+                                 #   kept= expanded-word-layout=
+                                 #   expanded-keyed= expanded-other=); expand
                                  #   symbolic memsets (not with --seam);
                                  #   merge asserts, split wide accesses
                                  #   (kept whole with --seam --seam-wide),
@@ -2656,6 +2660,19 @@ TYPICAL:
                                  #   translates what is left by the read
                                  #   equations, no assumption
                                  #   (seam.rule.memop.translated)
+                                 #   sea.mem.fill of a byte memory (a global
+                                 #   initializer) is one term, mfill: a read
+                                 #   at a numeral offset from its start is
+                                 #   the data byte (row.mfill-hit) or below
+                                 #   it (row.mfill-skip), a read decided
+                                 #   outside it is below it (row.mfill-skip-
+                                 #   disjoint), an ite address per leaf
+                                 #   (row.mfill-split); any other read
+                                 #   reads its store expansion
+                                 #   (row.mfill-expand, one
+                                 #   store per byte, as without --seam); a
+                                 #   fill of one repeated byte is an mset
+                                 #   (mem.fill-replicate)
   sea-vc p.mlir --lower --seam --seam-prune-size0=0   # no addr.prune-size0
                                  #   (default on, uses A-NULL): an access
                                  #   address ite(c, null + o, B + x) is
@@ -3241,6 +3258,13 @@ OUTPUT (stdout, `key: value` lines):
                                   the fold is off; only when there is one;
                                   each value is a split.assumed-candidate
                                   of --split-candidates)
+  vc.expand-mem-fill: expanded=<n> cells=<n> kept=<n>
+      expanded-word-layout=<n> expanded-keyed=<n> expanded-other=<n>
+                                  (--lower of a program with sea.mem.fill:
+                                  fills expanded into cell stores, the
+                                  stores, fills kept as SeaM mfill terms
+                                  (--seam: byte memories), and under --seam
+                                  the fills expanded by kind of memory)
   vc.widen-memory: bytes=<n> classes=<n> k=<K> other=<n> widened-2=<n>
       widened-4=<n> widened-8=<n>  (--widen-memory=K: memory classes,
                                   widened to each word size, byte memories
@@ -5761,6 +5785,7 @@ int main(int argc, char **argv) {
     jo.lower.ptrCompanion = ptrCompanion != CompanionMode::Off;
     jo.lower.boxAllExpand = boxAllExpandOpt;
     jo.lower.widenPerClass = widenMemoryPerClass;
+    jo.lower.expandByteFills = !seam;
     // the pointer mode of the input (the parts are lowered programs)
     {
       bool intToPtr = false;
@@ -5872,7 +5897,8 @@ int main(int argc, char **argv) {
         logPhase.on(sea::log::Flow) ? countOps(*module) : 0;
     PassManager pm(&context);
     // with --seam, memset / memmove / memhavoc are terms (SeaM-memops.md):
-    // no sea-expand-memset, symbolic lengths are exact
+    // no sea-expand-memset, symbolic lengths are exact; so are the fills of
+    // byte memories (MemFill.md)
     sea::buildVCLoweringPipeline(
         pm, abstract, nativeMulOverflow,
         /*fold=*/true, widenMemory,
@@ -5883,7 +5909,7 @@ int main(int argc, char **argv) {
         sea::PlaceFiles{placeIn, placeOut, symbolicSizeOpt, maxSymbolicSizeOpt,
                         placeSlotsOpt},
         rangeFoldOpt, expandMemMoveOpt, ptrCompanion != CompanionMode::Off,
-        boxAllExpandOpt, widenMemoryPerClass);
+        boxAllExpandOpt, widenMemoryPerClass, /*expandByteFills=*/!seam);
     // pm keeps a reference to the phase's scope; SEA_PHASE_END resets it after
     // pm.run, and the reference is not used after that
     if (failed(configurePM(pm, lowerPhase.timing())) || failed(pm.run(*module)))
@@ -6015,6 +6041,15 @@ int main(int argc, char **argv) {
          {"k", "expanded", "bytes", "kept-symbolic", "kept-over-k",
           "kept-word-layout", "kept-abstract", "kept-tracked",
           "kept-companion-mirror", "kept-ptr-companion"})
+      if (auto i = d.getAs<IntegerAttr>(key))
+        l.kv(key, i.getInt());
+  }
+  // sea-expand-mem-fill's counters (a program with a fill)
+  if (auto d = program->getAttrOfType<DictionaryAttr>(
+          sea::kExpandMemFillStatsAttr)) {
+    sea::stats::Line &l = lowerStats.line("vc.expand-mem-fill");
+    for (StringRef key : {"expanded", "cells", "kept", "expanded-word-layout",
+                          "expanded-keyed", "expanded-other"})
       if (auto i = d.getAs<IntegerAttr>(key))
         l.kv(key, i.getInt());
   }

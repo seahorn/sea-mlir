@@ -987,10 +987,21 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
                   op.getLoc());
       return failure();
     }
-    if (isa<MemFillOp>(op)) {
+    if (auto fill = dyn_cast<MemFillOp>(op)) {
+      // with SeaM, a fill of a byte memory is one term (MemFill.md, "SeaM");
+      // every other fill is expanded by sea-expand-mem-fill first
+      if (seamMode && fill.getMem().getType().isByteCells()) {
+        execFillTerm(fill, ctx);
+        continue;
+      }
       diag::error("vc.mem-fill",
-                  "sea.mem.fill is not encoded by the VC: expand it into "
-                  "stores first (sea-expand-mem-fill; sea-vc --lower does)",
+                  seamMode
+                      ? "sea.mem.fill of a memory that is not a byte memory "
+                        "(word layout, keyed): expand it into stores first "
+                        "(sea-expand-mem-fill; sea-vc --lower does)"
+                      : "sea.mem.fill is not encoded by the VC: expand it "
+                        "into stores first (sea-expand-mem-fill; sea-vc "
+                        "--lower does)",
                   op.getLoc());
       return failure();
     }
@@ -1404,6 +1415,32 @@ void SeaOpSem::execRangeTerm(Operation &op, Value lenV, OpSemContext &ctx) {
   trailAccess("range", 1);
   res = seamRw->rewrite(res);
   ctx.write(mkSymbReg(op.getResult(0)), res);
+}
+
+/// With SeaM, a sea.mem.fill of a byte memory is one term, mfill (MemOps.hh;
+/// docs/design/MemFill.md, "SeaM"): its destination range [d, d + n) is an
+/// access (A-INB, as a memset's), n the number of bytes (< 2^w: the op
+/// verifier). The rules decide a read over it (SeaMRules.hh rowFill); the
+/// boundary translates what is left by its read equation (MemOps.hh).
+void SeaOpSem::execFillTerm(MemFillOp op, OpSemContext &ctx) {
+  auto data = op.getData();
+  std::vector<uint8_t> bytes;
+  bytes.reserve(data.getNumElements());
+  for (const llvm::APInt &v : data.getValues<llvm::APInt>())
+    bytes.push_back(uint8_t(v.getZExtValue()));
+  seamRw->noteMemOps();
+  trailAccess("addr", 0);
+  Expr mem = lookup(op.getMem(), ctx);
+  Expr dst = seamRw->rewrite(lookup(op.getAddr(), ctx));
+  unsigned w = bitWidthOf(op.getAddr().getType());
+  Expr n = bvnum(llvm::APInt(w, bytes.size()));
+  accessRange(dst, n, /*write=*/true, ctx);
+  Expr res = op::array::memFill(mem, dst, n, op::array::fillData(bytes, ef));
+  // the term's own rules (mem.fill-replicate, addr.prune-size0 over its
+  // range)
+  trailAccess("range", 1);
+  res = seamRw->rewrite(res);
+  ctx.write(mkSymbReg(op.getResult()), res);
 }
 
 LogicalResult SeaOpSem::execRangeOp(Operation &op, OpSemContext &ctx) {

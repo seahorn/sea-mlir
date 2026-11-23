@@ -142,6 +142,7 @@ decimal.
 | `constMem` | one arg: the value of every cell |
 | `wselect`, `wstore` | memory, address[, value]; `bytes`, `alignment` (the promised alignment) |
 | `mset`, `mcopy`, `mhavoc` | the memory-operation terms of `docs/design/SeaM-memops.md`, args as in Expr |
+| `mfill` | memory, destination; `data` `[byte, ...]` (integers 0..255, byte i at destination + i, at least one, fewer than 2^N): the fill of `docs/design/MemFill.md` (seam-lean `RangeExpr.mfill`; Expr's length argument is the data's length and is not exported); SeaM lanes only |
 | `smap` | base memory, object; `entries` `[{offset, value}]`, newest first, numeral offsets |
 | `addr`, `toInt`, `toBits`, `fromInt`, `fromBits` | one arg (`docs/design/PtrSort.md`) |
 | `diff`, `ptrEq` | two pointers |

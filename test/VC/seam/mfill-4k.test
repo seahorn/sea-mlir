@@ -1,0 +1,26 @@
+// Two 4 KiB initializers (docs/design/MemFill.md, "SeaM"), one of varied
+// bytes read at numeral offsets (an 8-byte load at 1000 and a byte at
+// 4095: row.mfill-hit), one of zeros (an mset: mem.fill-replicate) read at a
+// symbolic offset. With --seam the query keeps no store of either fill: a
+// few dozen DAG nodes, where the store expansion has one store per byte
+// (8192). Every firing is valid.
+// RUN: rm -rf %t && mkdir -p %t
+// RUN: %python %S/Inputs/mfill-4k.py > %t/fill4k.mlir
+// RUN: sea-vc %t/fill4k.mlir --lower --seam --dag-stats --seam-stats | FileCheck %s
+// RUN: sea-vc %t/fill4k.mlir --lower --seam --seam-check | FileCheck %s --check-prefix=VALID
+// RUN: sea-vc %t/fill4k.mlir --lower --vcgen-only --dag-stats | FileCheck %s --check-prefix=PLAIN
+// REQUIRES: z3
+// CHECK: vc.dag-size: {{[0-9]{1,2}$}}
+// CHECK-NOT: vc.dag-op: store
+// CHECK: vc.expand-mem-fill: expanded=0 cells=0 kept=2
+// CHECK-DAG: seam.rule.mem.fill-replicate: 1
+// CHECK-DAG: seam.rule.row.mfill-hit: 9
+// CHECK-DAG: seam.rule.memop.translated: 0
+// CHECK: result: unsat
+// VALID: result: unsat
+// VALID: seam-check: firings={{[0-9]+}} checked={{[0-9]+}} valid={{[0-9]+}} invalid=0 unknown=0 unexpressible=0
+// PLAIN: vc.dag-size: {{[0-9]{5}$}}
+// PLAIN: vc.expand-mem-fill: expanded=2 cells=8192 kept=0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -26,6 +26,9 @@ CHECK: test: wide-byte-in ok
 CHECK: test: store-map ok
 CHECK: test: boundary ok
 CHECK: test: ptr-index ok
+CHECK-DAG: read-eq: mfill ok
+CHECK-DAG: fill-stores: ok
+CHECK: test: fill ok
 CHECK: failures: 0
 
 // The log tag yices.const-array (docs/reference/logging.md): the assertion

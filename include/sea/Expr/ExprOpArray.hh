@@ -25,6 +25,7 @@ enum class ArrayOpKind {
   MEM_COPY,
   MEM_SET,
   MEM_HAVOC,
+  MEM_FILL,
   W_STORE,
   W_SELECT
 };
@@ -106,7 +107,8 @@ struct StoreMap : public TypeCheckBase {
 };
 
 /// A memory-operation term (SeaM, docs/design/SeaM-memops.md; MemOps.hh):
-/// mcopy(Md, Ms, d, s, n), mset(M, d, n, v), mhavoc(M, H, d, n). \return the
+/// mcopy(Md, Ms, d, s, n), mset(M, d, n, v), mhavoc(M, H, d, n),
+/// mfill(M, d, n, data). \return the
 /// sort of the first kid (the memory written), an array. Only the arity and
 /// the sort of the memory are checked.
 template <unsigned Arity>
@@ -160,6 +162,12 @@ NOP(SMAP_NIL, "smap-nil", FUNCTIONAL, ArrayOp, typeCheck::Any)
 NOP(MEM_COPY, "mcopy", FUNCTIONAL, ArrayOp, typeCheck::arrayType::MemOp<5>)
 NOP(MEM_SET, "mset", FUNCTIONAL, ArrayOp, typeCheck::arrayType::MemOp<4>)
 NOP(MEM_HAVOC, "mhavoc", FUNCTIONAL, ArrayOp, typeCheck::arrayType::MemOp<4>)
+/// mfill(M, d, n, data) (docs/design/MemFill.md): the constant bytes of
+/// `data` (a FillData terminal, n = its length as a numeral at the index
+/// width, 0 < n < 2^w) written from d:
+///   mfill(M, d, n, data):    in(j, d, n) ? data[j - d] : M[j]
+/// (seam-lean `rangeFill`). Byte memories only.
+NOP(MEM_FILL, "mfill", FUNCTIONAL, ArrayOp, typeCheck::arrayType::MemOp<4>)
 /// Width terms of byte memories (docs/design/SeaM-mixed-width.md):
 ///   wstore(M, a, v):  the w = bits(v) / 8 bytes of v, little endian, at
 ///                     a, a + 1, ..., a + w - 1 (bits [8k, 8k + 8) at a + k)
@@ -184,6 +192,51 @@ inline Expr StoreMap::inferType(Expr exp, TypeChecker &tc) {
 } // namespace arrayType
 } // namespace typeCheck
 } // namespace op
+
+namespace op {
+namespace array {
+/// The constant bytes of an mfill term: shared, so that a copy of the
+/// terminal's value (Terminal::get) does not copy the data.
+struct FillData {
+  std::shared_ptr<const std::vector<uint8_t>> bytes;
+  const std::vector<uint8_t> &get() const { return *bytes; }
+  size_t size() const { return bytes->size(); }
+};
+} // namespace array
+} // namespace op
+
+/// \brief Terminal traits for the bytes of an mfill term: printed as
+/// `bytes<n>:` and the bytes in hex, compared by content
+template <>
+struct TerminalTrait<op::array::FillData> {
+  static inline void print(std::ostream &OS, const op::array::FillData &d,
+                           int depth, bool brkt) {
+    static const char hex[] = "0123456789abcdef";
+    OS << "bytes" << d.size() << ":";
+    for (uint8_t b : d.get())
+      OS << hex[b >> 4] << hex[b & 15];
+  }
+  static inline bool less(const op::array::FillData &a,
+                          const op::array::FillData &b) {
+    return a.get() < b.get();
+  }
+  static inline bool equal_to(const op::array::FillData &a,
+                              const op::array::FillData &b) {
+    return a.bytes == b.bytes || a.get() == b.get();
+  }
+  static inline size_t hash(const op::array::FillData &d) {
+    size_t seed = d.size();
+    for (uint8_t b : d.get())
+      boost::hash_combine(seed, b);
+    return seed;
+  }
+  static TerminalKind getKind() { return TerminalKind::FILL_DATA; }
+  static std::string name() { return "fill-data"; }
+  // never a term of its own (a kid of mfill only): the string terminal sort
+  static inline Expr inferType(Expr exp, TypeChecker &tc) {
+    return op::sort::stringTerminalTy(exp->efac());
+  }
+};
 
 namespace op {
 namespace array {
@@ -226,6 +279,23 @@ inline Expr memHavoc(const Expr &m, const Expr &h, const Expr &d,
                      const Expr &n) {
   ExprVector args{m, h, d, n};
   return mknary<MEM_HAVOC>(args.begin(), args.end());
+}
+/// The data terminal of an mfill term.
+inline Expr fillData(const std::vector<uint8_t> &bytes, ExprFactory &ef) {
+  return mkTerm<FillData>(
+      FillData{std::make_shared<const std::vector<uint8_t>>(bytes)}, ef);
+}
+/// mfill(M, d, n, data): M with the constant bytes of \p data (a fillData
+/// terminal) at d, d + 1, ...; \p n is the number of bytes, a numeral at the
+/// index width.
+inline Expr memFill(const Expr &m, const Expr &d, const Expr &n,
+                    const Expr &data) {
+  ExprVector args{m, d, n, data};
+  return mknary<MEM_FILL>(args.begin(), args.end());
+}
+/// The bytes of an mfill term \p t.
+inline const std::vector<uint8_t> &fillBytes(const Expr &t) {
+  return getTerm<FillData>(t->arg(3)).get();
 }
 /// The promised alignment argument of a width term (SeaM-mixed-width.md
 /// rev 5, A-ALIGN): the access's `align` in bytes, 1 if none / unknown.
