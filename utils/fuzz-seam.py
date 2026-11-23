@@ -1279,7 +1279,13 @@ def run(sea_vc, path, flags, solver):
         )
     except subprocess.TimeoutExpired:
         return "timeout", -1, f"timed out after {RUN_TIMEOUT} s", ""
-    m = re.search(r"^result: (\S+)", r.stdout, re.M)
+    # the solver's answer (solver-answer:), as `result:` read before sea-vc
+    # settled it after the replay: a conditional --seam sat whose replay
+    # fails (exit 2 / 4, `result: unknown`) still compares as sat; the exit
+    # status is checked on its own. `result:` for a run without a solve
+    m = re.search(r"^solver-answer: (\S+)", r.stdout, re.M) or re.search(
+        r"^result: (\S+)", r.stdout, re.M
+    )
     return (m.group(1) if m else "none"), r.returncode, r.stderr, r.stdout
 
 

@@ -53,6 +53,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -94,6 +95,10 @@ struct JobOptions {
   /// the parts' solver and why (`check-inb.solver:`), and the read-only
   /// array mode when the job chose it (partDefaults)
   std::string solverName, solverReason, roArraysNote;
+  /// the job's answer (`none`, its verdict): sea-vc holds it and prints the
+  /// run's one `result:` line once the status is final (a verdict only with
+  /// status 0); unset: a `result:` record on the emitter at once
+  std::function<void(llvm::StringRef)> emitResult;
 };
 
 /// What one part's run said.
@@ -474,6 +479,19 @@ inline std::string sha256Of(llvm::StringRef path) {
     return "";
   auto h = llvm::SHA256::hash(llvm::arrayRefFromStringRef((*buf)->getBuffer()));
   return llvm::toHex(h, /*LowerCase=*/true);
+}
+
+/// The job's answer \p v: to JobOptions::emitResult, else a `result:` record
+inline void emitJobResult(const JobOptions &o, out::Emitter &out,
+                          llvm::StringRef v) {
+  if (o.emitResult) {
+    o.emitResult(v);
+    return;
+  }
+  out::Record rec("result");
+  rec.str("value", v);
+  rec.text = ("result: " + v).str();
+  out.emit(rec);
 }
 
 inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
@@ -874,10 +892,7 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
                             dir, specs.size())
                   .str();
     out.emit(pr);
-    out::Record rec("result");
-    rec.str("value", "none");
-    rec.text = "result: none";
-    out.emit(rec);
+    emitJobResult(o, out, "none");
     out.flush();
     return 0;
   }
@@ -1039,12 +1054,12 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
             .str();
     out.emit(rec);
   }
-  // the verdict: sat if a part's failure replayed, a bounds violation or a
-  // failed premise (premise.failed, exit 4: the premise class; the part's
-  // own sea-vc prints `result: unknown` with it); unsat iff every part is unsat
-  // (a trivial part is); else unknown. A sat part and a failed part: sat, with
-  // the failed part's status (a premise part's 4).
-  std::string verdict = sat || premise                      ? "sat"
+  // the verdict: sat if a part's failure replayed, a bounds violation; a
+  // failed premise (premise.failed) is status 4, the premise class; unsat
+  // iff every part is unsat (a trivial part is); else unknown. A sat part
+  // and a failed part: the failed part's status (a premise part's 4), and
+  // the run's `result:` is unknown (a verdict only with status 0)
+  std::string verdict = sat                                 ? "sat"
                         : unsat == specs.size() && !skipped ? "unsat"
                                                             : "unknown";
   {
@@ -1112,16 +1127,13 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     rec.text = "check-inb.discharges: " + what + " under=" + underText;
     out.emit(rec);
   }
-  {
-    out::Record rec("result");
-    rec.str("value", verdict);
-    rec.text = "result: " + verdict;
-    out.emit(rec);
-  }
+  // the status, then the run's one `result:`: a verdict only with status 0
+  const int status = worst != 0 && worst != 3 ? worst
+                     : verdict == "unknown"   ? 3
+                                              : 0;
+  emitJobResult(o, out, status == 0 ? verdict : "unknown");
   out.flush();
-  if (worst != 0 && worst != 3)
-    return worst;
-  return verdict == "unknown" ? 3 : 0;
+  return status;
 }
 
 } // namespace sea::checkinb

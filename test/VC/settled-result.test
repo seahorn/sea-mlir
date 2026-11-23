@@ -54,6 +54,26 @@
 // STALE: mismatch:
 // STALE: [vc.replay-mismatch]
 // STALE: {{^}}result: unknown
+//
+// a split whose part does not replay (status 2): the split stops, and the
+// run's one result line is unknown (with a split part's own BRUNCH_STAT
+// result, none of the split's)
+// RUN: bash -c 'sea-vc %t/splitmm.mlir --split=nd.1 --brunch-stats > %t.split 2>&1; test $? -eq 2'
+// RUN: FileCheck %s --check-prefix=SPLIT < %t.split
+// RUN: grep -c '^result:' %t.split | FileCheck %s --check-prefix=ONE
+// SPLIT: solver-answer: sat
+// SPLIT: [vc.replay-mismatch]
+// SPLIT: split.part-result: unknown
+// SPLIT-NOT: split.verdict
+// SPLIT: {{^}}result: unknown
+// SPLIT-NOT: BRUNCH_STAT result
+//
+// a memory limit hit in the replay also prints the BRUNCH_STAT result
+// RUN: bash -c 'sea-vc %t/sat.mlir --mem-limit=4 --x-mem-limit-plant-replay --brunch-stats > %t.memb; test $? -eq 3'
+// RUN: FileCheck %s --check-prefix=MEMB < %t.memb
+// MEMB: {{^}}result: unknown
+// MEMB-NEXT: BRUNCH_STAT result unknown
+// MEMB-NEXT: mem-limit: hit
 
 //--- sat.mlir
 sea.program @sat {
@@ -67,6 +87,22 @@ sea.program @sat {
 sea.program @unsat {
   %x = sea.nondet "x" [1] : i8
   %ok = sea.icmp eq, %x, %x : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- splitmm.mlir
+!m8 = !sea.mem<!sea.addr<8>, i8>
+sea.program @splitmm {
+  %m0 = sea.mem.nondet "m" [0] : !m8
+  %b = sea.nondet "b" [1] : i1
+  %z = sea.const 0 : i8
+  %one = sea.const 1 : i8
+  %i = sea.select %b, %z, %one : i8
+  %a = sea.addr.from_int %i : i8 to !sea.addr<8>
+  %v = sea.const 7 : i8
+  %m1 = sea.store %m0[%a], %v inplace : !m8, i8
+  %old = sea.load %m0[%a] : !m8 -> i8
+  %ok = sea.icmp eq, %old, %v : i8
   sea.assert %ok
   sea.halt
 }

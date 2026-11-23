@@ -89,6 +89,16 @@
 // UNPROVEN: narrow-check-unknown: index={{.*}} reason=rlimit
 // UNPROVEN: vc.narrow-check-unproven
 // UNPROVEN: BRUNCH_STAT status 7
+// The unsat of a run whose narrowing is not discharged is no verdict:
+// status 7 and one `result: unknown`.
+// RUN: bash -c 'sea-vc %t/t1.mlir --lower --seam --narrow-offsets --narrow-check --narrow-check-rlimit=1 > %t.unproven 2>&1; test $? -eq 7'
+// RUN: FileCheck %s --check-prefix=UNPROVEN-RES < %t.unproven
+// RUN: grep -c '^result:' %t.unproven | FileCheck %s --check-prefix=ONE
+// UNPROVEN-RES: solver-answer: unsat
+// UNPROVEN-RES-NOT: result: unsat
+// UNPROVEN-RES: {{^}}result: unknown
+// UNPROVEN-RES: [vc.narrow-check-unproven]
+// ONE: {{^}}1{{$}}
 // Under --seam-check alone the same unknown is listed and, as its other
 // unknowns, does not change the exit status.
 // RUN: sea-vc %t/t1.mlir --lower --seam --narrow-offsets --seam-check --narrow-check-rlimit=1 --brunch-stats 2>&1 | FileCheck %s --check-prefix=SCUNK

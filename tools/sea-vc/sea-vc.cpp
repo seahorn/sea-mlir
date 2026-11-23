@@ -1304,18 +1304,25 @@ static cl::opt<sea::out::Format>
 /// stdout: every line goes through it (sea/Support/Output.h); set in main
 static sea::out::Emitter *gOut = nullptr;
 
-/// Whether the run's `result:` line is out: one per run (the settled
-/// answer); the limit handlers print `result: unknown` only before it
+/// The run's one `result:` line (docs/reference/output-formats.md): a
+/// verdict `sat` / `unsat` only with exit status 0 and a confirmed answer;
+/// every other ending of a run that reached a solver prints `unknown` (the
+/// error lines and the status say why). It is printed when the answer is
+/// settled: a sat after its replay; a sat / unsat that a failed
+/// --seam-check (5) or an unproven --narrow-check (7) will turn into a
+/// failure status (those checks run before the solve) prints `unknown`; a
+/// run that reached a solver and ends without the line gets `unknown` at
+/// its end (settleResult); the limit handlers print `result: unknown`
+/// themselves when the line is not out yet.
 static volatile bool gResultPrinted = false;
-
-/// The run's `result:` record (text `result: <v>`; jsonl kind result)
-static void emitResultRecord(StringRef v) {
-  sea::out::Record rec("result");
-  rec.str("value", v);
-  rec.text = ("result: " + v).str();
-  gOut->emit(rec);
-  gResultPrinted = true;
-}
+/// the status the run ends with once its result line is out (a limit hit
+/// after it keeps it: `result: sat` never goes with status 3)
+static volatile int gSettledStatus = 0;
+/// a solver of the verdict answered (solver-answer:)
+static bool gSolverReached = false;
+/// a split run: its parts print their BRUNCH_STAT result, the split's own
+/// `result:` has none
+static bool gSplitRun = false;
 /// text lines of stdout (stat records under --format=jsonl)
 static raw_ostream &vout() { return gOut->lines(); }
 
@@ -1342,6 +1349,33 @@ static void printStats(llvm::function_ref<void(sea::stats::Report &)> add) {
 /// (emitResult), or a split part's `split.part-result:`
 static void resultLine(sea::stats::Report &r, StringRef v) {
   r.line("result").value(v).brunch(sea::stats::Brunch::Value).brunchOnly();
+}
+
+/// The `result:` record now (and its BRUNCH_STAT line, but in a split)
+static void printResultNow(StringRef v, int status) {
+  sea::out::Record rec("result");
+  rec.str("value", v);
+  rec.text = ("result: " + v).str();
+  gOut->emit(rec);
+  if (!gSplitRun)
+    printStats([&](sea::stats::Report &r) { resultLine(r, v); });
+  gOut->flush();
+  gSettledStatus = status;
+  gResultPrinted = true;
+}
+
+/// The run's settled answer \p v (sat / unsat: status 0; `none`: no
+/// verdict; unknown)
+static void emitResultRecord(StringRef v) {
+  printResultNow(v, v == "unknown" ? 3 : 0);
+}
+
+/// At the end of a run with status \p rc: `result: unknown` for a run that
+/// reached a solver and printed no result (an error after the solve, a
+/// split part that failed); nothing otherwise.
+static void settleResult(int rc) {
+  if (!gResultPrinted && gSolverReached)
+    printResultNow("unknown", rc);
 }
 
 static cl::opt<unsigned> solveTimeout(
@@ -1965,13 +1999,26 @@ static uint64_t countOps(Operation *op) {
   static const char jmsg[] =
       "{\"kind\":\"stat\",\"key\":\"mem-limit\",\"value\":"
       "\"hit\",\"text\":\"mem-limit: hit\"}\n";
+  static const char bres[] = "BRUNCH_STAT result unknown\n";
+  static const char jbres[] =
+      "{\"kind\":\"stat\",\"key\":\"result\",\"value\":\"unknown\","
+      "\"brunch\":true,\"text\":\"BRUNCH_STAT result unknown\"}\n";
   const bool jsonl = outFormat == sea::out::Format::Jsonl;
-  if (!gResultPrinted) {
+  // a hit after the run's result line keeps its status (the answer is
+  // settled; `result: sat` never goes with status 3)
+  const bool settled = gResultPrinted;
+  if (!settled) {
     gResultPrinted = true;
     if (jsonl)
       (void)!::write(1, jres, sizeof(jres) - 1);
     else
       (void)!::write(1, res, sizeof(res) - 1);
+    if (brunchStats && !gSplitRun) {
+      if (jsonl)
+        (void)!::write(1, jbres, sizeof(jbres) - 1);
+      else
+        (void)!::write(1, bres, sizeof(bres) - 1);
+    }
   }
   if (jsonl)
     (void)!::write(1, jmsg, sizeof(jmsg) - 1);
@@ -1984,7 +2031,7 @@ static uint64_t countOps(Operation *op) {
   static const char err[] =
       "Error: memory limit (--mem-limit) hit [vc.mem-limit]\n";
   (void)!::write(2, err, sizeof(err) - 1);
-  ::_exit(3);
+  ::_exit(settled ? gSettledStatus : 3);
 }
 
 /// z3 ran out of memory outside a check (its memory_max_size, or an
@@ -1998,7 +2045,8 @@ static uint64_t countOps(Operation *op) {
   static const char msg[] = "result: unknown\n";
   static const char jmsg[] = "{\"kind\":\"result\",\"value\":\"unknown\","
                              "\"text\":\"result: unknown\"}\n";
-  if (!gResultPrinted) {
+  const bool settled = gResultPrinted;
+  if (!settled) {
     gResultPrinted = true;
     if (outFormat == sea::out::Format::Jsonl)
       (void)!::write(1, jmsg, sizeof(jmsg) - 1);
@@ -2008,7 +2056,7 @@ static uint64_t countOps(Operation *op) {
   static const char err[] =
       "Warning: the solver returned unknown (memout) [vc.unknown]\n";
   (void)!::write(2, err, sizeof(err) - 1);
-  ::_exit(3);
+  ::_exit(settled ? gSettledStatus : 3);
 }
 
 /// The LLVM bad-alloc handler (llvm::safe_malloc, SmallVector growth, ...);
@@ -2030,8 +2078,14 @@ static uint64_t countOps(Operation *op) {
   const bool nodes = b == sea::MemWatch::Budget::Nodes;
   const bool test = b == sea::MemWatch::Budget::Test;
   const char *resource = nodes ? "nodes" : test ? "test" : "rss";
-  if (!gResultPrinted)
-    emitResultRecord("unknown");
+  // the census's report below holds the BRUNCH_STAT result
+  if (!gResultPrinted) {
+    sea::out::Record res("result");
+    res.str("value", "unknown");
+    res.text = "result: unknown";
+    gOut->emit(res);
+    gResultPrinted = true;
+  }
   raw_ostream &os = smt2 && !gOut->jsonl() ? errs() : vout();
   printStats(os, [&](sea::stats::Report &r) {
     sea::stats::Line &l = r.line("budget")
@@ -3767,8 +3821,8 @@ OUTPUT (stdout, `key: value` lines):
   premise.failed: <name> size= room= at= part=<i>   (after a part with
                                   result=premise-failed: its run failed a
                                   premise assert, --symbolic-size=assert;
-                                  the job then says result: sat and exits
-                                  4, also with a sat part)
+                                  the job then exits 4, also with a sat
+                                  part, and says result: unknown)
   check-inb.parts: total= unsat= sat= unknown= other= skipped= premise=
                   median-time= max-time= solve-time= time=
   check-inb.part-diags: none | <kind>=<parts> ...
@@ -3778,15 +3832,14 @@ OUTPUT (stdout, `key: value` lines):
                                   result rests on; docs/design/CheckInb.md)
   solver-answer: sat|unsat|unknown  (the solver's answer, after its check;
                                   not the verdict)
-  result: sat|unsat|unknown|none  (the verdict, one line per run, last
-                                  of the answer's lines: unsat / unknown
-                                  as the solver says; sat only after the
-                                  replay confirms it (status 0); a sat
-                                  whose replay does not (status 1 replay
-                                  impossible, 2, 4, 6, a --mem-limit hit
-                                  in the replay) is unknown, the status
-                                  and its error say why; none:
-                                  --vcgen-only, --split-candidates)
+  result: sat|unsat|unknown|none  (the verdict, one line per run that
+                                  reached a solver: sat / unsat only with
+                                  exit status 0 and a confirmed answer (a
+                                  sat after its replay confirms it); every
+                                  other ending prints unknown, and the
+                                  error lines and the status say why;
+                                  none: no verdict (--vcgen-only,
+                                  --split-candidates))
   hint: split: open-aliases=<n>[ ackermann-constraints=<m>]; rerun with
                                   --split-candidates ...
                                   (unknown, --seam, not a split, n > 0 open
@@ -4249,7 +4302,7 @@ PTR_EQ; all of it is erased to bit-vectors at the solver boundary (error
 vc.ptr-sort-at-boundary: a pointer-sorted term reached the solver, a
 bug). Accesses spanning several cells and
 abstract pointers need lowering first (--lower). Replay runs memory in place, so updates must be `inplace` (else
-status 1 after the verdict).
+status 1 after `solver-answer: sat`, `result: unknown`).
 
 CONFIG (--config=<file|name>, repeatable; docs/Profiles.md): LLVM config
 files (as clang --config): options separated by whitespace / newlines, `#`
@@ -5632,6 +5685,7 @@ int main(int argc, char **argv) {
                 "(the Yices and Bitwuzla marshalers refuse lambdas)");
   // case splitting (sea/VC/Split.h)
   const bool splitOn = !splitBool.empty() || !splitLeaves.empty() || splitAuto;
+  gSplitRun = splitOn;
   if (splitCandidatesOpt) {
     if (splitOn)
       return fail("--split-candidates lists split targets without solving: "
@@ -5914,7 +5968,10 @@ int main(int argc, char **argv) {
     jo.source = inputFilename;
     for (int i = 1; i < argc; ++i)
       jo.jobArgs.push_back(argv[i]);
-    return sea::checkinb::runJob(*module, program, jo, *gOut);
+    jo.emitResult = [](llvm::StringRef v) { emitResultRecord(v); };
+    const int jrc = sea::checkinb::runJob(*module, program, jo, *gOut);
+    settleResult(jrc);
+    return jrc;
   }
   // With --seam the answer rests on the premises. A sat whose replay fails may
   // be an artifact of a program that leaves its objects; the abstract program
@@ -9015,9 +9072,14 @@ int main(int argc, char **argv) {
         splitPart.result = v.str();
         printStats([&](sea::stats::Report &r) {
           r.line("split.part-result").value(v);
+          resultLine(r, v);
         });
         return;
       }
+      // a failed --seam-check / unproven --narrow-check (run before the
+      // solve) makes the status 5 / 7: no verdict
+      if ((v == "sat" || v == "unsat") && (checkInvalid || narrowUnproven))
+        v = "unknown";
       emitResultRecord(v);
     };
     {
@@ -9084,7 +9146,6 @@ int main(int argc, char **argv) {
         sea::diag::warn("vc.vcgen-only-check-skipped",
                         "--seam-check does not run: --vcgen-only skips it");
       emitResult("none");
-      printStats([](sea::stats::Report &r) { resultLine(r, "none"); });
       return 0;
     }
     runSeamCheck();
@@ -9476,6 +9537,7 @@ int main(int argc, char **argv) {
           .value(res == sea::solver::SolverResult::SAT     ? "sat"
                  : res == sea::solver::SolverResult::UNSAT ? "unsat"
                                                            : "unknown");
+      gSolverReached = true;
       r.print(vout(), brunchStats);
     }
     if (res == sea::solver::SolverResult::UNSAT) {
@@ -9483,13 +9545,11 @@ int main(int argc, char **argv) {
       sea::stats::Report r;
       if (sem.ptrIntChecking() && sem.companionChecked())
         r.line("seam.ptrint").value("holds");
-      resultLine(r, "unsat");
       r.print(vout(), brunchStats);
       return 0;
     }
     if (res != sea::solver::SolverResult::SAT) {
       emitResult("unknown");
-      printStats([](sea::stats::Report &r) { resultLine(r, "unknown"); });
       // why, when a limit of the run explains it: the backend's reason
       // (z3, Yices' watchdog); else the time spent reached --timeout; for
       // Bitwuzla (complete for the VC's logics) an unknown under
@@ -9605,9 +9665,7 @@ int main(int argc, char **argv) {
     // mismatch, 4 a premise, 6 the lowering); a --mem-limit hit in the
     // replay prints its own `result: unknown`
     auto settleSat = [&](int rc) -> int {
-      StringRef v = rc == 0 ? "sat" : "unknown";
-      emitResult(v);
-      printStats([&](sea::stats::Report &r) { resultLine(r, v); });
+      emitResult(rc == 0 ? "sat" : "unknown");
       gOut->flush();
       return rc;
     };
@@ -10356,7 +10414,6 @@ int main(int argc, char **argv) {
         gOut->emit(rec);
       }
       emitResultRecord("none");
-      printStats([](sea::stats::Report &r) { resultLine(r, "none"); });
       gOut->flush();
       return 0;
     }();
@@ -10559,7 +10616,8 @@ int main(int argc, char **argv) {
             r.line("split.unknown-part").value(u);
         });
       }
-      emitResultRecord(verdict);
+      // as emitResult: the checks' failure statuses (5 / 7) give no verdict
+      emitResultRecord(checkInvalid || narrowUnproven ? "unknown" : verdict);
       gOut->flush();
       return nSat || nUnknown == 0 ? 0 : 3;
     }();
@@ -10592,6 +10650,8 @@ int main(int argc, char **argv) {
     }
   }
   gOut->flush();
+  // the run's one result line, now that no check can change its status
+  settleResult(rc);
   {
     sea::stats::Report r;
     r.line("status").value(rc).brunch(sea::stats::Brunch::Value).brunchOnly();

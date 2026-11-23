@@ -341,8 +341,14 @@ def interesting(a, path):
 
     if a.mode == "result":
         r = vc(a.config)
+        # an expected exit status (--status) overrides the error
+        # classification: a sat whose replay fails exits 2 with an `Error:`
+        # line and `result: unknown`, and that run is the symptom
         if failure(r) and not (
-            a.status == 1 and r.status == 1 and r.signal is None and not r.timed_out
+            a.status is not None
+            and r.status == a.status
+            and r.signal is None
+            and not r.timed_out
         ):
             return bad(r)
         if r.result() != a.result:

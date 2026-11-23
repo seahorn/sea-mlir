@@ -32,7 +32,7 @@ The main lines of `sea-vc`:
 | `solve-time: <s>` | the solver's check |
 | `solver.z3-tactic: <t>`, `solver.z3-logic: <logic>` | z3 only: `--z3-tactic` when not the default, `--z3-logic` when given |
 | `solver-answer: sat\|unsat\|unknown` | the solver's answer, right after its check; not the verdict (a `sat` is settled by the replay) |
-| `result: sat|unsat|unknown|none` | the verdict, one line per run, after everything that settles it: `unsat` / `unknown` as the solver answers; `sat` only when the replay confirms it (status 0); a `sat` whose replay does not (status 1 replay impossible, 2, 4, 6, or a `--mem-limit` hit in the replay) is `unknown`, and the status and its error say why (`none`: `--vcgen-only`, `--split-candidates`) |
+| `result: sat|unsat|unknown|none` | the verdict, one line per run that reached a solver: `sat` or `unsat` only with exit status 0 and a confirmed answer (a `sat` after its replay confirms it); every other ending prints `unknown`, and the error lines and the status say why. `none`: no verdict (`--vcgen-only`, `--split-candidates`, `--check-inb --vcgen-only`); `--reach` prints none |
 | `solve-timeout: true`, `mem-limit: hit` | why the result is `unknown` |
 | `mem-limit-phase: <phase> [run=<n>]` | after `mem-limit: hit`: the phase that was running (the last `vc.phase` start; `none`: before the first phase, while reading the input; `solve` for the solver's own limit) |
 | `mem-limit-progress: time= blocks= blocks-total= ops= ops-total= nodes-made= [rss-mb= vm-mb=] peak-rss-mb= [slowest-op= slowest-op-time= slowest-op-at=] [biggest-op= biggest-op-nodes= biggest-op-at=]` | after a hit in `encode`: the counters of its last progress tick (the fields of the `vc.phase progress` event, [Logging](logging.md); every `--progress-interval` seconds, so up to that old); absent before the first tick |
@@ -379,8 +379,8 @@ the lowering guarded or dropped a memhavoc for it. `result` is the part's
 `other` counts those. A part whose run failed a premise
 assert (`--symbolic-size=assert`, status 4 with a `premise.failed:` line)
 is `premise-failed`, counted as `premise`, and its `premise.failed:` line
-follows, with `part=<i>`: the job prints `result: sat` and exits 4 (the
-premise class; with a sat part too, the same). In jsonl the records are
+follows, with `part=<i>`: the job exits 4 (the premise class; with a sat
+part too, the same) and prints `result: unknown`. In jsonl the records are
 `check-inb`, `check-inb.solver` (solver, reason, ro_arrays (`uf` or `array`),
 ro_arrays_reason (`default`, `--ro-arrays` or `--z3-logic`)),
 `check-inb.split` (folded, parts, trivial, to_solve),

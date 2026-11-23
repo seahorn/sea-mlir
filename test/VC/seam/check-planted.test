@@ -18,5 +18,26 @@ ROW: seam-check-smt: (assert
 ROW: seam-check: {{.*}} invalid=1
 ROW: BRUNCH_STAT status 5
 
+The answer of a run with an invalid firing is no verdict: status 5 and
+`result: unknown` (one line), for an unsat and for a sat whose replay
+confirms it alike (the check runs before the solve).
+RUN: bash -c 'sea-vc %S/check-loaded-length.mlir --lower --seam --seam-check --seam-plant-bug=sub.const --brunch-stats > %t.unsat 2>&1; test $? -eq 5'
+RUN: FileCheck %s --check-prefix=SETTLED-UNSAT < %t.unsat
+RUN: grep -c '^result:' %t.unsat | FileCheck %s --check-prefix=ONE
+SETTLED-UNSAT: solver-answer: unsat
+SETTLED-UNSAT-NOT: result: unsat
+SETTLED-UNSAT: {{^}}result: unknown
+SETTLED-UNSAT: [seam.check-invalid]
+SETTLED-UNSAT: BRUNCH_STAT status 5
+RUN: bash -c 'sea-vc %S/inb-witness-memory.mlir --lower --seam --seam-check --seam-plant-bug=sub.const > %t.sat 2>&1; test $? -eq 5'
+RUN: FileCheck %s --check-prefix=SETTLED-SAT < %t.sat
+RUN: grep -c '^result:' %t.sat | FileCheck %s --check-prefix=ONE
+SETTLED-SAT: solver-answer: sat
+SETTLED-SAT: replay: assert-failed
+SETTLED-SAT: validate: {{.*}}mismatches=0
+SETTLED-SAT: {{^}}result: unknown
+SETTLED-SAT: [seam.check-invalid]
+ONE: {{^}}1{{$}}
+
 # SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -32,7 +32,7 @@ utils/reduce-test.py reduce --mode crash --config="--lower" \
 
 # a specific result (and exit status)
 utils/reduce-test.py reduce --mode result --config="--lower --seam" \
-    --result sat --status 2 in.mlir -o small.mlir
+    --result unknown --status 2 in.mlir -o small.mlir
 ```
 
 `reduce` checks that the input is interesting, writes the test script,

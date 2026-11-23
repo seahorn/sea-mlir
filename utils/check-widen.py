@@ -14,7 +14,7 @@ word of the memory's size combined, little-endian), and W runs with
 --missing=error. W reads exactly the words whose bytes O read: the pass
 widens only memories whose accesses are all whole, aligned words. O and W must agree on the status
 and on every traced value (the pass changes no op, only memory types).
-With --sea-vc, the VC must also give the same verdict (and exit status)
+With --sea-vc, the VC must also give the same solver answer (solver-answer:) and exit status
 with and without --widen-memory=k.
 
 Exit status 1 if any program disagrees (or W asks for an input O never
@@ -161,11 +161,15 @@ def check(args, path, work):
                 f"{b[i] if i < len(b) else '-'}"
             )
     if args.sea_vc:
-        # the VC on the byte and on the widened program: same verdict, and
-        # the same exit status (2 = a sat that does not replay)
+        # the VC on the byte and on the widened program: the same solver
+        # answer (solver-answer:, the solver's verdict before the replay; the
+        # settled `result:` is unknown for a sat that does not replay), and
+        # the same exit status (2 = a sat that does not replay): what this
+        # accepts is what it accepted when `result:` was printed before the
+        # replay (maintainer sign-off)
         rb, ob, eb = run([args.sea_vc, path, "--lower"])
         rw, ow, ew = run([args.sea_vc, path, "--lower", f"--widen-memory={args.k}"])
-        vb, vw = field(ob, "result"), field(ow, "result")
+        vb, vw = field(ob, "solver-answer"), field(ow, "solver-answer")
         if (vb, rb) != (vw, rw) or vb not in ("sat", "unsat"):
             return "FAIL", (
                 f"VC: byte {vb} (exit {rb}), word {vw} (exit {rw}) {ew.strip()[:160]}"
