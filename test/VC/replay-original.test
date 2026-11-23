@@ -1,3 +1,5 @@
+// --place-slots=none (compare, same-loc, no-loc): one past the end of a is b
+// only when objects are packed.
 // sea-vc --replay-original: a sat confirmed on the lowered program is also
 // run on the input program before any pass, with the model's inputs; it must
 // fail the same assertion.
@@ -27,7 +29,7 @@
 
 // A program whose behavior depends on placement (one past the end of a is
 // b): the lowered program fails, the abstract one does not. Exit 6.
-// RUN: bash -c 'sea-vc %t/compare.mlir --lower --replay-original > %t.cmp.out 2> %t.cmp.err; test $? -eq 6'
+// RUN: bash -c 'sea-vc %t/compare.mlir --lower --place-slots=none --replay-original > %t.cmp.out 2> %t.cmp.err; test $? -eq 6'
 // RUN: FileCheck %s --check-prefix=CMP < %t.cmp.out
 // RUN: FileCheck %s --check-prefix=CMP-ERR < %t.cmp.err
 // CMP: replay: assert-failed
@@ -73,9 +75,9 @@
 // Two asserts at one location, or with none: told apart by their ids. The
 // placed program fails the second (one past the end of a is b), the
 // abstract one the first: exit 6.
-// RUN: bash -c 'sea-vc %t/same-loc.mlir --lower --replay-original > %t.same.out 2>&1; test $? -eq 6'
+// RUN: bash -c 'sea-vc %t/same-loc.mlir --lower --place-slots=none --replay-original > %t.same.out 2>&1; test $? -eq 6'
 // RUN: FileCheck %s --check-prefix=IDS < %t.same.out
-// RUN: bash -c 'sea-vc %t/no-loc.mlir --lower --replay-original > %t.noloc.out 2>&1; test $? -eq 6'
+// RUN: bash -c 'sea-vc %t/no-loc.mlir --lower --place-slots=none --replay-original > %t.noloc.out 2>&1; test $? -eq 6'
 // RUN: FileCheck %s --check-prefix=IDS < %t.noloc.out
 // IDS: replay.original: status=assert-failed {{.*}} match=no
 // IDS: replay.original: expected: {{.*}} assert=1
@@ -83,8 +85,8 @@
 // IDS: [vc.replay-original-mismatch]
 
 // jsonl carries the same line.
-// RUN: sea-vc %t/compare.mlir --lower --replay-original > %t.cmp.txt || true
-// RUN: sea-vc %t/compare.mlir --lower --replay-original --format=jsonl > %t.cmp.jsonl || true
+// RUN: sea-vc %t/compare.mlir --lower --place-slots=none --replay-original > %t.cmp.txt || true
+// RUN: sea-vc %t/compare.mlir --lower --place-slots=none --replay-original --format=jsonl > %t.cmp.jsonl || true
 // RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.cmp.txt --jsonl %t.cmp.jsonl \
 // RUN:   --require replay-original:status,at,match,nondets,cells,defaulted,unmapped,expected,got
 // REQUIRES: z3

@@ -131,6 +131,9 @@ import tempfile
 import threading
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import seavc_flags  # noqa: E402
+
 AGENT = """\
 cover-diff: validate a lowering change by reach coverage (level 0) and
   reachability equivalence per target (level 1).
@@ -146,6 +149,8 @@ USAGE:
       [--b-input <file>] <f.mlir | dir>...
   e.g. --a=--lower-opt=false --b=   (validates the canonicalize + cse folds)
        --a=--lower-disable=canonicalize --b=
+  Level 1 passes --vc-fold-top-eqs=false to its --smt2 runs (a folded
+  query is only equisatisfiable with the VC) when the binary has the flag.
   --no-keep-sites: without sea-vc --reach-keep-sites (checks of true are
   erased, not kept as reach-site markers: removed-true / unknown).
   --b-input: B lowers another file (one input; both files must carry
@@ -471,7 +476,7 @@ def rt_programs(a, f, side_args, d, place=()):
 
 def smt2(a, rt):
     """(query, None) or (None, why) for R_T."""
-    cmd = [a.sea_vc, rt] + a.rt_args + ["--smt2"]
+    cmd = [a.sea_vc, rt] + seavc_flags.no_fold(a.sea_vc) + a.rt_args + ["--smt2"]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=a.timeout)
     except subprocess.TimeoutExpired:

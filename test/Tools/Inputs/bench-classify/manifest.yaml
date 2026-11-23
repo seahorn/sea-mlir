@@ -9,6 +9,8 @@ jobs:
   badalloc-after-sat: {expected: unknown-ok, tier: smoke}
   memlimit: {expected: unknown-ok, tier: smoke}
   memlimit-after-sat: {expected: unknown-ok, tier: smoke}
+  budget: {expected: unknown-ok, tier: smoke}
+  budget-sat: {expected: sat, tier: smoke}
   split: {expected: unsat, tier: smoke}
   split-jsonl: {expected: unsat, tier: smoke}
   jsonl: {expected: unsat, tier: smoke, counters: {vc.box-all.expanded: {exact: 1}}}

@@ -36,6 +36,7 @@
 #include <cstdlib>
 #include <functional>
 #include <initializer_list>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -666,13 +667,21 @@ void testRow() {
           "size-0 without A-INB: " << str(out2));
     CHECK(F.equivalent(in, out2, false), "size-0 without A-INB: unsound");
   }
-  // integer casts: o1 + (o2 - o1) is the address o2, not a pointer into o1
-  // (the view needs an offset that mentions no base): no skip
+  // integer casts: from_int(to_int(o1) + (to_int(o2) - to_int(o1))) is
+  // the address o2 with no provenance (PTR_FROM_INT): no view, no skip, no
+  // premise. (The same arithmetic as a node over o1, o1 + (o2 - o1), is
+  // pointer arithmetic on o1: a pointer into o1, testNodeView.)
   {
-    Expr idx =
-        F.add({F.o1, mk<BSUB>(mk<PTR_TO_INT>(F.o2), mk<PTR_TO_INT>(F.o1))});
-    F.expect("int-cast", F.sel(F.st(F.m, F.o2, v), idx),
-             mk<ITE>(F.ov(F.o2, idx), v, F.sel(F.m, idx)), {"row.store"});
+    Expr idx = mk<PTR_FROM_INT>(
+        mk<BADD>(mk<PTR_TO_INT>(F.o1),
+                 mk<BSUB>(mk<PTR_TO_INT>(F.o2), mk<PTR_TO_INT>(F.o1))));
+    Expr in = F.sel(F.st(F.m, F.o2, v), idx);
+    RewriteStats st;
+    Expr out = F.rewrite(in, P1(), st);
+    CHECK(st.get("row.store-skip") == 0 && st.get("cmp.diff-base") == 0 &&
+              st.get("premise.a-sep") == 0,
+          "int-cast: no decision: " << str(out));
+    CHECK(F.equivalent(in, out, false), "int-cast: exact");
   }
   // a program compare inside an address survives; the one-past-the-end
   // pointer of o1 is o4's base (their layout is adjacent), so the select
@@ -1473,6 +1482,54 @@ struct Gen {
   Expr read() { return F.sel(mem(4), ptr(1)); }
 };
 
+/// The pointer atoms (registered bases, pointer constants) of \p e that
+/// carry provenance: not below an address observation (ADDR, PTR_TO_INT; a
+/// stored pointer's bits, PTR_TO_BITS, are read back by ptr.load-resolve).
+void provenanceAtoms(const Expr &e, std::set<Expr> &out, std::set<Expr> &seen) {
+  if (!seen.insert(e).second)
+    return;
+  if (isOpX<ADDR>(e) || isOpX<PTR_TO_INT>(e))
+    return;
+  if (op::ptr::isPtrConst(e)) {
+    out.insert(e);
+    return;
+  }
+  for (size_t i = 0; i < e->arity(); ++i)
+    provenanceAtoms(e->arg(i), out, seen);
+}
+
+/// No rewrite gives provenance back from integer arithmetic: every pointer
+/// atom at the root of a node chain of \p out (through ites) carries
+/// provenance in \p in (a cast sum from_int(to_int(p) + x) never becomes
+/// the node p + x).
+bool noCastToNode(const Expr &in, const Expr &out) {
+  std::set<Expr> atoms, seen;
+  provenanceAtoms(in, atoms, seen);
+  bool ok = true;
+  std::set<Expr> visited;
+  std::function<void(const Expr &)> roots = [&](const Expr &r) {
+    if (isOpX<ITE>(r)) {
+      roots(r->arg(1));
+      roots(r->arg(2));
+    } else if (op::ptr::isPtrIndex(r)) {
+      roots(op::ptr::base(r));
+    } else if (op::ptr::isPtrConst(r) && !atoms.count(r)) {
+      ok = false;
+    }
+  };
+  // (below an observation a node is an address, not a provenance)
+  std::function<void(const Expr &)> walk = [&](const Expr &e) {
+    if (!visited.insert(e).second || isOpX<ADDR>(e) || isOpX<PTR_TO_INT>(e))
+      return;
+    if (op::ptr::isPtrIndex(e))
+      roots(op::ptr::base(e));
+    for (size_t i = 0; i < e->arity(); ++i)
+      walk(e->arg(i));
+  };
+  walk(out);
+  return ok;
+}
+
 void testRandom(unsigned count, bool big = false) {
   Fixture F;
   Gen g(F, big ? 20261101 : 20260501, big);
@@ -1495,6 +1552,11 @@ void testRandom(unsigned count, bool big = false) {
       ++unsound;
       llvm::errs() << "FAIL: random " << i << " unsound: " << str(in) << " ~> "
                    << str(out) << "\n";
+    }
+    if (!noCastToNode(in, out)) {
+      ++unsound;
+      llvm::errs() << "FAIL: random " << i
+                   << " cast became a node: " << str(out) << "\n";
     }
     if (getenv("SEAM_TEST_VERBOSE"))
       llvm::errs() << "  checked\n";
@@ -1728,6 +1790,123 @@ void testProvenance() {
   }
 }
 
+/// view.node / view.node-ite: a node chain keeps its pointer operand's
+/// provenance whatever its indices mention; an ite operand whose leaves all
+/// point into one object gives that object (offset: the ite of the leaves'
+/// offsets). Cast sums (from_int) keep no provenance.
+void testNodeView() {
+  Fixture F;
+  Expr v = F.var("v");
+  SeaMRewriter rw0(F.efac, F.reg, P1());
+  const seam::Rules &R = rw0.rules();
+  auto viewBase = [&](const Expr &e) -> Expr {
+    std::optional<seam::PtrView> pv = R.view(e);
+    return pv ? pv->base : Expr();
+  };
+  // an index that mentions another base: o1 + (to_int(o2) & 0xf0) is a
+  // pointer into o1 (in its bounds whatever o2's address)
+  Expr mask = mk<BAND>(mk<PTR_TO_INT>(F.o2), F.num(0xf0));
+  Expr pm = F.add({F.o1, mask});
+  CHECK(viewBase(pm) == F.o1, "node-view: index mentions o2: into o1");
+  // decided by the view under A-SEP; base: no view, ARM top (the mask of a
+  // base), undecided
+  F.expect("node-view-skip", F.sel(F.st(F.m, F.add({F.o2, F.x}), v), pm),
+           F.sel(F.m, pm), {"row.store-skip", "cmp.diff-base"},
+           /*usesInb=*/true);
+  // o1 + (o2 - o1) as a node: a pointer into o1 (its A-INB fails: the
+  // bounds job reports it); the cast-sum form has no view
+  Expr cast = mk<BSUB>(mk<PTR_TO_INT>(F.o2), mk<PTR_TO_INT>(F.o1));
+  Expr pc = F.add({F.o1, cast});
+  CHECK(viewBase(pc) == F.o1, "node-view: o1 + (o2 - o1) is into o1");
+  {
+    bool violated = false;
+    Expr inb = R.inBounds(pc, 1, violated);
+    CHECK(!F.satisfiable(inb),
+          "node-view: o1 + (o2 - o1) breaks A-INB of o1: " << str(inb));
+  }
+  Expr fc = mk<PTR_FROM_INT>(mk<BADD>(mk<PTR_TO_INT>(F.o1), cast));
+  CHECK(!viewBase(fc), "node-view: from_int keeps no provenance");
+  CHECK(!viewBase(F.add({fc, F.x})),
+        "node-view: a node over from_int has no view");
+  // an ite operand, every leaf into o1 (one leaf's offset mentions o2)
+  Expr it = mk<ITE>(F.a, F.add({F.o1, F.num(4)}),
+                    mk<ITE>(F.b, F.o1, F.add({F.o1, mask})));
+  Expr pi = op::ptr::ptrIndex(op::PtrOpKind::PTR_INDEX, it, {{F.y, 1}}, 0, 0);
+  CHECK(viewBase(pi) == F.o1, "node-view: ite operand, leaves into o1");
+  // ARM gives it the o1 entry only when no leaf offset mentions a base
+  {
+    Expr it2 = mk<ITE>(F.a, F.add({F.o1, F.num(4)}), mk<ITE>(F.b, F.o1, F.o1));
+    Expr pi2 =
+        op::ptr::ptrIndex(op::PtrOpKind::PTR_INDEX, it2, {{F.y, 1}}, 0, 0);
+    AddrRangeAnalysis an(F.reg);
+    const AddrRangeMap &m2 = an.alpha(pi2);
+    CHECK(!m2.isTop() && m2.size() == 1 &&
+              m2.entries()[0].first == F.reg.lookup(F.o1)->order,
+          "node-view: ARM of the ite node: the o1 entry");
+    CHECK(an.alpha(pi).isTop(), "node-view: ARM top with a masked base");
+  }
+  // (the node is not pulled into its ite here: maxPullLeaves 2 < 3 leaves,
+  // as an index ite with many leaves blocks the pull in a VC; a pulled ite
+  // under an observation is not cancelled, the open sub.obs-ite case)
+  SeaMOptions noPull = P1();
+  noPull.maxPullLeaves = 2;
+  // a difference of two pointers into o1, one the ite node: base-free, exact
+  {
+    Expr in = mk<PTR_DIFF>(pi, F.add({F.o1, F.x}));
+    RewriteStats st;
+    Expr out = F.rewrite(in, noPull, st);
+    CHECK(st.get("diff.same-base") >= 1,
+          "node-view: diff.same-base: " << str(out));
+    CHECK(F.equivalent(in, out, false), "node-view: diff exact");
+    Expr in2 = mk<BSUB>(mk<PTR_TO_INT>(pi), mk<PTR_TO_INT>(F.add({F.o1, F.x})));
+    RewriteStats st2;
+    Expr out2 = F.rewrite(in2, noPull, st2);
+    CHECK(st2.get("sub.same-base") >= 1,
+          "node-view: sub.same-base: " << str(out2));
+    CHECK(F.equivalent(in2, out2, false), "node-view: sub exact");
+  }
+  // a read through the ite node over a write to o2: skipped (A-SEP)
+  F.expect("node-view-ite-skip", F.sel(F.st(F.m, F.add({F.o2, F.x}), v), pi),
+           F.sel(F.m, pi), {"row.store-skip", "cmp.diff-base"},
+           /*usesInb=*/true, noPull);
+  // leaves into different objects: no view
+  Expr mixed = op::ptr::ptrIndex(op::PtrOpKind::PTR_INDEX,
+                                 mk<ITE>(F.a, F.o1, F.o2), {{F.y, 1}}, 0, 0);
+  CHECK(!viewBase(mixed), "node-view: mixed leaves: no view");
+  // over the leaf cap (maxDecideLeaves distinct leaves): no view, counted
+  {
+    Expr wide = F.o1;
+    for (unsigned k = 0; k < 9; ++k)
+      wide = mk<ITE>(k % 2 ? F.b : F.c, F.add({F.o1, F.num(16 + 4 * k)}), wide);
+    Expr pw =
+        op::ptr::ptrIndex(op::PtrOpKind::PTR_INDEX, wide, {{F.y, 1}}, 0, 0);
+    RewriteStats st;
+    seam::Rules rules(F.efac, F.reg, st, P1());
+    CHECK(!rules.view(pw) && st.get("view.node-ite-cap") == 1,
+          "node-view: over the cap: no view, counted");
+  }
+  // no rule turns a cast sum into a node: reads at from_int(to_int(p) + x)
+  // over stores whose addresses do not mention o1, so o1 has no provenance
+  // in the input and any node over it in the output is caught
+  for (const Expr &p : {F.o1, F.add({F.o1, F.num(8)}),
+                        Expr(mk<ITE>(F.a, F.o1, F.add({F.o1, F.num(4)})))}) {
+    Expr idx = mk<PTR_FROM_INT>(mk<BADD>(mk<PTR_TO_INT>(p), F.num(4)));
+    for (const Expr &mm :
+         {F.st(F.m, F.add({F.o2, F.x}), v), F.st(F.m, F.add({F.o3, F.y}), v)}) {
+      Expr in = F.sel(mm, idx);
+      // the check itself: the planted rewrite of the cast sum into the node
+      // p + 4 is caught
+      CHECK(!noCastToNode(in, F.sel(mm, F.add({F.o1, F.num(4)}))),
+            "node-view: the cast check misses a planted node");
+      RewriteStats st;
+      Expr out = F.rewrite(in, SeaMOptions(), st);
+      CHECK(noCastToNode(in, out),
+            "node-view: a cast sum became a node: " << str(out));
+      CHECK(F.equivalent(in, out, false), "node-view: cast read exact");
+    }
+  }
+}
+
 /// A non-unit IS_OVERLAP at the boundary: the circular interval test with
 /// the widths as numerals; a width of 2^w units covers every address
 void testOverlapWidth() {
@@ -1742,6 +1921,54 @@ void testOverlapWidth() {
   CHECK(isOpX<TRUE>(fullQ), "overlap(p, 1, q, 2^w): " << str(fullQ));
   Expr big = erased(op::ptr::overlap(F.p, (1UL << kWidth) + 5, F.q, 1));
   CHECK(isOpX<TRUE>(big), "overlap(p, 2^w + 5, q, 1): " << str(big));
+}
+
+/// BaseRegistry::alignedTo / ownsSlot (sea-place-static slots=aligned):
+/// facts read from the bases, whatever placed them.
+void testSlots() {
+  ExprFactory efac;
+  BaseRegistry reg;
+  auto add = [&](const char *name, unsigned long base,
+                 unsigned long size) -> const ObjectBase & {
+    Expr e = op::ptr::ptrConst(mkTerm<std::string>(name, efac), kWidth);
+    return reg.add(e, name, "heap", llvm::APInt(kWidth, base),
+                   llvm::APInt(kWidth, size), 1);
+  };
+  auto get = [&](const char *name) -> const ObjectBase & {
+    return *reg.lookup(
+        op::ptr::ptrConst(mkTerm<std::string>(name, efac), kWidth));
+  };
+  add("null", 0, 0);
+  add("a", 0x1000, 0x100);  // s 9: [0x1000, 0x1200)
+  add("b", 0x1200, 0x10);   // s 5: [0x1200, 0x1220)
+  add("c", 0x1300, 0);      // size 0, s 1: [0x1300, 0x1302)
+  add("e", 0x1404, 4);      // s 3, base not a multiple of 8
+  add("f", 0x8000, 0x7fff); // s 15: the slot ends at 2^16
+  add("g", 0x4000, 0x4000); // s 15, base 0x4000 not a multiple of 2^15
+  CHECK(BaseRegistry::alignedTo(get("a"), 12), "0x1000 at 12");
+  CHECK(!BaseRegistry::alignedTo(get("a"), 13), "0x1000 not at 13");
+  CHECK(BaseRegistry::alignedTo(get("null"), kWidth), "0 at the width");
+  CHECK(!BaseRegistry::alignedTo(get("a"), kWidth), "0x1000 not at 16");
+  CHECK(BaseRegistry::slotBits(get("a")) == 9, "slot of 0x100: 2^9");
+  CHECK(BaseRegistry::slotBits(get("b")) == 5, "slot of 0x10: 2^5");
+  CHECK(BaseRegistry::slotBits(get("c")) == 1, "slot of size 0: 2^1");
+  CHECK(BaseRegistry::slotBits(get("e")) == 3, "slot of 4: 2^3");
+  CHECK(reg.ownsSlot(get("a")), "a owns its slot");
+  CHECK(reg.ownsSlot(get("b")), "b owns its slot");
+  CHECK(reg.ownsSlot(get("c")), "c (size 0) owns its slot");
+  CHECK(!reg.ownsSlot(get("e")), "e is not aligned to its slot");
+  CHECK(reg.ownsSlot(get("f")), "f's slot ends at 2^w");
+  CHECK(!reg.ownsSlot(get("g")), "g is not aligned to its slot");
+  // an object of size 0 inside a's slot, one at c's second address
+  add("in_a", 0x1100, 0);
+  add("in_c", 0x1301, 0);
+  CHECK(!reg.ownsSlot(get("a")), "a size-0 object in a's slot");
+  CHECK(!reg.ownsSlot(get("c")), "a size-0 object in c's slot");
+  CHECK(reg.ownsSlot(get("b")), "b still owns its slot");
+  // an object below b's slot that reaches into it
+  add("h", 0x1500, 0x100);
+  add("i", 0x1580, 0x10); // s 5 at 0x1580: inside h's range
+  CHECK(!reg.ownsSlot(get("i")), "i's slot is in h's range");
 }
 
 int main(int argc, char **argv) {
@@ -1761,11 +1988,13 @@ int main(int argc, char **argv) {
                {"thesis-examples", testThesisExamples},
                {"arm", testArm},
                {"provenance", testProvenance},
+               {"node-view", testNodeView},
                {"load-resolve", testLoadResolve},
                {"null", testNull},
                {"prune-size0", testPruneSize0},
                {"shadow", testShadow},
-               {"overlap-width", testOverlapWidth}};
+               {"overlap-width", testOverlapWidth},
+               {"slots", testSlots}};
   for (const Test &t : tests) {
     int before = failures;
     t.fn();

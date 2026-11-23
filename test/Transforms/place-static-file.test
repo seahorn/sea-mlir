@@ -1,3 +1,6 @@
+// slots=none where the placement is computed: the checks name the bases of
+// the packed placement (slots: place-static-slots.mlir, test/VC/place-
+// slots.test).
 // External placement: sea-place-static place-out writes the placement,
 // place-in takes the bases from a file and checks them as placement does.
 // RUN: rm -rf %t && split-file %s %t
@@ -5,7 +8,7 @@
 // DEFINE: %{place} = sea-opt --pass-pipeline='builtin.module(sea.program(sea-place-static{%{opts}}))'
 
 // The writer: one object per line, with its kind, base, size and align.
-// REDEFINE: %{opts} = place-out=%t/w.place
+// REDEFINE: %{opts} = slots=none place-out=%t/w.place
 // RUN: %{place} %t/writer.mlir -o %t/w.mlir
 // RUN: FileCheck %s --check-prefix=OUT < %t/w.place
 // OUT-DAG: name=stack.1 kind=stack base=0x{{[0-9a-f]+}} size=8 align=8
@@ -24,7 +27,7 @@
 // bases, not its own: stack.2 is where the writer put it, below stack.1.
 // RUN: %{place} %t/reader.mlir | FileCheck %s --check-prefix=HOLE
 // HOLE: sea.segment "stack.2" base 3221225448 : i64 size 16 : i64 align 4 kind "stack"
-// REDEFINE: %{opts} =
+// REDEFINE: %{opts} = slots=none
 // RUN: %{place} %t/reader.mlir | FileCheck %s --check-prefix=OWN
 // OWN: sea.segment "stack.2" base 3221225456 : i64 size 16 : i64 align 4 kind "stack"
 // REDEFINE: %{opts} = place-in=%t/w.place
@@ -75,7 +78,7 @@
 // BOTH: [place.file-both]
 
 // A concrete program: nothing to place, an empty file.
-// REDEFINE: %{opts} = place-out=%t/c.place
+// REDEFINE: %{opts} = slots=none place-out=%t/c.place
 // RUN: %{place} %t/concrete.mlir -o /dev/null
 // RUN: not grep -v '^#' %t/c.place
 

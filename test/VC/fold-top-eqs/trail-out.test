@@ -1,0 +1,29 @@
+# RUN: sea-vc %S/post-store.mlir --program=trail --lower --seam --vc-fold-top-eqs --vcgen-only --model-trail-out=%t.trail > %t.stats
+# RUN: sea-vc %S/post-store.mlir --program=trail --lower --seam --vc-fold-top-eqs --smt2 2>/dev/null > %t.smt2
+# RUN: %python %S/Inputs/check-trail.py %t.trail %t.stats | FileCheck %s
+# RUN: %if z3 %{ %python %S/Inputs/check-trail.py %t.trail %t.stats --smt2 %t.smt2 --z3 %z3 | FileCheck %s %}
+# RUN: FileCheck %s --check-prefix=FILE < %t.trail
+# RUN: sea-vc %S/post-store.mlir --program=trail --lower --seam --vcgen-only --model-trail-out=%t.default > /dev/null
+# RUN: FileCheck %s --check-prefix=FILE < %t.default
+# RUN: not sea-vc %S/post-store.mlir --program=trail --lower --seam --vc-fold-top-eqs=false --model-trail-out=%t.x 2>&1 | FileCheck %s --check-prefix=NEEDS
+# --model-trail-out (docs/design/FoldTopEqs.md, "Model trail"): the file
+# reads back, one JSON object per elimination, its counts equal the
+# vc.model-trail counters, and its terms are SMT-LIB over the symbols of the
+# --smt2 query. The fold is on by default: the file is written without
+# --vc-fold-top-eqs, and refused when the fold is off.
+# CHECK: trail: entries={{[1-9][0-9]*}} cells=1 defs={{[0-9]+}} ok
+# FILE: "kind":"cell"
+# NEEDS: --model-trail-out needs the fold of --vc-fold-top-eqs (vc.fold-top-eqs-status: off-flag)
+
+# The file is not stdout (the report is); the part loop and --check-inb do
+# not share one file between parts.
+# RUN: not sea-vc %S/post-store.mlir --program=trail --lower --seam --vc-fold-top-eqs --model-trail-out=- 2>&1 | FileCheck %s --check-prefix=STDOUT
+# STDOUT: --model-trail-out needs a file (stdout is the report)
+# RUN: not sea-vc %S/post-store.mlir --program=trail --check-inb --lower --seam --ackermannize=off --vc-fold-top-eqs --model-trail-out=%t.inb 2>&1 | FileCheck %s --check-prefix=INB
+# INB: --model-trail-out writes one output that every part would share
+# RUN: sea-vc %S/post-store.mlir --program=trail --lower --seam --vc-fold-top-eqs --split-auto --vcgen-only --model-trail-out=%t.split > /dev/null
+# RUN: FileCheck %s --check-prefix=FILE < %t.split.part0
+# RUN: not test -e %t.split
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -1,0 +1,60 @@
+// A budget never replaces an answer: once the solver has answered (sat or
+// unsat) or --reach has decided its targets, the budgets are off. The
+// trigger is --budget-test-hit=<phase> (testing only): the budgets report a
+// hit at the end of that phase if they are still armed (resource=test,
+// error vc.test-budget, status 8), so no size or memory limit is pinned.
+// RUN: split-file %s %t
+
+// Control: a hit at the end of encode stops the run (the trigger works).
+// RUN: sh -c 'sea-vc "$0" --lower --reach --budget-test-hit=encode >%t.c1 2>/dev/null; test $? -eq 8' %t/multi.mlir
+// RUN: FileCheck %s --check-prefix=HIT < %t.c1
+// RUN: sh -c 'sea-vc "$0" --lower --seam --budget-test-hit=encode >%t.c2 2>/dev/null; test $? -eq 8' %t/multi.mlir
+// RUN: FileCheck %s --check-prefix=HIT < %t.c2
+// HIT: result: unknown
+// HIT: budget: hit resource=test limit=0 {{.*}} phase=encode
+// HIT-NOT: reach:
+
+// --reach: decided targets are all printed, no budget line, status 0.
+// RUN: sea-vc %t/multi.mlir --lower --reach --budget-test-hit=reach > %t.reach
+// RUN: FileCheck %s --check-prefix=REACH < %t.reach
+// REACH: reach: m.c:3:1 reachable
+// REACH: reach: m.c:5:1 reachable
+// REACH: reach: multi.mlir:1:1 reachable
+// REACH: reach.summary: targets=3
+// REACH-NOT: budget
+// REACH-NOT: result: unknown
+
+// A sat: a hit at the end of the solve or of the replay is not reported;
+// one result: sat, status 0.
+// RUN: sea-vc %t/multi.mlir --lower --seam --budget-test-hit=solve > %t.solve
+// RUN: FileCheck %s --check-prefix=SAT < %t.solve
+// RUN: sea-vc %t/multi.mlir --lower --seam --budget-test-hit=replay > %t.replay
+// RUN: FileCheck %s --check-prefix=SAT < %t.replay
+// SAT: result: sat
+// SAT-NOT: result:
+// SAT-NOT: budget
+
+// --check-inb: the parts inherit the option; each stops with status 8
+// (unknown, error vc.test-budget) and the job's status is 8 (8 ranks with
+// the unknowns: worseStatus).
+// RUN: sh -c 'sea-vc "$0" --check-inb --lower --seam --ackermannize=off --budget-test-hit=encode >%t.inb 2>/dev/null; test $? -eq 8' %S/../seam/inb-ptrmem.mlir
+// RUN: FileCheck %s --check-prefix=INB < %t.inb
+// INB: check-inb.part: 0 {{.*}} result=unknown status=8 {{.*}} error=vc.test-budget
+// INB: check-inb.part: 1 {{.*}} result=unknown status=8
+// INB: check-inb.part-diags: vc.test-budget=2
+// INB: result: unknown
+
+//--- multi.mlir
+sea.program @main {
+  %x = sea.nondet "x" [0] : i8 loc("m.c":1:1)
+  %c5 = sea.const 5 : i8
+  %big = sea.icmp ugt, %x, %c5 : i8 loc("m.c":2:1)
+  sea.assert %big loc("m.c":3:1)
+  %f = sea.const 0 : i1 loc("m.c":4:1)
+  sea.assume %f loc("m.c":5:1)
+  sea.assert %big loc("m.c":6:1)
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

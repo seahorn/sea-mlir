@@ -368,17 +368,17 @@ void testRules() {
     CHECK(!F.equivalent(F.ref(t, j), r, part),
           "the skip needs the destination range");
   }
-  // skip across objects by ARM: j = ite(5 pointers into b) + y has no view
-  // (the ite is not pulled: maxPullLeaves), its provenance is b only
+  // skip across objects by ARM: j = ite(9 pointers into b) + y has no view
+  // (the ite is not pulled: maxPullLeaves; a node over it has more distinct
+  // leaves than view.node-ite reads, maxDecideLeaves), its provenance is b
+  // only
   {
     RuleRun R(F);
-    Expr c2 = op::bind::boolConst(mkTerm<std::string>("c2", F.efac));
-    Expr c3 = op::bind::boolConst(mkTerm<std::string>("c3", F.efac));
-    Expr c4 = op::bind::boolConst(mkTerm<std::string>("c4", F.efac));
-    Expr big = mk<ITE>(
-        F.c, F.at(F.ob, 1),
-        mk<ITE>(c2, F.at(F.ob, 2),
-                mk<ITE>(c3, F.ob, mk<ITE>(c4, F.at(F.ob, 3), F.at(F.ob, 4)))));
+    Expr big = F.ob;
+    for (unsigned k = 1; k <= 8; ++k)
+      big = mk<ITE>(op::bind::boolConst(
+                        mkTerm<std::string>("c" + std::to_string(k), F.efac)),
+                    F.at(F.ob, k), big);
     Expr j = F.add(big, F.y4());
     Expr t = mcopy(F.Md, F.Ms, F.add(F.oa, F.x), F.s, F.n);
     Expr r = R.read(t, j);

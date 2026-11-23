@@ -1,6 +1,12 @@
 ORACLE: static placement vs abstract interpreter (see test/README.md).
 RUN: %python %sea_src_root/utils/fuzz-place.py --sea-opt sea-opt --sea-run sea-run --sea-vc sea-vc --seed 1 -n 40 --runs 3 | FileCheck %s
 CHECK: programs: 40 sat: {{[0-9]+}} unsat: {{[0-9]+}} failures: 0
+Wider pointers (SeaHorn's layout at 32 bits, the compact one at 16) with
+power-of-two slots (sea-place-static slots=aligned).
+RUN: %python %sea_src_root/utils/fuzz-place.py --sea-opt sea-opt --sea-run sea-run --sea-vc sea-vc --seed 2 -n 30 --runs 3 --width 32 --slots aligned | FileCheck %s --check-prefix=SLOTS
+RUN: %python %sea_src_root/utils/fuzz-place.py --sea-opt sea-opt --sea-run sea-run --sea-vc sea-vc --seed 3 -n 20 --runs 3 --width 16 --slots aligned | FileCheck %s --check-prefix=SLOTS16
+SLOTS: programs: 30 sat: {{[0-9]+}} unsat: {{[0-9]+}} failures: 0
+SLOTS16: programs: 20 sat: {{[0-9]+}} unsat: {{[0-9]+}} failures: 0
 
 # SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

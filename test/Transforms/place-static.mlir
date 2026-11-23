@@ -1,7 +1,9 @@
-// RUN: sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-place-static))' -split-input-file 2>/dev/null | FileCheck %s
-// RUN: sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-place-static))' -split-input-file 2>&1 >/dev/null | FileCheck %s --check-prefix=DIAG
-// RUN: sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-place-static{symbolic-size=assert}))' -split-input-file 2>/dev/null | FileCheck %s --check-prefix=ASSERT
-// RUN: not sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-place-static{symbolic-size=refuse}))' -split-input-file 2>&1 | FileCheck %s --check-prefix=REFUSE
+// slots=none: this file tests the packed placement, SeaHorn's (slots: place-
+// static-slots.mlir).
+// RUN: sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-place-static{slots=none}))' -split-input-file 2>/dev/null | FileCheck %s
+// RUN: sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-place-static{slots=none}))' -split-input-file 2>&1 >/dev/null | FileCheck %s --check-prefix=DIAG
+// RUN: sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-place-static{slots=none symbolic-size=assert}))' -split-input-file 2>/dev/null | FileCheck %s --check-prefix=ASSERT
+// RUN: not sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-place-static{slots=none symbolic-size=refuse}))' -split-input-file 2>&1 | FileCheck %s --check-prefix=REFUSE
 
 // SeaHorn's layout: functions, globals, heap upwards from 0x08048000; stack
 // downwards from 0xC0000000. Pointers become addresses everywhere.

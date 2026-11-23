@@ -383,6 +383,44 @@ public:
 
   const SeaMOptions &options() const { return m_opts; }
   RewriteStats &stats() { return m_stats; }
+
+  /// A nested rewrite counts into a scratch set (the counts it keeps are
+  /// merged by the caller, the rest dropped): the current counters move
+  /// into \p scratch for its time, and scratchLeave moves them back.
+  void scratchEnter(RewriteStats &scratch) const {
+    std::swap(scratch, m_stats);
+    m_outer.push_back(&scratch);
+  }
+  void scratchLeave(RewriteStats &scratch) const {
+    m_outer.pop_back();
+    std::swap(scratch, m_stats);
+  }
+  /// The counters with those moved aside by the nested rewrites in
+  /// progress: what a progress or budget report from inside one shows
+  /// (a copy, no trail; at most the counts a nested rewrite will drop more).
+  RewriteStats totals() const {
+    RewriteStats t;
+    t.rules = m_stats.rules;
+    t.ruleCalls = m_stats.ruleCalls;
+    t.rulesFired = m_stats.rulesFired;
+    t.cacheHits = m_stats.cacheHits;
+    t.cacheInserts = m_stats.cacheInserts;
+    t.chainHops = m_stats.chainHops;
+    t.chainStarts = m_stats.chainStarts;
+    t.chainStartCaches = m_stats.chainStartCaches;
+    for (const RewriteStats *o : m_outer) {
+      t.ruleCalls += o->ruleCalls;
+      t.rulesFired += o->rulesFired;
+      t.cacheHits += o->cacheHits;
+      t.cacheInserts += o->cacheInserts;
+      t.chainHops += o->chainHops;
+      t.chainStarts += o->chainStarts;
+      t.chainStartCaches += o->chainStartCaches;
+      for (auto &kv : o->rules)
+        t.rules[kv.getKey()] += kv.getValue();
+    }
+    return t;
+  }
   const AddrRangeAnalysis &arm() const { return m_arm; }
   /// The normalization rules of BvRules.hh (used when options().simplify).
   bvnorm::Rules &bv() { return m_bv; }
@@ -649,9 +687,9 @@ public:
     // the flat forms run normalization rules: their counts go to a scratch
     // set, not into the firing being made (its rule list is the trail's)
     RewriteStats scratch;
-    std::swap(scratch, m_stats);
+    scratchEnter(scratch);
     const bool same = cmpErase(a) == cmpErase(b);
-    std::swap(scratch, m_stats);
+    scratchLeave(scratch);
     if (same) {
       ++m_stats.rules["cmp.refl-erase"]; // bookkeeping: not in the trail
       return true;
@@ -1250,8 +1288,132 @@ public:
     return v;
   }
 
-  /// view without the memo.
+  /// view without the memo: the sum form (viewSum); for a node chain that
+  /// form does not read, the chain's pointer operand (viewNode).
   std::optional<PtrView> viewOnce(const Expr &e0) const {
+    std::optional<PtrView> v = viewSum(e0);
+    if (!v && op::ptr::isPtrIndex(e0))
+      v = viewNode(e0);
+    return v;
+  }
+
+  /// The ite tree \p it (ites that are not registered bases), every leaf a
+  /// pointer into one object: that object in \p base and the ite of the
+  /// leaves' offsets (same conditions, the DAG kept: each ite node and leaf
+  /// mapped once). Null when a leaf has no view or another base, or when
+  /// there are more than \p cap distinct leaves (\p overCap set). Exact: on
+  /// every path the ite selects one leaf L = base + off_L, and the result
+  /// selects off_L.
+  Expr iteLeafOffsets(const Expr &it, Expr &base, unsigned cap,
+                      bool &overCap) const {
+    // iterative over the DAG (a VC has deep ite chains): an ite node is
+    // expanded, then mapped once both branches are
+    std::unordered_map<ENode *, Expr> memo;
+    unsigned leaves = 0;
+    llvm::SmallVector<std::pair<Expr, bool>, 32> stack;
+    stack.push_back({it, false});
+    while (!stack.empty()) {
+      auto [e, expanded] = stack.back();
+      stack.pop_back();
+      if (memo.count(e.get()))
+        continue;
+      if (isOpX<ITE>(e) && !m_bases.lookup(e)) {
+        if (!expanded) {
+          stack.push_back({e, true});
+          for (unsigned i : {2u, 1u})
+            if (!memo.count(e->arg(i)))
+              stack.push_back({e->arg(i), false});
+          continue;
+        }
+        const Expr &t = memo.find(e->arg(1))->second;
+        const Expr &f = memo.find(e->arg(2))->second;
+        memo.emplace(e.get(), t == f ? t : mk<ITE>(e->arg(0), t, f));
+        continue;
+      }
+      if (++leaves > cap) {
+        overCap = true;
+        return Expr();
+      }
+      std::optional<PtrView> v = view(e);
+      if (!v || (base && v->base != base))
+        return Expr();
+      base = v->base;
+      memo.emplace(e.get(), offSum(v->off));
+    }
+    return memo.find(it.get())->second;
+  }
+
+  /// The view of a node chain PTR_INDEX*(p, x_k, ...) from its pointer
+  /// operand p (docs/design/SeaM.md, "Soundness stance"): pointer
+  /// arithmetic keeps p's provenance whatever its indices mention (bases
+  /// included). p is a registered base b, or an ite whose leaves are all
+  /// pointers into one object b (at most maxDecideLeaves distinct leaves;
+  /// counter view.node-ite-cap over it); the view is b with offset
+  /// off(p) + sum x_k * s_k + c + K (off(p) the ite of the leaves' offsets
+  /// for an ite). Exact: a node is its operand plus its index sum
+  /// (PtrIndex.md). Only for a chain viewSum does not read (an index that
+  /// mentions a base, an ite operand); a chain over another operand (a
+  /// loaded pointer, from_int) has none here. Counters (once per node while
+  /// view's memo is on): view.node, view.node-ite.
+  std::optional<PtrView> viewNode(const Expr &e) const {
+    llvm::SmallVector<Expr, 4> chain;
+    Expr p = e;
+    while (op::ptr::isPtrIndex(p)) {
+      chain.push_back(p);
+      p = op::ptr::base(p);
+    }
+    Expr base, off;
+    if (m_bases.isBase(p)) {
+      base = p;
+    } else if (isOpX<ITE>(p) && !m_bases.lookup(p)) {
+      bool overCap = false;
+      off = iteLeafOffsets(p, base, m_opts.maxDecideLeaves, overCap);
+      if (!off) {
+        if (overCap)
+          m_stats.rules["view.node-ite-cap"]++;
+        return std::nullopt;
+      }
+    } else {
+      return std::nullopt;
+    }
+    // the offset as the add rule normalizes a sum (as viewSum's node case)
+    unsigned w = widthOf(base);
+    llvm::SmallVector<Expr, 8> terms;
+    mpz_class c = 0;
+    auto take = [&](const Expr &t) {
+      llvm::SmallVector<Expr, 4> parts;
+      if (isOpX<BADD>(t))
+        parts.append(t->args_begin(), t->args_end());
+      else
+        parts.push_back(t);
+      for (const Expr &x : parts) {
+        unsigned tw;
+        if (op::bv::isBvNum(x, tw))
+          smallarith::addTo(c, numVal(x));
+        else
+          terms.push_back(x);
+      }
+    };
+    if (off)
+      take(off);
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+      for (size_t k = 0; k < op::ptr::numIndices(*it); ++k)
+        take(indexSummand(op::ptr::index(*it, k), op::ptr::stride(*it, k), w));
+      smallarith::addTo(c, op::ptr::constant(*it));
+      smallarith::addTo(c, op::ptr::byteOffset(*it));
+    }
+    if (m_opts.simplify)
+      m_bv.sortSum(terms);
+    c = modPow2(c, w);
+    if (c != 0)
+      terms.push_back(num(c, w));
+    m_stats.rules[off ? "view.node-ite" : "view.node"]++;
+    return PtrView{base, sumOf(terms, w)};
+  }
+
+  /// The sum form of view: a base, or a bvadd of one base and base-free
+  /// terms (through nodes' flat forms and observation markers).
+  std::optional<PtrView> viewSum(const Expr &e0) const {
     // a node is read through its flat form, a bvadd a rule built over one
     // (splitRead's j + k) too. Shallow: the offset keeps the nodes of the
     // loads in it (rules build terms from it: sub.same-base, the compare
@@ -3909,10 +4071,10 @@ public:
         // resolved leaves are counted by buildEq; roll nothing back if none
         // resolves: the built term is dropped
         RewriteStats scratch;
-        std::swap(scratch, m_stats);
+        scratchEnter(scratch);
         Expr res = buildEq(a, b, depth, resolved, /*diffBase=*/false, reduced,
                            premises, /*shadow=*/false, ptrLeaf);
-        std::swap(scratch, m_stats);
+        scratchLeave(scratch);
         if (resolved) {
           m_stats.merge(scratch);
           m_stats.count("cmp.ite-push");
@@ -4015,11 +4177,11 @@ public:
         unsigned depth = 0, resolved = 0, premises = PremNone;
         bool reduced = false;
         RewriteStats scratch;
-        std::swap(scratch, m_stats);
+        scratchEnter(scratch);
         Expr built = buildEq(as, bs, depth, resolved, /*diffBase=*/true,
                              reduced, premises, /*shadow=*/false,
                              /*ptrLeaf=*/true);
-        std::swap(scratch, m_stats);
+        scratchLeave(scratch);
         if (resolved) {
           m_stats.merge(scratch);
           m_stats.count("ptr.overlap.ite-push");
@@ -5271,11 +5433,11 @@ public:
       if (eqPairs(i, idx, pairs, m_opts.maxDecideLeaves)) {
         unsigned resolved = 0;
         RewriteStats scratch;
-        std::swap(scratch, m_stats);
+        scratchEnter(scratch);
         unsigned used = PremNone;
         Expr built = buildEq(i, idx, depth, resolved, /*diffBase=*/!shadow,
                              reduced, used, shadow, /*ptrLeaf=*/true);
-        std::swap(scratch, m_stats);
+        scratchLeave(scratch);
         if (resolved) {
           m_stats.merge(scratch);
           cmp = built;
@@ -5809,11 +5971,11 @@ public:
       unsigned resolved = 0, premises = PremNone;
       llvm::SmallVector<Expr, 4> openIn;
       RewriteStats scratch;
-      std::swap(scratch, m_stats);
+      scratchEnter(scratch);
       Expr built =
           buildIn(idx, d, memOpLen(t), haveN, nlo, nhi,
                   /*inb=*/!shadowMemory(t), resolved, premises, openIn);
-      std::swap(scratch, m_stats);
+      scratchLeave(scratch);
       if (resolved) {
         m_stats.merge(scratch);
         m_stats.count("mem.in-push");
@@ -6011,9 +6173,9 @@ public:
           unsigned dp2, pr2;
           bool red2;
           RewriteStats scratch;
-          std::swap(scratch, m_stats);
+          scratchEnter(scratch);
           Expr c2 = rowCompare(cur->arg(1), idx, dp2, red2, pr2, shadow);
-          std::swap(scratch, m_stats);
+          scratchLeave(scratch);
           if (pr2 != PremNone)
             break; // its counts are dropped with it
           m_stats.merge(scratch);
@@ -6052,6 +6214,9 @@ private:
   ExprFactory &m_efac;
   const BaseRegistry &m_bases;
   RewriteStats &m_stats;
+  /// the counters moved aside by the nested rewrites in progress
+  /// (scratchEnter), outermost first
+  mutable std::vector<RewriteStats *> m_outer;
   /// the ordered maps of the store-maps (a side table: Expr is immutable)
   StoreMapTable m_smaps;
   SeaMOptions m_opts;
@@ -6503,6 +6668,8 @@ public:
 
   const RewriteStats &stats() const { return m_stats; }
   RewriteStats &stats() { return m_stats; }
+  /// stats() with the counts a nested rewrite in progress holds aside
+  RewriteStats totalStats() const { return m_config.rules().totals(); }
   RewriteCache &cache() { return m_cache; }
 };
 

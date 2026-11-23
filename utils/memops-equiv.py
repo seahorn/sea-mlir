@@ -54,6 +54,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import seavc_flags  # noqa: E402
+
 DEFAULT_Z3 = shutil.which("z3") or "z3"
 
 AGENT = """memops-equiv.py (agent guide, terse)
@@ -62,6 +65,8 @@ as formulas over the shared nondet constants (nd.*): for every assignment to
 them, A has a satisfying assignment of its private constants iff B has.
 Uses z3 (explicit binary; the PATH z3 may be too old). Exact guarantee: see
 the docstring (python3 utils/memops-equiv.py -h).
+FOLD: both dumps pass --vc-fold-top-eqs=false (a folded query is only
+equisatisfiable with the VC) to a binary that has the flag.
 USE:
   utils/memops-equiv.py prog.mlir                       # plain vs --seam, --lower
   utils/memops-equiv.py prog.mlir --a '--widen-memory=4' --b '--seam --widen-memory=4'
@@ -147,7 +152,11 @@ def rename(formula, mapping):
 
 
 def dump(sea_vc, mlir, program, flags):
-    cmd = [sea_vc, mlir, "--program=" + program, "--smt2"] + flags
+    cmd = (
+        [sea_vc, mlir, "--program=" + program, "--smt2"]
+        + seavc_flags.no_fold(sea_vc)
+        + flags
+    )
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(

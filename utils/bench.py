@@ -59,7 +59,7 @@ COMMANDS:
   bench.py compare <dirA> [<dirB>] [-a CONFIG] [-b CONFIG]   (dir: path, name under results/, or `latest`)
 OUTPUT of run: stats.csv (job config rep wall cpu status verdict + every BRUNCH_STAT key),
   logs/<config>/<job>.<rep>.{out,err}, manifest.yaml (sea-vc sha256, git rev/dirty, configs, host, date), rows.jsonl.
-  verdict: sat unsat unknown timeout memout error inb-violation (rc 4) replay-mismatch (rc 2)
+  verdict: sat unsat unknown timeout memout budget (rc 8) error inb-violation (rc 4) replay-mismatch (rc 2)
   premise-failed (rc 4 with a `premise.failed:` line: the replay failed a premise assert,
   --symbolic-size=assert, not the property; inconclusive),
   promise-broken (rc 4 with a `vc.ack-stride-promise-broken:` line: the replay breaks a front-end GEP promise
@@ -68,6 +68,8 @@ OUTPUT of run: stats.csv (job config rep wall cpu status verdict + every BRUNCH_
   original-memory-error (rc 4 with replay.original match=no: the input program makes a memory-safety violation),
   check-invalid (rc 5: --seam-check / --narrow-check found an invalid rewrite), check-unproven (rc 7:
   --narrow-check left a narrowed read index unproven).
+  budget: --max-nodes / --max-rss exceeded (`result: unknown`, `budget: hit`); gated like unknown / memout:
+  a failure of a sat / unsat job (unsolved), allowed on unknown-ok.
   Classified by what sea-vc printed: the verdict is the last `result:` line of stdout (text or --format=jsonl;
   a split's parts and BRUNCH_STAT result do not count; column `result`): rc 0/3 give it (rc 3 with
   `result: unknown` after a mem-limit hit is unknown, also after an earlier sat; no `result:` line: error).
@@ -131,7 +133,7 @@ SUITES (benchmark repos outside sea-mlir, docs/Benchmarks.md): suite roots = $SE
   bench.py establish <SEL>... [--par N] [--sea-vc PATH] [--jobs REGEX] [--resume RESULTSDIR [--no-run]]
        [--record-counters KEY,... [--counters-only]]
     runs the default configuration and writes expected / tier / time into the manifests (curation; review the
-    diff in the benchmark repo; sat/unsat -> expected, timeout/unknown/memout -> unknown-ok + hard).
+    diff in the benchmark repo; sat/unsat -> expected, timeout/unknown/memout/budget -> unknown-ok + hard).
     --record-counters: for each solved job and KEY without a deliberate bound, writes the observed value as
     {max: value, seeded: <date> <sea-vc sha>} (replacing an older seeded bound); a deliberate bound (no
     `seeded`) is never changed: a run that breaks it prints COUNTER-OVER. --counters-only: only that.
@@ -460,6 +462,10 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
         verdict = "timeout"
     elif rc in (0, 3):
         verdict = printed or "error"
+    elif rc == 8 and printed == "unknown":
+        # --max-nodes / --max-rss: a budget stop (`budget: hit`), not a solver
+        # answer; like unknown / memout for the gate
+        verdict = "budget"
     elif rc == 4 and replay_original == "no":
         # --replay-original: the input program makes a memory-safety
         # violation and fails no assertion of the lowered sat

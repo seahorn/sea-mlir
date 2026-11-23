@@ -16,6 +16,10 @@ loaded values) and checks, for each:
      they exist only after placement);
   3. sea-vc --lower: sat replays (exit 0), unsat survives the abstract runs.
 
+--width sets the pointer width (default 8: the compact layout; 32 or more:
+SeaHorn's layout); --slots=aligned places with sea-place-static
+slots=aligned (sea-vc --place-slots=aligned), the same three checks.
+
 ORACLE (see test/README.md): changing what it accepts needs sign-off.
 """
 
@@ -27,9 +31,18 @@ import subprocess
 import sys
 import tempfile
 
-PW = 8  # pointer width: compact layout, small numbers
+PW = 8  # pointer width (--width): 8 is the compact layout, small numbers
 PTR = f"!sea.ptr<{PW}>"
 MEM = f"!sea.mem<{PTR}, i8>"
+
+
+def set_width(w):
+    global PW, PTR, MEM
+    PW = w
+    PTR = f"!sea.ptr<{PW}>"
+    MEM = f"!sea.mem<{PTR}, i8>"
+
+
 PREDS = ["eq", "ne", "ult", "ule", "slt", "sge"]
 
 
@@ -233,6 +246,10 @@ def field(out, key):
     return None
 
 
+def vc_slots(args):
+    return [] if args.slots == "none" else [f"--place-slots={args.slots}"]
+
+
 def check(args, path, placed):
     """Returns a problem description, or None."""
     for seed in range(args.runs):
@@ -259,7 +276,7 @@ def check(args, path, placed):
                 if x != y:
                     return f"seed {seed}: abstract {x} vs placed {y}"
             return f"seed {seed}: traces differ in length ({len(ta)} vs {len(tc)})"
-    v = run([args.sea_vc, path, "--lower"])
+    v = run([args.sea_vc, path, "--lower"] + vc_slots(args))
     if v.returncode not in (0,):
         return f"sea-vc --lower exit {v.returncode}\n{v.stdout}{v.stderr}"
     if field(v.stdout, "result") == "unsat":
@@ -279,7 +296,15 @@ def main():
     ap.add_argument("-n", type=int, default=50)
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--keep", help="directory to keep failing programs")
+    ap.add_argument("--width", type=int, default=8, help="pointer width (default 8)")
+    ap.add_argument(
+        "--slots",
+        choices=["none", "aligned"],
+        default="none",
+        help="sea-place-static slots (sea-vc --place-slots)",
+    )
     args = ap.parse_args()
+    set_width(args.width)
     for attr in ("sea_opt", "sea_run", "sea_vc"):
         v = getattr(args, attr)
         if os.sep in v:
@@ -299,7 +324,8 @@ def main():
                 [
                     args.sea_opt,
                     path,
-                    "--pass-pipeline=builtin.module(sea.program(sea-place-static))",
+                    "--pass-pipeline=builtin.module(sea.program("
+                    f"sea-place-static{{slots={args.slots}}}))",
                     "--mlir-print-debuginfo",
                     "-o",
                     placed,
@@ -315,7 +341,9 @@ def main():
                     with open(os.path.join(args.keep, f"fail{i}.mlir"), "w") as f:
                         f.write(text)
                 continue
-            res = field(run([args.sea_vc, path, "--lower"]).stdout, "result")
+            res = field(
+                run([args.sea_vc, path, "--lower"] + vc_slots(args)).stdout, "result"
+            )
             if res in stats:
                 stats[res] += 1
     for i, problem, text in failures[:5]:

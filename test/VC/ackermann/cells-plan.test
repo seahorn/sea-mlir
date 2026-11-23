@@ -1,0 +1,418 @@
+// The cells plan (--ack-cells-plan, docs/design/Ackermann.md, "Cell
+// representatives: the plan"): per group of objects (from ARM over the
+// reads' access addresses), the constraints a cell mode would remove (keep)
+// against what it would add, counted and bit-weighted. Counts only: the
+// query is unchanged.
+// RUN: split-file %s %t
+//
+// table: six reads of a slot field, a + 8 * i_k + 4, in a 16-byte object.
+// ARM gives a with no interval (full object); the offset's residue leaves
+// two cells (4, 12). keep = 15 pairs, cost = 12 arms + 2 cells = 14:
+// converted by both measures.
+// RUN: sea-vc %t/table.mlir --ack-cells-plan --lower --seam 2>&1 | FileCheck %s --check-prefix=TABLE
+// TABLE: vc.cells-plan: on
+// TABLE: vc.cells-plan-reads-full-object: 6
+// TABLE: vc.cells-plan-reads-a-inb: 6
+// TABLE: vc.cells-plan-groups: 1
+// TABLE: vc.cells-plan-cells: 2
+// TABLE: vc.cells-plan-arms: 12
+// TABLE: vc.cells-plan-keep: 15
+// TABLE: vc.cells-plan-converted: 1
+// TABLE: vc.cells-plan-removed: 15
+// TABLE: vc.cells-plan-added: 14
+// TABLE: vc.cells-plan-bits-converted: 1
+// The query is byte-identical with and without the plan.
+// RUN: sea-vc %t/table.mlir --lower --seam --smt2 > %t/off.smt2 2>/dev/null
+// RUN: sea-vc %t/table.mlir --ack-cells-plan --lower --seam --smt2 > %t/on.smt2 2>/dev/null
+// RUN: cmp %t/off.smt2 %t/on.smt2
+// The same with narrowed offsets and without the stride rule (the second
+// lowering takes the real one's configuration).
+// RUN: sea-vc %t/table.mlir --lower --seam --narrow-offsets --ack-stride=false --smt2 > %t/off2.smt2 2>/dev/null
+// RUN: sea-vc %t/table.mlir --ack-cells-plan --lower --seam --narrow-offsets --ack-stride=false --smt2 > %t/on2.smt2 2>/dev/null
+// RUN: cmp %t/off2.smt2 %t/on2.smt2
+//
+// symsize: stride 8 in an object of symbolic size (placed with the symbolic
+// room, 4096 units): 512 cells for 3 pairs, not converted.
+// RUN: sea-vc %t/symsize.mlir --ack-cells-plan --lower --seam 2>&1 | FileCheck %s --check-prefix=SYM
+// SYM: vc.cells-plan-cells: 512
+// SYM: vc.cells-plan-keep: 3
+// SYM: vc.cells-plan-converted: 0
+// SYM: vc.cells-plan-bits-converted: 0
+//
+// mixed: the table and one read at a + j (any of the 16 cells): 28 arms +
+// 16 cells cost more than the 21 pairs by count, less by bits (a pair
+// compares two 64-bit indices).
+// RUN: sea-vc %t/mixed.mlir --ack-cells-plan --lower --seam --log=vc.cells-plan:2 2>&1 | FileCheck %s --check-prefix=MIXED
+// MIXED: log: vc.cells-plan group {{.*}}reads=7 {{.*}}cells=16 {{.*}}arms=28 keep=21 {{.*}}cost=44 {{.*}}mode-count=address mode-bits=cells
+// MIXED: vc.cells-plan-converted: 0
+// MIXED: vc.cells-plan-bits-converted: 1
+// MIXED: vc.cells-plan-bits-removed: 21
+//
+// two: the table in a, a second object b read at b + j and as a pointer
+// (eight bytes at numeral offsets: ARM intervals), and a read through the
+// loaded pointer (unknown). The table pays one constraint per cell and
+// unknown read and stays converted; b does not. ARM separates the pairs of
+// a against b by their bases.
+// RUN: sea-vc %t/two.mlir --ack-cells-plan --lower --seam 2>&1 | FileCheck %s --check-prefix=TWO
+// TWO: vc.cells-plan-reads-arm-interval: 8
+// TWO: vc.cells-plan-reads-full-object: 7
+// TWO: vc.cells-plan-reads-unknown: 1
+// TWO: vc.cells-plan-groups: 2
+// TWO: vc.cells-plan-arm-pairs-cross-base: 12
+// TWO: vc.cells-plan-converted: 1
+// TWO: vc.cells-plan-removed: 21
+// TWO: vc.cells-plan-added: 16
+// TWO: vc.cells-plan-other-object-pairs: 12
+//
+// word: an aligned i32 memory (4-byte cells), a 16-byte object aligned to
+// 8, two loads at a + i and a + j: 4 cells. The same memory unaligned:
+// every byte is a cell, 16.
+// RUN: sea-vc %t/word.mlir --ack-cells-plan --lower --seam 2>&1 | FileCheck %s --check-prefix=WORD
+// WORD: vc.cells-plan-cells: 4
+// RUN: sea-vc %t/unaligned.mlir --ack-cells-plan --lower --seam 2>&1 | FileCheck %s --check-prefix=UNALIGNED
+// UNALIGNED: vc.cells-plan-cells: 16
+// misaligned: the aligned memory, an object aligned to 1 (placed at an odd
+// address): its cells are not at offsets 0 mod 4, so every unit counts; the
+// loads at a + 1 and a + 5 have one candidate each (the query only: its
+// replay leaves the word layout).
+// RUN: sea-vc %t/misaligned.mlir --ack-cells-plan --lower --seam --log=vc.cells-plan:2 --smt2 2>&1 >/dev/null | FileCheck %s --check-prefix=MIS
+// MIS: log: vc.cells-plan group {{.*}}obj=heap.1 {{.*}}cells=2 {{.*}}arms=2
+//
+// multi: a load through select(c, a, b) + i and one at a + j: one read on
+// two bases, one group.
+// RUN: sea-vc %t/multi.mlir --ack-cells-plan --lower --seam 2>&1 | FileCheck %s --check-prefix=MULTI
+// MULTI: vc.cells-plan-reads-multi-base: 1
+// MULTI: vc.cells-plan-groups: 1
+//
+// gap: a load at ptr.index(from_int(16), [to_bits(select(c, b1, b3))]): ARM
+// names b1 and b3, but no A-INB condition does (arm-absolute-base.test); the
+// read is unknown.
+// RUN: sea-vc %t/gap.mlir --ack-cells-plan --lower --seam 2>&1 | FileCheck %s --check-prefix=GAP
+// GAP: vc.cells-plan-reads-unknown: 1
+// GAP: vc.cells-plan-reads-inb-gap: 1
+// GAP: vc.cells-plan-groups: 1
+//
+// big: a read at b2 + i, b2 of size 2^63 (too big for the plan), and one
+// at b1 + j: the first is unknown, not planned on another base. ARM still
+// separates the pair by its bases.
+// RUN: sea-vc %t/big.mlir --ack-cells-plan --lower --seam 2>&1 | FileCheck %s --check-prefix=BIG
+// BIG: vc.cells-plan-reads-unknown: 1
+// BIG: vc.cells-plan-reads-unusable: 1
+// BIG: vc.cells-plan-arm-pairs-cross-base: 1
+// BIG: vc.cells-plan-arm-pairs-interval: 0
+//
+// two, narrowed: b's reads are narrowed. The bytes of the pointer at
+// b + 0..7 have one candidate each and cost no decoding; b + j is decoded
+// once (its offset before narrowing is the key).
+// RUN: sea-vc %t/two.mlir --ack-cells-plan --lower --seam --narrow-offsets --ack-stride=false --log=vc.cells-plan:2 2>&1 | FileCheck %s --check-prefix=TWONARROW
+// TWONARROW: log: vc.cells-plan group {{.*}}obj=heap.2 {{.*}}indices=1
+//
+// Off: without the premises, without the eager lowering; refused without
+// --seam. Without the switch: no line.
+// RUN: sea-vc %t/table.mlir --ack-cells-plan --lower --seam --seam-premises=0 2>&1 | FileCheck %s --check-prefix=NOPREM
+// NOPREM: vc.cells-plan: off-no-premises
+// NOPREM-NOT: vc.cells-plan-
+// RUN: sea-vc %t/table.mlir --ack-cells-plan --lower --seam --ackermannize=off 2>&1 | FileCheck %s --check-prefix=NOACK
+// NOACK: vc.cells-plan: off-no-ackermann
+// NOACK-NOT: vc.cells-plan-
+// RUN: not sea-vc %t/table.mlir --ack-cells-plan --lower 2>&1 | FileCheck %s --check-prefix=NOSEAM
+// NOSEAM: --ack-cells-plan needs --seam
+// RUN: sea-vc %t/table.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=OFF
+// OFF-NOT: vc.cells-plan
+
+//--- table.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @table {
+  %m = sea.mem.nondet "m" [0] : !m
+  %n = sea.const 16 : i64
+  %c8 = sea.const 8 : i64
+  %c4 = sea.const 4 : i64
+  %a = sea.malloc %n align 8 [1] : i64 -> !sea.ptr<64>
+  %i0 = sea.nondet "i0" [10] : i64
+  %s0 = sea.mul %i0, %c8 : i64
+  %o0 = sea.add %s0, %c4 : i64
+  %p0 = sea.ptr.add %a, %o0 : !sea.ptr<64>, i64
+  %x0 = sea.load %m[%p0] : !m -> i8
+  %i1 = sea.nondet "i1" [11] : i64
+  %s1 = sea.mul %i1, %c8 : i64
+  %o1 = sea.add %s1, %c4 : i64
+  %p1 = sea.ptr.add %a, %o1 : !sea.ptr<64>, i64
+  %x1 = sea.load %m[%p1] : !m -> i8
+  %i2 = sea.nondet "i2" [12] : i64
+  %s2 = sea.mul %i2, %c8 : i64
+  %o2 = sea.add %s2, %c4 : i64
+  %p2 = sea.ptr.add %a, %o2 : !sea.ptr<64>, i64
+  %x2 = sea.load %m[%p2] : !m -> i8
+  %i3 = sea.nondet "i3" [13] : i64
+  %s3 = sea.mul %i3, %c8 : i64
+  %o3 = sea.add %s3, %c4 : i64
+  %p3 = sea.ptr.add %a, %o3 : !sea.ptr<64>, i64
+  %x3 = sea.load %m[%p3] : !m -> i8
+  %i4 = sea.nondet "i4" [14] : i64
+  %s4 = sea.mul %i4, %c8 : i64
+  %o4 = sea.add %s4, %c4 : i64
+  %p4 = sea.ptr.add %a, %o4 : !sea.ptr<64>, i64
+  %x4 = sea.load %m[%p4] : !m -> i8
+  %i5 = sea.nondet "i5" [15] : i64
+  %s5 = sea.mul %i5, %c8 : i64
+  %o5 = sea.add %s5, %c4 : i64
+  %p5 = sea.ptr.add %a, %o5 : !sea.ptr<64>, i64
+  %x5 = sea.load %m[%p5] : !m -> i8
+  %y1 = sea.add %x0, %x1 : i8
+  %y2 = sea.add %y1, %x2 : i8
+  %y3 = sea.add %y2, %x3 : i8
+  %y4 = sea.add %y3, %x4 : i8
+  %y5 = sea.add %y4, %x5 : i8
+  %z = sea.const 0 : i8
+  %ok = sea.icmp ne, %y5, %z : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- symsize.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @symsize {
+  %m = sea.mem.nondet "m" [0] : !m
+  %n = sea.nondet "n" [1] : i64
+  %a = sea.malloc %n align 8 [2] : i64 -> !sea.ptr<64>
+  %c8 = sea.const 8 : i64
+  %i = sea.nondet "i" [3] : i64
+  %j = sea.nondet "j" [4] : i64
+  %k = sea.nondet "k" [5] : i64
+  %si = sea.mul %i, %c8 : i64
+  %sj = sea.mul %j, %c8 : i64
+  %sk = sea.mul %k, %c8 : i64
+  %pi = sea.ptr.add %a, %si : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %a, %sj : !sea.ptr<64>, i64
+  %pk = sea.ptr.add %a, %sk : !sea.ptr<64>, i64
+  %x = sea.load %m[%pi] : !m -> i8
+  %y = sea.load %m[%pj] : !m -> i8
+  %z = sea.load %m[%pk] : !m -> i8
+  %s1 = sea.add %x, %y : i8
+  %s2 = sea.add %s1, %z : i8
+  %c0 = sea.const 0 : i8
+  %ok = sea.icmp ne, %s2, %c0 : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- mixed.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @mixed {
+  %m = sea.mem.nondet "m" [0] : !m
+  %n = sea.const 16 : i64
+  %c8 = sea.const 8 : i64
+  %c4 = sea.const 4 : i64
+  %a = sea.malloc %n align 8 [1] : i64 -> !sea.ptr<64>
+  %i0 = sea.nondet "i0" [10] : i64
+  %s0 = sea.mul %i0, %c8 : i64
+  %o0 = sea.add %s0, %c4 : i64
+  %p0 = sea.ptr.add %a, %o0 : !sea.ptr<64>, i64
+  %x0 = sea.load %m[%p0] : !m -> i8
+  %i1 = sea.nondet "i1" [11] : i64
+  %s1 = sea.mul %i1, %c8 : i64
+  %o1 = sea.add %s1, %c4 : i64
+  %p1 = sea.ptr.add %a, %o1 : !sea.ptr<64>, i64
+  %x1 = sea.load %m[%p1] : !m -> i8
+  %i2 = sea.nondet "i2" [12] : i64
+  %s2 = sea.mul %i2, %c8 : i64
+  %o2 = sea.add %s2, %c4 : i64
+  %p2 = sea.ptr.add %a, %o2 : !sea.ptr<64>, i64
+  %x2 = sea.load %m[%p2] : !m -> i8
+  %i3 = sea.nondet "i3" [13] : i64
+  %s3 = sea.mul %i3, %c8 : i64
+  %o3 = sea.add %s3, %c4 : i64
+  %p3 = sea.ptr.add %a, %o3 : !sea.ptr<64>, i64
+  %x3 = sea.load %m[%p3] : !m -> i8
+  %i4 = sea.nondet "i4" [14] : i64
+  %s4 = sea.mul %i4, %c8 : i64
+  %o4 = sea.add %s4, %c4 : i64
+  %p4 = sea.ptr.add %a, %o4 : !sea.ptr<64>, i64
+  %x4 = sea.load %m[%p4] : !m -> i8
+  %i5 = sea.nondet "i5" [15] : i64
+  %s5 = sea.mul %i5, %c8 : i64
+  %o5 = sea.add %s5, %c4 : i64
+  %p5 = sea.ptr.add %a, %o5 : !sea.ptr<64>, i64
+  %x5 = sea.load %m[%p5] : !m -> i8
+  %y1 = sea.add %x0, %x1 : i8
+  %y2 = sea.add %y1, %x2 : i8
+  %y3 = sea.add %y2, %x3 : i8
+  %y4 = sea.add %y3, %x4 : i8
+  %y5 = sea.add %y4, %x5 : i8
+  %j = sea.nondet "j" [30] : i64
+  %pj = sea.ptr.add %a, %j : !sea.ptr<64>, i64
+  %xj = sea.load %m[%pj] : !m -> i8
+  %r = sea.add %y5, %xj : i8
+  %z = sea.const 0 : i8
+  %ok = sea.icmp ne, %r, %z : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- two.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @two {
+  %m = sea.mem.nondet "m" [0] : !m
+  %n = sea.const 16 : i64
+  %c8 = sea.const 8 : i64
+  %c4 = sea.const 4 : i64
+  %a = sea.malloc %n align 8 [1] : i64 -> !sea.ptr<64>
+  %i0 = sea.nondet "i0" [10] : i64
+  %s0 = sea.mul %i0, %c8 : i64
+  %o0 = sea.add %s0, %c4 : i64
+  %p0 = sea.ptr.add %a, %o0 : !sea.ptr<64>, i64
+  %x0 = sea.load %m[%p0] : !m -> i8
+  %i1 = sea.nondet "i1" [11] : i64
+  %s1 = sea.mul %i1, %c8 : i64
+  %o1 = sea.add %s1, %c4 : i64
+  %p1 = sea.ptr.add %a, %o1 : !sea.ptr<64>, i64
+  %x1 = sea.load %m[%p1] : !m -> i8
+  %i2 = sea.nondet "i2" [12] : i64
+  %s2 = sea.mul %i2, %c8 : i64
+  %o2 = sea.add %s2, %c4 : i64
+  %p2 = sea.ptr.add %a, %o2 : !sea.ptr<64>, i64
+  %x2 = sea.load %m[%p2] : !m -> i8
+  %i3 = sea.nondet "i3" [13] : i64
+  %s3 = sea.mul %i3, %c8 : i64
+  %o3 = sea.add %s3, %c4 : i64
+  %p3 = sea.ptr.add %a, %o3 : !sea.ptr<64>, i64
+  %x3 = sea.load %m[%p3] : !m -> i8
+  %i4 = sea.nondet "i4" [14] : i64
+  %s4 = sea.mul %i4, %c8 : i64
+  %o4 = sea.add %s4, %c4 : i64
+  %p4 = sea.ptr.add %a, %o4 : !sea.ptr<64>, i64
+  %x4 = sea.load %m[%p4] : !m -> i8
+  %i5 = sea.nondet "i5" [15] : i64
+  %s5 = sea.mul %i5, %c8 : i64
+  %o5 = sea.add %s5, %c4 : i64
+  %p5 = sea.ptr.add %a, %o5 : !sea.ptr<64>, i64
+  %x5 = sea.load %m[%p5] : !m -> i8
+  %y1 = sea.add %x0, %x1 : i8
+  %y2 = sea.add %y1, %x2 : i8
+  %y3 = sea.add %y2, %x3 : i8
+  %y4 = sea.add %y3, %x4 : i8
+  %y5 = sea.add %y4, %x5 : i8
+  %b = sea.malloc %n align 8 [2] : i64 -> !sea.ptr<64>
+  %j = sea.nondet "j" [30] : i64
+  %pj = sea.ptr.add %b, %j : !sea.ptr<64>, i64
+  %xj = sea.load %m[%pj] : !m -> i8
+  %q = sea.load %m[%b] : !m -> !sea.ptr<64>
+  %xq = sea.load %m[%q] : !m -> i8
+  %r0 = sea.add %y5, %xj : i8
+  %r = sea.add %r0, %xq : i8
+  %z = sea.const 0 : i8
+  %ok = sea.icmp ne, %r, %z : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- word.mlir
+!m = !sea.mem<!sea.ptr<64>, i32, aligned>
+sea.program @word {
+  %m = sea.mem.nondet "m" [0] : !m
+  %n = sea.const 16 : i64
+  %a = sea.malloc %n align 8 [1] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [2] : i64
+  %j = sea.nondet "j" [3] : i64
+  %pi = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %a, %j : !sea.ptr<64>, i64
+  %x = sea.load %m[%pi] align 4 : !m -> i32
+  %y = sea.load %m[%pj] align 4 : !m -> i32
+  %ok = sea.icmp ne, %x, %y : i32
+  sea.assert %ok
+  sea.halt
+}
+//--- unaligned.mlir
+!m = !sea.mem<!sea.ptr<64>, i32, unaligned>
+sea.program @word {
+  %m = sea.mem.nondet "m" [0] : !m
+  %n = sea.const 16 : i64
+  %a = sea.malloc %n align 8 [1] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [2] : i64
+  %j = sea.nondet "j" [3] : i64
+  %pi = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %a, %j : !sea.ptr<64>, i64
+  %x = sea.load %m[%pi] align 4 : !m -> i32
+  %y = sea.load %m[%pj] align 4 : !m -> i32
+  %ok = sea.icmp ne, %x, %y : i32
+  sea.assert %ok
+  sea.halt
+}
+//--- misaligned.mlir
+!m = !sea.mem<!sea.ptr<64>, i32, aligned>
+sea.program @word {
+  %m = sea.mem.nondet "m" [0] : !m
+  %n3 = sea.const 3 : i64
+  %n = sea.const 16 : i64
+  %b = sea.malloc %n3 align 1 [4] : i64 -> !sea.ptr<64>
+  %a = sea.malloc %n align 1 [1] : i64 -> !sea.ptr<64>
+  %c1 = sea.const 1 : i64
+  %c5 = sea.const 5 : i64
+  %pi = sea.ptr.add %a, %c1 : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %a, %c5 : !sea.ptr<64>, i64
+  %pb = sea.ptr.add %b, %c1 : !sea.ptr<64>, i64
+  %x = sea.load %m[%pi] align 4 : !m -> i32
+  %y = sea.load %m[%pj] align 4 : !m -> i32
+  %z = sea.load %m[%pb] align 4 : !m -> i32
+  %s = sea.add %x, %y : i32
+  %ok = sea.icmp ne, %s, %z : i32
+  sea.assert %ok
+  sea.halt
+}
+//--- multi.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @multi {
+  %m = sea.mem.nondet "m" [0] : !m
+  %n = sea.const 8 : i64
+  %a = sea.malloc %n align 8 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %n align 8 [2] : i64 -> !sea.ptr<64>
+  %c = sea.nondet "c" [3] : i1
+  %i = sea.nondet "i" [4] : i64
+  %j = sea.nondet "j" [5] : i64
+  %p = sea.select %c, %a, %b : !sea.ptr<64>
+  %pi = sea.ptr.add %p, %i : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %a, %j : !sea.ptr<64>, i64
+  %x = sea.load %m[%pi] : !m -> i8
+  %y = sea.load %m[%pj] : !m -> i8
+  %ok = sea.icmp ne, %x, %y : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- gap.mlir
+!am = !sea.mem<!sea.addr<64>, i8>
+sea.program @gap {
+  %b1 = sea.segment "heap.1" base 4096 : i64 size 16 : i64 align 1 kind "heap" : !sea.addr<64>
+  %b2 = sea.segment "heap.2" base 4112 : i64 size 16 : i64 align 1 kind "heap" : !sea.addr<64>
+  %b3 = sea.segment "heap.3" base 8192 : i64 size 16 : i64 align 1 kind "heap" : !sea.addr<64>
+  %m = sea.mem.nondet "m" [0] : !am
+  %c16 = sea.const 16 : i64
+  %zp = sea.addr.from_int %c16 : i64 to !sea.addr<64>
+  %c = sea.nondet "c" [1] : i1
+  %pb = sea.select %c, %b1, %b3 : !sea.addr<64>
+  %x = sea.addr.to_bits %pb : !sea.addr<64> to i64
+  %q = sea.ptr.index %zp [%x] strides [1] offset 0 : !sea.addr<64>, i64
+  %r = sea.load %m[%q] : !am -> i8
+  %j = sea.nondet "j" [2] : i64
+  %pj = sea.ptr.index %b2 [%j] strides [1] offset 0 : !sea.addr<64>, i64
+  %s = sea.load %m[%pj] : !am -> i8
+  %ok = sea.icmp eq, %r, %s : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- big.mlir
+!am = !sea.mem<!sea.addr<64>, i8>
+sea.program @big {
+  %b1 = sea.segment "heap.1" base -4096 : i64 size 16 : i64 align 1 kind "heap" : !sea.addr<64>
+  %b2 = sea.segment "heap.2" base 64 : i64 size -9223372036854775808 : i64 align 1 kind "heap" : !sea.addr<64>
+  %m = sea.mem.nondet "m" [0] : !am
+  %c = sea.nondet "c" [1] : i1
+  %i = sea.nondet "i" [2] : i64
+  %j = sea.nondet "j" [3] : i64
+  %p = sea.select %c, %b1, %b2 : !sea.addr<64>
+  %pi = sea.ptr.index %b2 [%i] strides [1] offset 0 : !sea.addr<64>, i64
+  %pj = sea.ptr.index %b1 [%j] strides [1] offset 0 : !sea.addr<64>, i64
+  %r = sea.load %m[%pi] : !am -> i8
+  %s = sea.load %m[%pj] : !am -> i8
+  %ok = sea.icmp eq, %r, %s : i8
+  sea.assert %ok
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

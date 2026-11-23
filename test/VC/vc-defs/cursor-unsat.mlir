@@ -3,11 +3,13 @@
 // every definition form and with every backend.
 // --ack-decider=false: the difference decider drops these pairs (their
 // offsets are bounded); the test needs them constrained.
-// RUN: sea-vc %s --lower --seam --ack-decider=false --vc-defs=hidden 2>&1 | FileCheck %s
-// RUN: sea-vc %s --lower --seam --ack-decider=false --vc-defs=eq 2>&1 | FileCheck %s
-// RUN: sea-vc %s --lower --seam --ack-decider=false --vc-defs=nest 2>&1 | FileCheck %s
-// RUN: %if yices %{ sea-vc %s --lower --seam --ack-decider=false --vc-defs=hidden --solver=yices 2>&1 | FileCheck %s %}
-// RUN: %if bitwuzla %{ sea-vc %s --lower --seam --ack-decider=false --vc-defs=hidden --ackermannize=on --solver=bitwuzla 2>&1 | FileCheck %s %}
+// --vc-fold-top-eqs=false: the fold (on by default) eliminates the object
+// base, the sums become numerals plus offsets, and no name is made.
+// RUN: sea-vc %s --lower --seam --ack-decider=false --vc-fold-top-eqs=false --vc-defs=hidden 2>&1 | FileCheck %s
+// RUN: sea-vc %s --lower --seam --ack-decider=false --vc-fold-top-eqs=false --vc-defs=eq 2>&1 | FileCheck %s
+// RUN: sea-vc %s --lower --seam --ack-decider=false --vc-fold-top-eqs=false --vc-defs=nest 2>&1 | FileCheck %s
+// RUN: %if yices %{ sea-vc %s --lower --seam --ack-decider=false --vc-fold-top-eqs=false --vc-defs=hidden --solver=yices 2>&1 | FileCheck %s %}
+// RUN: %if bitwuzla %{ sea-vc %s --lower --seam --ack-decider=false --vc-fold-top-eqs=false --vc-defs=hidden --ackermannize=on --solver=bitwuzla 2>&1 | FileCheck %s %}
 // CHECK-DAG: vc.defs-names: {{[1-9][0-9]*}}
 // CHECK-DAG: result: unsat
 !m = !sea.mem<!sea.ptr<64>, i8>

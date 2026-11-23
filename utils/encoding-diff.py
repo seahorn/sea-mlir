@@ -65,6 +65,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import seavc_flags  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 LABEL_SUFFIX = r"\.a\d+"
 
@@ -83,6 +86,8 @@ USAGE:
       [--rlimit 200000000] [--timeout 300] [--strict] [--verbose]
       LEFT.mlir RIGHT.mlir [LEFT2.mlir RIGHT2.mlir ...]
   (an even number of files: consecutive pairs; flags apply to every pair)
+FOLD: both sides pass --vc-fold-top-eqs=false (a folded query is
+  only equisatisfiable with the VC) to a binary that has the flag.
 RENAMING: both sides run sea-vc --smt2 with Ackermann off; nd.<site>_<k>
   becomes nd.<nondet name>_<k> and obj.<segment> becomes obj.<alloca label>
   (a label ending in a position number, <name>.a<n>, is renamed <name>#<k>,
@@ -354,6 +359,7 @@ def query(a, path, flags, alias, drops=()):
             "--smt2",
             "--ackermannize=off",
             f"--print-lowered={low}",
+            *seavc_flags.no_fold(a.sea_vc),
             *flags,
         ]
         try:

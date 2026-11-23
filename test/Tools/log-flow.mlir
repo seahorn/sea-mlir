@@ -58,6 +58,7 @@
 // ALL: log: lower.pass
 // ALL: log: vc.phase start phase=solve{{$}}
 // ALL-NEXT: log: vc.solve backend=z3 result=sat
+// ALL-NEXT: log: vc.mem phase-end phase=solve
 // ALL-NEXT: log: vc.phase end phase=solve
 // RUN: sea-vc %s --lower > %t.off
 // RUN: sea-vc %s --lower '--log=*:1' 2>/dev/null > %t.on

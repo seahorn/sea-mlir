@@ -1,3 +1,4 @@
+// --place-slots=none: a + 16 = b only when objects are packed.
 // An assumption after the violating access. The store through p = a+n may
 // land in b (n <= 16, assumed first: a + 16 = b); the program reads b, assumes
 // the read is 0 (false exactly when the store hit b) and asserts p != b.
@@ -10,12 +11,12 @@
 // --seam sat with `seam.premises: assumed` and a failed replay, which sea-vc
 // explains: the abstract program, run with the model's inputs, leaves an
 // object (exit 4, vc.seam-inb-spurious), not a VC bug (exit 2).
-// RUN: bash -c 'sea-vc %s --lower --solver=z3 --seam > /dev/null 2>&1; test $? -eq 4'
-// RUN: sea-vc %s --lower --solver=z3 | FileCheck %s --check-prefix=PLAIN
-// RUN: %if yices %{ sea-vc %s --lower --solver=yices | FileCheck %s --check-prefix=PLAIN %}
-// RUN: sea-vc %s --lower --solver=z3 --seam --seam-premises=0 | FileCheck %s --check-prefix=NOINB
-// RUN: not sea-vc %s --lower --solver=z3 --seam 2>&1 | FileCheck %s --check-prefix=SEAM
-// RUN: %if yices %{ not sea-vc %s --lower --solver=yices --seam 2>&1 | FileCheck %s --check-prefix=SEAM %}
+// RUN: bash -c 'sea-vc %s --lower --place-slots=none --solver=z3 --seam > /dev/null 2>&1; test $? -eq 4'
+// RUN: sea-vc %s --lower --place-slots=none --solver=z3 | FileCheck %s --check-prefix=PLAIN
+// RUN: %if yices %{ sea-vc %s --lower --place-slots=none --solver=yices | FileCheck %s --check-prefix=PLAIN %}
+// RUN: sea-vc %s --lower --place-slots=none --solver=z3 --seam --seam-premises=0 | FileCheck %s --check-prefix=NOINB
+// RUN: not sea-vc %s --lower --place-slots=none --solver=z3 --seam 2>&1 | FileCheck %s --check-prefix=SEAM
+// RUN: %if yices %{ not sea-vc %s --lower --place-slots=none --solver=yices --seam 2>&1 | FileCheck %s --check-prefix=SEAM %}
 // PLAIN: result: unsat
 // NOINB: seam.premises: off
 // NOINB: result: unsat

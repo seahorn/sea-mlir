@@ -4,7 +4,7 @@
 // --ack-decider=false: the difference decider drops these pairs (their
 // offsets are bounded); the test needs them constrained.
 // RUN: sea-vc %s --lower --seam --ack-decider=false --narrow-offsets 2>&1 | FileCheck %s
-// RUN: sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --smt2 2>/dev/null | FileCheck %s --check-prefix=SMT
+// RUN: sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --vc-fold-top-eqs=false --smt2 2>/dev/null | FileCheck %s --check-prefix=SMT
 // CHECK: vc.narrow-reads: 2
 // CHECK: vc.narrow-objects: 2
 // CHECK: vc.narrow-pairs: 0

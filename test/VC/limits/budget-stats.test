@@ -1,0 +1,10 @@
+// A budget stop inside a nested rewrite (buildEq's ite push counts on a
+// scratch set of counters) shows the totals: seam.rule-calls is not 0 and is
+// the rule-calls of the `budget: hit` line.
+// Limits 150..254 stop at many points of the encoding, some of them inside
+// such a rewrite.
+// RUN: sh %S/Inputs/stats-totals.sh %sea_vc %S/node-budget.mlir 150 2 254 | FileCheck %s
+// CHECK: totals
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

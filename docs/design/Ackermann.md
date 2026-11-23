@@ -191,11 +191,11 @@ On vcc hash_table_eq (seam-wide, yices): 95104 -> 43712 constraints, solve
 54 -> 26 s.
 
 One more, off by default: the ownership drop (`--ack-own`, below), on the
-pairs every rule above leaves. No other pair is dropped. Without
-`--ack-own`, pointers into different objects (`obj.a + i` vs `obj.b + j`)
-whose offsets nothing bounds keep their constraint.
-(Possible extension, not done: drop pairs SeaM decided different, with the
-premise stated and reported as for the rewriter.)
+pairs every rule above leaves; and ARM separation (`--ack-arm`, below),
+whose exact class runs right after the decider and whose premise classes
+run after the ownership drop. No other pair is dropped. Without `--ack-own`
+or `--ack-arm`, pointers into different objects (`obj.a + i` vs `obj.b +
+j`) whose offsets nothing bounds keep their constraint.
 
 ### The ownership drop (`--ack-own`)
 
@@ -335,6 +335,213 @@ Measured: hash_iter_begin (`--lower --widen-memory=8 --seam`) 281 reads,
 39340 pairs, 36884 offset pairs, 2456 constraints; array_list_swap 98
 reads (130 before sharing equal linear forms), 4753 constraints (its
 indices differ in their symbolic parts).
+
+### Cell representatives: the plan (`--ack-cells-plan`)
+
+Status: the plan only, a count; no lowering uses it yet, and the query is
+unchanged (byte-identical with and without the switch). Off by default.
+
+The idea, not implemented: a read whose address is on a fixed set of
+objects needs no pairwise constraints. Each cell of those objects becomes one
+read (index `o + off`), and the read becomes a case split over its candidate
+cells (one arm each). Cells never meet (one symbolic part, different
+numerals); against another object's reads A-SEP / A-OWN separate the pair;
+against a read in no known object (a loaded address) each cell keeps one
+constraint.
+
+The objects come from ARM (`AddrRangeMap.hh`), not from the shape of the
+index: the join of the ARM maps of the access addresses behind the read's
+selects (`AccessOrigins`, recorded at the boundary). A read is unknown when
+it has no record (more than 8 addresses, a shadow read), a top map, an
+absolute entry (a loaded or numeric address: no provenance), an address
+whose ARM provenance no A-INB condition names (an absolute node whose
+stride-1 index holds the base: `Rules::armInbGap`, where the rewriter
+refuses its decisions too; `reads-inb-gap`), or an entry of an object the
+plan cannot use (size >= 2^63; `reads-unusable`); otherwise it is on the
+bases of its map (objects of size 0 dropped), each with an interval
+(arm-interval when every interval is bounded, full-object when one is
+top). Bases read together by one read form a group, converted as a whole.
+
+Candidates of a read on base b of size N: the offsets in [0, N) ∩ I_b;
+for a read on one base whose index splits as `b + rest` (the offset before
+narrowing for a read narrowed in b), also ∩ the unsigned interval of rest
+(`BvRanges`) and its residue (c mod 2^t, t the trailing zeros common to
+the coefficients of its linear form); only the array's cells (an array
+whose memory type has the aligned word layout, k-unit cells, found from the
+array constant's name: offsets 0 mod k, when b's alignment is a multiple
+of k; else every unit); and, for at most 64 candidates (a cost bound,
+untuned), minus those the difference decider finds never equal to rest
+(leaf by leaf through an ite offset). Under A-INB of the read's access the
+set holds every offset it can have; a read whose interval is not inside
+its object rests on A-INB (counted, `reads-a-inb`). A read with no
+candidate (every offset ruled out: it cannot execute in bounds) costs no
+arm here; the lowering will still need a value for it, since the case split
+will end in an unconditional arm: one cell of the object, or a fresh
+constant.
+
+The plan runs a second lowering, configured as the real one, recording its
+constrained pairs and the selects of each read, after the real lowering;
+its query is discarded. For each group G of a lowered array (R its reads,
+U the array's unknown reads, C the distinct candidate cells, arms the sum
+of the candidates over R):
+
+- keep: the constrained pairs with both reads in R or one in R and one in
+  U; the pairs with a read of another group are counted apart.
+- count cost: arms + C + C x |U|.
+- bit cost, against keep x (aw + vw) (a pair: the index compare and the
+  guarded equality; aw, vw the index and value widths): arms x vw (the
+  mux), the decoding n x iw per distinct symbolic part S of the reads'
+  offsets (the linear form of rest, so also under `--narrow-offsets`; iw =
+  ceil(log2 C); the selectors of `S + c1` and `S + c2`, two fields of one
+  slot, test S: shared, also across arrays; counted at its first read;
+  nothing for a read with at most one candidate; a read without rest, on
+  several bases, is keyed by its index's symbolic part), C x vw (the
+  cells), C x |U| x (aw + vw).
+- converted: keep > 0 and cost < keep, by each measure (ratio 1, untuned).
+
+There is no bound on the candidate sets: the cost decides.
+
+Reported with the switch: `vc.cells-plan: on | off-no-premises |
+off-no-ackermann | off-seam-words` (needs `--seam` with its premises and
+the eager lowering), then `vc.cells-plan-*`: reads, reads-arm-interval,
+reads-full-object, reads-unknown, reads-multi-base, reads-a-inb,
+reads-inb-gap, reads-unusable; groups, cells, cells-marked,
+groups-cells-bound, arms, decider-dropped (candidates the decider
+removed), unknown-constraints (C x |U|), keep (all groups); pairs (the
+constrained ones), arm-pairs-cross-base / arm-pairs-size0 /
+arm-pairs-interval (of them, the pairs ARM separates, by the classes of
+`--ack-arm` below: different bases, one base once size-0 provenances are
+dropped, disjoint intervals of one base; with `--ack-arm` on, the plan's
+lowering drops them too, so these count only the pairs its rules
+leave); by count: converted, reads-converted, removed, added, other-object-pairs (pairs of a converted group with
+another group); by bits: bits-converted, bits-reads-converted,
+bits-removed, bits-keep, bits-cost, bits-other-object-pairs. Per group,
+`--log=vc.cells-plan:2`: objects, sizes, reads by source, cells, arms,
+keep, both costs (`keep-bits=`, `cost-bits=`) and both modes.
+
+Cost: the second lowering costs about as much as the first in time, and
+holds the image of every node of the query (`keepImages`, to reach the
+reads' selects) while the plan runs; it keeps the ownership drop's pair
+set only when `--ack-own` is on, as the real one does. C is counted on a
+bitmap per group and object of at most 2^24 units (above: the sum of the
+reads' candidates, a bound, `groups-cells-bound`); filling it takes one
+pass per distinct candidate progression (reads with the same interval,
+residue and step mark once) plus the filtered small sets, so the work is
+at most that many passes times N; `cells-marked` counts the bit writes,
+overlaps included.
+
+### ARM separation (`--ack-arm`)
+
+Status: implemented, off by default. It turns the plan's `arm-pairs-*`
+classes into drops: a pair of reads whose ARM maps share no value gets no
+constraint.
+
+The maps. A read's map is the join of the ARM maps (`AddrRangeMap.hh`) of
+the addresses its selects had before the boundary, over every index term
+merged into the read (`AccessOrigins`, the record the stride rule and the
+ownership drop use; the code that joins them is shared with the plan). The
+recorded address of a select is its own index as a pointer term, not the
+address of the access behind it: a byte `q + k` of a wide load and a
+memmove's source read `s + (p - d)` are recorded as such (the latter's map
+is top when a base stays under the subtraction after simplification: ARM
+reads bases only under `bvadd`, ite and pointer nodes). A read has no map
+when one of its index terms has no record (a shadow read, more than 8
+addresses). The map's claim, for an entry (b, [l, h]): the index equals
+`obj.b + o` modulo 2^w for some integer o in [l, h], whatever the values
+of the index's other leaves; a select under the index is a leaf with no
+bound, so the claim also holds of the lowered index, whose inner reads are
+fresh constants. A narrowed read (`--narrow-offsets`) compares `base +
+zext(low_k(rest))`, not its index; its map is `{base: [0, 2^k - 1]}` (that
+term's own bound, k < w), or the index's interval on base when it lies
+inside (then the two terms are equal).
+
+Three classes (`armApart`, `Ackermann.hh`):
+
+- **interval**: one base on each side, the same, intervals that do not
+  meet (or two absolute intervals that do not meet). Exact. ARM's interval
+  addition gives top when it leaves the signed w-bit range, so an entry's
+  offsets are integers in [-2^(w-1), 2^(w-1)), two of them that differ
+  differ by less than 2^w, and the indices differ modulo 2^w. No premise:
+  not A-INB (nothing says the offset is inside the object), not A-NOWRAP,
+  not the layout (the base cancels). It is the same argument as the
+  rewriter's same-base ARM decision (`arm.skip` with no premise, SeaM.md).
+  The two indices are never equal in any assignment, so the constraint is
+  valid: dropping it keeps the query equivalent. It runs right after the
+  difference decider, before the stride rule, so a pair it decides does not
+  rest on the stride rule's promises. Counted `vc.ackermann-arm-interval-
+  pairs`. It runs with SeaM's premises off too (`vc.ack-arm: exact-only`).
+- **size0**: disjoint once the entries of objects of size 0 are dropped,
+  with no step across bases (an ite of a pointer into a and a size-0
+  object, against a pointer into a). Rests on A-INB: no access of positive
+  width is inside an object of size 0, so the read's index is not on that
+  leaf when its access executes. Counted `vc.ackermann-arm-size0-pairs`.
+- **cross-base**: disjoint only across different bases (every base of
+  both maps of nonzero size). Rests on A-INB of each read's access (its
+  index is a cell of one of its map's objects) and A-OWN (no access
+  through one object touches another object's cells; reads included, which
+  A-SEP does not cover; "The ownership drop"). Counted
+  `vc.ackermann-arm-cross-base-pairs`.
+
+The premise classes need SeaM's premises on and a read whose every
+provenance an A-INB condition names: a read with an address of
+`Rules::armInbGap` (a node over an absolute base whose stride-1 index
+holds a base) takes only the exact class. They run after the ownership
+drop, on what it leaves.
+
+Why not a second ownership drop. The premise classes are the ownership
+drop with ARM identifying the objects, and share all of its accounting:
+their pairs go into the same dropped set (`ownDropped`), so a sat model
+that puts two of them at one index with different cells counts
+`own-broken=`, is excused when the replayed run fails the assertion and
+validates (`own-excused=`, warning `vc.ack-own-collision-excused`), and is
+`vc.ackermann-inconsistent` (status 2) otherwise, exactly as an `--ack-own`
+pair. No `assume.*` line: an unsat needs no premise (dropping a constraint
+only adds models). `--ack-own` itself is kept unchanged rather than
+switched to ARM: its view-based test (every ite leaf of every address in
+one registered object) is not contained in ARM's (a node whose
+non-unit-stride index mentions a base is top for ARM), and its counters
+are measured and documented; with both switches on the ownership drop
+goes first and ARM takes the rest, so `arm-cross-base-pairs` is then what
+ARM adds. ARM's identification adds reads on several objects (an ite of
+pointers into a and b against c), maps with more than 16 leaves (ARM
+joins any number), and the size-0 class. On nki
+`sweep-scatter-N2-D5-K3-pmax2-fmax1-good` the two identify the same
+pairs (2442).
+
+Counter changes with `--ack-arm`. The cells plan's `arm-pairs-interval`
+no longer includes pairs that are disjoint only after dropping size-0
+entries; those are now `arm-pairs-size0`. With both `--ack-own` and
+`--ack-arm` on, the pairs ARM drops are not counted in `own-same-object` /
+`own-not-eligible`.
+
+Unsat and sat, by class. Interval: the dropped constraints are valid, so
+both answers are those of the full lowering; a model that puts such a pair
+at one index is impossible, and would be a lowering bug
+(`vc.ackermann-inconsistent`, status 2, not `own-broken`). Size0 and
+cross-base: as the ownership drop.
+
+`vc.ack-arm: on | exact-only | off-no-seam | off-no-ackermann |
+off-seam-words`; with the switch, `vc.ackermann-arm-reads` (reads with a
+map) and the three pair counters. Not on the words path (`--seam-words`
+records no access origins).
+
+Measured (`--lower --seam`, one run each, Debug build): nki
+`sweep-scatter-N2-D5-K3-pmax2-fmax1-good` 0 interval, 0 size0, 2442
+cross-base pairs, 406 constraints left (2848 without), unsat as without;
+with `--ack-own` too, the ownership drop takes all 2442 and ARM none. Its
+sat siblings replay and validate with `own-broken=0`, except
+`-mut-store-d0`: 2 dropped pairs collide in the model (memmove source reads
+whose guard is false), excused (`own-excused=2`), status 0. firedancer
+(`--widen-memory=4`): `step-reach-sz` 2 cross-base pairs of 6487
+constraints, `step-vs-frag` none (query byte-identical); z3 sat and unsat,
+the expected verdicts. Their constraints compare reads of one object at
+symbolic offsets, where ARM's intervals are top.
+The interval class decides nothing the rules before it leave on the
+measured jobs: with the layout values, the decider's interval test on the
+cancelled difference covers what an ARM interval of one base says (both
+read a sum of numerals and ites of numerals). It is exact and cheap, and
+decides pairs only when the decider is off or out of budget (the lit test
+runs it with `--ack-decider=false`).
 
 ## Measurements (Release, timeout 300 s)
 
@@ -529,6 +736,12 @@ n-ary regrouping of the index into `base + S` (its ite case is proved).
   `shared-boundary`, `no-object`, `shadow`, `size`, `many`, `shape`), reads narrowed, their
   objects, the largest k, k-bit constraints and the sum of their widths,
   mixed (w-bit) constraints with one narrowed read.
+- `vc.narrow-base-aligned` / `-unaligned`: narrowed indices whose object's
+  base is / is not a multiple of 2^k, read from the placement's numeral
+  (`BaseRegistry::alignedTo`). Aligned, `base + zext(low_k)` has no carry
+  and z3 reads it as a concatenation; `--place-slots=aligned` makes every
+  base aligned at the k of its object (unless it falls back,
+  `place.slots: fallback`).
 - `--seam-check` / `--narrow-check`: what is checked per run and what
   rests on a lemma are split.
   - Per run, for each narrowed index i = base + S (the lowering's record of
@@ -766,7 +979,8 @@ the solver's) rebuilds A as the finite function
 
 consistent by the constraints (two reads with equal index values have
 equal cell values; a pair that is not, `inconsistent`, is a lowering bug,
-or under `--ack-own` a model that breaks its premises (`own-broken`, above):
+or under `--ack-own` / `--ack-arm` a model that breaks its premises
+(`own-broken`, above):
 sea-vc reports error `vc.ackermann-inconsistent`, status 2, unless the
 replay confirms an `own-broken`-only model, above).
 
@@ -805,10 +1019,10 @@ an address, validation sees the address values differ.
   `--ackermannize=auto` lowers only queries with no store, so the plain
   (non-SeaM) VC and widened memories with store chains are left to the
   solver.
-- Pair reductions beyond linear forms and the difference decider's
-  structural ranges (no ARM, no ranges from assumes, no reasoning on ite
-  conditions beyond the identity of the condition node; A-INB only under
-  `--narrow-offsets` and `--ack-own`).
+- Pair reductions beyond linear forms, the difference decider's
+  structural ranges and ARM (`--ack-arm`): no ranges from assumes, no
+  reasoning on ite conditions beyond the identity of the condition node;
+  A-INB only under `--narrow-offsets`, `--ack-own` and `--ack-arm`.
 - The number of constraints is quadratic in the reads of one array with
   different symbolic parts (array_list_swap: 4753), and it is what makes
   the lowered query slower there for every solver. Fewer constraints need

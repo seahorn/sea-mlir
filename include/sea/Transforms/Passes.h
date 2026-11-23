@@ -37,11 +37,13 @@ inline constexpr uint64_t kPlaceMaxSymbolicSize = 4096;
 /// The options of sea-place-static that sea-vc sets: `in`, `out` (above)
 /// and `symbolicSize`, `maxSymbolicSize`, the pass options symbolic-size
 /// (assume, assert, refuse) and max-symbolic-size (sea-vc --symbolic-size,
-/// --max-symbolic-size).
+/// --max-symbolic-size), and `slots`, the pass option slots (none, aligned;
+/// sea-vc --place-slots).
 struct PlaceFiles {
   std::string in, out;
   std::string symbolicSize = "assume";
   uint64_t maxSymbolicSize = kPlaceMaxSymbolicSize;
+  std::string slots = "aligned";
 };
 std::unique_ptr<mlir::Pass> createPlaceStaticPass(const PlaceFiles &files);
 
@@ -167,6 +169,18 @@ inline constexpr llvm::StringLiteral kMemSetBoundAttr = "sea.memset_bound";
 /// sea-vc reports it as `assume.symbolic-size-bound: allocs=<n> room=<R>`.
 inline constexpr llvm::StringLiteral kSymbolicSizeBoundAttr =
     "sea.symbolic_size_bound";
+/// On the sea.program after sea-place-static: numbers of the placement, read
+/// from the bases (not the rule that made them, so a place-in of a written
+/// placement makes the same program), a dictionary {objects, slot-bits-max,
+/// span-up, span-stack, over-aligned} of i64. objects: the placed
+/// objects but null; slot-bits-max: the largest slot exponent s =
+/// bitwidth(max(room, 1)) of them; span-up / span-stack: the bytes from the
+/// lowest base to the highest end (base + max(room, 1)) of the objects
+/// other than stack ones / of the stack objects (0: none); over-aligned:
+/// the objects whose
+/// base is a multiple of a power of two larger than their align (read from
+/// the numerals, in every layout). sea-vc reports it as place.* lines.
+inline constexpr llvm::StringLiteral kPlaceStatsAttr = "sea.place_stats";
 /// A premise assert: a sea.assert of a premise the answer would otherwise
 /// rest on, asserted instead of assumed (sea-place-static
 /// symbolic-size=assert: "symbolic-size-bound", the name of the assumption

@@ -77,6 +77,48 @@ public:
     return nullptr;
   }
 
+  /// Is the object's base a multiple of 2^k? Read from the placement's
+  /// numeral, never from a layout mode (sea-place-static slots=aligned
+  /// makes it hold for k up to the slot exponent; a place-in file or the
+  /// plain layout may make it hold or not).
+  static bool alignedTo(const ObjectBase &o, unsigned k) {
+    if (k >= o.base.getBitWidth())
+      return o.base.isZero();
+    return k == 0 || o.base.trunc(k).isZero();
+  }
+
+  /// The slot exponent of an object: the least s with 2^s > max(size, 1)
+  /// (the one-past-the-end address is in the slot).
+  static unsigned slotBits(const ObjectBase &o) {
+    return o.size.isZero() ? 1 : o.size.getActiveBits();
+  }
+
+  /// Does the object own its slot [base, base + 2^s), s = slotBits(o): the
+  /// base is a multiple of 2^s, the slot is inside the address width, and
+  /// no other registered object (one of size 0 at its base too) has an
+  /// address in it? Then the bits of an address above s name the object.
+  bool ownsSlot(const ObjectBase &o) const {
+    unsigned s = slotBits(o), w = o.base.getBitWidth();
+    if (!alignedTo(o, s) || s > w)
+      return false;
+    llvm::APInt b = o.base.zext(kRangeWidth);
+    llvm::APInt e = b + llvm::APInt::getOneBitSet(kRangeWidth, s);
+    if (e.ugt(llvm::APInt::getOneBitSet(kRangeWidth, w)))
+      return false;
+    // every other object's addresses [base, base + max(size, 1)): linear,
+    // exact also for objects of size 0 inside another's range
+    for (const ObjectBase &p : m_objects) {
+      if (p.order == o.order)
+        continue;
+      llvm::APInt pb = p.base.zext(kRangeWidth);
+      llvm::APInt pe = pb + (p.size.isZero() ? llvm::APInt(kRangeWidth, 1)
+                                             : p.size.zext(kRangeWidth));
+      if (pb.ult(e) && b.ult(pe))
+        return false;
+    }
+    return true;
+  }
+
   /// \p twin names the object of base constant \p constant too: the
   /// erased bv(w) constant of a ptr(w) base (PtrSort S2e), so the readers of
   /// the solver's terms (eq-audit's shapes) know the object.

@@ -1,13 +1,15 @@
+// --place-slots=none: offset 48 lands in another object only when objects
+// are packed.
 // inb-ptrmem.mlir with n = 48 (a numeral): the access through the reloaded
 // pointer is a static out-of-object access (offset 48 in a 16-byte object,
 // landing in another object). --seam warns (vc.seam-out-of-object) and keeps
 // the premises; the access executes, so A-SEP fails and the unsat is
 // conditional on a broken premise. --seam-out-of-object=fallback (tested in
 // inb-static.mlir) would give the plain answer.
-// RUN: sea-vc %s --lower --solver=z3 | FileCheck %s --check-prefix=PLAIN
-// RUN: %if yices %{ sea-vc %s --lower --solver=yices | FileCheck %s --check-prefix=PLAIN %}
-// RUN: sea-vc %s --lower --solver=z3 --seam 2>&1 | FileCheck %s --check-prefix=SEAM
-// RUN: %if yices %{ sea-vc %s --lower --solver=yices --seam 2>&1 | FileCheck %s --check-prefix=SEAM %}
+// RUN: sea-vc %s --lower --place-slots=none --solver=z3 | FileCheck %s --check-prefix=PLAIN
+// RUN: %if yices %{ sea-vc %s --lower --place-slots=none --solver=yices | FileCheck %s --check-prefix=PLAIN %}
+// RUN: sea-vc %s --lower --place-slots=none --solver=z3 --seam 2>&1 | FileCheck %s --check-prefix=SEAM
+// RUN: %if yices %{ sea-vc %s --lower --place-slots=none --solver=yices --seam 2>&1 | FileCheck %s --check-prefix=SEAM %}
 // PLAIN: result: sat
 // PLAIN: replay: assert-failed
 // SEAM: Warning: {{.*}}[vc.seam-out-of-object]

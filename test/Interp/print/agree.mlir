@@ -1,5 +1,6 @@
+// slots=none: the checks name the bases of the packed placement.
 // RUN: sea-run %s --input=4=1 | FileCheck %s
-// RUN: sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-scalarize-structs,sea-place-static,sea-split-wide-access))' --mlir-print-debuginfo \
+// RUN: sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-scalarize-structs,sea-place-static{slots=none},sea-split-wide-access))' --mlir-print-debuginfo \
 // RUN:   | sea-run - --input=4=1 | FileCheck %s --check-prefixes=CHECK,PLACED
 
 // The same pointer tokens before and after placement (and after

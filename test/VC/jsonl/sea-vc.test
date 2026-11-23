@@ -1,3 +1,5 @@
+// --place-slots=none (print/replay.mlir): the checks name the bases of the
+// packed placement.
 // --format=jsonl (include/sea/Support/Output.h): every stdout line is one
 // JSON object with a kind and the text rendering; the texts, in order, are
 // the --format=text output, and records with a fixed rendering render from
@@ -5,8 +7,8 @@
 
 // A sat with a replay and prints (abstract program, lowered; SeaM; strong
 // prints keep every printed value alive through the lowering).
-// RUN: sea-vc %S/../print/replay.mlir --lower --seam --print-refs=strong > %t.sat.txt
-// RUN: sea-vc %S/../print/replay.mlir --lower --seam --print-refs=strong --format=jsonl > %t.sat.jsonl
+// RUN: sea-vc %S/../print/replay.mlir --lower --place-slots=none --seam --print-refs=strong > %t.sat.txt
+// RUN: sea-vc %S/../print/replay.mlir --lower --place-slots=none --seam --print-refs=strong --format=jsonl > %t.sat.jsonl
 // RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.sat.txt --jsonl %t.sat.jsonl \
 // RUN:   --require program:name --require object:id,symbol,order,objkind,base,size,align \
 // RUN:   --require result:value --require nondet:site,callee,width,value \
@@ -28,8 +30,8 @@
 // SAT: {"kind":"validate","checked":{{[0-9]+}},"mismatches":0,"dontcare":0,
 
 // Tree prints with locations.
-// RUN: sea-vc %S/../print/replay.mlir --lower --print=tree --print-locs > %t.tree.txt
-// RUN: sea-vc %S/../print/replay.mlir --lower --print=tree --print-locs --format=jsonl > %t.tree.jsonl
+// RUN: sea-vc %S/../print/replay.mlir --lower --place-slots=none --print=tree --print-locs > %t.tree.txt
+// RUN: sea-vc %S/../print/replay.mlir --lower --place-slots=none --print=tree --print-locs --format=jsonl > %t.tree.jsonl
 // RUN: %python %sea_src_root/utils/jsonl-check.py --text %t.tree.txt --jsonl %t.tree.jsonl \
 // RUN:   --require print.scope:path,tag,depth --require print:path,depth,at
 

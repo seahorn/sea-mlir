@@ -34,7 +34,7 @@
 // fold.assert-false.
 // RUN: sea-vc %t/marker.mlir --lower --replay-original 2>&1 | FileCheck %s --check-prefix=MARKER
 // MARKER-NOT: fold.assert-false
-// MARKER-NOT: vc.fold
+// MARKER-NOT: vc.fold:
 // MARKER: result: sat
 // MARKER: replay: assert-failed
 // MARKER: replay.original: status=assert-failed {{.*}}match=yes

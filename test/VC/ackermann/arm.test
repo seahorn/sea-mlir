@@ -1,0 +1,232 @@
+// ARM separation in the Ackermann lowering (--ack-arm,
+// docs/design/Ackermann.md, "ARM separation"): a pair of reads whose ARM
+// maps share no value gets no constraint. One base with disjoint intervals
+// is exact (no premise); different bases rest on A-INB + A-OWN and go
+// through the ownership drop's model check. Off by default.
+// RUN: split-file %s %t
+//
+// three: p = a + s0 + ... + s4 (s_k in {0, 2^k}: 32 leaves, more than the
+// leaf rule takes; ARM: a + [0, 31]) is read against a + 64 (disjoint
+// interval: exact), a + 20 (inside [0, 31]: kept) and b + 20 (another
+// base). The decider is off: with it the layout decides a + 64 first.
+// RUN: sea-vc %t/three.mlir --lower --seam --ack-decider=false --ack-arm 2>&1 | FileCheck %s --check-prefix=THREE
+// THREE: vc.ackermann-arm-interval-pairs: 1
+// THREE: vc.ackermann-arm-size0-pairs: 0
+// THREE: vc.ackermann-arm-cross-base-pairs: 1
+// THREE: vc.ackermann-constraints: 1
+// THREE: vc.ack-arm: on
+// THREE: result: sat
+// THREE: vc.ackermann-model: {{.*}} own-broken=0
+// THREE: replay: assert-failed
+// THREE: validate: checked={{[0-9]+}} mismatches=0
+// Without the switch the three pairs keep their constraints.
+// RUN: sea-vc %t/three.mlir --lower --seam --ack-decider=false 2>&1 | FileCheck %s --check-prefix=OFF
+// OFF-NOT: vc.ackermann-arm
+// OFF: vc.ackermann-constraints: 3
+// OFF-NOT: vc.ack-arm
+// Without SeaM's premises only the exact class drops.
+// RUN: sea-vc %t/three.mlir --lower --seam --seam-premises=0 --ack-decider=false --ack-arm 2>&1 | FileCheck %s --check-prefix=NOPREM
+// NOPREM: vc.ackermann-arm-interval-pairs: 1
+// NOPREM: vc.ackermann-arm-cross-base-pairs: 0
+// NOPREM: vc.ackermann-constraints: 2
+// NOPREM: vc.ack-arm: exact-only
+// NOPREM: result: sat
+// NOPREM: validate: checked={{[0-9]+}} mismatches=0
+// With the ownership drop on, it takes the cross-base pair first.
+// RUN: sea-vc %t/three.mlir --lower --seam --ack-decider=false --ack-arm --ack-own 2>&1 | FileCheck %s --check-prefix=OWN
+// OWN: vc.ackermann-own-pairs: 1
+// OWN: vc.ackermann-arm-interval-pairs: 1
+// OWN: vc.ackermann-arm-cross-base-pairs: 0
+// OWN: vc.ackermann-constraints: 1
+// With --narrow-offsets the same-object pairs are narrowed pairs; the narrowed read's map still separates it from b's read.
+// RUN: sea-vc %t/three.mlir --lower --seam --ack-decider=false --ack-arm --narrow-offsets 2>&1 | FileCheck %s --check-prefix=NARROW
+// NARROW: vc.ackermann-arm-interval-pairs: 0
+// NARROW: vc.ackermann-arm-cross-base-pairs: 1
+// NARROW: vc.ackermann-constraints: 2
+// NARROW: result: sat
+// NARROW: validate: checked={{[0-9]+}} mismatches=0
+//
+// guard: the load of a + i runs only for i < 16 and ARM drops its pair with
+// c + j (j < 16). The model puts both reads at one index (i >= 16, the load
+// does not run) with different cells; the replayed run fails the assertion
+// and validates, so the model is excused: sat, status 0, with the warning
+// (as for --ack-own, own.test).
+// RUN: sea-vc %t/guard.mlir --lower --seam --ack-arm --brunch-stats 2>&1 | FileCheck %s --check-prefix=GUARD
+// GUARD-DAG: [vc.ack-own-collision-excused]
+// GUARD-DAG: vc.ackermann-arm-cross-base-pairs: 1
+// GUARD-DAG: vc.ackermann-model: {{.*}} own-broken=[[N:[1-9][0-9]*]] own-excused=[[N]]
+// GUARD-DAG: replay: assert-failed
+// GUARD-DAG: validate: checked={{[0-9]+}} mismatches=0
+// GUARD-DAG: BRUNCH_STAT status 0
+// The status values when ARM does not run.
+// RUN: sea-vc %t/three.mlir --lower --seam --ack-arm --ackermannize=off 2>&1 | FileCheck %s --check-prefix=NOACK
+// NOACK: vc.ack-arm: off-no-ackermann
+// RUN: sea-vc %t/three.mlir --lower --seam --seam-wide --seam-words=all --ack-decider=false --ack-arm 2>&1 | FileCheck %s --check-prefix=WORDS
+// WORDS: vc.ack-arm: off-seam-words
+//
+// size0: p or a size-0 object z (an ite of pointers; SeaM's size-0 pruning
+// off) against a + 64: disjoint once z's entry is dropped (A-INB).
+// RUN: sea-vc %t/size0.mlir --lower --seam --seam-prune-size0=0 --ack-decider=false --ack-arm 2>&1 | FileCheck %s --check-prefix=SIZE0
+// SIZE0: vc.ackermann-arm-interval-pairs: 0
+// SIZE0: vc.ackermann-arm-size0-pairs: 1
+// SIZE0: vc.ackermann-constraints: 0
+// SIZE0: result: sat
+// SIZE0: validate: checked={{[0-9]+}} mismatches=0
+//
+// broken: a + i and b + j, unbounded, read one cell through two objects (a
+// memory-safety error): unsat with the constraint. ARM drops it across the
+// bases; the model puts both reads at one index with different cells and
+// the run ends in no answer, as for --ack-own (placed: status 2).
+// RUN: sea-vc %t/broken.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=BROKEN-OFF
+// BROKEN-OFF: result: unsat
+// RUN: sea-opt %t/broken.mlir --sea-place-static -o %t/placed.mlir
+// RUN: not sea-vc %t/placed.mlir --lower --seam --ack-arm --brunch-stats 2>&1 | FileCheck %s --check-prefix=BROKEN
+// BROKEN-DAG: vc.ackermann-arm-cross-base-pairs: 1
+// BROKEN-DAG: vc.ackermann-model: {{.*}} own-broken=1 own-excused=0
+// BROKEN-DAG: --ack-arm dropped {{.*}}[vc.ackermann-inconsistent]
+// BROKEN-DAG: BRUNCH_STAT status 2
+// RUN: not sea-vc %t/broken.mlir --lower --ack-arm 2>&1 | FileCheck %s --check-prefix=NOSEAM
+// NOSEAM: --ack-arm needs --seam
+
+//--- three.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @three {
+  %m = sea.mem.nondet "m" [0] : !m
+  %n = sea.const 128 : i64
+  %a = sea.malloc %n align 8 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %n align 8 [2] : i64 -> !sea.ptr<64>
+  %k0 = sea.const 0 : i64
+  %v0 = sea.const 1 : i64
+  %c0 = sea.nondet "c0" [3] : i1
+  %s0 = sea.select %c0, %k0, %v0 : i64
+  %p0 = sea.ptr.add %a, %s0 : !sea.ptr<64>, i64
+  %v1 = sea.const 2 : i64
+  %c1 = sea.nondet "c1" [4] : i1
+  %s1 = sea.select %c1, %k0, %v1 : i64
+  %p1 = sea.ptr.add %p0, %s1 : !sea.ptr<64>, i64
+  %v2 = sea.const 4 : i64
+  %c2 = sea.nondet "c2" [5] : i1
+  %s2 = sea.select %c2, %k0, %v2 : i64
+  %p2 = sea.ptr.add %p1, %s2 : !sea.ptr<64>, i64
+  %v3 = sea.const 8 : i64
+  %c3 = sea.nondet "c3" [6] : i1
+  %s3 = sea.select %c3, %k0, %v3 : i64
+  %p3 = sea.ptr.add %p2, %s3 : !sea.ptr<64>, i64
+  %v4 = sea.const 16 : i64
+  %c4 = sea.nondet "c4" [7] : i1
+  %s4 = sea.select %c4, %k0, %v4 : i64
+  %p4 = sea.ptr.add %p3, %s4 : !sea.ptr<64>, i64
+  %k64 = sea.const 64 : i64
+  %k20 = sea.const 20 : i64
+  %q1 = sea.ptr.add %a, %k64 : !sea.ptr<64>, i64
+  %q2 = sea.ptr.add %a, %k20 : !sea.ptr<64>, i64
+  %q3 = sea.ptr.add %b, %k20 : !sea.ptr<64>, i64
+  %x = sea.load %m[%p4] : !m -> i8
+  %y1 = sea.load %m[%q1] : !m -> i8
+  %y2 = sea.load %m[%q2] : !m -> i8
+  %y3 = sea.load %m[%q3] : !m -> i8
+  %e1 = sea.icmp eq, %x, %y1 : i8
+  %e2 = sea.icmp eq, %x, %y2 : i8
+  %e3 = sea.icmp eq, %x, %y3 : i8
+  %e12 = sea.and %e1, %e2 : i1
+  %e = sea.and %e12, %e3 : i1
+  sea.assert %e
+  sea.halt
+}
+//--- size0.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @size0 {
+  %m = sea.mem.nondet "m" [0] : !m
+  %n = sea.const 128 : i64
+  %a = sea.malloc %n align 8 [1] : i64 -> !sea.ptr<64>
+  %n0 = sea.const 0 : i64
+  %z = sea.malloc %n0 align 8 [2] : i64 -> !sea.ptr<64>
+  %k0 = sea.const 0 : i64
+  %v0 = sea.const 1 : i64
+  %c0 = sea.nondet "c0" [3] : i1
+  %s0 = sea.select %c0, %k0, %v0 : i64
+  %p0 = sea.ptr.add %a, %s0 : !sea.ptr<64>, i64
+  %v1 = sea.const 2 : i64
+  %c1 = sea.nondet "c1" [4] : i1
+  %s1 = sea.select %c1, %k0, %v1 : i64
+  %p1 = sea.ptr.add %p0, %s1 : !sea.ptr<64>, i64
+  %v2 = sea.const 4 : i64
+  %c2 = sea.nondet "c2" [5] : i1
+  %s2 = sea.select %c2, %k0, %v2 : i64
+  %p2 = sea.ptr.add %p1, %s2 : !sea.ptr<64>, i64
+  %v3 = sea.const 8 : i64
+  %c3 = sea.nondet "c3" [6] : i1
+  %s3 = sea.select %c3, %k0, %v3 : i64
+  %p3 = sea.ptr.add %p2, %s3 : !sea.ptr<64>, i64
+  %v4 = sea.const 16 : i64
+  %c4 = sea.nondet "c4" [7] : i1
+  %s4 = sea.select %c4, %k0, %v4 : i64
+  %p4 = sea.ptr.add %p3, %s4 : !sea.ptr<64>, i64
+  %cz = sea.nondet "cz" [8] : i1
+  %pz = sea.select %cz, %z, %p4 : !sea.ptr<64>
+  %k64 = sea.const 64 : i64
+  %q = sea.ptr.add %a, %k64 : !sea.ptr<64>, i64
+  %x = sea.load %m[%pz] : !m -> i8
+  %y = sea.load %m[%q] : !m -> i8
+  %e = sea.icmp eq, %x, %y : i8
+  sea.assert %e
+  sea.halt
+}
+//--- guard.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @guard {
+  %m = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %z8 = sea.const 0 : i8
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %c = sea.malloc %c16 align 8 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64
+  %j = sea.nondet "j" [4] : i64
+  %jlt = sea.icmp ult, %j, %c16 : i64
+  sea.assume %jlt
+  %pa = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %pc = sea.ptr.add %c, %j : !sea.ptr<64>, i64
+  %y = sea.load %m[%pc] : !m -> i8
+  %lt = sea.icmp ult, %i, %c16 : i64
+  sea.cond_br %lt, ^t, ^e
+^t:
+  %x = sea.load %m[%pa] : !m -> i8
+  %o1 = sea.const 1 : i8
+  %xo = sea.or %x, %o1 : i8
+  %okt = sea.icmp ne, %xo, %z8 : i8
+  sea.br ^j(%okt : i1)
+^e:
+  %same = sea.ptr.cmp eq, %pa, %pc : !sea.ptr<64>
+  %yz = sea.icmp eq, %y, %z8 : i8
+  %t1 = sea.const 1 : i1
+  %ns = sea.xor %same, %t1 : i1
+  %oke = sea.or %ns, %yz : i1
+  sea.br ^j(%oke : i1)
+^j(%ok : i1):
+  sea.assert %ok
+  sea.halt
+}
+//--- broken.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @broken {
+  %m = sea.mem.nondet "m" [0] : !m
+  %n = sea.const 64 : i64
+  %a = sea.malloc %n align 8 [1] : i64 -> !sea.ptr<64>
+  %b = sea.malloc %n align 8 [2] : i64 -> !sea.ptr<64>
+  %i = sea.nondet "i" [3] : i64
+  %j = sea.nondet "j" [4] : i64
+  %pi = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %b, %j : !sea.ptr<64>, i64
+  %x = sea.load %m[%pi] : !m -> i8
+  %y = sea.load %m[%pj] : !m -> i8
+  %same = sea.ptr.cmp eq, %pi, %pj : !sea.ptr<64>
+  %e = sea.icmp eq, %x, %y : i8
+  %t = sea.const 1 : i1
+  %ns = sea.xor %same, %t : i1
+  %ok = sea.or %ns, %e : i1
+  sea.assert %ok
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

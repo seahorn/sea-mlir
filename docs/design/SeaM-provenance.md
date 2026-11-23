@@ -229,7 +229,9 @@ A-INB with the whole-range premise) or In (same object, decided range), and
 an undecided leaf gets its own `ite(k <u n, hit(k), miss)` with
 `k = leaf - d` in which a common base cancels (`(B + o1) - (B + o2) =
 o1 - o2`, mod 2^w, premise-free). The translated source read of a hit is
-`s + k` with s's object and a base-free k: the provenance.
+`s + k`, a node over s: it has s's provenance whatever k mentions
+(SeaM.md "Soundness stance"; before node views, only a base-free k gave
+it one).
 
 - Guards: the ite conditions of idx stay in the term; each leaf read is
   relevant only under its guard. A leaf decided Out under A-INB is removed

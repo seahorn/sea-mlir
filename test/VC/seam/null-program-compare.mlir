@@ -16,7 +16,7 @@
 // RUN: sea-vc %s --lower --program=layout --seam --seam-stats 2>&1 | FileCheck %s --check-prefixes=UNSAT,NODEC
 // RUN: sea-vc %s --lower --program=layout --seam --seam-check --solver=z3 2>&1 | FileCheck %s --check-prefixes=UNSAT,CHK
 // RUN: %if yices %{ sea-vc %s --lower --program=layout --seam --seam-check --solver=yices 2>&1 | FileCheck %s --check-prefixes=UNSAT,CHK %}
-// RUN: sea-vc %s --lower --program=layout --seam --smt2 2>/dev/null | FileCheck %s --check-prefix=SMT
+// RUN: sea-vc %s --lower --program=layout --seam --vc-fold-top-eqs=false --smt2 2>/dev/null | FileCheck %s --check-prefix=SMT
 // RUN: sea-run %s --program=layout --input=2=1 | FileCheck %s --check-prefix=INTERP
 // SAT: result: sat
 // SAT: replay: assert-failed

@@ -1,0 +1,46 @@
+// --place-slots=none (the plain placement) writes the placement sea-vc
+// wrote before --place-slots existed, byte for byte: golden.place is the
+// --place-out of sea-vc at the commit before the option, on golden.mlir
+// (every kind of object, sizes 0, 3, 16, 100 and symbolic).
+// RUN: rm -rf %t && split-file %s %t
+// RUN: sea-vc %t/golden.mlir --lower --lower-opt=false --vcgen-only --place-slots=none --place-out=%t/out.place > /dev/null 2>&1
+// RUN: diff %t/golden.place %t/out.place
+
+//--- golden.place
+# sea-place-static placement of @golden: one object per line
+name=null kind=null base=0x0 size=0 align=4611686018427387904
+name=stack.1 kind=stack base=0xbffffff0 size=16 align=8
+name=stack.2 kind=stack base=0xbfffffed size=3 align=1
+name=heap.3 kind=heap base=0x8048010 size=100 align=16
+name=heap.4 kind=heap base=0x8048080 size=0 align=1
+name=heap.6 kind=heap base=0x8048088 size=4096 align=8
+name=nondet.7 kind=heap base=0x8049088 size=1 align=1
+name=global.g kind=global base=0x8048004 size=5 align=4
+name=func.main kind=func base=0x8048000 size=4 align=4
+//--- golden.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @golden {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %n0 = sea.const 0 : i64
+  %n3 = sea.const 3 : i64
+  %n16 = sea.const 16 : i64
+  %n100 = sea.const 100 : i64
+  %s1 = sea.alloca %n16 align 8 [1] : i64 -> !sea.ptr<64>
+  %s2 = sea.alloca %n3 align 1 [2] : i64 -> !sea.ptr<64>
+  %h3 = sea.malloc %n100 align 16 [3] : i64 -> !sea.ptr<64>
+  %h4 = sea.malloc %n0 align 1 [4] : i64 -> !sea.ptr<64>
+  %k = sea.nondet "k" [5] : i64
+  %h6 = sea.malloc %k align 8 [6] : i64 -> !sea.ptr<64>
+  %p = sea.ptr.nondet "p" [7] : !sea.ptr<64>
+  %g = sea.global @g size 5 align 4 : !sea.ptr<64>
+  %f = sea.func_addr @main : !sea.ptr<64>
+  %null = sea.ptr.null : !sea.ptr<64>
+  %x = sea.load %m0[%s2] : !m -> i8
+  %y = sea.load %m0[%h3] : !m -> i8
+  %ok = sea.icmp eq, %x, %y : i8
+  sea.assert %ok
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

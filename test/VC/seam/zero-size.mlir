@@ -1,3 +1,4 @@
+// --place-slots=none: the checks name the bases of the packed placement.
 // Every object has its own base (sea-place-static; docs/design/SeaM-null.md,
 // "Shadow memories"): p = malloc(0) keeps size 0 but takes one unit of
 // address space, so p == q (q = malloc(4)) is false in every layout, as in
@@ -5,8 +6,8 @@
 // r, which holds 0: unsat, plain and --seam. The segment of p keeps size 0.
 // The compared pointer is p or r by a nondet choice, so the compare is no
 // compare of two constant addresses (which the addr.cmp folder decides).
-// RUN: sea-vc %s --lower | FileCheck %s
-// RUN: sea-vc %s --lower --seam | FileCheck %s --check-prefixes=CHECK,SEG
+// RUN: sea-vc %s --lower --place-slots=none | FileCheck %s
+// RUN: sea-vc %s --lower --place-slots=none --seam | FileCheck %s --check-prefixes=CHECK,SEG
 // RUN: sea-run %s --input=4=1 | FileCheck %s --check-prefix=INTERP
 // SEG: object: name=obj.heap.1 order=0 kind=heap base=134512640 size=0
 // SEG: object: name=obj.heap.2 order=1 kind=heap base=134512644 size=4

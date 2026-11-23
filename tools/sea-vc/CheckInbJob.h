@@ -90,6 +90,9 @@ struct JobOptions {
   /// the pointer mode resolved on the input (--ptr-mode for each part,
   /// which sees a lowered program)
   std::string ptrMode;
+  /// the parts' solver and why (`check-inb.solver:`), and the read-only
+  /// array mode when the job chose it (partDefaults)
+  std::string solverName, solverReason, roArraysNote;
 };
 
 /// What one part's run said.
@@ -239,7 +242,8 @@ inline mlir::LogicalResult postconditionFailedNoAssert(ProgramOp part) {
 }
 
 /// The worst of two exit statuses of parts: a bug or an error (5, 2, 6, 4,
-/// 1, in that order) over unknown (3) over a decided part (0).
+/// 1, in that order) over a budget stop (8) over unknown (3) over a decided
+/// part (0).
 inline int worseStatus(int a, int b) {
   auto rank = [](int s) {
     switch (s) {
@@ -247,18 +251,20 @@ inline int worseStatus(int a, int b) {
       return 0;
     case 3:
       return 1;
+    case 8:
+      return 2;
     case 1:
-      return 2;
-    case 4:
       return 3;
-    case 6:
+    case 4:
       return 4;
-    case 2:
+    case 6:
       return 5;
-    case 5:
+    case 2:
       return 6;
+    case 5:
+      return 7;
     default:
-      return 2;
+      return 3;
     }
   };
   return rank(a) >= rank(b) ? a : b;
@@ -280,7 +286,7 @@ inline bool partArguments(llvm::ArrayRef<const char *> args,
       "check-inb-max-time", "program", "format", "vcgen-only", "config",
       "lower", "lower-opt", "lower-disable", "range-fold", "expand-memmove",
       "box-all-expand", "place-in", "place-out", "symbolic-size",
-      "max-symbolic-size", "widen-memory", "widen-memory-report",
+      "max-symbolic-size", "place-slots", "widen-memory", "widen-memory-report",
       "widen-memory-per-class", "ptr-mode",
       // diagnostic output (logs,
       // crash reproducers, IR dumps):
@@ -290,9 +296,9 @@ inline bool partArguments(llvm::ArrayRef<const char *> args,
       "log-file", "info-output-file", "mlir-pass-pipeline-crash-reproducer",
       "mlir-print-ir-tree-dir", "crash-diagnostics-dir"};
   // options that write one file (or stdout) every part would share
-  static const llvm::StringSet<> shared = {"smt2",           "print-lowered",
-                                           "seam-trail",     "ack-dump-pairs",
-                                           "ack-relax-smt2", "split-smt2"};
+  static const llvm::StringSet<> shared = {
+      "smt2",           "print-lowered", "seam-trail",     "ack-dump-pairs",
+      "ack-relax-smt2", "split-smt2",    "model-trail-out"};
   auto &registered = llvm::cl::getRegisteredOptions();
   bool positional = false;
   for (size_t i = 0; i < args.size(); ++i) {
@@ -336,6 +342,83 @@ inline bool partArguments(llvm::ArrayRef<const char *> args,
     out.push_back(hasValue ? "--" + name.str() + "=" + v : "--" + name.str());
   }
   return true;
+}
+
+/// The defaults of the parts' solver (docs/design/CheckInb.md, "The parts'
+/// solver"), applied to \p args (the parts' options, partArguments'
+/// output). An explicit --solver= of the command line wins and is passed
+/// through. Else a z3-only option (--z3-tactic, --z3-logic, --z3-param,
+/// --z3-plant-error, --seam-check-rlimit) keeps z3 (reason: the option);
+/// else the solver is Yices when the binary has it (\p haveYices), z3
+/// otherwise (said in \p reason). With z3, `--ro-arrays=uf` unless the
+/// command line gave --ro-arrays=: exact, and it cuts z3's time on the
+/// parts' read-only arrays; not passed for Yices and Bitwuzla (not
+/// measured with it). \p roNote: what happened to --ro-arrays. \p ignored:
+/// the z3-only options an explicit non-z3 solver ignores.
+inline void partDefaults(std::vector<std::string> &args, bool haveYices,
+                         std::string &solver, std::string &reason,
+                         std::string &roNote,
+                         std::vector<std::string> &ignored) {
+  static const llvm::StringSet<> z3Only = {"z3-tactic", "z3-logic", "z3-param",
+                                           "z3-plant-error",
+                                           "seam-check-rlimit"};
+  std::string explicitRo;
+  std::vector<std::string> z3Opts;
+  bool hasSolver = false, hasRo = false;
+  for (const std::string &a : args) {
+    llvm::StringRef r(a);
+    if (r.consume_front("--solver=")) {
+      solver = r.str();
+      hasSolver = true;
+    } else if (r.consume_front("--ro-arrays=")) {
+      explicitRo = r.str();
+      hasRo = true;
+    } else if (r.starts_with("--")) {
+      auto [name, value] = r.drop_front(2).split('=');
+      // a value that leaves the option off (its default, as in sea-vc.cpp)
+      // does not count: --z3-tactic=default, --z3-logic=, --z3-param=,
+      // --z3-plant-error=false|0, --seam-check-rlimit=0
+      bool neutral = false;
+      if (name == "z3-tactic")
+        neutral = value == "default";
+      else if (name == "z3-logic" || name == "z3-param")
+        neutral = r.contains('=') && value.empty();
+      else if (name == "z3-plant-error")
+        neutral =
+            r.contains('=') &&
+            llvm::is_contained({"false", "False", "FALSE", "0", ""}, value);
+      else if (name == "seam-check-rlimit")
+        neutral = value == "0";
+      if (z3Only.contains(name) && !neutral &&
+          !llvm::is_contained(z3Opts, "--" + name.str()))
+        z3Opts.push_back("--" + name.str());
+    }
+  }
+  if (hasSolver) {
+    reason = "--solver";
+    if (solver != "z3")
+      ignored = z3Opts;
+  } else if (!z3Opts.empty()) {
+    solver = "z3";
+    reason = z3Opts.front();
+    args.push_back("--solver=z3");
+  } else if (haveYices) {
+    solver = "yices";
+    reason = "default";
+    args.push_back("--solver=yices");
+  } else {
+    solver = "z3";
+    reason = "no yices in this build";
+    args.push_back("--solver=z3");
+  }
+  if (hasRo)
+    roNote = explicitRo;
+  else if (solver == "z3") {
+    args.push_back("--ro-arrays=uf");
+    roNote = "uf";
+  } else
+    roNote = "array";
+  roNote += hasRo ? " (--ro-arrays)" : " (default)";
 }
 
 /// One part as the manifest describes it: everything an outside runner
@@ -522,6 +605,19 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     });
     trivial.push_back(t);
     trivialN += t;
+  }
+  {
+    out::Record rec("check-inb.solver");
+    rec.str("solver", o.solverName)
+        .str("reason", o.solverReason)
+        .str("ro_arrays",
+             llvm::StringRef(o.roArraysNote).split(' ').first.str())
+        .str(
+            "ro_arrays_reason",
+            llvm::StringRef(o.roArraysNote).split(' ').second.trim("()").str());
+    rec.text = ("check-inb.solver: " + o.solverName + " (" + o.solverReason +
+                ") ro-arrays=" + o.roArraysNote);
+    out.emit(rec);
   }
   {
     out::Record rec("check-inb.split");

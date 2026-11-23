@@ -3,8 +3,8 @@
 // query has no ptr sort, node, marker or ptr-eq; arrays are bv-indexed;
 // constants keep their names. --vc-typecheck (default on) passes on the
 // sorted VC.
-// RUN: sea-vc %s --lower --seam --ackermannize=off --smt2 2>/dev/null | FileCheck %s
-// RUN: sea-vc %s --lower --seam --seam-wide --ackermannize=off --smt2 2>/dev/null | FileCheck %s
+// RUN: sea-vc %s --lower --seam --ackermannize=off --vc-fold-top-eqs=false --smt2 2>/dev/null | FileCheck %s
+// RUN: sea-vc %s --lower --seam --seam-wide --ackermannize=off --vc-fold-top-eqs=false --smt2 2>/dev/null | FileCheck %s
 // RUN: sea-vc %s --lower --seam 2>&1 | FileCheck %s --check-prefix=RES
 // RUN: sea-vc %s --lower --seam --seam-wide --seam-words=all --words-check 2>&1 | FileCheck %s --check-prefix=RES
 // CHECK-NOT: ptr

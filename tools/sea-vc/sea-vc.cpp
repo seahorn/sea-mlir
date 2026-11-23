@@ -11,12 +11,15 @@
 #include "ArithStats.h"
 #include "CheckInbJob.h"
 #include "EqAudit.h"
+#include "MemWatch.h"
 #include "sea/Dialect/Sea/SeaDialect.h"
 #include "sea/Dialect/Sea/SeaOps.h"
 #include "sea/Dialect/SeaImp/SeaImpDialect.h"
+#include "sea/Expr/AckCellsPlan.hh"
 #include "sea/Expr/AckRelax.hh"
 #include "sea/Expr/Ackermann.hh"
 #include "sea/Expr/ExprAPInt.hh"
+#include "sea/Expr/ExprMlir.hh"
 #include "sea/Expr/InitialWords.hh"
 #include "sea/Expr/ReadCells.hh"
 #include "sea/Expr/SeaMRules.hh"
@@ -45,6 +48,7 @@
 #include "sea/Transforms/RangeFold.h"
 
 #include "mlir/Pass/PassManager.h"
+#include "sea/VC/FoldTopEqs.h"
 #include "sea/VC/Reach.h"
 #include "sea/VC/Replay.h"
 #include "sea/VC/Split.h"
@@ -77,6 +81,7 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/StringSaver.h"
 #include "llvm/Support/raw_ostream.h"
@@ -220,6 +225,17 @@ static cl::opt<uint64_t> maxSymbolicSizeOpt(
              "reserves for an allocation of non-constant size (default "
              "4096, SeaHorn's; not tuned)"),
     cl::value_desc("N"), cl::init(sea::kPlaceMaxSymbolicSize));
+
+static cl::opt<std::string> placeSlotsOpt(
+    "place-slots",
+    cl::desc("With --lower, an abstract program: aligned (default; each "
+             "object owns a power-of-two slot 2^s > its room, its base a "
+             "multiple of max(2^s, align); same order and windows; if the "
+             "slots do not fit, the plain placement with the warning "
+             "place.slots-fallback) or none (each object at its own align, "
+             "packed). Given explicitly, not with --place-in. The "
+             "placement is reported as place.* lines"),
+    cl::value_desc("aligned|none"), cl::init("aligned"));
 
 static cl::opt<bool> addr0IsNull(
     "addr0-is-null",
@@ -636,6 +652,41 @@ static cl::opt<bool> ackOwn(
              "(docs/design/Ackermann.md, \"The ownership drop\")"),
     cl::init(false));
 
+static cl::opt<bool> ackArm(
+    "ack-arm",
+    cl::desc("ARM separation in the Ackermann lowering (with --seam): a pair "
+             "of reads whose ARM maps (of the addresses the reads' selects "
+             "had before the boundary) share no value gets no constraint. One "
+             "base with disjoint offset intervals: exact, right after the "
+             "difference decider (vc.ackermann-arm-interval-pairs). With "
+             "SeaM's premises on, after the ownership drop: different bases "
+             "or a size-0 provenance, resting on A-INB/A-OWN as --ack-own "
+             "and handled as its pairs in the model check (own-broken, "
+             "vc.ack-own-collision-excused); vc.ackermann-arm-cross-base-"
+             "pairs / -arm-size0-pairs. Off by default "
+             "(docs/design/Ackermann.md, \"ARM separation\")"),
+    cl::init(false));
+
+static cl::opt<bool> ackCellsPlan(
+    "ack-cells-plan",
+    cl::desc("Cell representatives, the plan only (with --seam and the "
+             "Ackermann lowering): a second lowering made for the plan, "
+             "discarded, counts per group of objects (ARM over the reads' "
+             "access addresses) the constraints a cell mode would remove "
+             "(keep) against what it would add (the arms of the reads' case "
+             "splits, the cells, a constraint per cell and read in no known "
+             "object), by count and by bits; vc.cells-plan-*, one line per "
+             "group with --log=vc.cells-plan:2. The query is unchanged. "
+             "Off by default (docs/design/Ackermann.md, \"Cell "
+             "representatives: the plan\")"),
+    cl::init(false));
+
+// --ack-cells-plan: one event per (array, object) of the plan
+static sea::log::Tag logCellsPlan(
+    "vc.cells-plan", 2,
+    "--ack-cells-plan: per group of objects: reads by source, unknown "
+    "reads, cells, arms, keep, both costs and both modes");
+
 static cl::opt<std::string> ackRelax(
     "ack-relax",
     cl::desc("Lazy Ackermann constraints, a diagnosis mode (off by default; "
@@ -688,12 +739,14 @@ static cl::opt<std::string> ackRelaxSmt2(
     cl::value_desc("file"), cl::init(""));
 
 /// vc.ackermann-inconsistent when the pairs at fault are --ack-own drops
+/// (or --ack-arm's premise classes)
 static constexpr const char *ownBrokenMessage =
     "the model puts two reads of different objects whose constraint "
-    "--ack-own dropped at one index with different cells: it breaks A-INB "
-    "or A-OWN (an access through one object reaches another object's "
-    "cells), or a read that does not execute lands on another object; the "
-    "answer is not built on it (run without --ack-own)";
+    "--ack-own or --ack-arm dropped at one index with different cells: it "
+    "breaks A-INB or A-OWN (an access through one object reaches another "
+    "object's cells), or a read that does not execute lands on another "
+    "object; the answer is not built on it (run without --ack-own / "
+    "--ack-arm)";
 
 static cl::opt<bool> narrowOffsets(
     "narrow-offsets",
@@ -772,6 +825,58 @@ static cl::opt<RoArrays> roArrays(
     cl::values(clEnumValN(RoArrays::Array, "array", "arrays (default)"),
                clEnumValN(RoArrays::Uf, "uf", "uninterpreted functions")),
     cl::init(RoArrays::Array));
+
+static cl::opt<bool> vcFoldTopEqs(
+    "vc-fold-top-eqs",
+    cl::desc("Substitute the top-level facts of the query after the "
+             "rewriting (T = c, the parts of concat(a, b) = c, Boolean "
+             "constants; the defining conjunct stays), then simplify again, "
+             "to a fixpoint, before the solver boundary and the Ackermann "
+             "lowering; after the lowering, eliminate the top-level "
+             "definitions x = c of constants (the Ackermann reads among "
+             "them) into a model trail that extends the solver's model. "
+             "Exact; needs --simplify (on under --seam); not with --reach "
+             "or --ack-relax; counted vc.fold-top-eqs, vc.model-trail. "
+             "Default: on where it applies (simplify on, no --reach, no "
+             "--ack-relax; also under --smt2 / --split-smt2: the written "
+             "query is equisatisfiable with the VC, not equivalent), else "
+             "off, the reason in vc.fold-top-eqs-status; "
+             "=true where it does not apply is an error, =false turns it "
+             "off (docs/design/FoldTopEqs.md)"),
+    cl::init(false));
+
+static cl::opt<sea::ConcatIte> vcFoldConcatIte(
+    "vc-fold-concat-ite",
+    cl::desc("With the fold of --vc-fold-top-eqs on: the concat-ite hoist "
+             "of each round, "
+             "concat of numerals and ites on one condition -> ite of concats "
+             "(counted vc.fold-top-eqs concat-ite=, refused "
+             "concat-ite-refused=; docs/design/FoldTopEqs.md, \"The "
+             "concat-ite hoist\")"),
+    cl::values(clEnumValN(sea::ConcatIte::Off, "off", "no hoist"),
+               clEnumValN(sea::ConcatIte::Numeral, "numeral",
+                          "only when every leaf is a concat of numerals and "
+                          "it makes no more ites than the parts have "
+                          "(default)"),
+               clEnumValN(sea::ConcatIte::All, "all",
+                          "wherever it applies (leaves of any kind)")),
+    cl::init(sea::ConcatIte::Numeral));
+
+static cl::opt<bool> modelTrailPlantSkip(
+    "x-model-trail-plant-skip", cl::Hidden,
+    cl::desc("Test only: with --vc-fold-top-eqs, the model is not extended "
+             "by the trail (a replay that needs it diverges)"),
+    cl::init(false));
+
+static cl::opt<std::string> modelTrailOut(
+    "model-trail-out",
+    cl::desc("With the fold of --vc-fold-top-eqs on: write the model "
+             "trail to this file "
+             "(not stdout; with --split, <file>.part<N> per part), "
+             "JSON lines, one elimination per line in order, terms in "
+             "SMT-LIB over the symbols of the query (--smt2) "
+             "(docs/design/FoldTopEqs.md, \"Model trail\")"),
+    cl::value_desc("file"));
 
 enum class VcDefs { Inline, Nest, Eq, Hidden };
 static cl::opt<VcDefs> vcDefs(
@@ -1333,6 +1438,73 @@ static sea::log::Tag logSolve("vc.solve", 1,
                               "each solver call of the verdict: backend, "
                               "result, time, Expr nodes made so far");
 
+static sea::log::Tag logMem(
+    "vc.mem", 1,
+    "a memory heartbeat (--mem-trace): every --mem-trace-interval seconds "
+    "while Expr nodes are made, and at the end of each phase: memory, live "
+    "nodes, the top operators, rules and sea ops (docs/agents/blowups.md)");
+
+static cl::opt<bool> memTrace(
+    "mem-trace",
+    cl::desc("A memory heartbeat on stderr, or the log file: an alias of "
+             "--log=vc.mem (=false: vc.mem:0); `log: vc.mem beat` lines "
+             "every --mem-trace-interval seconds while Expr nodes are made "
+             "and `log: vc.mem phase-end` lines: rss, live nodes, the "
+             "operators with the most live nodes, the rules fired since the "
+             "last beat, the sea ops that made the most nodes "
+             "(docs/agents/blowups.md)"),
+    cl::init(false), cl::cb<void, bool>([](bool on) {
+      sea::log::select(on ? "vc.mem" : "vc.mem:0", "--mem-trace");
+    }));
+
+static cl::opt<double> memTraceInterval(
+    "mem-trace-interval",
+    cl::desc("Seconds between vc.mem beats (default 10, untuned; a beat "
+             "also waits 20 times its own census's time; 0: at every check, "
+             "every 4096 nodes made, however slow)"),
+    cl::init(10.0), cl::value_desc("seconds"));
+
+static cl::opt<unsigned> memTop(
+    "mem-top",
+    cl::desc("The length of each top list of vc.mem beats and of a budget "
+             "stop's census (default 8)"),
+    cl::init(8), cl::value_desc("n"));
+
+static cl::opt<unsigned> memWatchStep(
+    "mem-watch-step",
+    cl::desc("Testing only: the --mem-trace / budget checks run every <n> "
+             "Expr nodes made (default 4096; --max-nodes=<m> lowers it to "
+             "m/8)"),
+    cl::init(4096), cl::value_desc("n"), cl::Hidden);
+
+static cl::opt<std::string> budgetTestHit(
+    "budget-test-hit",
+    cl::desc("Testing only: the budgets report a hit (resource=test, error "
+             "vc.test-budget, status 8) at the end of the named phase, if "
+             "they are still armed (not after the solver answered or reach "
+             "decided)"),
+    cl::init(""), cl::value_desc("phase"), cl::Hidden);
+
+static cl::opt<uint64_t> maxNodes(
+    "max-nodes",
+    cl::desc("Budget of live Expr nodes (hash-consed, 0: none), for "
+             "encoding and solving (not after the solver answered): when "
+             "exceeded, stop with `result: unknown`, `budget: hit "
+             "resource=nodes` and the census (budget.* lines), error "
+             "vc.node-budget, status 8; checked every n/8 (at most 4096) "
+             "nodes made and at phase boundaries (deterministic)"),
+    cl::init(0), cl::value_desc("n"));
+
+static cl::opt<uint64_t> maxRss(
+    "max-rss",
+    cl::desc("Budget of resident memory in MiB (0: none): as --max-nodes, "
+             "`budget: hit resource=rss`, error vc.rss-budget (an error "
+             "vc.rss-budget-unsupported at startup where the process's "
+             "memory cannot be read); checked every "
+             "4096 Expr nodes made and at phase boundaries (not inside the "
+             "solver's check: --mem-limit bounds that)"),
+    cl::init(0), cl::value_desc("MiB"));
+
 static cl::opt<bool> progress(
     "progress",
     cl::desc("Log the start and end of each phase on stderr, or the log "
@@ -1525,6 +1697,10 @@ static sea::log::Event &withMem(sea::log::Event &e) {
   return e;
 }
 
+/// --mem-trace / --max-nodes / --max-rss (MemWatch.h): set in main when
+/// one is on; the phases tell it where the run is
+static sea::MemWatch *gMemWatch = nullptr;
+
 /// MLIR's timing (--mlir-timing): the root scope of one report over every
 /// PassManager and the phases (Phase); set in main when timing is on
 static mlir::TimingScope *gTiming = nullptr;
@@ -1550,6 +1726,8 @@ struct Phase {
       memPhaseNote.set(t);
       memProgressNote.clear();
     }
+    if (gMemWatch)
+      gMemWatch->phaseStart(name, run);
     if (gTiming || logPhase.on(sea::log::Flow))
       scope.emplace(timer, gTiming);
     if (!logPhase.on(sea::log::Flow))
@@ -1564,8 +1742,15 @@ struct Phase {
   }
   Phase(const Phase &) = delete;
   Phase &operator=(const Phase &) = delete;
+  ~Phase() { end(); }
   /// Ends the phase (once; a later call does nothing).
-  void end() { scope.reset(); }
+  void end() {
+    scope.reset();
+    if (!ended && gMemWatch)
+      gMemWatch->phaseEnd(name);
+    ended = true;
+  }
+  bool ended = false;
   /// The time of the ended phase.
   double seconds() const { return timer.seconds(); }
   /// The --mlir-timing scope of what runs inside the phase (a pass
@@ -1608,6 +1793,8 @@ public:
   ~EncodeMeter() { memCurOp.store(nullptr, std::memory_order_release); }
 
   void operator()(const sea::EncodeProgress &p) {
+    if (gMemWatch)
+      gMemWatch->opStart(p.op, efac.nodesMade());
     if (memLimit) {
       memCurOpIndex.store(p.ops, std::memory_order_relaxed);
       memCurOp.store(p.op, std::memory_order_release);
@@ -1765,6 +1952,92 @@ static uint64_t countOps(Operation *op) {
 /// it must not return.
 [[noreturn]] static void memLimitHitLlvm(void *, const char *, bool) {
   memLimitHit();
+}
+
+/// --max-nodes / --max-rss exceeded (MemWatch): `result: unknown`, the
+/// `budget: hit` line and the census (budget.* lines), with --seam-stats the
+/// rewriter's counters, BRUNCH_STAT result / budget / status; error
+/// vc.node-budget / vc.rss-budget; exit 8 (a status of its own: not a verdict,
+/// and not the unknown 3 of a timeout or --mem-limit). The
+/// run is inside Expr construction: it ends here, without unwinding.
+[[noreturn]] static void budgetHit(sea::MemWatch::Budget b, uint64_t limit,
+                                   const sea::MemWatch::Census &c) {
+  // the rewriter's counters of the moment, nested scratch counts included
+  const expr::RewriteStats *rw = c.stats ? &*c.stats : nullptr;
+  const bool nodes = b == sea::MemWatch::Budget::Nodes;
+  const bool test = b == sea::MemWatch::Budget::Test;
+  const char *resource = nodes ? "nodes" : test ? "test" : "rss";
+  sea::out::Record res("result");
+  res.str("value", "unknown");
+  res.text = "result: unknown";
+  gOut->emit(res);
+  raw_ostream &os = smt2 && !gOut->jsonl() ? errs() : vout();
+  printStats(os, [&](sea::stats::Report &r) {
+    sea::stats::Line &l = r.line("budget")
+                              .value("hit")
+                              .kv("resource", resource)
+                              .kv("limit", limit)
+                              .kv("nodes-live", c.nodesLive)
+                              .kv("nodes-made", c.nodesMade);
+    for (const auto &[k, v] : sea::memFields(c.mem))
+      l.kv(k, v);
+    l.kv("phase", c.phase);
+    if (c.run)
+      l.kv("run", c.run);
+    l.kv("time", sea::secondsText(c.time));
+    if (c.cacheEntries >= 0)
+      l.kv("rw-cache", uint64_t(c.cacheEntries));
+    if (rw)
+      l.kv("rule-calls", c.ruleCalls);
+    if (!c.curOp.empty())
+      r.line("budget.op-in-progress")
+          .value(c.curOp)
+          .kv("nodes", c.curOpNodes)
+          .kv("at", sea::log::textValue(c.curOpAt));
+    for (const auto &o : c.ops)
+      r.line("budget.op").value(o.op).kv("live", o.live);
+    std::vector<sea::MemWatch::RuleCount> rules = c.rules;
+    std::sort(rules.begin(), rules.end(), [](const auto &x, const auto &y) {
+      return x.total != y.total ? x.total > y.total : x.rule < y.rule;
+    });
+    if (rules.size() > memTop)
+      rules.resize(memTop);
+    for (const auto &ru : rules)
+      r.line("budget.rule")
+          .value(ru.rule)
+          .kv("fired", ru.total)
+          .kv("recent", ru.recent);
+    for (const auto &st : c.sites)
+      r.line("budget.site")
+          .value(st.op)
+          .kv("nodes", st.nodes)
+          .kv("at", sea::log::textValue(st.where));
+    if (seamStats && rw)
+      rw->report(r, "seam.");
+    resultLine(r, "unknown");
+    r.line("budget")
+        .value(resource)
+        .brunch(sea::stats::Brunch::Value)
+        .brunchOnly();
+    r.line("status").value(8).brunch(sea::stats::Brunch::Value).brunchOnly();
+  });
+  gOut->flush();
+  sea::diag::error(
+      test    ? "vc.test-budget"
+      : nodes ? "vc.node-budget"
+              : "vc.rss-budget",
+      test    ? "--budget-test-hit: a hit at the end of phase " + c.phase
+      : nodes ? "more than " + std::to_string(limit) +
+                    " live Expr nodes (--max-nodes) in phase " + c.phase +
+                    ": stopped, the census is in the "
+                    "budget.* lines"
+              : "resident memory above " + std::to_string(limit) +
+                    " MiB (--max-rss) in phase " + c.phase +
+                    ": stopped, the census is in the budget.* "
+                    "lines");
+  sea::diag::printSummary();
+  errs().flush();
+  ::_exit(8);
 }
 
 static cl::list<std::string> configFiles(
@@ -2016,6 +2289,10 @@ semantics) and every computed value is checked against the model.
 SLOW OR TIMEOUT: read docs/agents/slow-vc.md. First commands:
   sea-vc p.mlir <flags> --smt2 > q.smt2; z3 -v:10 -st q.smt2   # size or
                                  #   search: num-exprs per step, conflicts
+                                 #   (the query is the solving run's,
+                                 #   folded by --vc-fold-top-eqs unless
+                                 #   =false: equisatisfiable with the VC;
+                                 #   the query-diff tools turn it off)
   sea-vc p.mlir <flags> --z3-param=verbose=10   # the same inside a run
   sea-vc p.mlir <flags> --dag-stats --vcgen-only  # size with sharing
   sea-vc p.mlir <flags> --ack-dump-pairs=f --eq-audit   # big terms by value
@@ -2115,6 +2392,12 @@ TYPICAL:
                                  #   space, not resident memory): set it
                                  #   above the expected resident size, with
                                  #   headroom
+  sea-vc p.mlir --mem-trace --max-nodes=50000000  # a VC blowup: a
+                                 #   heartbeat of what grows (vc.mem beats on
+                                 #   stderr) and a diagnosed stop (budget:
+                                 #   hit, the census, status 8) instead of
+                                 #   an out-of-memory kill;
+                                 #   docs/agents/blowups.md
   sea-vc p.mlir --lower --reach  # REACH: per check site (sea.assume,
                                  #   sea.assert, sea.unreachable = a folded
                                  #   assume of false) after the lowering, is
@@ -2242,6 +2525,21 @@ TYPICAL:
                                  #   exceeds it is premise.failed (exit 4):
                                  #   bound the size in the harness, or
                                  #   rerun with --max-symbolic-size=<n>
+  sea-vc p.mlir --lower --place-slots=none  # the packed placement (each
+                                 #   object at its own align, SeaHorn's);
+                                 #   the default, aligned, gives each
+                                 #   object a power-of-two slot (2^s >
+                                 #   room, base a multiple of max(2^s,
+                                 #   align)): the bits above s name the
+                                 #   object. A verdict differs only if
+                                 #   the result depends on address bits
+                                 #   above the objects' alignment (one
+                                 #   particular layout; so under either
+                                 #   placement) or on an out-of-bounds
+                                 #   access (packed: the next object;
+                                 #   slots: padding; under --seam A-INB
+                                 #   excludes it). Not with --place-in or
+                                 #   a placed program
   sea-vc p.mlir --lower --reach --reach-failures  # also each tagged
                                  #   assert's failure (reached with its
                                  #   condition false): op=sea.print
@@ -2567,6 +2865,26 @@ TYPICAL:
                                  #   the model's arrays are rebuilt as for
                                  #   the lowering. A no-op when the lowering
                                  #   runs. Default array.
+  sea-vc p.mlir --seam --vc-fold-top-eqs=false  # the A/B baseline: by
+                                 #   default (on where it applies: simplify
+                                 #   on, no --reach, no --ack-relax; also
+                                 #   under --smt2 / --split-smt2, where the
+                                 #   query is equisatisfiable with the VC;
+                                 #   vc.fold-top-eqs-status) the query's
+                                 #   top-level facts T = c are substituted
+                                 #   (concat facts by part, Boolean
+                                 #   constants), simplified again to a
+                                 #   fixpoint; after Ackermann the
+                                 #   definitions x = c of constants leave
+                                 #   the query for a model trail that
+                                 #   extends the model (exact; an explicit
+                                 #   --vc-fold-top-eqs with --reach,
+                                 #   --ack-relax or no simplify is an error;
+                                 #   --model-trail-out=<file>: the trail as
+                                 #   JSON lines; --vc-fold-concat-ite=
+                                 #   numeral|all|off: where the concat-ite
+                                 #   hoist fires, default numeral,
+                                 #   docs/design/FoldTopEqs.md)
   sea-vc p.mlir --seam --vc-defs=hidden  # named address sums, after
                                  #   Ackermann: index sums that share a
                                  #   prefix (a parser cursor) become fresh
@@ -2694,6 +3012,29 @@ TYPICAL:
                                  #   needs the premises
                                  #   (else vc.ack-own: off-...).
                                  #   docs/design/Ackermann.md
+  sea-vc p.mlir --seam --ack-arm  # (off by default) ARM separation in
+                                 #   the Ackermann lowering: two reads whose
+                                 #   ARM maps (over the addresses of their
+                                 #   selects) share no value get no
+                                 #   constraint. One base, disjoint
+                                 #   intervals: exact, after the decider.
+                                 #   Different bases or a size-0 provenance
+                                 #   (with the premises; else vc.ack-arm:
+                                 #   exact-only): A-INB / A-OWN, handled as
+                                 #   --ack-own's pairs (own-broken, the
+                                 #   excused run); after --ack-own when both
+                                 #   are on. vc.ackermann-arm-*;
+                                 #   docs/design/Ackermann.md
+  sea-vc p.mlir --seam --ack-cells-plan  # (off by default) the cells
+                                 #   plan, counts only: per group of objects
+                                 #   (ARM over the reads' access addresses),
+                                 #   the constraints a cell mode would remove
+                                 #   against what it would add, by count and
+                                 #   by bits, from a second lowering,
+                                 #   discarded; the query is unchanged.
+                                 #   vc.cells-plan-*; per group
+                                 #   --log=vc.cells-plan:2.
+                                 #   docs/design/Ackermann.md
   sea-vc p.mlir --seam --ack-stride=false   # (default on) the stride rule in the Ackermann
                                  #   lowering: reads at sea.ptr.index nodes
                                  #   with a promise (inbounds / nusw / nuw:
@@ -2744,6 +3085,9 @@ TYPICAL:
                                  #   check-inb.discharges: the premises
                                  #   an unsat discharges; unsat iff every
                                  #   part is unsat (docs/design/CheckInb.md)
+                                 #   the parts' solver: Yices if built in
+                                 #   (else z3), --solver= wins; z3 gets
+                                 #   --ro-arrays=uf (check-inb.solver:)
   sea-vc p.mlir --check-inb ... --vcgen-only --check-inb-dir=d
                                  # write d/part-<i>.mlir, d/parts.cfg
                                  #   (the expanded part options) and
@@ -2892,6 +3236,23 @@ OUTPUT (stdout, `key: value` lines):
                                   widened to each word size, byte memories
                                   kept as bytes, classes that are not byte
                                   memories; widened-<k> per size from max(K, 8) down to 2)
+  place.slots: none|aligned|fallback|file   (--lower of an abstract
+                                  program: the placement's rule; fallback:
+                                  --place-slots=aligned did not fit,
+                                  warning place.slots-fallback; file:
+                                  --place-in)
+  place.objects: <n>  place.slot-bits-max: <s>  place.span-up: <bytes>
+  place.span-stack: <bytes>  place.over-aligned: <n>   (the objects placed
+                                  but null; the largest slot exponent s =
+                                  bitwidth(max(room, 1)); lowest base to
+                                  highest end of the non-stack objects and
+                                  of the stack objects; objects whose base
+                                  is a multiple of a power of two above
+                                  their align, from the numerals, not 0
+                                  under none either: compare two runs, when
+                                  a verdict differs between placements;
+                                  these numeric lines are BRUNCH_STAT
+                                  place.<key>, place.slots is not)
   vc.box-all: dead=<n> empty=<n> expand-max=<K> expanded=<n> guarded=<n>
       lowered=<n> nondets=<n>     (--lower, a program with sea.box.all:
                                   ops erased unused, constant empty boxes
@@ -2982,6 +3343,13 @@ OUTPUT (stdout, `key: value` lines):
                                   pairs of two objects dropped, pairs of
                                   one object and pairs with a read in no
                                   known object kept) /
+                                  -arm-reads / -arm-interval-pairs /
+                                  -arm-size0-pairs / -arm-cross-base-pairs
+                                  (--ack-arm: reads with an ARM map; pairs
+                                  dropped: one base, disjoint intervals
+                                  (exact); disjoint once size-0
+                                  provenances are dropped (A-INB);
+                                  different bases (A-INB + A-OWN)) /
                                   -constraints: arrays lowered and kept,
                                   distinct reads, read pairs, pairs of two
                                   different numerals, pairs S + c1, S + c2
@@ -2998,6 +3366,32 @@ OUTPUT (stdout, `key: value` lines):
                                   (resting on a memory operation's or an
                                   expansion's A-INB); the pair counters are
                                   vc.ackermann-own-*)
+  vc.ack-arm: on|exact-only|off-no-seam|off-no-ackermann|off-seam-words
+                                  (--ack-arm: whether ARM separation ran;
+                                  exact-only: SeaM's premises off, only
+                                  the exact class; the pair counters are
+                                  vc.ackermann-arm-*)
+  vc.cells-plan: on|off-no-premises|off-no-ackermann|off-seam-words
+                                  (--ack-cells-plan; on: vc.cells-plan-
+                                  reads / -reads-arm-interval / -reads-full-
+                                  object / -reads-unknown / -reads-multi-
+                                  base / -reads-a-inb / -reads-inb-gap /
+                                  -reads-unusable (reads by ARM source; of
+                                  the unknown ones, an address whose ARM
+                                  provenance no A-INB condition names, an
+                                  object of size >= 2^63),
+                                  -groups / -cells / -cells-marked /
+                                  -groups-cells-bound / -arms / -decider-
+                                  dropped / -unknown-constraints / -keep,
+                                  -pairs / -arm-pairs-cross-base / -arm-
+                                  pairs-size0 / -arm-pairs-interval (the
+                                  constrained pairs, those ARM separates,
+                                  by --ack-arm's classes),
+                                  by count: -converted / -reads-converted /
+                                  -removed / -added / -other-object-pairs,
+                                  by bits: -bits-converted / -bits-reads-
+                                  converted / -bits-removed / -bits-keep /
+                                  -bits-cost / -bits-other-object-pairs)
   vc.narrow: on|off-no-premises|off-no-ackermann   (--narrow-offsets; on:
                                   vc.narrow-indices / -eligible / -skip-not-
                                   own / -skip-shared-boundary / -skip-no-
@@ -3018,7 +3412,11 @@ OUTPUT (stdout, `key: value` lines):
                                   the largest k, constraints compared at k
                                   bits and the sum of their k, constraints
                                   with one narrowed read and another (64
-                                  bits); with vc-time, stderr with --smt2)
+                                  bits); with vc-time, stderr with --smt2;
+                                  vc.narrow-base-aligned / -unaligned: the
+                                  narrowed indices whose object's base is /
+                                  is not a multiple of 2^k, read from the
+                                  placement, see --place-slots)
   vc.ack-relax: all|off-no-ackermann   (--ack-relax: the selector, or
                                   not run (no lowering); with a selector:
                                   vc.ack-relax-candidates: the constraints
@@ -3050,6 +3448,38 @@ OUTPUT (stdout, `key: value` lines):
   vc.ack-relax-mode: incremental  (--ack-relax-mode=incremental only)
   vc.ack-relax-time: <s>          (--ack-relax-mode=incremental only: the
                                   rounds, the fallback and the assertions)
+  vc.fold-top-eqs-status: on|off-flag|off-reach|off-ack-relax|
+      off-no-simplify             (--vc-fold-top-eqs: whether the fold ran:
+                                  on by default where it applies, also
+                                  under --smt2 / --split-smt2 (the written
+                                  query is equisatisfiable with the VC);
+                                  off by =false, under --reach, under
+                                  --ack-relax, without the simplifier)
+  vc.fold-top-eqs: facts=<n> term=<n> split=<n> bool=<n> uses=<n>
+      rounds=<n> concat-ite=<n> concat-ite-refused=<n> skipped-masked=<n>
+      skipped-untyped=<n> skipped-ptr=<n>
+                                  (fold on: keys substituted, by
+                                  kind (T = c, concat parts, Boolean
+                                  constants); operand uses replaced; rounds
+                                  that changed the query; concats of ites
+                                  on one condition made ites (distinct
+                                  nodes), top concats the
+                                  --vc-fold-concat-ite mode refused (both
+                                  summed over the rounds: a concat refused
+                                  in one round and still in the query is
+                                  counted again); facts not
+                                  used: bvand(x, m) = c, a concat part of
+                                  unknown width, a term or concat part
+                                  derived from a pointer's address outside
+                                  a memory read (addr(obj.k) = c: step 2
+                                  eliminates the bases after the boundary);
+                                  warning
+                                  vc.fold-top-eqs-rounds: the round bound
+                                  stopped it)
+  vc.model-trail: cells=<n> defs=<n> rounds=<n>  (fold on:
+                                  constants eliminated after Ackermann into
+                                  the model trail: Ackermann reads (cells)
+                                  and other constants (defs))
   vc.defs: inline|nest|eq|hidden  (--vc-defs; not inline: vc.defs-sums /
                                   -index-sums / -names / -atoms / -rewritten:
                                   distinct sums of the query, those at an
@@ -3084,6 +3514,7 @@ OUTPUT (stdout, `key: value` lines):
                                   cells: a lowering bug, error
                                   vc.ackermann-inconsistent, status 2;
                                   own-broken, of them: pairs --ack-own
+                                  (or --ack-arm across bases / size 0)
                                   dropped, the model breaks A-INB / A-OWN
                                   or a read that does not execute lands on
                                   another object, same error; own-excused:
@@ -3200,6 +3631,14 @@ OUTPUT (stdout, `key: value` lines):
                                   (--check-inb: the bounds checks, those
                                   proved statically, those left, ranges of
                                   constant length 0)
+  check-inb.solver: <name> (<reason>) ro-arrays=<mode> (<reason>)
+                                  (--check-inb: the parts' solver: --solver=
+                                  wins; else z3 if a z3-only option is
+                                  given (--z3-tactic ...: reason is the
+                                  option); else yices if the binary has it
+                                  (default), else z3 (no yices in this
+                                  build). z3 gets --ro-arrays=uf unless
+                                  given. The lowering follows it.)
   check-inb.split: folded= parts= trivial= to-solve=
                                   (checks the optimize stages removed
                                   before the split; parts; parts folded to
@@ -3256,6 +3695,27 @@ OUTPUT (stdout, `key: value` lines):
       biggest-op-at=]             (a hit in encode, after a progress tick:
                                   the counters of the last tick, see
                                   PROGRESS; up to --progress-interval old)
+  budget: hit resource=nodes|rss limit=<n> nodes-live=<n> nodes-made=<n>
+      [rss-mb= vm-mb=] peak-rss-mb= phase=<p> [run=<n>] time=<s>
+      [rw-cache=<n> rule-calls=<n>]   (after result: unknown: --max-nodes
+                                  (live hash-consed Expr nodes) or
+                                  --max-rss (MiB) exceeded; the census of
+                                  that moment follows; rw-cache: entries of
+                                  the rewriter's cache)
+  budget.op-in-progress: <op> nodes=<n> at=<where>   (a hit in encode: the
+                                  op being encoded, the nodes it made so far)
+  budget.op: <operator> live=<n>  (the operators with the most live nodes,
+                                  --mem-top of them, largest first)
+  budget.rule: <rule> fired=<n> recent=<n>   (the rewrite rules by firings,
+                                  recent: since the last vc.mem beat)
+  budget.site: <op> nodes=<n> at=<where>   (the sea ops whose encoding,
+                                  SeaM rewriting included, made the most
+                                  nodes; the op in progress counted so far)
+                                  Then, with --seam-stats, the seam.*
+                                  counters; with --brunch-stats
+                                  BRUNCH_STAT result unknown, budget
+                                  nodes|rss, status 8. Error
+                                  vc.node-budget / vc.rss-budget
   mem-limit-op: <op> ops=<n> at=<where>   (a hit in encode: the op being
                                   encoded, n-th in encoding order; where:
                                   file:line:col, else the location name,
@@ -3751,6 +4211,29 @@ array of file:line:col strings, outermost last), the name in
 path (positions) and, when an entry was inlined, path_inlined (an array
 parallel to path of call-site arrays, [] for an entry not inlined).
 
+MEMORY TRACE (--mem-trace = --log=vc.mem; docs/agents/blowups.md; on
+stderr, or the log file, each line flushed): while Expr nodes are made,
+every --mem-trace-interval=<s> seconds (default 10, untuned; a beat also
+waits 20 times its census's time; 0: every check), and at the end of each
+phase:
+`log: vc.mem beat|phase-end phase=<p> [run=<n>] time=<s> <memory>
+nodes-live=<n> nodes-made=<n> [rw-cache=<n> rule-calls=<n>] [op=<op>
+op-at=<where> op-nodes=<n>] top-ops=<n>:<operator>,...
+[top-rules=<n>:<rule>,...] [top-sites=<n>:<op>@<where>,...]`: live
+hash-consed nodes, nodes made so far, the rewriter's cache entries and rule
+calls; in encode the op in progress and the nodes it made so far; the
+operators with the most live nodes; the rules fired since the last beat;
+the sea ops (encode) that made the most nodes. Lists: --mem-top=<n> items
+(default 8), count first, `-` when empty. The checks run every 4096 nodes
+made, so a phase that makes none (solve) has its phase-end line only.
+Budgets: --max-nodes=<n> (live nodes), --max-rss=<MiB>, checked at the
+same points and at phase boundaries: exceeded, the run stops with
+result: unknown, budget: hit and the census (OUTPUT FORMATS), status 8.
+The budgets bound encoding and solving: once the solver has answered
+(sat, unsat) they are off, so a verdict is never replaced (the replay is
+bounded by --mem-limit only).
+Off (no flag): one compare per node made.
+
 PROGRESS (--progress = --log=vc.phase, --progress=false = vc.phase:0; on
 stderr, or the log file; each line flushed as it is written):
 `log: vc.phase start phase=<name>` at the start of each phase and
@@ -4098,6 +4581,9 @@ Kinds and fields:
                 name=), order, objkind, base, size, align
   result        value: sat|unsat|unknown|none
   check-inb     (--check-inb) checks, static, left, zero_length
+  check-inb.solver solver, reason (default | --solver | --z3-<option> | no
+                yices in this build), ro_arrays (uf | array),
+                ro_arrays_reason (default | --ro-arrays)
   check-inb.split folded (checks the optimize stages removed before the
                 split), parts, trivial (folded to true in their own
                 optimize: not run), to_solve
@@ -4234,10 +4720,12 @@ model (a value differs, or the run shows no failure of the property:
 vc.replay-no-failure): a bug in the VC or the interpreter, or a load of an earlier memory
 version whose cell was clobbered (the in-place interpreter sees the new
 value, the VC the old one); also 2 when the model of the Ackermann lowering
-is not a function on an array (vc.ackermann-inconsistent), except (--ack-own)
-when every such pair is one the ownership drop dropped and the replay fails
+is not a function on an array (vc.ackermann-inconsistent), except (--ack-own,
+--ack-arm) when every such pair is one the ownership drop (or ARM's premise
+classes: across bases, size 0) dropped and the replay fails
 the assertion with mismatches=0: then 0, warning
-vc.ack-own-collision-excused; 3 unknown; 4 (--seam) sat that does not replay
+vc.ack-own-collision-excused; 3 unknown (also --timeout, --mem-limit);
+4 (--seam) sat that does not replay
 because the program leaves an object with the model's inputs: A-INB does not
 hold (A-SEP or A-NULL may: the check is of bounds, not of separation, so a
 run that only leaves into a gap is reported here as well, though it keeps
@@ -4272,8 +4760,10 @@ the property (premise.failed, vc.premise-failed): an allocation's size
 exceeds its room; inconclusive, before --replay-original (the input
 program has no premise assert). Under --check-inb a part that fails one
 makes the job's status 4, its premise.failed line on the job's output.
-Split (--split*): the status of the verdict (0 sat or unsat, 3 unknown); a
-part's status 1, 2, 4, 5 or 6 stops the split with that status; 5 also for
+8 --max-nodes / --max-rss exceeded (budget: hit, after result: unknown;
+the run stops there, also in a split or --reach; never after the solver's
+answer). Split (--split*): the status of the verdict (0 sat or unsat, 3
+unknown); a part's status 1, 2, 4, 5 or 6 stops the split with that status; 5 also for
 a failed --split-check.
 )";
 
@@ -4760,10 +5250,19 @@ int main(int argc, char **argv) {
        maxSymbolicSizeOpt.getNumOccurrences()) &&
       !lower)
     return fail("--symbolic-size and --max-symbolic-size need --lower");
+  if (placeSlotsOpt != "none" && placeSlotsOpt != "aligned")
+    return fail("--place-slots must be none or aligned");
+  if (placeSlotsOpt.getNumOccurrences() && !lower)
+    return fail("--place-slots needs --lower");
+  if (placeSlotsOpt.getNumOccurrences() && !placeIn.empty())
+    return fail("--place-slots and --place-in exclude each other (the file "
+                "gives the bases)");
   if (!placeIn.empty() && !placeOut.empty())
     return fail("--place-in and --place-out exclude each other");
   if (printLowered == "-")
     return fail("--print-lowered needs a file (stdout is the report)");
+  if (modelTrailOut == "-")
+    return fail("--model-trail-out needs a file (stdout is the report)");
   if (reachSeed.getNumOccurrences() && !reachFuzz)
     return fail("--reach-seed is the seed of --reach-fuzz");
   if (!reachPrograms.empty() &&
@@ -4783,6 +5282,9 @@ int main(int argc, char **argv) {
   if (reach && (smt2 || vcgenOnly))
     return fail("--reach runs its own queries: not with --smt2 or "
                 "--vcgen-only");
+  if (vcFoldTopEqs && reach)
+    return fail("--vc-fold-top-eqs: not with --reach (its targets are "
+                "block guards the trail may eliminate)");
   if (reach && sinkAssumes)
     return fail("--reach: --sink-assumes moves every assume before the "
                 "assertion, which changes what reaches a target");
@@ -4794,6 +5296,38 @@ int main(int argc, char **argv) {
     return fail("--reach-rlimit is a z3 limit (--solver=z3)");
   if (memLimitPlant && !memLimit)
     return fail("--mem-limit-plant needs --mem-limit");
+  // --mem-trace / --max-nodes / --max-rss: the watch of every VC run's
+  // factory (MemWatch.h)
+  std::optional<sea::MemWatch> memWatch;
+  if (logMem.on(sea::log::Flow) || maxNodes || maxRss ||
+      !budgetTestHit.empty()) {
+    if (memTraceInterval < 0)
+      return fail("--mem-trace-interval: a number of seconds >= 0");
+    sea::MemWatchOptions mo;
+    mo.interval = memTraceInterval;
+    mo.top = memTop;
+    mo.maxNodes = maxNodes;
+    mo.maxRssMB = maxRss;
+    mo.testHitPhase = budgetTestHit;
+    if (maxRss && !sea::readProcMem().hasCurrent) {
+      sea::diag::error("vc.rss-budget-unsupported",
+                       "--max-rss needs the process's resident size "
+                       "(/proc/self/statm), which cannot be read here");
+      return 1;
+    }
+    if (memWatchStep == 0)
+      return fail("--mem-watch-step: a number > 0");
+    mo.step = memWatchStep;
+    memWatch.emplace(logMem, mo,
+                     [&memWatch](sea::MemWatch::Budget b, uint64_t limit,
+                                 const sea::MemWatch::Census &c) {
+                       budgetHit(b, limit, c);
+                     });
+    gMemWatch = &*memWatch;
+  }
+  struct ClearWatch {
+    ~ClearWatch() { gMemWatch = nullptr; }
+  } clearWatch;
   if (memLimit) {
     memPhaseNote.set("mem-limit-phase: none");
     rlim_t bytes = rlim_t(memLimit) << 30;
@@ -4892,6 +5426,12 @@ int main(int argc, char **argv) {
   if (ackOwn && !seam)
     return fail("--ack-own needs --seam (it rests on A-INB and A-OWN of the "
                 "accesses SeaM records)");
+  if (ackArm && !seam)
+    return fail("--ack-arm needs --seam (its maps are those of the accesses "
+                "SeaM records)");
+  if (ackCellsPlan && !seam)
+    return fail("--ack-cells-plan needs --seam (its objects are those of "
+                "the accesses SeaM records)");
   std::optional<expr::AckRelaxSelector> relaxSel;
   if (ackRelax.getNumOccurrences()) {
     std::string err;
@@ -4994,6 +5534,36 @@ int main(int argc, char **argv) {
                 "--split-leaves or --split-auto (each part is an encoding)");
   if (!iteStats && iteStatsMax.getNumOccurrences())
     return fail("--ite-stats-max needs --ite-stats");
+  if (vcFoldTopEqs && relaxSel)
+    return fail("--vc-fold-top-eqs: not with --ack-relax (its rounds "
+                "rebuild the lowered query)");
+  if (vcFoldTopEqs && !simplify)
+    return fail("--vc-fold-top-eqs needs --simplify (on under --seam): "
+                "the substituted query is simplified again");
+  // --vc-fold-top-eqs: on by default where it applies; an explicit =true
+  // where it does not is an error above, =false turns it off. A written
+  // query (--smt2, --split-smt2) is folded too: it is equisatisfiable
+  // with the VC, not equivalent, and the model trail extends its models;
+  // the query comparisons pass =false
+  // (docs/design/FoldTopEqs.md, "Default")
+  const char *foldTopEqsStatus = "on";
+  if (vcFoldTopEqs.getNumOccurrences())
+    foldTopEqsStatus = vcFoldTopEqs ? "on" : "off-flag";
+  else if (reach)
+    foldTopEqsStatus = "off-reach";
+  else if (relaxSel)
+    foldTopEqsStatus = "off-ack-relax";
+  else if (!simplify)
+    foldTopEqsStatus = "off-no-simplify";
+  const bool foldTopEqs = StringRef(foldTopEqsStatus) == "on";
+  if (!modelTrailOut.empty() && !foldTopEqs)
+    return fail(std::string("--model-trail-out needs the fold of "
+                            "--vc-fold-top-eqs (vc.fold-top-eqs-status: ") +
+                foldTopEqsStatus + ")");
+  if (vcFoldConcatIte.getNumOccurrences() && !foldTopEqs)
+    return fail(std::string("--vc-fold-concat-ite needs the fold of "
+                            "--vc-fold-top-eqs (vc.fold-top-eqs-status: ") +
+                foldTopEqsStatus + ")");
   if ((splitOn || splitCandidatesOpt) && relaxSel)
     return fail("--ack-relax: not with --split, --split-leaves, --split-auto "
                 "or --split-candidates");
@@ -5067,6 +5637,18 @@ int main(int argc, char **argv) {
     return fail(programName.empty() ? "no sea.program in input"
                                     : "no program named '" + programName + "'");
   bool abstract = sea::isAbstract(program);
+  // --place-slots places objects: a placed program (its sea.segment ops
+  // fix the bases) has none left; a program without pointers has nothing
+  // to place either way
+  if (placeSlotsOpt.getNumOccurrences() && !abstract &&
+      program.walk([](sea::SegmentOp) { return WalkResult::interrupt(); })
+          .wasInterrupted()) {
+    sea::diag::error("vc.place-slots-placed",
+                     "--place-slots needs an abstract program; this one is "
+                     "placed already (its segments fix the bases)",
+                     program.getLoc());
+    return 1;
+  }
   // z3 and Bitwuzla have mul overflow predicates (Bitwuzla's bvumulo /
   // bvsmulo, checked against z3's by check-semantics.py --bitwuzla); Yices
   // gets the expansion (as do add / sub overflow for every solver: solvers
@@ -5113,10 +5695,46 @@ int main(int argc, char **argv) {
     jo.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
     jo.maxSeconds = checkInbMaxTime;
     jo.boxAllExpand = boxAllExpandOpt;
+    // the part's options and solver, before the lowering below: the
+    // lowering follows the parts' solver (mul overflow). The EXPANDED command
+    // line (--config files and response files read, every option one
+    // `--name[=value]` token, paths absolute), without the input and the
+    // options of the job itself, so a part runs the same from any directory and
+    // with any profile path
+    {
+      SmallVector<const char *> expanded(args.begin(), args.end());
+      cl::ExpansionContext ectx(configAlloc, cl::TokenizeGNUCommandLine);
+      if (Error e = ectx.expandResponseFiles(expanded)) {
+        sea::diag::error("vc.config-read", toString(std::move(e)));
+        return 1;
+      }
+      std::string bad;
+      if (!sea::checkinb::partArguments(
+              ArrayRef<const char *>(expanded).drop_front(), jo.partArgs,
+              bad)) {
+        sea::diag::error("check-inb.unsupported", "--check-inb: " + bad);
+        return 1;
+      }
+#ifdef WITH_YICES2
+      constexpr bool haveYices = true;
+#else
+      constexpr bool haveYices = false;
+#endif
+      std::vector<std::string> ignored;
+      sea::checkinb::partDefaults(jo.partArgs, haveYices, jo.solverName,
+                                  jo.solverReason, jo.roArraysNote, ignored);
+      // once, at the job: z3-only options given with another solver
+      if (!ignored.empty())
+        sea::diag::warn("check-inb.z3-option-ignored",
+                        "the parts' verdict solver is " + jo.solverName +
+                            ", which ignores " + llvm::join(ignored, ", "));
+    }
     // the lowering's options, as the --lower below would take them; the
     // job runs its stages (docs/design/CheckInb.md)
     jo.lower.abstract = true;
-    jo.lower.nativeMulOverflow = nativeMulOverflow;
+    // the parts' solver, not the job's: Yices gets the mul overflow
+    // expansion
+    jo.lower.nativeMulOverflow = jo.solverName != "yices";
     jo.lower.fold = true;
     jo.lower.widenMemory = widenMemory;
     jo.lower.expandMemSet = !seam && !lambdaMem;
@@ -5125,8 +5743,8 @@ int main(int argc, char **argv) {
     jo.lower.opt = lowerOpt;
     jo.lower.memhavocNullNoop = memhavocNull == MemhavocNull::Noop;
     jo.lower.disable = lowerDisableMask;
-    jo.lower.place =
-        sea::PlaceFiles{placeIn, placeOut, symbolicSizeOpt, maxSymbolicSizeOpt};
+    jo.lower.place = sea::PlaceFiles{placeIn, placeOut, symbolicSizeOpt,
+                                     maxSymbolicSizeOpt, placeSlotsOpt};
     jo.lower.rangeFold = rangeFoldOpt;
     jo.lower.expandMemMove = expandMemMoveOpt;
     jo.lower.ptrCompanion = ptrCompanion != CompanionMode::Off;
@@ -5155,25 +5773,6 @@ int main(int argc, char **argv) {
     jo.source = inputFilename;
     for (int i = 1; i < argc; ++i)
       jo.jobArgs.push_back(argv[i]);
-    // the part's options: the EXPANDED command line (--config files and
-    // response files read, every option one `--name[=value]` token, paths
-    // absolute), without the input and the options of the job itself, so
-    // a part runs the same from any directory and with any profile path
-    {
-      SmallVector<const char *> expanded(args.begin(), args.end());
-      cl::ExpansionContext ectx(configAlloc, cl::TokenizeGNUCommandLine);
-      if (Error e = ectx.expandResponseFiles(expanded)) {
-        sea::diag::error("vc.config-read", toString(std::move(e)));
-        return 1;
-      }
-      std::string bad;
-      if (!sea::checkinb::partArguments(
-              ArrayRef<const char *>(expanded).drop_front(), jo.partArgs,
-              bad)) {
-        sea::diag::error("check-inb.unsupported", "--check-inb: " + bad);
-        return 1;
-      }
-    }
     return sea::checkinb::runJob(*module, program, jo, *gOut);
   }
   // With --seam the answer rests on the premises. A sat whose replay fails may
@@ -5270,7 +5869,8 @@ int main(int argc, char **argv) {
         /*keepByteWide=*/seam && seamWide, checkAlign,
         checkPtrIndex ? (checkPtrIndexAssumeAsserts ? 2u : 1u) : 0u, lowerOpt,
         memhavocNull == MemhavocNull::Noop, lowerDisableMask,
-        sea::PlaceFiles{placeIn, placeOut, symbolicSizeOpt, maxSymbolicSizeOpt},
+        sea::PlaceFiles{placeIn, placeOut, symbolicSizeOpt, maxSymbolicSizeOpt,
+                        placeSlotsOpt},
         rangeFoldOpt, expandMemMoveOpt, ptrCompanion != CompanionMode::Off,
         boxAllExpandOpt, widenMemoryPerClass);
     // pm keeps a reference to the phase's scope; SEA_PHASE_END resets it after
@@ -5414,6 +6014,27 @@ int main(int argc, char **argv) {
     for (NamedAttribute a : d)
       if (auto i = dyn_cast<IntegerAttr>(a.getValue()))
         l.kv(a.getName().getValue(), i.getInt());
+  }
+  // sea-place-static's placement (a program placed by this lowering):
+  // the rule and the numbers the slots change (BRUNCH_STAT place.<key>
+  // for the numbers)
+  // (only when this run placed it: a printed lowered program keeps the
+  // attribute)
+  if (auto d = program->getAttrOfType<DictionaryAttr>(sea::kPlaceStatsAttr);
+      d && lower && abstract) {
+    using sea::stats::Brunch;
+    // the rule is this run's option (the program records only numbers)
+    std::string rule = !placeIn.empty() ? std::string("file")
+                       : sea::diag::count("place.slots-fallback")
+                           ? std::string("fallback")
+                           : std::string(placeSlotsOpt);
+    lowerStats.line("place.slots").value(rule);
+    for (StringRef key :
+         {"objects", "slot-bits-max", "span-up", "span-stack", "over-aligned"})
+      if (auto i = d.getAs<IntegerAttr>(key))
+        lowerStats.line(("place." + key).str())
+            .value(uint64_t(i.getInt()))
+            .brunch(Brunch::Value);
   }
   // sea-lower-box-all's counters (a program with sea.box.all ops)
   if (auto d = program->getAttrOfType<DictionaryAttr>(sea::kBoxAllStatsAttr)) {
@@ -5847,7 +6468,8 @@ int main(int argc, char **argv) {
     seamOpts.checkInbPremise = seamCheckInbPremise;
     // own reads with their loads' execution conditions: also for the
     // stride rule's model check (AckermannModel::strideBroken)
-    seamOpts.trackOwnReads = narrowOffsets || ackOwn || ackStride;
+    seamOpts.trackOwnReads =
+        narrowOffsets || ackOwn || ackStride || ackCellsPlan || ackArm;
     seamOpts.layoutDecide = seamLayout;
     seamOpts.pruneSize0 = seamPruneSize0;
     seamOpts.wideAccess = seamWide;
@@ -5873,6 +6495,25 @@ int main(int argc, char **argv) {
     sea::SeaOpSem sem(efac, names, nativeMulOverflow, seam, &seamOpts);
     if (originsOn)
       sem.setOrigins(&origins);
+    // --mem-trace / budgets: this run's factory and rewriter, until the end
+    // of the run (declared after efac and sem: detached before they go)
+    struct WatchRun {
+      WatchRun(expr::ExprFactory &efac, sea::SeaOpSem &sem) {
+        if (!gMemWatch)
+          return;
+        expr::SeaMRewriter *rw = sem.seamRewriter();
+        gMemWatch->attach(efac,
+                          sem.seamStats() ? sea::MemWatch::StatsFn([&sem] {
+                            return sem.seamStatsTotal();
+                          })
+                                          : nullptr,
+                          rw ? &rw->cache() : nullptr);
+      }
+      ~WatchRun() {
+        if (gMemWatch)
+          gMemWatch->detach();
+      }
+    } watchRun(efac, sem);
     sem.setAddressMode(addressMode);
     sem.setPtrCompanion(companionMode != CompanionMode::Off,
                         companionMode == CompanionMode::Assume,
@@ -5997,7 +6638,7 @@ int main(int argc, char **argv) {
     lap("setup");
     Phase encodePhase("encode", vcRuns);
     std::optional<EncodeMeter> meter;
-    if (logPhase.on(sea::log::Flow) || memLimit) {
+    if (logPhase.on(sea::log::Flow) || memLimit || gMemWatch) {
       meter.emplace(efac, vcRuns);
       vcgen.setProgress(
           [&meter](const sea::EncodeProgress &p) { (*meter)(p); });
@@ -6110,6 +6751,29 @@ int main(int argc, char **argv) {
         }
         return r;
       });
+    }
+    // --vc-fold-top-eqs: the top-level facts substituted
+    // (docs/design/FoldTopEqs.md)
+    std::optional<sea::FoldTopEqsStats> foldTopEqsStats;
+    // its second step, after the Ackermann lowering; the model trail
+    sea::TopConstEliminator trailElim;
+    if (foldTopEqs) {
+      if (!sem.simplifies())
+        return fail("--vc-fold-top-eqs needs --simplify (on under --seam): "
+                    "the substituted query is simplified again");
+      sem.setTrailContext("fold-top-eqs");
+      sea::TopEqFolder folder([&](expr::Expr e) { return sem.simplify(e); },
+                              vcFoldConcatIte);
+      query = folder.fold(query);
+      if (originsOn)
+        origins = origins.through(
+            [&](const expr::Expr &n) { return folder.image(n); });
+      foldTopEqsStats = folder.stats();
+      if (foldTopEqsStats->roundCap)
+        sea::diag::warn("vc.fold-top-eqs-rounds",
+                        "--vc-fold-top-eqs: stopped at its round bound, "
+                        "before a fixpoint (exact; facts may be left)");
+      lap("fold-top-eqs");
     }
     // the unknown hint counts its open alias questions (only then: a DAG
     // walk after the solver); a reference, the nodes are hash-consed
@@ -6506,6 +7170,16 @@ int main(int argc, char **argv) {
     const bool narrowOn = narrowOffsets && inb && sem.seamRewriter();
     // --ack-own: the same premises
     const bool ownOn = ackOwn && inb && sem.seamRewriter();
+    // --ack-arm: the exact class needs no premise; the others A-INB (inb).
+    // Not on the words path (it records no access origins)
+    const bool armOn =
+        ackArm && sem.seamRewriter() && seamWords == WordsMode::Off;
+    // a pair may be dropped on A-INB + A-OWN (the model's own-broken)
+    const bool ownDropOn = ownOn || (armOn && inb);
+    // --ack-cells-plan: the same premises (A-INB, A-SEP); not on the words
+    // path (it records no access origins)
+    const bool cellsPlanOn = ackCellsPlan && inb && sem.seamRewriter() &&
+                             seamWords == WordsMode::Off;
     if (seamWords != WordsMode::Off)
       words = std::make_unique<expr::InitialWords>(
           8,
@@ -6609,7 +7283,8 @@ int main(int argc, char **argv) {
     } else {
       // the stride rule's record: the address each read had before the
       // nodes were expanded (the query only); also --narrow-offsets'
-      if ((strideOn || narrowOn || ownOn) && sem.seamRewriter())
+      if ((strideOn || narrowOn || ownOn || cellsPlanOn || armOn) &&
+          sem.seamRewriter())
         sem.seamRewriter()->recordAccesses(&accessOrigins);
       query = sem.solverTerm(query);
       if (sem.seamRewriter())
@@ -6683,6 +7358,10 @@ int main(int argc, char **argv) {
       uint64_t indices = 0, notOwn = 0, shared = 0, shadow = 0, noObject = 0,
                size = 0, many = 0;
     } narrowSkip;
+    // the narrowed indices whose object's base is / is not a multiple of
+    // 2^k (read from the placement's numeral, BaseRegistry::alignedTo):
+    // bvadd(base, zext(low_k)) is carry-free in the first case
+    uint64_t narrowBaseAligned = 0, narrowBaseUnaligned = 0;
     if (narrowOn || ownOn) {
       const auto &rules = sem.seamRewriter()->rules();
       const expr::BaseRegistry &reg = vcgen.baseRegistry();
@@ -6773,8 +7452,49 @@ int main(int argc, char **argv) {
           continue;
         narrowTable.byIndex.emplace(e->key.get(),
                                     expr::NarrowTable::Entry{site.base, k});
+        ++(expr::BaseRegistry::alignedTo(*obj, k) ? narrowBaseAligned
+                                                  : narrowBaseUnaligned);
         narrowSites.push_back(std::move(site));
       }
+    }
+    // ARM over the reads' addresses (--ack-arm, --ack-cells-plan): per read
+    // index, the join of the ARM maps of the addresses its selects had
+    // before the boundary, and whether one has a provenance no A-INB
+    // condition names (Rules::armInbGap); none for an index with more than
+    // kMaxAddrs addresses, a shadow read, or no address
+    std::optional<expr::AddrRangeAnalysis> armAnalysis;
+    if (armOn || cellsPlanOn)
+      armAnalysis.emplace(vcgen.baseRegistry());
+    auto armOfIndex = [&](const expr::AccessOrigins::Entry &e)
+        -> std::optional<expr::ArmTable::Entry> {
+      if (e.many || e.shadow || e.addrs.empty())
+        return std::nullopt;
+      const auto &rules = sem.seamRewriter()->rules();
+      std::optional<expr::ArmTable::Entry> r;
+      for (const expr::Expr &ad : e.addrs) {
+        const expr::AddrRangeMap &x = armAnalysis->alpha(ad);
+        if (!r)
+          r = expr::ArmTable::Entry{x, false};
+        else
+          r->map = r->map.join(x);
+        r->gap = r->gap || rules.armInbGap(ad, 1);
+      }
+      return r;
+    };
+    // --ack-arm's table (docs/design/Ackermann.md, "ARM separation")
+    expr::ArmTable armTable;
+    if (armOn) {
+      const expr::BaseRegistry &reg = vcgen.baseRegistry();
+      const auto &rules = sem.seamRewriter()->rules();
+      for (const auto &kv : accessOrigins.byIndex)
+        if (auto e = armOfIndex(kv.second))
+          armTable.byIndex.emplace(kv.first, std::move(*e));
+      for (const expr::ObjectBase &o : reg.objects())
+        armTable.keyOf.emplace(rules.erase(o.constant).get(), o.order);
+      armTable.nonZero = [&reg](unsigned key) {
+        return key < reg.size() && !reg.objects()[key].size.isZero();
+      };
+      armTable.premises = inb;
     }
     // Ackermann lowering of read-only arrays (an encoding step of the query,
     // docs/design/Ackermann.md); its table rebuilds the arrays on a model
@@ -6789,6 +7509,8 @@ int main(int argc, char **argv) {
       ack.setNarrow(&narrowTable);
     if (ownOn)
       ack.setOwn(&ownTable);
+    if (armOn)
+      ack.setArm(&armTable);
     if (strideOn && !accessOrigins.byIndex.empty()) {
       ack.setAccessOrigins(&accessOrigins);
       std::unordered_set<expr::ENode *> size0;
@@ -6843,8 +7565,119 @@ int main(int argc, char **argv) {
     const bool lowered = ackOn || ufOn;
     // the origins of the lowering's input (the reads' selects)
     sea::ExprOrigins preAckOrigins;
+    // --ack-cells-plan: the lowering's input, for the plan's own lowering
+    expr::Expr preLowerQuery = cellsPlanOn && ackOn ? query : expr::Expr();
     if (lowered)
       query = ack.lower(query);
+    // --ack-cells-plan: a lowering configured as the real one, recording
+    // its constrained pairs and the selects of each read, made after the
+    // real one (the query is built first and stays as it is) and discarded;
+    // the reads' objects from ARM over their access addresses
+    std::optional<expr::CellsPlan> cellsPlan;
+    if (cellsPlanOn && ackOn && !ufOn) {
+      expr::Ackermannizer dry;
+      dry.setValues(layoutValues);
+      dry.setDecider(ackDecider, deciderOpt);
+      if (narrowOn)
+        dry.setNarrow(&narrowTable);
+      if (ownOn)
+        dry.setOwn(&ownTable);
+      if (armOn)
+        dry.setArm(&armTable);
+      if (strideOn && !accessOrigins.byIndex.empty()) {
+        dry.setAccessOrigins(&accessOrigins);
+        std::unordered_set<expr::ENode *> size0;
+        for (const expr::ObjectBase &o : vcgen.baseRegistry().objects())
+          if (o.size.isZero())
+            size0.insert(o.constant.get());
+        dry.setSize0Bases(std::move(size0));
+        dry.setAssumePremises(inb);
+      }
+      dry.recordPairs(true);
+      dry.keepImages(true);
+      (void)dry.lower(preLowerQuery);
+      const expr::BaseRegistry &reg = vcgen.baseRegistry();
+      const auto &rules = sem.seamRewriter()->rules();
+      std::vector<expr::CellsObjectInfo> objs(reg.size());
+      for (const expr::ObjectBase &o : reg.objects())
+        if (o.order < objs.size())
+          objs[o.order] = expr::CellsObjectInfo{
+              rules.erase(o.constant),
+              o.size.getActiveBits() <= 63 ? o.size.getZExtValue() : UINT64_MAX,
+              o.size.getActiveBits() <= 63, o.align, o.name};
+      uint64_t inbGapReads = 0;
+      // the join of the ARM maps of the access addresses of every select
+      // merged into the read (armOfIndex); none if one has no usable record
+      auto readMap = [&](size_t a,
+                         size_t k) -> std::optional<expr::AddrRangeMap> {
+        const auto &rd = dry.arrays()[a].reads[k];
+        std::optional<expr::AddrRangeMap> m;
+        for (const expr::Expr &sel : rd.selects) {
+          auto it = accessOrigins.byIndex.find(sel->arg(1));
+          if (it == accessOrigins.byIndex.end())
+            return std::nullopt;
+          std::optional<expr::ArmTable::Entry> e = armOfIndex(it->second);
+          if (!e)
+            return std::nullopt;
+          // a provenance no A-INB condition names (Rules::armInbGap): the
+          // rewriter refuses decisions on it; the read is unknown
+          if (e->gap) {
+            ++inbGapReads;
+            return expr::AddrRangeMap::top();
+          }
+          m = m ? m->join(e->map) : e->map;
+        }
+        return m;
+      };
+      // the cells of an array: its memory value is the name of its
+      // constant (the havoc's variant of the register of a sea value); an
+      // aligned word memory has its cells at offsets 0 mod k (the pass that
+      // chose the layout proved it), any other memory at every unit
+      auto cellUnits = [&](size_t a) -> unsigned {
+        expr::Expr n =
+            expr::op::bind::fname(expr::op::bind::fname(dry.arrays()[a].array));
+        for (unsigned i = 0; i < 8 && (expr::isOpX<expr::VARIANT>(n) ||
+                                       expr::isOpX<expr::TAG>(n));
+             ++i)
+          n = n->right();
+        if (!expr::isOpX<expr::MLIR_VALUE>(n))
+          return 1;
+        auto m = mlir::dyn_cast<sea::MemType>(
+            expr::getTerm<sea::ValueRef>(n).value.getType());
+        return m && m.getLayout() == sea::MemLayout::aligned ? m.getCellUnits()
+                                                             : 1;
+      };
+      cellsPlan = expr::planCells(dry, readMap, objs, cellUnits);
+      cellsPlan->readsInbGap = inbGapReads;
+      for (const expr::CellsPlan::Group &g : cellsPlan->groups) {
+        std::string names, sizes;
+        for (unsigned b : g.objects) {
+          names += (names.empty() ? "" : "+") + objs[b].name;
+          sizes += (sizes.empty() ? "" : "+") + std::to_string(objs[b].size);
+        }
+        SEA_LOG(logCellsPlan, sea::log::Object)
+            .msg("group")
+            .kv("array",
+                *expr::op::bind::fname(dry.arrays()[g.array].array->first()))
+            .kv("obj", names)
+            .kv("size", sizes)
+            .kv("reads", g.reads)
+            .kv("arm-interval", g.readsInterval)
+            .kv("full-object", g.readsFull)
+            .kv("unknown", g.unknown)
+            .kv("indices", g.indices)
+            .kv("cells", g.cells)
+            .kv("cells-bound", g.cellsBound ? 1 : 0)
+            .kv("arms", g.arms)
+            .kv("keep", g.keep)
+            .kv("other", g.other)
+            .kv("cost", g.cost)
+            .kv("keep-bits", g.keepBits)
+            .kv("cost-bits", g.costBits)
+            .kv("mode-count", g.convCount ? "cells" : "address")
+            .kv("mode-bits", g.convBits ? "cells" : "address");
+      }
+    }
     if (lowered && originsOn) {
       preAckOrigins = origins;
       origins =
@@ -6890,6 +7723,54 @@ int main(int argc, char **argv) {
         .kv("arrays", ack.stats().lowered)
         .kv("pairs", ack.stats().pairs)
         .kv("nodes-made", efac.nodesMade());
+    // --vc-fold-top-eqs, second step: the top-level definitions x = c of
+    // constants (the Ackermann reads of the facts among them) leave the
+    // query for the model trail (docs/design/FoldTopEqs.md, "Model trail")
+    uint64_t trailCells = 0, trailDefs = 0;
+    if (foldTopEqs) {
+      query = trailElim.eliminate(query);
+      if (originsOn)
+        origins = origins.through(
+            [&](const expr::Expr &n) { return trailElim.image(n); });
+      // the eliminated Ackermann reads: cells of their arrays
+      std::unordered_map<expr::ENode *, std::pair<size_t, size_t>> readOf;
+      if (lowered)
+        for (size_t a = 0; a < ack.arrays().size(); ++a)
+          for (size_t k = 0; k < ack.arrays()[a].reads.size(); ++k)
+            readOf.emplace(ack.arrays()[a].reads[k].value.get(),
+                           std::make_pair(a, k));
+      for (const sea::TrailEntry &t : trailElim.trail())
+        ++(readOf.count(t.var.get()) ? trailCells : trailDefs);
+      if (!modelTrailOut.empty()) {
+        auto body = [&](llvm::raw_ostream &os) {
+          sea::EZ3 tz3(efac);
+          auto smt = [&](const expr::Expr &e) {
+            return sea::z3_to_smtlib(tz3, trailElim.image(e));
+          };
+          for (const sea::TrailEntry &t : trailElim.trail()) {
+            llvm::json::Object o;
+            auto it = readOf.find(t.var.get());
+            o["kind"] = it != readOf.end() ? "cell" : "def";
+            o["var"] = sea::z3_to_smtlib(tz3, t.var);
+            if (it != readOf.end()) {
+              const auto &arr = ack.arrays()[it->second.first];
+              o["array"] = sea::z3_to_smtlib(tz3, arr.array);
+              o["index"] = smt(arr.reads[it->second.second].index);
+            }
+            o["value"] = sea::z3_to_smtlib(tz3, t.value);
+            os << llvm::json::Value(std::move(o)) << "\n";
+          }
+          return success();
+        };
+        const std::string trailPath =
+            splitOn ? modelTrailOut + ".part" + std::to_string(splitPartId)
+                    : modelTrailOut;
+        if (failed(sea::writeFileAtomic(trailPath, body, "vc.model-trail-out",
+                                        "--model-trail-out")))
+          return 1;
+      }
+      lap("model-trail");
+    }
     // --ack-relax: the parts of the solver's query (after --vc-defs) a
     // round's query is made of: the lowered body, each candidate's conjunct,
     // the definitions of named sums (all of them: the names are made once,
@@ -7209,6 +8090,29 @@ int main(int argc, char **argv) {
         lstats.report(r, "lambda.", lambdaFinalSimplify);
       if (words)
         words->report(r, "words.");
+      // --vc-fold-top-eqs: whether the fold ran (and why not)
+      r.line("vc.fold-top-eqs-status").value(foldTopEqsStatus);
+      if (foldTopEqsStats) {
+        const sea::FoldTopEqsStats &f = *foldTopEqsStats;
+        r.line("vc.fold-top-eqs")
+            .brunch(sea::stats::Brunch::Parts)
+            .kv("facts", f.facts)
+            .kv("term", f.termFacts)
+            .kv("split", f.splitFacts)
+            .kv("bool", f.boolFacts)
+            .kv("uses", f.uses)
+            .kv("rounds", f.rounds)
+            .kv("concat-ite", f.hoisted)
+            .kv("concat-ite-refused", f.hoistRefused)
+            .kv("skipped-masked", f.skippedMasked)
+            .kv("skipped-untyped", f.skippedUntyped)
+            .kv("skipped-ptr", f.skippedPtr);
+        r.line("vc.model-trail")
+            .brunch(sea::stats::Brunch::Parts)
+            .kv("cells", trailCells)
+            .kv("defs", trailDefs)
+            .kv("rounds", trailElim.rounds());
+      }
       {
         using Stride = expr::Ackermannizer::Stats::Stride;
         r.line("vc.ackermann").value(ackOn ? "on" : "off");
@@ -7244,6 +8148,25 @@ int main(int argc, char **argv) {
           r.line("vc.ack-own-boundary-indices").value(ownBoundaryIndices);
         }
       }
+      // --ack-arm: whether it ran, with the premise classes or the exact one
+      // only (and why not); its counters are vc.ackermann-arm-*
+      if (ackArm)
+        r.line("vc.ack-arm")
+            .value(seamWords != WordsMode::Off ? "off-seam-words"
+                   : !armOn                    ? "off-no-seam"
+                   : !ackOn                    ? "off-no-ackermann"
+                   : !inb                      ? "exact-only"
+                                               : "on");
+      // --ack-cells-plan: whether it ran (and why not), its counters
+      if (ackCellsPlan) {
+        r.line("vc.cells-plan")
+            .value(seamWords != WordsMode::Off ? "off-seam-words"
+                   : !cellsPlanOn              ? "off-no-premises"
+                   : !ackOn                    ? "off-no-ackermann"
+                                               : "on");
+        if (cellsPlan)
+          cellsPlan->report(r, "vc.cells-plan-");
+      }
       // --ack-relax: whether it runs, over how many candidates (the rounds
       // are reported after the solve)
       if (relaxSel) {
@@ -7262,6 +8185,8 @@ int main(int argc, char **argv) {
         if (narrowOn && ackOn) {
           r.line("vc.narrow-indices").value(narrowSkip.indices);
           r.line("vc.narrow-eligible").value(narrowSites.size());
+          r.line("vc.narrow-base-aligned").value(narrowBaseAligned);
+          r.line("vc.narrow-base-unaligned").value(narrowBaseUnaligned);
           r.line("vc.narrow-skip-not-own").value(narrowSkip.notOwn);
           r.line("vc.narrow-skip-shared-boundary").value(narrowSkip.shared);
           r.line("vc.narrow-skip-no-object").value(narrowSkip.noObject);
@@ -8090,6 +9015,9 @@ int main(int argc, char **argv) {
       int rc =
           sea::runReach(program, reachTargets, vcgen, query, sem, ctx, ropts,
                         hooks, *gOut, reachRuns ? &*reachRuns : nullptr);
+      // reach has answered: a budget never replaces its targets
+      if (gMemWatch)
+        gMemWatch->disarm();
       SEA_PHASE_END(reachPhase).kv("targets", reachTargets.size());
       return rc;
     }
@@ -8330,6 +9258,11 @@ int main(int argc, char **argv) {
                                                                 : "unknown")
         .kv("time", solveSec)
         .kv("nodes-made", efac.nodesMade());
+    // a verdict is never replaced by a budget hit: the budgets bound
+    // encoding and solving (replay is bounded by --mem-limit only)
+    if (gMemWatch && (res == sea::solver::SolverResult::SAT ||
+                      res == sea::solver::SolverResult::UNSAT))
+      gMemWatch->disarm();
     SEA_PHASE_END(solvePhase);
     splitPart.solveSeconds = solveSec;
     {
@@ -8436,8 +9369,9 @@ int main(int argc, char **argv) {
     // eagerly: AckermannModel)
     uint64_t strideBroken = 0;
     if (ackOn && strideOn && ack.stats().stridePairs) {
-      auto probeInner = solver->get_model();
-      expr::AckermannModel probe(*probeInner, ack);
+      auto probeSolver = solver->get_model();
+      sea::TrailModel probeInner(*probeSolver, trailElim);
+      expr::AckermannModel probe(probeInner, ack);
       for (size_t a = 0; a < ack.arrays().size(); ++a)
         (void)probe.function(a);
       {
@@ -8476,9 +9410,14 @@ int main(int argc, char **argv) {
     }
 
     auto solverModel = solver->get_model();
+    // --vc-fold-top-eqs: the model extended by the trail (a model of the
+    // query before the eliminations)
+    sea::TopConstEliminator noTrail;
+    sea::TrailModel trailModel(*solverModel,
+                               modelTrailPlantSkip ? noTrail : trailElim);
     // the cells of the solver's arrays no constraint reads: defaults
     // (`..` in prints, docs/design/Print.md)
-    expr::ReadCellsModel model(*solverModel, query);
+    expr::ReadCellsModel model(trailModel, query);
     // with the lowering, the arrays are rebuilt from the model of the lowered
     // query: every evaluation (replay, validation) reads them through it
     std::unique_ptr<expr::AckermannModel> ackModel;
@@ -8521,14 +9460,15 @@ int main(int argc, char **argv) {
              << " inconsistent=" << ackModel->inconsistent();
       if (strideOn)
         vout() << " stride-broken=" << ackModel->strideBroken();
-      if (ownOn)
+      if (ownDropOn)
         vout() << " own-broken=" << ackModel->ownBroken()
                << " own-excused=" << ownExcused;
       vout() << "\n";
       if (ownExcused)
         sea::diag::warn("vc.ack-own-collision-excused",
                         Twine(ownExcused) +
-                            " read pair(s) whose constraint --ack-own dropped "
+                            " read pair(s) whose constraint --ack-own or "
+                            "--ack-arm dropped "
                             "are at one index with different cells in the "
                             "model (reads that do not execute, or whose guard "
                             "is false); the replayed run fails the assertion "

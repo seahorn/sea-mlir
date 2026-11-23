@@ -1,10 +1,10 @@
-// RUN: sea-vc %s --lower | FileCheck %s --check-prefixes=CHECK,KEPT,DEAD
-// RUN: sea-vc %s --lower --seam | FileCheck %s --check-prefixes=CHECK,KEPT,DEAD
-// RUN: sea-vc %s --lower --widen-memory=8 | FileCheck %s --check-prefixes=CHECK,KEPT,DEAD
-// RUN: sea-vc %s --lower --lower-opt=false | FileCheck %s --check-prefixes=CHECK,KEPT,LIVE
-// RUN: sea-vc %s --lower --print-refs=strong | FileCheck %s --check-prefixes=CHECK,KEPT,LIVE
-// RUN: sea-vc %s --lower --print-refs=weak | FileCheck %s --check-prefixes=CHECK,WEAK,DEAD
-// RUN: sea-vc %s --lower --print=off | FileCheck %s --check-prefix=OFF
+// RUN: sea-vc %s --lower --place-slots=none | FileCheck %s --check-prefixes=CHECK,KEPT,DEAD
+// RUN: sea-vc %s --lower --place-slots=none --seam | FileCheck %s --check-prefixes=CHECK,KEPT,DEAD
+// RUN: sea-vc %s --lower --place-slots=none --widen-memory=8 | FileCheck %s --check-prefixes=CHECK,KEPT,DEAD
+// RUN: sea-vc %s --lower --place-slots=none --lower-opt=false | FileCheck %s --check-prefixes=CHECK,KEPT,LIVE
+// RUN: sea-vc %s --lower --place-slots=none --print-refs=strong | FileCheck %s --check-prefixes=CHECK,KEPT,LIVE
+// RUN: sea-vc %s --lower --place-slots=none --print-refs=weak | FileCheck %s --check-prefixes=CHECK,WEAK,DEAD
+// RUN: sea-vc %s --lower --place-slots=none --print=off | FileCheck %s --check-prefix=OFF
 
 // sea-vc replays a sat model and prints the program's prints, after the
 // replay status (the `replay:` status line stays first and exact) and
@@ -65,8 +65,10 @@ sea.program @main {
 // OFF: validate:
 
 // Kept at the end: other tests pin the line numbers above.
-// RUN: sea-vc %s --lower --print-refs=strong --replay-original | FileCheck %s --check-prefix=ORIG
+// RUN: sea-vc %s --lower --place-slots=none --print-refs=strong --replay-original | FileCheck %s --check-prefix=ORIG
 // ORIG: replay.original: status=assert-failed {{.*}} match=yes
+
+// (the RUN lines) --place-slots=none: the checks name the addresses of the packed placement.
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

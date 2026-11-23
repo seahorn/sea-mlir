@@ -10,7 +10,7 @@
 // the stats show the rules that did it.
 // RUN: sea-vc %s --lower --widen-memory=4 --seam --seam-stats | FileCheck %s --check-prefix=STATS
 // RUN: sea-vc %s --lower --widen-memory=4 --seam --seam-simplify=0 --smt2 | FileCheck %s --check-prefix=SMT
-// RUN: sea-vc %s --lower --widen-memory=4 --seam --smt2 | FileCheck %s --check-prefix=SIMP
+// RUN: sea-vc %s --lower --widen-memory=4 --seam --vc-fold-top-eqs=false --smt2 | FileCheck %s --check-prefix=SIMP
 // RUN: sea-vc %s --lower --widen-memory=4 --smt2 | FileCheck %s --check-prefix=PLAIN
 // RUN: sea-vc %s --lower --widen-memory=4 | FileCheck %s --check-prefix=VERDICT
 // RUN: sea-vc %s --lower --widen-memory=4 --seam | FileCheck %s --check-prefix=VERDICT

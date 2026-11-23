@@ -314,6 +314,11 @@ Deviations from the text above (each with why):
    gives `inBounds(s + k)`; where it does not (guard false) the value is
    unused. So no unsound firing can pass, and the bounds job (which checks
    the source and destination ranges) still discharges what is used.
+   The translated index `s + k` is a node over s, so it has s's provenance
+   even when k = j - d mentions other objects (an undecided pair of
+   objects, SeaM.md "Soundness stance"); the same argument covers it: its
+   A-INB is used only where the guard holds, and there it follows from the
+   source range's.
    Tracking the guard per translated index (the index is normalized after
    the rule fires) was not worth the machinery. [HYP] revisit if a firing
    on a translated read is ever reported invalid only for guard-false

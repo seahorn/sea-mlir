@@ -16,6 +16,7 @@ CHECK: test: row ok
 CHECK: test: thesis-examples ok
 CHECK: test: arm ok
 CHECK: test: provenance ok
+CHECK: test: node-view ok
 CHECK: test: null ok
 CHECK: test: prune-size0 ok
 CHECK: random: terms=300

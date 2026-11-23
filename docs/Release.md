@@ -29,7 +29,9 @@ include it (see [Reporting a bug](#reporting-a-bug)).
   secondary: they work and are smoke-tested, the best solver differs per
   workload (Yices wins on some, times out on others), and both are
   optional at build time. Release binaries do not include Yices (see
-  [Runtime requirements](#runtime-requirements)). It includes:
+  [Runtime requirements](#runtime-requirements)). In a build with Yices,
+  the parts of `--check-inb` default to Yices (see
+  [CheckInb.md](design/CheckInb.md)). It includes:
   - the VC lowering (`--lower`): placement, tracking, fat pointers,
     struct scalarization and the other passes of `lib/Transforms`;
   - SeaM (`--seam`), the object-aware rewriting of loads and stores
@@ -233,6 +235,7 @@ short:
 | 4 | `--seam`: sat that does not replay because the program leaves an object with the model's inputs. A-INB does not hold (A-SEP or A-NULL may not), the answer is inconclusive, and the program has a memory-safety error. |
 | 5 | `--seam-check`: an invalid rewrite. A bug, so do not trust the verdict. |
 | 6 | `--replay-original`: sat on the lowered program, but the original program does not fail the same assertion on the same inputs: the lowering changed the program (a bug, or a program that depends on placement). |
+| 8 | `--max-nodes` / `--max-rss` exceeded (`result: unknown`, `budget: hit`). |
 
 Where a counterexample fails (`sea-vc` after `replay: assert-failed`,
 `sea-run` after `status: assert-failed`):

@@ -1,27 +1,29 @@
+// --place-slots=none: the out-of-bounds store lands in the next object only
+// when objects are packed.
 // sea-drop-fresh-memhavoc rests on A-SEP: a store to another object, out
 // of its bounds, may land in the fresh object after placement, and then
 // the memhavoc was not a no-op. The drop is reported as A-SEP reliance,
 // also without --seam and with --seam-premises=0 (discharged by a separate
 // memory-safety check, not in sea-mlir yet).
 // RUN: split-file %s %t
-// RUN: sea-vc %t/oob.mlir --lower | FileCheck %s --check-prefix=OOB
+// RUN: sea-vc %t/oob.mlir --lower --place-slots=none | FileCheck %s --check-prefix=OOB
 // OOB: assume.a-sep: drop-fresh-memhavoc=1
 // OOB: result: unsat
-// RUN: sea-vc %t/oob.mlir --lower --seam --seam-premises=0 | FileCheck %s --check-prefix=INB0
+// RUN: sea-vc %t/oob.mlir --lower --place-slots=none --seam --seam-premises=0 | FileCheck %s --check-prefix=INB0
 // INB0: seam.premises: off (lowering: drop-fresh-memhavoc=1 rests on A-SEP)
 // With --seam the out-of-object store (it lands in another object) is
 // reported and the premises stay; the model needs that store, so its
 // replay leaves an object: inconclusive, exit 4.
-// RUN: not sea-vc %t/oob.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=SEAM
+// RUN: not sea-vc %t/oob.mlir --lower --place-slots=none --seam 2>&1 | FileCheck %s --check-prefix=SEAM
 // SEAM: [vc.seam-out-of-object]
 // SEAM: seam.out-of-object: accesses=1 object=1
 // SEAM: [vc.seam-inb-spurious]
 // The opt-in fallback without the premises warns: the answer still rests
 // on A-SEP.
-// RUN: sea-vc %t/oob.mlir --lower --seam --seam-out-of-object=fallback 2>&1 | FileCheck %s --check-prefix=FALLBACK
+// RUN: sea-vc %t/oob.mlir --lower --place-slots=none --seam --seam-out-of-object=fallback 2>&1 | FileCheck %s --check-prefix=FALLBACK
 // FALLBACK: [vc.seam-fallback-conditional]
 // FALLBACK: seam.premises: off (fallback: {{.*}}) (lowering: drop-fresh-memhavoc=1 rests on A-SEP)
-// RUN: sea-vc %t/oob.mlir --lower --brunch-stats | FileCheck %s --check-prefix=BRUNCH
+// RUN: sea-vc %t/oob.mlir --lower --place-slots=none --brunch-stats | FileCheck %s --check-prefix=BRUNCH
 // BRUNCH: BRUNCH_STAT assume.a-sep-drop-fresh-memhavoc 1
 // The abstract program shows the out-of-bounds store.
 // RUN: not sea-run %t/oob.mlir --input=2@heap.1+0=0 2>&1 | FileCheck %s --check-prefix=INTERP
@@ -31,17 +33,17 @@
 // then the memhavoc was not a no-op either. Any access before the memhavoc
 // makes the drop rest on A-SEP. The placed program, where nothing is
 // dropped, fails.
-// RUN: sea-vc %t/xread.mlir --lower | FileCheck %s --check-prefix=XREAD
+// RUN: sea-vc %t/xread.mlir --lower --place-slots=none | FileCheck %s --check-prefix=XREAD
 // XREAD: assume.a-sep: drop-fresh-memhavoc=1
 // XREAD: result: unsat
-// RUN: sea-vc %t/xread.mlir --lower --seam --seam-premises=0 | FileCheck %s --check-prefix=XREAD0
+// RUN: sea-vc %t/xread.mlir --lower --place-slots=none --seam --seam-premises=0 | FileCheck %s --check-prefix=XREAD0
 // XREAD0: seam.premises: off (lowering: drop-fresh-memhavoc=1 rests on A-SEP)
 // RUN: sea-opt %t/xread.mlir --sea-lower-tracking --sea-lower-fat-pointers --sea-place-static -o %t/xread-placed.mlir
 // RUN: sea-vc %t/xread-placed.mlir --lower | FileCheck %s --check-prefix=PLACED
 // PLACED: result: sat
 // PLACED: replay: assert-failed
 // No access before the memhavoc and its range in the object: no reliance.
-// RUN: sea-vc %t/plain.mlir --lower | FileCheck %s --check-prefix=PLAIN
+// RUN: sea-vc %t/plain.mlir --lower --place-slots=none | FileCheck %s --check-prefix=PLAIN
 // PLAIN-NOT: assume.a-sep
 // PLAIN: result: sat
 // REQUIRES: z3

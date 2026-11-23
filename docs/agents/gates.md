@@ -220,7 +220,9 @@ python3 utils/encoding-diff.py --sea-vc build/bin/sea-vc \
 ```
 
 Both sides run with `--lower --seam --smt2 --ackermannize=off` (no symbol
-is named after a read's position). Nondets and objects are renamed from
+is named after a read's position), and `--vc-fold-top-eqs=false` when the
+binary has it (query-diff and cover-diff level 1 too: the comparisons read
+the unfolded query). Nondets and objects are renamed from
 their sites to the names the programs give them, so two programs that
 number their sites differently compare by name. A symbol declared on one
 side only is projected (`exists`). The classes are `identical`, `same-dag`

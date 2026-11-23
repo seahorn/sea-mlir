@@ -19,6 +19,7 @@ sorted, with the highest level each emits and a one-line description:
 $ sea-vc --log=help
 log tags (--log=<pattern>[:<level>]; level 1 flow, 2 object, 3 detail; docs/reference/logging.md):
   lower.pass     1  each pass of a pass manager sea-vc runs (--lower, --sink-assumes, --print-refs): ops before and after, time
+  vc.mem         1  a memory heartbeat (--mem-trace): every --mem-trace-interval seconds while Expr nodes are made, and at the end of each phase: memory, live nodes, the top operators, rules and sea ops (docs/agents/blowups.md)
   vc.phase       1  the start and end of each sea-vc phase (lower, encode, simplify, solver-term, ackermann, solve, replay, replay-original); the end with time, memory and sizes; progress inside encode
   vc.reach       2  each sea-vc --reach query: target, answer, solve and replay time; each target a run decided
   vc.solve       1  each solver call of the verdict: backend, result, time, Expr nodes made so far
@@ -49,6 +50,7 @@ To see what a solver receives, use `--smt2`, not a log.
 | Tag | Level | Tool | Event |
 |---|---|---|---|
 | `vc.phase` | 1 | `sea-vc` | the start and end of each phase; progress inside encode |
+| `vc.mem` | 1 | `sea-vc` | a memory heartbeat while terms are made, and the census at the end of each phase ([Diagnosing a VC blowup](../agents/blowups.md)) |
 | `lower.pass` | 1 | `sea-vc` | one pass run |
 | `lower.box-all` | 1, 2 | `sea-vc`, `sea-opt` | `sea-lower-box-all`: its counters per run, refusals by reason (1); each op lowered, expanded, empty or dead (2) |
 | `lower.expand-memmove` | 1, 2 | `sea-vc`, `sea-opt` | `sea-expand-small-memmove`: its counters per run (1); each memmove expanded (bytes) or kept (reason) (2) |
@@ -149,6 +151,33 @@ Under `--mem-limit` the same counters are kept (with no events unless
 
 `--progress` is the same as `--log=vc.phase`, and `--progress=false` the
 same as `--log=vc.phase:0`, at their place among the `--log` entries.
+
+`vc.mem` (`--mem-trace`, the same as `--log=vc.mem`): what the terms grow
+by, while they grow. The Expr factory calls a watch every 4096 terms made;
+every `--mem-trace-interval` seconds (default 10, not tuned; a beat also
+waits 20 times the time of its own census, which walks the live terms;
+`0`: at every check) it writes a `beat` event, and at the end of each
+phase a `phase-end` event, with the census of that moment:
+
+```text
+log: vc.mem beat phase=encode run=1 time=95.875 rss-mb=2471 vm-mb=2562 peak-rss-mb=2470 nodes-live=5613142 nodes-made=11800583 rw-cache=1781674 rule-calls=1792549 op=sea.load op-at=OUT/fd_h2_tx.c:45:24 op-nodes=120672 top-ops="2880144:overlap,1437851:=,1195324:ite,..." top-rules=359754:decide.memo-hits,...,304168:row.smap-group,... top-sites=1033636:sea.load@OUT/fd_h2_tx.c:44:24,...
+```
+
+Fields: `phase` and `run` (the last `vc.phase` start), `time` (since the
+start of the run), the memory as for `vc.phase`, `nodes-live` (the
+hash-consed terms alive now: the factory's unique table), `nodes-made`,
+`rw-cache` (entries of the rewriter's cache, which keep their terms alive)
+and `rule-calls` (with `--seam` or `--simplify`), in `encode` the operation
+in progress (`op`, `op-at`, `op-nodes`: the terms it made so far), and
+three lists of `--mem-top` items (default 8), count first (an operator name
+can hold a colon), `-` when empty: `top-ops` (operators by live terms),
+`top-rules` (rules by firings since the last beat; a rule that counts
+nested rules on a scratch set adds them when it returns), `top-sites` (the
+operations of `encode` that made the most terms, the one in progress
+included; their loads' and stores' SeaM rewriting is part of them). Events
+come only while terms are made: a phase that makes none (the solver's
+check) has its `phase-end` event only. With the tag off the factory has
+no watch: one compare per term made.
 
 `lower.pass`: one event per pass run of the pass managers `sea-vc` builds
 (`--lower`, `--print-refs`, `--sink-assumes`): `pass` (its argument,

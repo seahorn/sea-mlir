@@ -277,7 +277,7 @@ sha256, suite revisions, verdict counts, failures, slow jobs) is appended to
 
 `bench.py establish <suite|family>...` runs the default configuration and
 writes `expected`, `tier`, `time` and `established` into the manifests:
-sat / unsat become the expected verdict, a timeout, unknown, memout or error
+sat / unsat become the expected verdict, a timeout, unknown, memout, budget or error
 becomes `unknown-ok` with tier `hard`. `--resume <results dir>` reuses the
 finished runs of an interrupted establish. With `--no-run` it only writes the manifests from
 those runs; jobs without a run get `expected: pending` (no tier: not gated). It prints `HARNESS-DISAGREE:` when a

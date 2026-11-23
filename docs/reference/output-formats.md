@@ -27,13 +27,20 @@ The main lines of `sea-vc`:
 | `seam.out-of-object: accesses=<n> object=<a> shared=<s> unknown=<u> null=<z> gap=<g>` | $n$ accesses leave their object on every address alternative, by where they land, pairwise (`shared`: a gap cell out-of-object accesses, or address alternatives outside their object, through two provenances reach); the premises stay, so an `unsat` holds only if the `object`, `shared`, `unknown` and `null` ones do not execute (A-SEP or A-NULL may break if they do, through the alternatives that meet; the warning also names A-NULL for any one through null and A-NOWRAP for any one whose address wraps, each if it executes through that alternative); `gap`: no other provenance found in their cells (best effort, not a proof that A-SEP holds); `seam.out-of-object-at:` names the first 8 (`with=`: the other access of a shared pair) |
 | `assume.memset-bound: count=<n> bound=<K>` | $n$ symbolic-length memsets were bounded by $K$; counted where `sea-expand-memset` made the bounds, so it may include bounds the answer no longer needs (a later fold proved one redundant, or the lowering erased its memset) |
 | `assume.symbolic-size-bound: allocs=<n> room=<r>` | `--lower` of an abstract program: $n$ allocations of non-constant size got $r$ units of room each (`--max-symbolic-size`, default 4096) and `assume(size <= r)` (`--symbolic-size=assume`, the default; warning `place.symbolic-size-assume`); $n$ is counted at placement, so it may include bounds the answer no longer needs (a later fold proved one redundant, or the lowering erased its allocation). An `unsat` holds only for sizes up to $r$. Not with `--symbolic-size=assert`, which asserts the bound instead |
+| `place.slots: none\|aligned\|fallback\|file` | `--lower` of an abstract program: the placement's rule (`--place-slots`; `fallback`: the aligned slots did not fit, warning `place.slots-fallback`; `file`: `--place-in`) |
+| `place.objects: <n>`, `place.slot-bits-max: <s>`, `place.span-up: <bytes>`, `place.span-stack: <bytes>`, `place.over-aligned: <n>` | the placed objects except null; the largest slot exponent, s = bitwidth(max(room, 1)); the bytes from the lowest base to the highest end (base + max(room, 1)) of the objects other than stack ones (the upward window) and of the stack objects (the stack window; 0: none); the objects whose base is a multiple of a power of two larger than their align, read from the bases. `place.over-aligned` is not 0 under `--place-slots=none` either (0x08048000 is a multiple of 2^15): compare two runs, not the number alone (where to look when a verdict differs between placements, [Placement files](#placement-files)). These numeric lines are BRUNCH_STAT `place.<key>`; `place.slots` is not |
 | `solve-time: <s>` | the solver's check |
 | `solver.z3-tactic: <t>`, `solver.z3-logic: <logic>` | z3 only: `--z3-tactic` when not the default, `--z3-logic` when given |
 | `result: sat|unsat|unknown|none` | the verdict (`none`: `--vcgen-only`, `--split-candidates`) |
 | `solve-timeout: true`, `mem-limit: hit` | why the result is `unknown` |
 | `mem-limit-phase: <phase> [run=<n>]` | after `mem-limit: hit`: the phase that was running (the last `vc.phase` start; `none`: before the first phase, while reading the input; `solve` for the solver's own limit) |
-| `mem-limit-progress: time= blocks= blocks-total= ops= ops-total= nodes-made= rss-mb= vm-mb= peak-rss-mb= [slowest-op= slowest-op-time= slowest-op-at=] [biggest-op= biggest-op-nodes= biggest-op-at=]` | after a hit in `encode`: the counters of its last progress tick (the fields of the `vc.phase progress` event, [Logging](logging.md); every `--progress-interval` seconds, so up to that old); absent before the first tick |
+| `mem-limit-progress: time= blocks= blocks-total= ops= ops-total= nodes-made= [rss-mb= vm-mb=] peak-rss-mb= [slowest-op= slowest-op-time= slowest-op-at=] [biggest-op= biggest-op-nodes= biggest-op-at=]` | after a hit in `encode`: the counters of its last progress tick (the fields of the `vc.phase progress` event, [Logging](logging.md); every `--progress-interval` seconds, so up to that old); absent before the first tick |
 | `mem-limit-op: <op> ops=<n> at=<where>` | after a hit in `encode`: the operation being encoded (the `n`-th in encoding order) and its first source position, else location name, else `-` (characters other than printable ASCII, `"`, `\` and space shown as `?`) |
+| `budget: hit resource=nodes\|rss limit=<n> nodes-live=<n> nodes-made=<n> rss-mb= vm-mb= peak-rss-mb= phase=<p> [run=<n>] time=<s> [rw-cache=<n> rule-calls=<n>]` | after `result: unknown`: `--max-nodes` (live terms) or `--max-rss` (MiB) was exceeded in encoding or solving, never after the solver's `sat` / `unsat` (exit status 8, error `vc.node-budget` / `vc.rss-budget`); the census of that moment follows ([Logging](logging.md), `vc.mem`) |
+| `budget.op-in-progress: <op> nodes=<n> at=<where>` | a hit in `encode`: the operation being encoded and the terms it made so far |
+| `budget.op: <operator> live=<n>` | the operators with the most live terms (`--mem-top`, largest first) |
+| `budget.rule: <rule> fired=<n> recent=<n>` | the rewrite rules by firings (`recent`: since the last `vc.mem` beat) |
+| `budget.site: <op> nodes=<n> at=<where>` | the operations of `encode` that made the most terms (SeaM's rewriting of their loads and stores included); with `--seam-stats` the `seam.*` counters follow, with `--brunch-stats` `BRUNCH_STAT budget nodes\|rss` |
 | `hint: split: open-aliases=<n>[ ackermann-constraints=<m>]; rerun with --split-candidates ...` | an `unknown` of a `--seam` run (not a split) whose normalized query has $n > 0$ open alias questions, or none and $m > 0$ constraints of the Ackermann lowering (then shown): where to look next |
 | `ite.values: kind=mem\|addr\|int values= over-guards= sites= listed= dropped= leaves-max= capped=` | `--ite-stats` (the run's first encoding, before any solver; stderr under `--smt2` in text): values whose term is an ite tree; `int`: integers in the backward slice of a mul / div / rem operand; `over-guards`: values with a block guard among their conditions' atoms; `capped`: values whose leaf, condition or guard set reached the cap (256) |
 | `ite.site: kind= values= leaves= conds= guard-atoms= capped= name= loc=` | `--ite-stats`: per location of a kind (most leaves first; at most `--ite-stats-max`): the most distinct leaves, conditions and guard atoms over its values; `name`: the first value (a `--split-leaves` selector) |
@@ -346,6 +353,7 @@ for the check jobs (`--check-align`, `--check-ptr-index`,
 
 ```text
 check-inb: checks=<n> static=<n> left=<n> zero-length=<n>
+check-inb.solver: <name> (<reason>) ro-arrays=<mode> (<reason>)
 check-inb.split: folded=<n> parts=<n> trivial=<n> to-solve=<n>
 check-inb-dir: <path>                       (a kept directory only)
 check-inb.manifest: <path> parts=<k>        (--vcgen-only only)
@@ -370,7 +378,9 @@ assert (`--symbolic-size=assert`, status 4 with a `premise.failed:` line)
 is `premise-failed`, counted as `premise`, and its `premise.failed:` line
 follows, with `part=<i>`: the job prints `result: sat` and exits 4 (the
 premise class; with a sat part too, the same). In jsonl the records are
-`check-inb`, `check-inb.split` (folded, parts, trivial, to_solve),
+`check-inb`, `check-inb.solver` (solver, reason, ro_arrays (`uf` or `array`),
+ro_arrays_reason (`default` or `--ro-arrays`)),
+`check-inb.split` (folded, parts, trivial, to_solve),
 `check-inb-dir` (path), `check-inb.manifest` (path,
 parts), `check-inb.part`, `premise` (the part's fields and `part`),
 `check-inb.parts`, `check-inb.part-diags`
@@ -472,6 +482,39 @@ same addresses, so their queries agree on `obj.<name>`
 Either option needs `--lower`, and a module with one program
 (`place.file-programs`).
 
+`--place-slots=aligned` (`slots=aligned`, the default) computes the
+placement; `--place-slots=none` (`slots=none`) the packed one, SeaHorn's
+(the example above). Aligned: each object other than null owns the slot `[base, base + 2^s)`,
+s the least exponent with 2^s > max(room, 1) (the one-past-the-end address
+is in the slot), base a multiple of max(2^s, align). The order and the
+windows stay: functions, globals and heap upwards from 0x08048000, stack
+downwards from 0xC0000000 within 9 MiB, the compact layout upwards from 1.
+A symbolic size takes its room. If a slot does not fit, every object is
+placed without slots (warning `place.slots-fallback`, `place.slots:
+fallback`). The file format does not change; a file written under slots is
+read like any other. Nothing downstream reads the mode: a consumer that
+needs alignment reads it from the bases.
+
+Verdicts can differ between the two placements only for programs whose
+result depends on address bits above the objects' minimum alignment, that
+is, on one particular layout; such programs are layout-dependent under the
+packed placement too. With a base aligned to at least the object's
+alignment a, the address bits below log2(a) come only from the offset in
+both placements: flags kept in low bits and alignment tests up to a behave
+the same. The bits above are constants in both: the packed placement sets
+them by placing objects one after the other, slots set them otherwise.
+Both placements stay below 2^32, so high-bit tests (user vs kernel
+addresses) do not change; a program that relies on such a split must
+model it. An out-of-bounds access is the other case: it can land in the
+next object under the packed placement and in the padding of its own slot
+under slots (`test/VC/place-slots-oob.mlir`). Under `--seam` such an
+access breaks A-INB (and with it A-SEP), the premises the answer rests on;
+the A-INB check (`--check-inb`) finds it.
+
+`--place-slots=aligned` with `--place-in` is an error (the file gives the
+bases; `place.slots-place-in` in the pass), and so is `--place-slots` on a
+program that is placed already (`vc.place-slots-placed`).
+
 ## JSONL
 
 `--format=jsonl` prints every stdout line as one JSON object:
@@ -568,16 +611,18 @@ other output is unchanged. The benchmark harness runs with it.
 |---|---|
 | 0 | `unsat`, or `sat` confirmed by replay: the replayed run fails an assertion; with `--ptr-companion=check`, a split pointer load fails its A-PTRINT guard (`seam.ptrint-violated` or `seam.ptrint-unstored`) |
 | 1 | error: bad input, not in BMC form, unsupported operation, replay impossible |
-| 2 | `sat`, but the replay disagrees with the model (a value differs, or the run shows no failure of the property: `vc.replay-no-failure`): a bug, or a load of an earlier memory version whose cell was overwritten (counted as `interp.earlier-version-loads`). Also the model of the Ackermann lowering not a function on an array (`vc.ackermann-inconsistent`), except under `--ack-own` when every such pair is one the ownership drop dropped and the replay fails the assertion with no mismatch: then 0 with the warning `vc.ack-own-collision-excused` |
+| 2 | `sat`, but the replay disagrees with the model (a value differs, or the run shows no failure of the property: `vc.replay-no-failure`): a bug, or a load of an earlier memory version whose cell was overwritten (counted as `interp.earlier-version-loads`). Also the model of the Ackermann lowering not a function on an array (`vc.ackermann-inconsistent`), except under `--ack-own` or `--ack-arm` when every such pair is one the ownership drop (or ARM's premise classes: across bases, size 0) dropped and the replay fails the assertion with no mismatch: then 0 with the warning `vc.ack-own-collision-excused` |
 | 3 | `unknown`, including a timeout or a memory limit |
 | 4 | with `--seam`: a `sat` whose replay leaves an object; the in-bounds assumption does not hold, the answer is inconclusive, and the program has a memory-safety error. With `--replay-original`: the original program's run makes a memory-safety violation and does not fail the same assertion. With `--symbolic-size=assert`: the replayed run fails a premise assert (`premise.failed`), not the property; inconclusive (decided before `--replay-original`: the input program has no premise assert). With `--ack-stride`: a `sat` whose model puts two executed reads whose constraint the stride rule dropped at one index, and whose replay fails and breaks a GEP promise at an access (`vc.ack-stride-promise-broken`): the answer is that run; it takes precedence over 2 (a mismatch the Mem-SSA no-clobber claim explains, `replay: no-clobber-violated`, is printed too) and, as for the in-bounds case, can hide a bug on that run |
 | 5 | with `--seam-check`: an invalid rewrite; a bug, and the verdict is not to be trusted. It takes precedence over 0, 2, 3 and 4, not over 1 |
 | 6 | with `--replay-original`: `sat` confirmed on the lowered program, but the original program on the same inputs does not fail the same assertion: the lowering changed what the program does (a bug in a pass, or a program whose behavior depends on where placement puts its objects) |
+| 8 | `--max-nodes` or `--max-rss` exceeded in encoding or solving: `result: unknown` and `budget: hit` with the census; also in a split or `--reach` run. Not an answer of the solver (never printed after its `sat` / `unsat`) and not the `unknown` 3 of a timeout or memory limit |
 
 With `--reach` the status is not a verdict: 0 when every target is
 decided and every reachable one replays to it; 3 when some target is
 `unknown`; 4 when a replay stops at a memory-safety violation before its
-target; 2 for a replay that disagrees with the model; 1 for an error. Each
+target; 2 for a replay that disagrees with the model; 1 for an error; 8 when a
+budget stops the run (before the reach summary). Each
 takes precedence over the ones before it in this list.
 
 | tool | exit codes |

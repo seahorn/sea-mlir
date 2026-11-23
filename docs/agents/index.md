@@ -78,7 +78,8 @@ z3 parameter (`--z3-param`), or the harness itself (a loop cut, a split of
 the claims into separate jobs). Compare counters before times: counters
 are deterministic. When a problem is too large to study, reduce it first
 ([Minimizing a problem](minimizing.md)). For a job that is slow or times
-out, follow [Diagnosing a slow or timed-out VC](slow-vc.md).
+out, follow [Diagnosing a slow or timed-out VC](slow-vc.md). For a job that
+runs out of memory, follow [Diagnosing a VC blowup](blowups.md).
 
 ### 4. Save the verification package
 
