@@ -118,6 +118,13 @@ inline Expr fillStores(const Expr &t) {
   return m;
 }
 
+/// sea-vc --seam-check proves a row.mfill-expand firing (the store expansion
+/// of a fill against its read equation) for fills of at most this many
+/// bytes; above it the firing is covered by seam-lean's
+/// RangeExpr.eval_mfill_eq_fillStores and not checked (docs/design/
+/// MemFill.md, "The boundary": z3 needs ~2 s at 256 bytes, > 30 s at 4096).
+inline constexpr uint64_t kFillExpandCheckCap = 64;
+
 /// The byte of an mfill term \p t at the numeral offset \p k from its
 /// destination, as a numeral (seam-lean `rangeFill_hit`); null when k is not
 /// a numeral below the length.
@@ -131,6 +138,15 @@ inline Expr fillHit(const Expr &t, const Expr &k) {
     return Expr();
   return op::bv::bvnum(mpz_class((unsigned long)bytes[kv.get_ui()]), 8,
                        t->efac());
+}
+
+/// Is the length of mfill \p t the numeral of its data's length (the term's
+/// invariant; the rules that use the data check it)?
+inline bool fillLengthOk(const Expr &t) {
+  unsigned w;
+  return op::bv::isBvNum(memOpLen(t), w) &&
+         op::bv::toMpz(memOpLen(t)) ==
+             mpz_class((unsigned long)op::array::fillBytes(t).size());
 }
 
 /// Do all bytes of \p bytes have one value (a splat initializer)? Then \p v

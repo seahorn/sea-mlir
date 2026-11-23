@@ -3,8 +3,9 @@
 
 //===- ExpandMemFill.cpp - sea.mem.fill -> one store per cell -*- C++ -*-===//
 //
-// docs/design/MemFill.md. The VC encodes no sea.mem.fill: every memory mode
-// (arrays, lambda, word layouts, SeaM) sees stores. A fill of N cells
+// docs/design/MemFill.md. Without keep-bytes every memory mode (arrays,
+// lambda, word layouts, SeaM) sees stores; with keep-bytes (sea-vc --seam)
+// the fills of byte memories stay (SeaM's mfill term). A fill of N cells
 // becomes N stores, in order, of one cell each (the memory's cell type: a
 // byte on a byte memory, a k-byte word on a widened one) at
 //   addr + k * c   (c = index units per cell; k = 0 .. N-1)

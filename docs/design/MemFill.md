@@ -144,25 +144,34 @@ distance k from d holds byte k when k < data.length, and keeps its value
 otherwise. Scope, as there: byte memories, full bytes (no holes).
 
 The rules (`SeaMRules.hh`; the counter is the rule name in the trail and
-in `--seam-check`), each with the theorem it corresponds to:
+in `--seam-check`), each with the seam-lean theorem it corresponds to: the
+expression-level theorem of namespace `SeaM.RangeFill`
+(`SeaM/MemOps/Wide.lean`) where there is one, with its side conditions (k
+the offset of the read from d, r its width in bytes, 1 for a byte read; n
+the data's length, w the address width):
 
 | rule | when | result | seam-lean theorem |
 |---|---|---|---|
-| `row.mfill-hit` | k = j - d a numeral, k < n | the numeral data[k] | `RangeFill.hit_sound` (r = 1), `rangeFill_hit` |
-| `row.mfill-skip` | k a numeral, k >= n | select(M, j) | `RangeFill.skip_sound` (r = 1), `rangeFill_skip` |
-| `row.mfill-skip-disjoint` | j decided outside [d, d + n) by other means: another object (`cmp.diff-base`, `arm.skip`: A-SEP), an ARM interval of j - d outside the range | select(M, j) | `RangeFill.skip_disjoint_sound`, `rangeFill_skip_inRange` |
-| `row.mfill-split` | j or d an ite whose every leaf pair is decided by the three rules above | the ite of the leaf results (each leaf counted under its rule) | per leaf as above; the split is the ite of reads (exact) |
-| `row.mfill-expand` | anything else: an open in-test, or in the range at an offset that is not one numeral | select(fillStores(mfill), j): the stores the fill expands into, decided by the store rules per byte | `RangeExpr.eval_mfill_eq_fillStores`, `rangeFill_eq_fillStores` |
-| `wide.mfill-hit` | a wide read of r bytes (`--seam-wide`) at a numeral k, k + r <= n | the numeral of bytes k .. k + r - 1, little endian | `wide_fill_hit`, `RangeFill.hit_sound` |
-| `wide.mfill-skip` / `-skip-disjoint` | a wide read decided outside the range (numeral k / otherwise) | wselect(M, j) | `wide_fill_skip` / `wide_fill_skip_of_disjoint` |
-| (byte fallback) | a wide read across the range's end or start, or in it at a symbolic offset | its byte reads (`wide.split-read`), each by `row.mfill-*` | `RangeFill.mixed_sound` at a numeral k (each byte decided); else the expansion |
-| `mem.fill-replicate` | every byte of the data is one byte b | mset(M, d, n, b) | `rangeFill_replicate` |
-| boundary | a read over the term left (rules off, interrupted) | ite((j - d) <u n, lookup(j - d), select(M, j)) | the definition `rangeFill` (`rangeFill_hit`, `rangeFill_skip`) |
+| `row.mfill-hit` | k = j - d a numeral, k < n | the numeral data[k] | `RangeFill.hit_sound` (r = 1: k + r <= n, k + r <= 2^w) |
+| `wide.mfill-hit` | a wide read of r bytes (`--seam-wide`) at a numeral k, k + r <= n | the numeral of bytes k .. k + r - 1, little endian | `RangeFill.hit_sound` (k + r <= n, k + r <= 2^w) |
+| `row.mfill-skip` | k a numeral, k >= n | select(M, j) | `RangeFill.skip_sound` (r = 1: n <= k, k + r <= 2^w) |
+| `wide.mfill-skip` | a wide read at a numeral k, k >= n, not wrapping onto the data | wselect(M, j) | `RangeFill.skip_sound` (n <= k, k + r <= 2^w) |
+| `row.mfill-skip-disjoint` | j decided outside [d, d + n) by other means: another object (`cmp.diff-base`, `arm.skip`: A-SEP), an object of size 0 (`cmp.size0-vacuous`: A-NULL), an ARM interval of j - d outside the range | select(M, j) | `RangeFill.skip_disjoint_sound` (n < 2^w, `RangeDisjoint`) |
+| `wide.mfill-skip-disjoint` | a wide read decided outside the range by the same means | wselect(M, j) | `RangeFill.skip_disjoint_sound` (n < 2^w, `RangeDisjoint`) |
+| `row.mfill-split` | j or d an ite whose every leaf pair is decided by the byte rules above | the ite of the leaf results (each leaf counted under its rule) | per leaf as above; the split is the ite of reads (exact) |
+| (byte fallback) | a wide read across the range's end or start, or in it at a symbolic offset | its byte reads (`wide.split-read`), each by the `row.mfill-*` rules | `RangeFill.mixed_sound` at a numeral k (each byte decided) |
+| `row.mfill-expand` | anything else: an open in-test, or in the range at an offset that is not one numeral | select(fillStores(mfill), j): the stores the fill expands into, decided by the store rules per byte | `RangeExpr.eval_mfill_eq_fillStores` (n <= 2^w) |
+| `mem.fill-replicate` | every byte of the data is one byte b (the rule scans the data itself, and checks that n is its length) | mset(M, d, n, b) | `rangeFill_replicate` (n < 2^w; memory-level, a RangeExpr form is coming in seam-lean) |
+| boundary | a read over the term left (rules off, interrupted) | ite((j - d) <u n, lookup(j - d), select(M, j)) | the definition `rangeFill` with `inRange_fillLength`; seam-lean's coming `rangeFill_readEq` is the exact target (not `RangeExpr.lower_mfill`) |
 
-`rangeFill_take` (only the first 2^w bytes matter) and the bound of
-`rangeFill_eq_fillStores` (n <= 2^w) need nothing here: the op verifier
-gives n < 2^w (`N * c < 2^w`), so the term is the whole data.
-`rangeFill_append` (a fill split in two) is not used by a rule.
+Any decided rule may also rest on `mem.in-layout` (LAYOUT: the placed
+address of an object), through `decideIn`, as the rules of the other
+terms do; its premises are those `decideIn` names.
+
+`rangeFill_take` (only the first 2^w bytes matter) and the bounds above
+(n <= 2^w, n < 2^w) need nothing here: the op verifier gives n < 2^w
+(`N * c < 2^w`), so the term is the whole data. `rangeFill_append` (a fill
+split in two) is not used by a rule.
 
 ### The fallback: the store expansion
 
@@ -186,10 +195,18 @@ one repeated byte (a zero initializer) is an `mset` instead
 `mfill` left in the query by the read equation of the term,
 
     select(mfill(M, d, n, data), j) = ite((j - d) <u n, lookup(j - d), select(M, j))
-    lookup(k) = ite(k = 0, data[0], ite(k = 1, data[1], ... data[n-1]))
+    lookup(k) = ite(k = 0, data[0], ite(k = 1, data[1], ... ite(k = n-2, data[n-2], data[n-1])))
 
-which is seam-lean's definition `rangeFill` (distance below the length:
-the data byte; else the old cell). Semantics only: no premise, no address
+(k an index-width bit-vector, the compares against numerals; n = 1:
+lookup(k) = data[0]). lookup(k) is data[k] for k < n; for every k
+outside [0, n) it is data[n-1], a value the guard (j - d) <u n never
+selects.
+
+This is seam-lean's definition `rangeFill` (distance below the length:
+the data byte; else the old cell), with `inRange_fillLength` for the
+guard (the distance is below n iff j is in the circular range of length
+n); seam-lean is adding `rangeFill_readEq`, the read equation itself, as
+the exact target. Semantics only: no premise, no address
 decision; counted in `memop.translated`. Only a run with the rules off or
 stopped leaves such a read.
 
@@ -213,11 +230,23 @@ expansion rule would be valid by construction and every decided rule,
 the ones that use premises, expensive to check; with the read equation
 the decided rules and the replicate rule check at once, and the check of
 a `row.mfill-expand` firing is a real instance of
-`rangeFill_eq_fillStores`, which z3 does not settle within the default 10
-s beyond a few hundred bytes (`seam-check-unknown`, never `invalid`; the
-4 KiB read of `test/VC/mem-fill-4k.test`: 98,336 firings, 0 invalid, 9
-unknown, 8 of them `row.mfill-expand` and one `row.smap-abort` on the
-expansion's stores). The unit test checks the read equation and
+`RangeExpr.eval_mfill_eq_fillStores`, which z3 does not settle within the
+default 10 s beyond a few hundred bytes.
+
+So `--seam-check` checks a `row.mfill-expand` firing exactly up to a cap
+of 64 bytes (`kFillExpandCheckCap`, MemOps.hh), and there an unknown is a
+failure: `seam-check-failed: id= rules= bytes= reason=unknown`, counted
+in `failed=` of the summary line, exit status 5 as an invalid firing.
+Above the cap the firing is covered by the theorem and not checked:
+`seam-check-covered: id= rules= bytes= theorem=RangeExpr.eval_mfill_eq_
+fillStores`, counted in `covered=`, never in `valid=` or `unknown=`.
+The summary line has `covered=` and `failed=` only when the run has a
+`row.mfill-expand` firing, after `unexpressible=` (other summaries are
+unchanged). (The
+4 KiB read of `test/VC/mem-fill-4k.test` before the cap: 98,336 firings, 0
+invalid, 9 unknown, 8 of them `row.mfill-expand`, one `row.smap-abort` on
+the expansion's stores.) A split of a large fill into checked pieces
+(`rangeFill_append`) is not done. The unit test checks the read equation and
 the expansion against an independent guarded-store reference for every
 length at 4-bit addresses (`unittests/MemOps`, `fill`).
 

@@ -248,7 +248,8 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   Mem-SSA chains (memory is a value); `inplace` on updates; the interpreter
   executes in place only; the VC uses the array encoding (load/store;
   constant-length memset/memmove/memhavoc as store chains; `sea.mem.fill`
-  (constant data) expanded into cell stores by a pass; a symbolic
+  (constant data) expanded into cell stores by a pass (under `--seam` a
+  byte-memory fill is the `mfill` term); a symbolic
   memset length is expanded by a pass with an explicit bound; other
   symbolic lengths are errors). The memory type names its layout
   (`!sea.mem<I, iC[, aligned|unaligned]>`): exact (default) = one cell per

@@ -42,7 +42,12 @@ TYPICAL:
                                           #   store chain + assume(n <= 16)
   sea-opt p.mlir --sea-expand-mem-fill    # sea.mem.fill -> one store per cell
                                           #   (cell type of the memory; the
-                                          #   VC encodes no fill: vc.mem-fill)
+                                          #   VC refuses a fill: vc.mem-fill,
+                                          #   but under --seam a byte-memory
+                                          #   fill is the mfill term);
+                                          #   =keep-bytes=true keeps byte-
+                                          #   memory fills (sea-vc --seam),
+                                          #   counters in sea.expand_mem_fill
   sea-opt p.mlir --pass-pipeline='builtin.module(sea.program(sea-wrap-flags{mode=assume}))'
                                           # nsw/nuw promises -> assume|assert|drop
   sea-opt p.mlir --sea-widen-memory="k=8 report=true"

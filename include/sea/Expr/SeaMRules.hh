@@ -2778,11 +2778,11 @@ public:
   /// read span and the range [d, d + n) through different provenances).
   /// Undecided: unchanged here; rowW then takes the byte fallback (rev 3's "the
   /// term stays" was replaced by the fallback after measurement).
-  /// mfill (counters wide.mfill-*): In at a numeral k: the numeral of data
-  /// bytes k .. k + r - 1, little endian (seam-lean `wide_fill_hit`,
-  /// `RangeFill.hit_sound`); Out: wide.mfill-skip at a numeral k
-  /// (`wide_fill_skip`), wide.mfill-skip-disjoint otherwise
-  /// (`wide_fill_skip_of_disjoint`); anything else (In at an offset that is
+  /// mfill: In at a numeral k: wide.mfill-hit, the numeral of data bytes
+  /// k .. k + r - 1, little endian (seam-lean `RangeFill.hit_sound`); Out:
+  /// wide.mfill-skip at a numeral k (`RangeFill.skip_sound`),
+  /// wide.mfill-skip-disjoint otherwise (`RangeFill.skip_disjoint_sound`);
+  /// anything else (In at an offset that is
   /// not one numeral, a partial overlap) is undecided: the byte fallback,
   /// whose byte reads row.mfill decides (a partial overlap at a numeral k:
   /// per byte, `RangeFill.mixed_sound`).
@@ -6038,22 +6038,26 @@ public:
   /// (docs/design/MemFill.md, "SeaM"; seam-lean SeaM/MemOps), decided by
   /// decideIn as the other terms, with k = idx - d:
   ///   row.mfill-hit: k a numeral, k < n: the data byte k, a numeral
-  ///     (`RangeFill.hit_sound`, `rangeFill_hit`). RW_DONE. No premise.
+  ///     (`RangeFill.hit_sound`, r = 1). RW_DONE. No premise beyond
+  ///     decideIn's (LAYOUT for mem.in-layout).
   ///   row.mfill-skip: k a numeral, k >= n: select(M, idx)
-  ///     (`RangeFill.skip_sound`, `rangeFill_skip`). RW_1. No premise.
+  ///     (`RangeFill.skip_sound`, r = 1). RW_1. No premise beyond decideIn's
+  ///     (LAYOUT for mem.in-layout).
   ///   row.mfill-skip-disjoint: idx decided outside [d, d + n) otherwise
-  ///     (another object: cmp.diff-base / arm.skip, A-SEP; an ARM interval
-  ///     outside the range, no premise): select(M, idx)
-  ///     (`RangeFill.skip_disjoint_sound`, `rangeFill_skip_inRange`). RW_1.
+  ///     (another object: cmp.diff-base / arm.skip, A-SEP; an object of size
+  ///     0: cmp.size0-vacuous, A-NULL; an ARM interval outside the range, no
+  ///     premise): select(M, idx) (`RangeFill.skip_disjoint_sound`). RW_1.
   ///   row.mfill-expand: anything else (an open in-test, or in the range at
   ///     an offset that is not one numeral): the read of the store expansion,
   ///     select(fillStores(T), idx), which the store rules then decide per
-  ///     byte (`RangeExpr.eval_mfill_eq_fillStores`, `rangeFill_eq_
-  ///     fillStores`; the bound n <= 2^w holds: n < 2^w). No premise.
+  ///     byte (`RangeExpr.eval_mfill_eq_fillStores`; its bound n <= 2^w
+  ///     holds: n < 2^w). No premise.
   ///     RW_FULL (the stores are new). Kept as it is when expandUnknownRow is
   ///     off (the boundary translates it by its read equation, MemOps.hh).
   /// The premises are decideIn's, as for mset.
   RewriteResult rowFill(const Expr &exp, const Expr &t, const Expr &idx) {
+    if (!fillLengthOk(t)) // not a term the VC makes: left as it is
+      return {exp, RWStatus::RW_DONE};
     Decision dec;
     Expr k;
     Range r = decideIn(idx, memOpDst(t), memOpLen(t), dec, k,
@@ -6209,9 +6213,12 @@ public:
   /// mem.fill-replicate: an mfill whose bytes are all one byte b is
   /// mset(M, d, n, b) (seam-lean `rangeFill_replicate`, n < 2^w). Exact, no
   /// premise; a zero initializer is one mset, read through one range test.
+  /// The rule itself scans the term's data (every byte b) and checks that n
+  /// is the data's length; nothing upstream is trusted.
   RewriteResult memOp(const Expr &exp) {
     uint8_t b;
-    if (isOpX<MEM_FILL>(exp) && fillSplat(op::array::fillBytes(exp), b)) {
+    if (isOpX<MEM_FILL>(exp) && fillLengthOk(exp) &&
+        fillSplat(op::array::fillBytes(exp), b)) {
       m_stats.count("mem.fill-replicate");
       return {op::array::memSet(memOpBase(exp), memOpDst(exp), memOpLen(exp),
                                 num(mpz_class((unsigned long)b), 8)),

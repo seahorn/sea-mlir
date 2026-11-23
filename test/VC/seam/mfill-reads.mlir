@@ -21,10 +21,15 @@
 // RUN: sea-vc %s --lower --seam --seam-stats --program=splat 2>&1 | FileCheck %s --check-prefix=SPLAT
 // RUN: sea-vc %s --lower --seam --dag-stats --program=hit 2>&1 | FileCheck %s --check-prefix=DAG
 // RUN: sea-vc %s --lower --seam --dag-stats --program=undecided 2>&1 | FileCheck %s --check-prefix=DAG
-// RUN: sea-vc %s --lower --seam --seam-check --program=hit 2>&1 | FileCheck %s --check-prefix=VALID
-// RUN: sea-vc %s --lower --seam --seam-check --program=outside 2>&1 | FileCheck %s --check-prefix=VALID
-// RUN: sea-vc %s --lower --seam --seam-check --program=undecided 2>&1 | FileCheck %s --check-prefix=VALID
-// RUN: sea-vc %s --lower --seam --seam-check --program=splat 2>&1 | FileCheck %s --check-prefix=VALID
+// RUN: sea-vc %s --lower --seam --seam-stats --seam-check --program=hit 2>&1 | FileCheck %s --check-prefixes=VALID,VHIT
+// RUN: sea-vc %s --lower --seam --seam-stats --seam-check --program=outside 2>&1 | FileCheck %s --check-prefixes=VALID,VOUT
+// RUN: sea-vc %s --lower --seam --seam-stats --seam-check --program=undecided 2>&1 | FileCheck %s --check-prefix=VUND
+// RUN: sea-vc %s --lower --seam --seam-stats --seam-check --program=splat 2>&1 | FileCheck %s --check-prefixes=VALID,VSPLAT
+// --seam-check proves row.mfill-expand up to 64 bytes: above, the firing
+// is covered by its theorem, not checked; at or below, an unknown (forced
+// here by a tiny rlimit) is a failure, exit 5.
+// RUN: sea-vc %s --lower --seam --seam-check --program=undecided_big 2>&1 | FileCheck %s --check-prefix=COVERED
+// RUN: not sea-vc %s --lower --seam --seam-check --seam-check-rlimit=1 --program=undecided 2>&1 | FileCheck %s --check-prefix=FAILED
 // With the rewriting off the boundary translates the reads (by the read
 // equation of the term), same verdicts.
 // RUN: sea-vc %s --lower --seam --seam-stats --seam-row-expand=0 --program=undecided 2>&1 | FileCheck %s --check-prefix=ROW0
@@ -50,7 +55,17 @@
 // SPLAT: result: unsat
 // DAG-NOT: vc.dag-op: mfill
 // DAG: result: unsat
+// VHIT: seam.rule.row.mfill-hit: 5
+// VOUT: seam.rule.row.mfill-skip-disjoint: 1
+// VUND: seam.rule.row.mfill-expand: 1
+// VUND: seam-check: firings={{[0-9]+}} checked={{[0-9]+}} valid={{[0-9]+}} invalid=0 unknown=0 unexpressible=0 covered=0 failed=0
+// VSPLAT: seam.rule.mem.fill-replicate: 1
 // VALID: seam-check: firings={{[0-9]+}} checked={{[0-9]+}} valid={{[0-9]+}} invalid=0 unknown=0 unexpressible=0
+// COVERED: seam-check-covered: id={{[0-9]+}} rules=row.mfill-expand bytes=100 theorem=RangeExpr.eval_mfill_eq_fillStores
+// COVERED: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0 {{.*}}covered=1 failed=0
+// FAILED: seam-check-failed: id={{[0-9]+}} rules=row.mfill-expand bytes=16 reason=unknown
+// FAILED: seam-check: {{.*}} covered=0 failed=1
+// FAILED: [seam.check-invalid]
 // ROW0: seam.rule.memop.translated: {{[1-9]}}
 // ROW0: result: unsat
 
@@ -131,6 +146,23 @@ sea.program @undecided_bug {
   %x = sea.load %m1[%p] : !m -> i8
   %c7 = sea.const 7 : i8
   %ok = sea.icmp ne, %x, %c7 : i8
+  sea.assert %ok
+  sea.halt
+}
+
+// g[i] for a symbolic i < 100 of a 100-byte initializer: every byte >= 1
+sea.program @undecided_big {
+  %m0 = sea.mem.nondet "mem" [0] : !m
+  %g = sea.global @big size 100 align 8 : !sea.ptr<64>
+  %m1 = sea.mem.fill %m0[%g], dense<[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100]> : tensor<100xi8> inplace : !m
+  %i = sea.nondet "i" [1] : i64
+  %c100 = sea.const 100 : i64
+  %lt = sea.icmp ult, %i, %c100 : i64
+  sea.assume %lt
+  %p = sea.ptr.add %g, %i : !sea.ptr<64>, i64
+  %x = sea.load %m1[%p] : !m -> i8
+  %c1 = sea.const 1 : i8
+  %ok = sea.icmp uge, %x, %c1 : i8
   sea.assert %ok
   sea.halt
 }

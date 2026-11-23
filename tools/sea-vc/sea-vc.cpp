@@ -4078,8 +4078,18 @@ OUTPUT (stdout, `key: value` lines):
                                   stderr; then seam-trace-lhs: / -rhs: with
                                   the printed terms, cut at 400 characters)
   seam-check: firings=<n> checked=<n> valid=<n> invalid=<n> unknown=<n>
-      unexpressible=<n>           (--seam-check, after the verdict; checked =
-                                  valid + invalid + unknown; unexpressible: a
+      unexpressible=<n> [covered=<n> failed=<n>] [unknown-rlimit=<n>]
+                                  (--seam-check, after the verdict; checked =
+                                  valid + invalid + unknown + failed;
+                                  covered / failed (only when the run has a
+                                  row.mfill-expand firing):
+                                  covered: row.mfill-expand firings of a
+                                  fill over 64 bytes, covered by the theorem
+                                  RangeExpr.eval_mfill_eq_fillStores, not
+                                  checked (never valid or unknown); failed:
+                                  such a firing of at most 64 bytes the
+                                  solver did not prove (unknown), exit 5 as
+                                  invalid; unexpressible: a
                                   firing whose premise cannot be stated, e.g.
                                   a premise firing while an address is
                                   normalized, or one the boundary cannot
@@ -4092,6 +4102,8 @@ OUTPUT (stdout, `key: value` lines):
   seam-check-smt: <line>          (the SMT-LIB of the failed check: sat means
                                   the rule's result differs from its input)
   seam-check-unknown: id=<n> rules=<r,...> [reason=rlimit]   (timeout, rlimit or solver unknown)
+  seam-check-covered: id=<n> rules=<r,...> bytes=<n> theorem=<name>
+  seam-check-failed: id=<n> rules=<r,...> bytes=<n> reason=unknown
   seam-check-cost: id=<n> rlimit=<n>|- time=<s>   (--seam-check-cost: per
                                   checked firing, valid or not, before its
                                   other lines; the query's z3 rlimit count, the unit of
@@ -8480,6 +8492,10 @@ int main(int argc, char **argv) {
       size_t m = (checkSample && checkSample < n) ? checkSample : n;
       uint64_t valid = 0, invalid = 0, unknown = 0, unexpr = 0;
       uint64_t unknownRlimit = 0;
+      // row.mfill-expand (docs/design/MemFill.md, "The boundary"): checked
+      // up to kFillExpandCheckCap bytes, where an unknown is a failure;
+      // above it covered by its theorem, not checked
+      uint64_t covered = 0, failed = 0, fillExpands = 0;
       unsigned ms = seamCheckTimeout * 1000;
       // a fresh solver per query. Hypothesis (measured, not read in z3's
       // source): z3 decides its auto-configuration at the first push, before
@@ -8508,6 +8524,20 @@ int main(int argc, char **argv) {
       for (size_t k = 0; k < m; ++k) {
         const expr::RewriteTrail::Firing &f = fs[m == n ? k : k * n / m];
         const expr::RewriteTrail::Context &c = trail.context(f.ctx);
+        // the expansion of a fill: its bytes (0: not one)
+        uint64_t fillBytes = 0;
+        if (expr::isOpX<expr::SELECT>(f.lhs) &&
+            expr::isOpX<expr::MEM_FILL>(f.lhs->arg(0)) &&
+            StringRef(trail.rulesOf(f)).split(',').first == "row.mfill-expand")
+          fillBytes = expr::op::array::fillBytes(f.lhs->arg(0)).size();
+        fillExpands += fillBytes != 0;
+        if (fillBytes > expr::kFillExpandCheckCap) {
+          ++covered;
+          os << "seam-check-covered: id=" << f.id
+             << " rules=" << trail.rulesOf(f) << " bytes=" << fillBytes
+             << " theorem=RangeExpr.eval_mfill_eq_fillStores\n";
+          continue;
+        }
         std::string why;
         expr::Expr prem = sem.firingPremise(trail, f, why);
         if (!prem) {
@@ -8585,6 +8615,14 @@ int main(int argc, char **argv) {
           ++valid;
           continue;
         }
+        if (res != sea::solver::SolverResult::SAT && fillBytes) {
+          // an expansion within the cap must be proved
+          ++failed;
+          os << "seam-check-failed: id=" << f.id
+             << " rules=" << trail.rulesOf(f) << " bytes=" << fillBytes
+             << " reason=unknown\n";
+          continue;
+        }
         if (res != sea::solver::SolverResult::SAT) {
           ++unknown;
           const bool viaRlimit = backend == Backend::Z3 &&
@@ -8623,13 +8661,17 @@ int main(int argc, char **argv) {
         }
       }
       os << "seam-check: firings=" << n
-         << " checked=" << (valid + invalid + unknown) << " valid=" << valid
-         << " invalid=" << invalid << " unknown=" << unknown
-         << " unexpressible=" << unexpr;
+         << " checked=" << (valid + invalid + unknown + failed)
+         << " valid=" << valid << " invalid=" << invalid
+         << " unknown=" << unknown << " unexpressible=" << unexpr;
+      // only for a run with fill expansions: other summaries stay as they
+      // were
+      if (fillExpands)
+        os << " covered=" << covered << " failed=" << failed;
       if (seamCheckRlimit)
         os << " unknown-rlimit=" << unknownRlimit;
       os << "\n";
-      checkInvalid += invalid;
+      checkInvalid += invalid + failed;
     };
 
     // --narrow-offsets: each narrowed index against its representative
@@ -10431,9 +10473,10 @@ int main(int argc, char **argv) {
       sea::diag::error("seam.check-invalid",
                        Twine(checkInvalid) +
                            " rule firing(s) or narrowed read indices are "
-                           "not valid under their premises: a rewriting bug "
-                           "(seam-check-invalid / narrow-check-invalid "
-                           "lines)");
+                           "not valid under their premises, or fill "
+                           "expansions within the check cap not proved: a "
+                           "rewriting bug (seam-check-invalid / "
+                           "seam-check-failed / narrow-check-invalid lines)");
       rc = 5;
     }
     if (narrowUnproven && (rc == 0 || rc == 3)) {
