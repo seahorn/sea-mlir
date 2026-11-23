@@ -3,8 +3,8 @@
 
 // --words-check
 RUN: sea-vc %S/initial-words.mlir --program=eq --lower --seam --seam-wide --seam-words=all --words-check --words-check-rlimit=1 2>&1 | FileCheck %s --check-prefix=WORDS
-WORDS: [vc.words-check-unknown]
 WORDS: words.check: unknown defs={{[0-9]+}} reason=rlimit
+WORDS: [vc.words-check-unknown]
 // unset: decided, no reason
 RUN: sea-vc %S/initial-words.mlir --program=eq --lower --seam --seam-wide --seam-words=all --words-check 2>&1 | FileCheck %s --check-prefix=WORDS0
 WORDS0: words.check: ok

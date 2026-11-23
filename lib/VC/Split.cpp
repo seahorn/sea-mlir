@@ -361,9 +361,14 @@ bool SplitRun::leafCases(Expr t, SeaOpSem &sem, unsigned maxPaths,
         text += ":term(" + std::string(c.value->op().name()) + ")";
     } else if (rw)
       if (auto v = rw->rules().view(c.value)) {
-        std::ostringstream os;
-        os << *v->base;
-        text += ":" + os.str();
+        // an object by its name (obj.<k>), not its dump
+        if (op::ptr::isSegment(v->base)) {
+          text += ":" + op::ptr::segmentSymbol(v->base);
+        } else {
+          std::ostringstream os;
+          os << *v->base;
+          text += ":" + os.str();
+        }
       }
     if (text == "leaf")
       text += ":unknown(" + std::string(c.value->op().name()) + ")";
@@ -1156,9 +1161,8 @@ bool IteCensus::ground(ENode *root, const expr::BaseRegistry &bases) {
     st.pop_back();
     if (groundMemo.count(n))
       continue;
-    // a free constant; an object's base (--seam: obj.<name>) is a fixed
-    // address
-    if (bind::isFapp(Expr(n))) {
+    // a free constant; an object (--seam: PTR_SEGMENT) is a fixed address
+    if (bind::isFapp(Expr(n)) || op::ptr::isSegment(n)) {
       groundMemo[n] = bases.isBase(Expr(n));
       continue;
     }

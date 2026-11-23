@@ -575,8 +575,10 @@ static cl::opt<bool> lambdaFinalSimplify(
 static cl::opt<bool> seam(
     "seam",
     cl::desc("SeaM (docs/design/SeaM.md): encode each object base "
-             "(sea.segment) as a named constant obj.<name> with a side "
-             "equality to its address, and rewrite every load and store as "
+             "(sea.segment) as the object term segment(obj.<name>, "
+             "<address>), erased at the solver boundary to the constant "
+             "obj.<name> with obj.<name> = <address> "
+             "(docs/design/PtrSegment.md), and rewrite every load and store as "
              "it is encoded (object-aware read-over-write, pointer "
              "normalization, ite and Boolean simplification). Requires "
              "--vc-join=ite"),
@@ -861,6 +863,13 @@ static cl::opt<sea::ConcatIte> vcFoldConcatIte(
                clEnumValN(sea::ConcatIte::All, "all",
                           "wherever it applies (leaves of any kind)")),
     cl::init(sea::ConcatIte::Numeral));
+
+static cl::opt<bool> foldNoBaseSkip(
+    "x-fold-top-eqs-no-base-skip", cl::Hidden,
+    cl::desc("Test only: the fold of --vc-fold-top-eqs also substitutes a "
+             "fact whose term mentions an object (skipped-base= counts 0; "
+             "docs/design/PtrSegment.md, \"What F2 does then\")"),
+    cl::init(false));
 
 static cl::opt<bool> modelTrailPlantSkip(
     "x-model-trail-plant-skip", cl::Hidden,
@@ -2576,8 +2585,9 @@ TYPICAL:
                                  #   the program (the rule before per-class
                                  #   sizes)
   sea-vc p.mlir --lower --seam   # SeaM: a placed object's base is the
-                                 #   constant obj.<name> with a side equality
-                                 #   obj.<name> = <address>, not the numeral,
+                                 #   object segment(obj.<name>, <address>)
+                                 #   (the query: the constant obj.<name> with
+                                 #   obj.<name> = <address>), not the numeral,
                                  #   and every load / store is rewritten as it
                                  #   is encoded: select over store / ite
                                  #   (hit and skip decided by an object-aware
@@ -3457,7 +3467,7 @@ OUTPUT (stdout, `key: value` lines):
                                   --ack-relax, without the simplifier)
   vc.fold-top-eqs: facts=<n> term=<n> split=<n> bool=<n> uses=<n>
       rounds=<n> concat-ite=<n> concat-ite-refused=<n> skipped-masked=<n>
-      skipped-untyped=<n> skipped-ptr=<n>
+      skipped-untyped=<n> skipped-base=<n>
                                   (fold on: keys substituted, by
                                   kind (T = c, concat parts, Boolean
                                   constants); operand uses replaced; rounds
@@ -3470,9 +3480,10 @@ OUTPUT (stdout, `key: value` lines):
                                   counted again); facts not
                                   used: bvand(x, m) = c, a concat part of
                                   unknown width, a term or concat part
-                                  derived from a pointer's address outside
-                                  a memory read (addr(obj.k) = c: step 2
-                                  eliminates the bases after the boundary);
+                                  that mentions an object outside a memory
+                                  read (the objects' addresses are stated
+                                  at the boundary; step 2 eliminates them
+                                  after it);
                                   warning
                                   vc.fold-top-eqs-rounds: the round bound
                                   stopped it)
@@ -6762,8 +6773,14 @@ int main(int argc, char **argv) {
         return fail("--vc-fold-top-eqs needs --simplify (on under --seam): "
                     "the substituted query is simplified again");
       sem.setTrailContext("fold-top-eqs");
+      if (foldNoBaseSkip)
+        sea::diag::warn("vc.fold-top-eqs-no-base-skip",
+                        "--x-fold-top-eqs-no-base-skip (testing only): the "
+                        "fold also substitutes facts whose term mentions an "
+                        "object");
       sea::TopEqFolder folder([&](expr::Expr e) { return sem.simplify(e); },
-                              vcFoldConcatIte);
+                              vcFoldConcatIte, /*maxRounds=*/64,
+                              /*baseSkip=*/!foldNoBaseSkip);
       query = folder.fold(query);
       if (originsOn)
         origins = origins.through(
@@ -7148,18 +7165,18 @@ int main(int argc, char **argv) {
         });
       return 0;
     }
-    // the layout (obj.k = <numeral>: unconditional side conditions of the
-    // query, OpSem.cpp sea.segment), for pairs that are never equal and for
-    // alignment proofs of initial words
+    // the layout (obj.k = <numeral>: unconditional conjuncts of the query,
+    // stated at the boundary, SeaOpSem::withLayoutFacts), for pairs that are
+    // never equal and for alignment proofs of initial words
     std::unordered_map<expr::ENode *, expr::mpz_class> layoutValues;
     for (const expr::ObjectBase &o : vcgen.baseRegistry().objects()) {
       expr::mpz_class v = expr::op::bv::toMpz(sem.numeral(o.base));
-      layoutValues.emplace(o.constant.get(), v);
+      layoutValues.emplace(o.term.get(), v);
       // the readers (InitialWords, Ackermann) see the erased query: the bv
-      // twin of the ptr constant (PtrSort S2e; the eraser pins it)
+      // twin of the segment (PtrSort S2e; the eraser pins it)
       if (sem.seamRewriter())
-        layoutValues.emplace(
-            sem.seamRewriter()->rules().erase(o.constant).get(), v);
+        layoutValues.emplace(sem.seamRewriter()->rules().erase(o.term).get(),
+                             v);
     }
     std::unique_ptr<expr::InitialWords> words;
     // the stride rule's record (--ack-stride; the plain boundary only: the
@@ -7293,13 +7310,17 @@ int main(int argc, char **argv) {
         return 1; // vc.memop-term-at-boundary
       lap("solver-term");
     }
-    SEA_PHASE_END(solverTermPhase).kv("nodes-made", efac.nodesMade());
     if (originsOn) {
       origins = origins.along(preBoundary, query, [&](const expr::Expr &e) {
         return sem.erasedImage(e);
       });
       preBoundary = expr::Expr();
     }
+    // the objects' addresses (obj.<k> = a over the erased twins): stated at
+    // the boundary, not before it (docs/design/PtrSegment.md, step 1); after
+    // the origins follow the boundary's structure (they have none)
+    query = sem.withLayoutFacts(query);
+    SEA_PHASE_END(solverTermPhase).kv("nodes-made", efac.nodesMade());
     if (failed(sea::verifyUniqueNames(query, clash)))
       return fail("two distinct VC constants are both named '" + clash + "'");
     lap("unique-names");
@@ -7490,7 +7511,7 @@ int main(int argc, char **argv) {
         if (auto e = armOfIndex(kv.second))
           armTable.byIndex.emplace(kv.first, std::move(*e));
       for (const expr::ObjectBase &o : reg.objects())
-        armTable.keyOf.emplace(rules.erase(o.constant).get(), o.order);
+        armTable.keyOf.emplace(rules.erase(o.term).get(), o.order);
       armTable.nonZero = [&reg](unsigned key) {
         return key < reg.size() && !reg.objects()[key].size.isZero();
       };
@@ -7516,7 +7537,7 @@ int main(int argc, char **argv) {
       std::unordered_set<expr::ENode *> size0;
       for (const expr::ObjectBase &o : vcgen.baseRegistry().objects())
         if (o.size.isZero())
-          size0.insert(o.constant.get());
+          size0.insert(o.term.get());
       ack.setSize0Bases(std::move(size0));
       ack.setAssumePremises(inb);
     }
@@ -7589,7 +7610,7 @@ int main(int argc, char **argv) {
         std::unordered_set<expr::ENode *> size0;
         for (const expr::ObjectBase &o : vcgen.baseRegistry().objects())
           if (o.size.isZero())
-            size0.insert(o.constant.get());
+            size0.insert(o.term.get());
         dry.setSize0Bases(std::move(size0));
         dry.setAssumePremises(inb);
       }
@@ -7602,7 +7623,7 @@ int main(int argc, char **argv) {
       for (const expr::ObjectBase &o : reg.objects())
         if (o.order < objs.size())
           objs[o.order] = expr::CellsObjectInfo{
-              rules.erase(o.constant),
+              rules.erase(o.term),
               o.size.getActiveBits() <= 63 ? o.size.getZExtValue() : UINT64_MAX,
               o.size.getActiveBits() <= 63, o.align, o.name};
       uint64_t inbGapReads = 0;
@@ -8106,7 +8127,7 @@ int main(int argc, char **argv) {
             .kv("concat-ite-refused", f.hoistRefused)
             .kv("skipped-masked", f.skippedMasked)
             .kv("skipped-untyped", f.skippedUntyped)
-            .kv("skipped-ptr", f.skippedPtr);
+            .kv("skipped-base", f.skippedBase);
         r.line("vc.model-trail")
             .brunch(sea::stats::Brunch::Parts)
             .kv("cells", trailCells)

@@ -37,8 +37,8 @@
 // target's guard, which deepest order queries first) is an error: the
 // model of the assume before it (x != 0 holds past x > 10) runs on to it.
 // RUN: not sea-vc %t/pass.mlir --reach --reach-order=deepest --x-reach-plant=block-last --brunch-stats 2>&1 | FileCheck %s --check-prefix=PINC
-// PINC: vc.reach-inconsistent
 // PINC: reach: l.c:5:1 unreachable op=sea.assert
+// PINC: vc.reach-inconsistent
 // PINC: BRUNCH_STAT status 2
 
 // The options need --reach.

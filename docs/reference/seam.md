@@ -27,8 +27,9 @@ itself, and leaves the solver only the comparisons it could not decide.
 
 ## What it keeps
 
-**Objects.** The base of a placed object is a named constant, `obj.<name>`,
-with a side equation `obj.<name> = <address>`, not a numeral. An address
+**Objects.** A placed object is the term `segment(obj.<name>, <address>)`,
+which carries its address; at the solver boundary it becomes the constant
+`obj.<name>` with the equation `obj.<name> = <address>`. An address
 that normalizes to `obj.k + off` is a pointer into object `k`.
 
 **A pointer sort.** Inside the query, addresses have their own sort with

@@ -12,20 +12,20 @@
 // RUN: sea-seam-export %s --lane=seam | %python %S/Inputs/show.py | FileCheck %s --allow-unused-prefixes --check-prefixes=ALL,SEAMENC,SEAM,INB -DLANE=seam
 // RUN: sea-seam-export %s --lane=plain | %python %S/Inputs/show.py | FileCheck %s --allow-unused-prefixes --check-prefixes=ALL,NOSEAM,PLAIN -DLANE=plain
 // RUN: sea-seam-export %s --lane=simplify | %python %S/Inputs/show.py | FileCheck %s --allow-unused-prefixes --check-prefixes=ALL,NOSEAM,SIMP -DLANE=simplify
-// ALL: header: schema=3 lane=[[LANE]]
-// SEAMENC: root %s1 sea.addr.add ptr: index(obj.s, c=1, K=0, plain)
+// ALL: header: schema=5 lane=[[LANE]]
+// SEAMENC: root %s1 sea.addr.add ptr: index(segment(obj.s, 8), c=1, K=0, plain)
 // NOSEAM: root %s1 sea.addr.add ptr: index(fromInt(8), c=1, K=0, plain)
-// RAW: root %m3 sea.store memory: store(store(store(constMem(0), index(obj.s, c=1, K=0, plain), nd.0_0), index(obj.s, c=2, K=0, plain), 1), index(obj.s, c=1, K=0, plain), 2)
+// RAW: root %m3 sea.store memory: store(store(store(constMem(0), index(segment(obj.s, 8), c=1, K=0, plain), nd.0_0), index(segment(obj.s, 8), c=2, K=0, plain), 1), index(segment(obj.s, 8), c=1, K=0, plain), 2)
 // RAW: root %r1 sea.load bv: select(store(store(store(
-// REW: root %m3 sea.store memory: smap(constMem(0), obj.s, 1:2, 2:1, 1:nd.0_0)
+// REW: root %m3 sea.store memory: smap(constMem(0), segment(obj.s, 8), 1:2, 2:1, 1:nd.0_0)
 // REW: root %r1 sea.load bv: 2
-// REW: root %r0 sea.load bv: select(constMem(0), obj.s)
-// SEAM: root %m3 sea.store memory: smap(constMem(0), obj.s, 1:2, 2:1, 1:nd.0_0)
+// REW: root %r0 sea.load bv: select(constMem(0), segment(obj.s, 8))
+// SEAM: root %m3 sea.store memory: smap(constMem(0), segment(obj.s, 8), 1:2, 2:1, 1:nd.0_0)
 // SEAM: root %r1 sea.load bv: 2
-// SEAM: root %r0 sea.load bv: select(constMem(0), obj.s)
+// SEAM: root %r0 sea.load bv: select(constMem(0), segment(obj.s, 8))
 // NOSEAM: root %r1 sea.load bv: select(store(store(store(
 // ALL: probe loc("r1") bytes=1:
-// SEAM: probe loc("r0") bytes=1: smap(constMem(0), obj.s, 1:2, 2:1, 1:nd.0_0) @ obj.s
+// SEAM: probe loc("r0") bytes=1: smap(constMem(0), segment(obj.s, 8), 1:2, 2:1, 1:nd.0_0) @ segment(obj.s, 8)
 // The boundary expands the store-map into stores; the reads resolved stay.
 // RAW: erased %r1: select(store(store(store(constMem(0), add(obj.s, 1), nd.0_0), add(obj.s, 2), 1), add(obj.s, 1), 2), add(obj.s, 1))
 // SEAM: erased %r1: 2

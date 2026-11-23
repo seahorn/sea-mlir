@@ -42,7 +42,7 @@ otherwise.
 
 ```console
 $ sea-seam-export smap.mlir --lane=seam --firings | jq -c '{schema, lane, sea_vc, ainb, rewrite, roots: (.roots|length), firings: (.firings|length)}'
-{"schema":3,"lane":"seam","sea_vc":"sea-vc --seam","ainb":true,"rewrite":true,"roots":13,"firings":4}
+{"schema":5,"lane":"seam","sea_vc":"sea-vc --seam","ainb":true,"rewrite":true,"roots":13,"firings":4}
 $ sea-seam-export smap.mlir --lane=seam --firings | jq -c '.firings[0] | {id, rules, premises, op}'
 {"id":0,"rules":["smap.new"],"premises":[],"op":"store"}
 ```
@@ -80,25 +80,25 @@ empty when no `sea-vc` run builds them.
   access (its firings would rest on a premise the program may break;
   `sea-vc` reports it and keeps the premises).
 - In `plain` and `simplify`, an object is its placed address, not a
-  variable `obj.<name>`.
+  `segment` node.
 
-## Format (schema 3)
+## Format (schema 5)
 
 One JSON object with sorted keys:
 
 | key | value |
 |---|---|
-| `schema` | `3` (2 before the premises were renamed: `premises` values, `sea_vc` flags). Additions keep the number; an incompatible change increments it |
+| `schema` | `5`: an object is a `segment` node with its address, and `side` has no layout equations. 3 before (4 is taken by an older envelope of the formal model's importers); 2 before the premises were renamed. Additions keep the number; an incompatible change increments it |
 | `lane`, `sea_vc` | the lane and its `sea-vc` command |
 | `ptr_mode` | `address` or `opaque` |
 | `address_bits` | $N$ |
 | `ainb` | whether the premises A-SEP, A-NULL, A-NOWRAP were used (the key keeps its name) |
 | `rewrite` | whether the memory rules ran |
 | `roots` | `[{name, location, operation, term}]`: every integer, address and memory result, in program order |
-| `side` | `[term]`: the side conditions, such as the layout `addr(obj.<name>) = base` |
-| `sources` | `[{site, term}]` for nondet values, nondet memories and havoc arrays, and `[{fixed, term}]` for segments with their placed base |
+| `side` | `[term]`: the side conditions; no layout equation (each `segment` node carries its address) |
+| `sources` | `[{site, term}]` for nondet values, nondet memories and havoc arrays, and `[{fixed, term}]` for segments with their placed base (equal to the node's `addr`) |
 | `probes` | `[{location, bytes, memory, address}]`: the operands of each load |
-| `erased_roots`, `erased_side` | the non-memory roots and the side conditions after the solver boundary, with no pointer sort left |
+| `erased_roots`, `erased_side` | the non-memory roots and the side conditions after the solver boundary, with no pointer sort left; `erased_side` starts with the layout `obj.<name> = base` the boundary adds (an erased object is the variable `obj.<name>`) |
 | `firings`, `firings_unexpressible` | with `--firings`: the rule applications, and how many could not be expressed |
 
 Names are the query's: `nd.<site>_0` for an input, `obj.<name>` for an
@@ -108,7 +108,8 @@ object, and the printed MLIR name for a root.
 
 A term is `{sort, [bits], op, args, ...}`. `sort` is `bv` (with `bits`),
 `bool`, `ptr` (with `bits` = $N$) or `memory` ($N$-bit addresses, byte
-cells). Numerals (the `bv` value, `smap` offsets, `fixed`) are strings in
+cells). Numerals (the `bv` value, `smap` offsets, `fixed`, a segment's
+`addr`) are strings in
 the form of the Expr printer: decimal below 65535, lowercase hex with a
 `0x` prefix from 65535 up (`0x3ffff80`). A `bv` value is unsigned; a
 negative one, which should not occur, would print as `-5` or `0x-ffff`.
@@ -120,6 +121,7 @@ are signed decimal.
 | `bv` | `value` (unsigned, below $2^{bits}$) |
 | `bool` | `value` |
 | `var` | `name` |
+| `segment` | no arguments; `sort` `ptr`, `bits` = $N$, `name` (`obj.<name>`), `addr` (the placed base, a numeral): a placed object, printed `segment(obj.<name>, 0x<addr>)` |
 | `ite`, `eq`, `ult`, `ule`, `not`, `and`, `or` | `args`; `and` and `or` are n-ary |
 | `add`, `sub`, `mul`, `concat` | `args`; `add` and `mul` may be n-ary; `concat` may be n-ary, first arg most significant |
 | `extract` | one argument; `start`, `length` (bits) |

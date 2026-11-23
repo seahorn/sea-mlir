@@ -12,12 +12,12 @@
 // RUN: sea-seam-export %s --lane=seam | %python %S/Inputs/show.py | FileCheck %s --allow-unused-prefixes --check-prefixes=ALL,SEAMENC,SEAM,INB -DLANE=seam
 // RUN: sea-seam-export %s --lane=plain | %python %S/Inputs/show.py | FileCheck %s --allow-unused-prefixes --check-prefixes=ALL,NOSEAM,PLAIN -DLANE=plain
 // RUN: sea-seam-export %s --lane=simplify | %python %S/Inputs/show.py | FileCheck %s --allow-unused-prefixes --check-prefixes=ALL,NOSEAM,SIMP -DLANE=simplify
-// ALL: header: schema=3 lane=[[LANE]] {{.*}} ptr_mode=opaque address_bits=8
+// ALL: header: schema=5 lane=[[LANE]] {{.*}} ptr_mode=opaque address_bits=8
 // ALL: root %p sea.addr.from_bits ptr: fromBits(nd.0_0)
-// SEAMENC: root %written sea.store memory: store(constMem(0), obj.slot, toBits(fromBits(nd.0_0)))
+// SEAMENC: root %written sea.store memory: store(constMem(0), segment(obj.slot, 2), toBits(fromBits(nd.0_0)))
 // NOSEAM: root %written sea.store memory: store(constMem(0), fromInt(2), toBits(fromBits(nd.0_0)))
 // The unrewritten read of the stored pointer.
-// RAW: root %q sea.load ptr: fromBits(select(store(constMem(0), obj.slot, toBits(fromBits(nd.0_0))), obj.slot))
+// RAW: root %q sea.load ptr: fromBits(select(store(constMem(0), segment(obj.slot, 2), toBits(fromBits(nd.0_0))), segment(obj.slot, 2)))
 // RAW: root %read sea.load bv: select(store(constMem(0), fromBits(nd.0_0), 42), fromBits(select(
 // NOSEAM: root %q sea.load ptr: fromBits(select(
 // Memory rules without simplification: the read resolved, the pointer not.
@@ -26,8 +26,10 @@
 // With simplification: ptr.load-resolve.
 // SEAM: root %q sea.load ptr: fromBits(nd.0_0)
 // SEAM: root %read sea.load bv: 42
-// SEAMENC: side: eq(addr(obj.slot), 2)
-// SEAMENC: source fixed=2: obj.slot
+// Schema 5: no layout side condition (the segment node carries its
+// address); the erased side states it over the erased object.
+// SEAMENC-NOT: side:
+// SEAMENC: source fixed=2: segment(obj.slot, 2)
 // NOSEAM: source fixed=2: fromInt(2)
 // ALL: probe loc("q") bytes=1:
 // ALL: probe loc("read") bytes=1:

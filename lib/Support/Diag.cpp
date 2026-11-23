@@ -54,6 +54,10 @@ bool logEnabled(StringRef kind) { return log::warningSelected(kind); }
 
 void print(raw_ostream::Colors color, StringRef prefix, StringRef kind,
            const Twine &msg, const std::string &where) {
+  // what the tool printed before the message comes first: stdout is
+  // buffered, so without the flush a message lands inside a buffered line
+  // at a position that depends on the buffer (2>&1 readers see it there)
+  outs().flush();
   raw_ostream &os = errs();
   bool c = useColor(os);
   if (c)
