@@ -29,6 +29,22 @@
 // RSAT: result: sat
 // RUNSAT: result: unsat
 
+// Exactness: the portable form of umulo and smulo equals their definition
+// (the product at twice the width out of range), at widths 1, 8 and 64; an
+// off-by-one bound of the expansion makes the query sat
+// RUN: sea-vc %s --program=exact_i1 --smt2 --smt2-dialect=portable > %t.e1.smt2
+// RUN: %z3 %t.e1.smt2 | FileCheck %s --check-prefix=UNSAT
+// RUN: %yices_smt2 %t.e1.smt2 | FileCheck %s --check-prefix=UNSAT
+// RUN: %bitwuzla %t.e1.smt2 | FileCheck %s --check-prefix=UNSAT
+// RUN: sea-vc %s --program=exact_i8 --smt2 --smt2-dialect=portable > %t.e8.smt2
+// RUN: %z3 %t.e8.smt2 | FileCheck %s --check-prefix=UNSAT
+// RUN: %yices_smt2 %t.e8.smt2 | FileCheck %s --check-prefix=UNSAT
+// RUN: %bitwuzla %t.e8.smt2 | FileCheck %s --check-prefix=UNSAT
+// RUN: sea-vc %s --program=exact_i64 --smt2 --smt2-dialect=portable > %t.e64.smt2
+// RUN: %z3 %t.e64.smt2 | FileCheck %s --check-prefix=UNSAT
+// RUN: %yices_smt2 %t.e64.smt2 | FileCheck %s --check-prefix=UNSAT
+// RUN: %bitwuzla %t.e64.smt2 | FileCheck %s --check-prefix=UNSAT
+
 // The default dialect is z3's: the query z3 solves, its mul overflow named
 // in the header and warned; z3 reads it
 // RUN: sea-vc %s --program=smul_sat --smt2 > %t.z3.smt2 2> %t.z3.err
@@ -100,6 +116,84 @@ sea.program @smul_unsat {
   %o = sea.smulo %x, %y : i8
   %t = sea.const 1 : i1
   %ok = sea.xor %o, %t : i1
+  sea.assert %ok
+  sea.halt
+}
+
+// umulo / smulo equal their definition by the 2w-bit product
+sea.program @exact_i1 {
+  %x = sea.nondet "nondet_x" [0] : i1
+  %y = sea.nondet "nondet_y" [1] : i1
+  %uo = sea.umulo %x, %y : i1
+  %xz = sea.zext %x : i1 to i2
+  %yz = sea.zext %y : i1 to i2
+  %pu = sea.mul %xz, %yz : i2
+  %umax = sea.const 1 : i2
+  %uref = sea.icmp ugt, %pu, %umax : i2
+  %ueq = sea.icmp eq, %uo, %uref : i1
+  %so = sea.smulo %x, %y : i1
+  %xs = sea.sext %x : i1 to i2
+  %ys = sea.sext %y : i1 to i2
+  %ps = sea.mul %xs, %ys : i2
+  %smax = sea.const 0 : i2
+  %smin = sea.const -1 : i2
+  %above = sea.icmp sgt, %ps, %smax : i2
+  %below = sea.icmp slt, %ps, %smin : i2
+  %sref = sea.or %above, %below : i1
+  %seq = sea.icmp eq, %so, %sref : i1
+  %ok = sea.and %ueq, %seq : i1
+  sea.assert %ok
+  sea.halt
+}
+
+// umulo / smulo equal their definition by the 2w-bit product
+sea.program @exact_i8 {
+  %x = sea.nondet "nondet_x" [0] : i8
+  %y = sea.nondet "nondet_y" [1] : i8
+  %uo = sea.umulo %x, %y : i8
+  %xz = sea.zext %x : i8 to i16
+  %yz = sea.zext %y : i8 to i16
+  %pu = sea.mul %xz, %yz : i16
+  %umax = sea.const 255 : i16
+  %uref = sea.icmp ugt, %pu, %umax : i16
+  %ueq = sea.icmp eq, %uo, %uref : i1
+  %so = sea.smulo %x, %y : i8
+  %xs = sea.sext %x : i8 to i16
+  %ys = sea.sext %y : i8 to i16
+  %ps = sea.mul %xs, %ys : i16
+  %smax = sea.const 127 : i16
+  %smin = sea.const -128 : i16
+  %above = sea.icmp sgt, %ps, %smax : i16
+  %below = sea.icmp slt, %ps, %smin : i16
+  %sref = sea.or %above, %below : i1
+  %seq = sea.icmp eq, %so, %sref : i1
+  %ok = sea.and %ueq, %seq : i1
+  sea.assert %ok
+  sea.halt
+}
+
+// umulo / smulo equal their definition by the 2w-bit product
+sea.program @exact_i64 {
+  %x = sea.nondet "nondet_x" [0] : i64
+  %y = sea.nondet "nondet_y" [1] : i64
+  %uo = sea.umulo %x, %y : i64
+  %xz = sea.zext %x : i64 to i128
+  %yz = sea.zext %y : i64 to i128
+  %pu = sea.mul %xz, %yz : i128
+  %umax = sea.const 18446744073709551615 : i128
+  %uref = sea.icmp ugt, %pu, %umax : i128
+  %ueq = sea.icmp eq, %uo, %uref : i1
+  %so = sea.smulo %x, %y : i64
+  %xs = sea.sext %x : i64 to i128
+  %ys = sea.sext %y : i64 to i128
+  %ps = sea.mul %xs, %ys : i128
+  %smax = sea.const 9223372036854775807 : i128
+  %smin = sea.const -9223372036854775808 : i128
+  %above = sea.icmp sgt, %ps, %smax : i128
+  %below = sea.icmp slt, %ps, %smin : i128
+  %sref = sea.or %above, %below : i1
+  %seq = sea.icmp eq, %so, %sref : i1
+  %ok = sea.and %ueq, %seq : i1
   sea.assert %ok
   sea.halt
 }

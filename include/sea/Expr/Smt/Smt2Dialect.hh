@@ -23,8 +23,7 @@
 ///   array-map, array-default, as-array  z3 only. No portable form.
 ///
 /// A query without a logic: Yices reads nothing (no bit-vector sort). Both
-/// dialects start with (set-logic ALL) (or z3's logic, sea-vc --z3-logic):
-/// z3 sets up for ALL as for no logic.
+/// dialects declare one (smt2Header): z3 sets up for ALL as for no logic.
 
 #include "sea/Expr/Expr.hh"
 
@@ -58,18 +57,36 @@ struct Smt2Construct {
   bool expandable;
 };
 
-/// The non-portable constructs of \p asserts, in a fixed order. With \p
-/// dialect Portable, \p asserts are rewritten in place: every expandable
-/// construct is replaced by its exact portable form; the result lists the
-/// constructs left (none expandable).
-std::vector<Smt2Construct> smt2Constructs(expr::ExprVector &asserts,
-                                          Smt2Dialect dialect);
+/// What a printed query holds that matters to a reader: the non-portable
+/// constructs left, and the theories a declared logic must admit
+struct Smt2Scan {
+  /// the constructs left, in a fixed order (none expandable in the
+  /// portable dialect)
+  std::vector<Smt2Construct> left;
+  /// an array sort or operation
+  bool arrays = false;
+  /// a quantifier
+  bool quantifiers = false;
+};
+
+/// Scans \p asserts. With \p dialect Portable, \p asserts are rewritten in
+/// place: every expandable construct is replaced by its exact portable form.
+Smt2Scan smt2Scan(expr::ExprVector &asserts, Smt2Dialect dialect);
 
 /// The header of a printed query: a comment naming the dialect, one comment
-/// line and one sea::diag warning (kind smt2.nonportable.<name>) per
-/// construct left, then (set-logic \p logic).
-void smt2Header(llvm::raw_ostream &o, Smt2Dialect dialect,
-                const std::vector<Smt2Construct> &left, llvm::StringRef logic);
+/// line per construct left (and, with \p warn, one sea::diag warning, kind
+/// smt2.nonportable.<name>), then the logic.
+///
+/// \p z3Logic is the logic of the solver that solves the query in-process
+/// (sea-vc --z3-logic; empty: none). The z3 dialect is that query, which z3
+/// reads without a logic: it states the logic in a comment
+/// (`; sea.z3-logic <L>`) and prints (set-logic ALL), since z3 under a
+/// smaller logic rejects terms its API accepts (bvsmul_noovfl, arrays under
+/// QF_BV). The portable dialect prints (set-logic <z3Logic>), else ALL; with
+/// \p warn, a query outside that logic (arrays without A, quantifiers under
+/// QF_) is warned, smt2.logic-mismatch.
+void smt2Header(llvm::raw_ostream &o, Smt2Dialect dialect, const Smt2Scan &scan,
+                llvm::StringRef z3Logic, bool warn = true);
 
 } // namespace solver
 } // namespace sea

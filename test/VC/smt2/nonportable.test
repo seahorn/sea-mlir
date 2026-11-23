@@ -1,3 +1,4 @@
+REQUIRES: z3
 The constructs of a --smt2 query without a portable form are named in the
 header (`; sea.smt2-nonportable <name>`) and warned
 (smt2.nonportable.<name>), in both dialects.
@@ -20,9 +21,29 @@ LAMBDA-NEXT: ; sea.smt2-nonportable lambda: read by z3 only; no portable form
 LAMBDA-NEXT: (set-logic ALL)
 LAMBDAWARN: [smt2.nonportable.lambda]
 
-The logic is z3's when sea-vc sets one.
-RUN: sea-vc %S/../memops/memmove-symbolic-overlap-above.mlir --program=unsat --lower --z3-logic=QF_AUFBV --smt2 2>/dev/null | FileCheck %s --check-prefix=LOGIC
-LOGIC: (set-logic QF_AUFBV)
+The z3 dialect is the query z3 solves in-process, under --z3-logic's logic
+too: it names the logic in a comment and declares ALL, so the z3 binary
+reads it (under QF_BV it would reject the arrays and bvsmul_noovfl that
+z3's API accepts).
+RUN: sea-vc %S/../memops/memmove-symbolic-overlap-above.mlir --program=unsat --lower --z3-logic=QF_BV --smt2 > %t.za.smt2 2>/dev/null
+RUN: FileCheck %s --check-prefix=LOGIC < %t.za.smt2
+RUN: %z3 %t.za.smt2 | FileCheck %s --check-prefix=UNSAT
+RUN: sea-vc %S/portable.mlir --program=smul_sat --z3-logic=QF_BV --smt2 > %t.zm.smt2 2>/dev/null
+RUN: FileCheck %s --check-prefix=LOGIC < %t.zm.smt2
+RUN: %z3 %t.zm.smt2 | FileCheck %s --check-prefix=SAT
+LOGIC: ; sea.z3-logic QF_BV
+LOGIC-NEXT: (set-logic ALL)
+UNSAT: {{^unsat$}}
+SAT: {{^sat$}}
+
+The portable dialect declares --z3-logic's logic; a query outside it is
+warned.
+RUN: sea-vc %S/../memops/memmove-symbolic-overlap-above.mlir --program=unsat --lower --z3-logic=QF_BV --smt2 --smt2-dialect=portable > %t.pa.smt2 2> %t.pa.err
+RUN: FileCheck %s --check-prefix=PLOGIC < %t.pa.smt2
+RUN: FileCheck %s --check-prefix=PLOGICWARN < %t.pa.err
+PLOGIC: ; sea.smt2-logic-mismatch arrays outside QF_BV
+PLOGIC-NEXT: (set-logic QF_BV)
+PLOGICWARN: [smt2.logic-mismatch]
 
 The dialect is z3's printer's: not with another solver.
 RUN: %if yices %{ not sea-vc %S/../memops/memmove-symbolic-overlap-above.mlir --solver=yices --smt2 --smt2-dialect=portable 2>&1 | FileCheck %s --check-prefix=SOLVER %}

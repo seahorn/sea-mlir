@@ -359,7 +359,7 @@ yices_solver_impl::model_ref yices_solver_impl::get_model() {
   return model_ref(new yices_model_impl(model, *this, d_efac));
 }
 
-void yices_solver_impl::to_smt_lib(raw_ostream &o, Smt2Dialect) {
+void yices_solver_impl::to_smt_lib(raw_ostream &o, Smt2Dialect, bool) {
   diag::warn("yices.smt2-unimplemented",
              "yices::to_smt_lib is not implemented; nothing printed");
 }

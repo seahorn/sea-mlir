@@ -90,10 +90,15 @@ struct PortableRw {
   std::array<bool, K_COUNT> &seen;
   bool expand;
   TypeChecker &tc;
+  Smt2Scan &scan;
 
   unsigned widthOf(Expr x) { return bv::width(tc.typeOf(x)); }
 
   Expr operator()(Expr e) {
+    if (isOpX<ARRAY_TY>(e) || isOpX<SELECT>(e) || isOpX<STORE>(e))
+      scan.arrays = true;
+    if (isOpX<FORALL>(e) || isOpX<EXISTS>(e))
+      scan.quantifiers = true;
     std::optional<Kind> k = kindOf(e);
     if (!k)
       return e;
@@ -145,34 +150,67 @@ struct PortableVisitor {
 };
 } // namespace
 
-std::vector<Smt2Construct> smt2Constructs(ExprVector &asserts,
-                                          Smt2Dialect dialect) {
+Smt2Scan smt2Scan(ExprVector &asserts, Smt2Dialect dialect) {
   std::array<bool, K_COUNT> seen{};
   TypeChecker tc;
   bool expand = dialect == Smt2Dialect::Portable;
-  PortableVisitor v{std::make_shared<PortableRw>(PortableRw{seen, expand, tc})};
+  Smt2Scan scan;
+  PortableVisitor v{
+      std::make_shared<PortableRw>(PortableRw{seen, expand, tc, scan})};
   DagVisit<PortableVisitor> dv(v);
   for (Expr &a : asserts)
     a = dv(a);
-  std::vector<Smt2Construct> left;
   for (unsigned k = 0; k < K_COUNT; ++k)
     if (seen[k] && !(expand && kInfo[k].expandable))
-      left.push_back({kInfo[k].name, kInfo[k].readers, kInfo[k].expandable});
-  return left;
+      scan.left.push_back(
+          {kInfo[k].name, kInfo[k].readers, kInfo[k].expandable});
+  return scan;
 }
 
-void smt2Header(llvm::raw_ostream &o, Smt2Dialect dialect,
-                const std::vector<Smt2Construct> &left, llvm::StringRef logic) {
-  o << "; sea.smt2-dialect "
-    << (dialect == Smt2Dialect::Portable ? "portable" : "z3") << "\n";
-  for (const Smt2Construct &c : left) {
+namespace {
+/// \p logic admits arrays: ALL, or its theories (after QF_) start with A
+/// (QF_ABV, QF_AUFBV, AUFLIA, ...)
+bool logicHasArrays(llvm::StringRef logic) {
+  if (logic == "ALL")
+    return true;
+  logic.consume_front("QF_");
+  return logic.starts_with("A");
+}
+} // namespace
+
+void smt2Header(llvm::raw_ostream &o, Smt2Dialect dialect, const Smt2Scan &scan,
+                llvm::StringRef z3Logic, bool warn) {
+  bool portable = dialect == Smt2Dialect::Portable;
+  o << "; sea.smt2-dialect " << (portable ? "portable" : "z3") << "\n";
+  for (const Smt2Construct &c : scan.left) {
     llvm::StringRef fix = c.expandable ? "--smt2-dialect=portable expands it"
                                        : "no portable form";
     o << "; sea.smt2-nonportable " << c.name << ": read by " << c.readers
       << "; " << fix << "\n";
-    diag::warn("smt2.nonportable." + c.name, "the SMT-LIB query has " + c.name +
-                                                 ", read by " + c.readers +
-                                                 "; " + fix);
+    if (warn)
+      diag::warn("smt2.nonportable." + c.name, "the SMT-LIB query has " +
+                                                   c.name + ", read by " +
+                                                   c.readers + "; " + fix);
+  }
+  if (!portable) {
+    if (!z3Logic.empty())
+      o << "; sea.z3-logic " << z3Logic << "\n";
+    o << "(set-logic ALL)\n";
+    return;
+  }
+  llvm::StringRef logic = z3Logic.empty() ? "ALL" : z3Logic;
+  std::string outside;
+  if (scan.arrays && !logicHasArrays(logic))
+    outside = "arrays";
+  else if (scan.quantifiers && logic.starts_with("QF_"))
+    outside = "quantifiers";
+  if (!outside.empty()) {
+    o << "; sea.smt2-logic-mismatch " << outside << " outside " << logic
+      << "\n";
+    if (warn)
+      diag::warn("smt2.logic-mismatch", "the SMT-LIB query has " + outside +
+                                            ", outside its logic " + logic +
+                                            " (--z3-logic)");
   }
   o << "(set-logic " << logic << ")\n";
 }

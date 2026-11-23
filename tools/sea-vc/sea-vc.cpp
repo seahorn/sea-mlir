@@ -8611,7 +8611,9 @@ int main(int argc, char **argv) {
         printer->add(q);
         std::string smt;
         raw_string_ostream ss(smt);
-        printer->to_smt_lib(ss);
+        // (not a --smt2 query: no smt2.nonportable warnings)
+        printer->to_smt_lib(ss, sea::solver::Smt2Dialect::Native,
+                            /*warn=*/false);
         for (StringRef rest = ss.str(); !rest.empty();) {
           auto [line, tail] = rest.split('\n');
           rest = tail;

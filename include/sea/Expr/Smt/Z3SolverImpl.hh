@@ -134,15 +134,16 @@ public:
   }
 
   /// Write asserted formulas to SMT-LIB format: a header (the dialect, the
-  /// constructs some solver does not read, the logic: z3's, else ALL, which
-  /// z3 sets up as no logic), then the assertions; \p dialect Portable
+  /// constructs some solver does not read, the logic: smt2Header), then the
+  /// assertions; \p dialect Portable
   /// expands what has an exact portable form (sea/Expr/Smt/Smt2Dialect.hh)
   virtual void to_smt_lib(llvm::raw_ostream &o,
-                          Smt2Dialect dialect = Smt2Dialect::Native) override {
+                          Smt2Dialect dialect = Smt2Dialect::Native,
+                          bool warn = true) override {
     expr::ExprVector asserts;
     m_solver->assertions(std::back_inserter(asserts));
-    std::vector<Smt2Construct> left = smt2Constructs(asserts, dialect);
-    smt2Header(o, dialect, left, m_logic.empty() ? "ALL" : m_logic);
+    Smt2Scan scan = smt2Scan(asserts, dialect);
+    smt2Header(o, dialect, scan, m_logic, warn);
     m_solver->toSmtLibOf(o, asserts, expr::ExprVector());
   }
 };

@@ -76,9 +76,12 @@ public:
 
   /// Write asserted formulas to SMT-LIB format, in \p dialect
   /// (sea/Expr/Smt/Smt2Dialect.hh; z3's printer only: the others print
-  /// their own, whatever \p dialect)
+  /// their own, whatever \p dialect); \p warn: report what another solver
+  /// cannot read as sea::diag warnings (off for a query printed as part of
+  /// another report)
   virtual void to_smt_lib(llvm::raw_ostream &o,
-                          Smt2Dialect dialect = Smt2Dialect::Native) = 0;
+                          Smt2Dialect dialect = Smt2Dialect::Native,
+                          bool warn = true) = 0;
 
   /// Why the last check answered unknown, as far as the backend says
   /// ("timeout", "memout", or the backend's own text); empty if not known.
