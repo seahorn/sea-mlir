@@ -65,9 +65,9 @@
 // accesses, so none of the premise rules above applies to them (the compares
 // of ROW, R-ABORT and WOW-COMMUTE there run with diffBase = false). Instead
 // `shadow.distinct-base`: two different registered bases at offset 0 whose
-// placed numerals differ are different cells. uses: LAYOUT (the placement
-// equations obj.k = <numeral>, a fact of the VC; sea-place-static gives
-// every object its own base, size 0 included).
+// placed numerals differ are different cells. uses: LAYOUT (the placement:
+// each object's numeral, in its PTR_SEGMENT term, a fact of the VC;
+// sea-place-static gives every object its own base, size 0 included).
 //
 // Provenance. A decision (decideEq / decidePair, ARM) is
 // a `Decision`: the rule of every leaf pair it rests on, each with the
@@ -169,8 +169,8 @@ struct SeaMOptions {
   bool trackOwnReads = false;
   /// without the premises, decide the access pairs / memop ranges of two placed
   /// objects at numeral offsets by their placed numerals (cmp.layout,
-  /// mem.in-layout; uses: LAYOUT). Off by default: valid only where the
-  /// layout equations obj = n are part of the formula (sea-vc turns it on,
+  /// mem.in-layout; uses: LAYOUT). Off by default: valid for the VC's
+  /// objects (PTR_SEGMENT terms carry their numerals; sea-vc turns it on,
   /// --seam-layout); the unit drivers' bases are free constants
   bool layoutDecide = false;
   /// ARM (AddrRangeMap.hh, thesis Ch. 5): when the syntactic checks of a ROW
@@ -305,9 +305,11 @@ enum class Tri { No, Yes, Unknown };
 /// "Soundness stance"), as a bit set. A-SEP, A-NULL and A-NOWRAP are
 /// assumptions about the program (see the header; a separate bounds check
 /// discharges all three, since A-INB implies them). LAYOUT is a fact of the
-/// VC, not an assumption: the placement equations obj.k = <numeral> (side
-/// conditions on every path); a rule that names it is valid given them
-/// (--seam-check adds them), and it is never reported as assumed. A new
+/// VC, not an assumption: each object's placed numeral, carried by its
+/// PTR_SEGMENT term and stated at the solver boundary as obj.<k> = <numeral>
+/// (docs/design/PtrSegment.md); a rule that names it is valid given those
+/// equations (--seam-check adds them), and it is never reported as
+/// assumed. A new
 /// named assumption adds a bit, and every place that combines
 /// premises already carries it.
 enum Premise : unsigned {
@@ -479,6 +481,8 @@ public:
     // type-check)
     if (op::ptr::isPtrConst(e))
       return op::ptr::width(bind::rangeTy(e->first()));
+    if (op::ptr::isSegment(e))
+      return op::bv::widthBvNum(op::ptr::segmentBase(e));
     if (op::ptr::isPtrIndex(e))
       return widthOf(op::ptr::base(e));
     if (isOpX<BADD>(e) || isOpX<BSUB>(e) || isOpX<PTR_DIFF>(e) ||
@@ -2171,9 +2175,9 @@ public:
     uint64_t size = o.size.getZExtValue();
     if (size < units)
       return mk<FALSE>(m_efac);
-    unsigned w = widthOf(o.constant);
+    unsigned w = widthOf(o.term);
     // over the addresses (ADDR, S2d): erased, value - obj.k
-    return mk<BULE>(mk<BSUB>(mk<ADDR>(value), mk<ADDR>(o.constant)),
+    return mk<BULE>(mk<BSUB>(mk<ADDR>(value), mk<ADDR>(o.term)),
                     num(size - units, w));
   }
 
@@ -5628,12 +5632,12 @@ public:
   ///                 the intervals (AddrRangeMap.hh: no wrap in the claim)
   /// (a - b) as an integer when a and b are views over two different
   /// placed objects with numeral offsets: (n_a + o_a) - (n_b + o_b), n the
-  /// placed numerals. Exact after the layout equations obj = n (a fact of
-  /// the VC, not an assumption: uses LAYOUT). Bases with equal numerals (a
-  /// hand-placed program) are not decided here.
-  /// Only for the addresses of accesses (a ROW compare, a memop range) and
-  /// only without the premises: with A-SEP, cmp.diff-base decides such pairs
-  /// first; without them (--seam-premises=0, the opt-in fallback
+  /// placed numerals. Exact given the layout equations obj = n (a fact of
+  /// the VC, stated at the boundary, not an assumption: uses LAYOUT). Bases
+  /// with equal numerals (a hand-placed program) are not decided here. Only for
+  /// the addresses of accesses (a ROW compare, a memop range) and only without
+  /// the premises: with A-SEP, cmp.diff-base decides such pairs first; without
+  /// them (--seam-premises=0, the opt-in fallback
   /// --seam-out-of-object=fallback) nothing
   /// else separates two objects, and every undecided memop row nests the
   /// next read (a read through n undecided mcopys is 2^n leaves). Program

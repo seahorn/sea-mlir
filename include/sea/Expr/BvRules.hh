@@ -93,6 +93,9 @@ public:
                  ? op::ptr::addrSortWidth(s)
                  : 0;
     }
+    // an object (PTR_SEGMENT): the width of its numeral
+    if (op::ptr::isSegment(e))
+      return op::bv::widthBvNum(op::ptr::segmentBase(e));
     auto it = m_widths.find(e);
     if (it != m_widths.end())
       return it->second;

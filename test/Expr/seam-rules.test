@@ -3,7 +3,11 @@
 // rules that name it, and with A-INB off no assumption at all), the thesis'
 // Fig. 3.3b / 3.4b / 3.5-3.6 examples, and a seeded random test (sound, and a
 // normal form: rewriting the result changes nothing), and the provenance of a
-// decision (every reason and premise of every leaf pair).
+// decision (every reason and premise of every leaf pair). segment and the
+// random-segments runs: the objects as PTR_SEGMENT terms
+// (docs/design/PtrSegment.md): no rule reads an object's numeral into an
+// observation of it, and per leaf the protected set changes only by a
+// decided arm or same-base cancellation; no leaf gains a base.
 RUN: sea-seam-rules-test 300 | FileCheck %s
 REQUIRES: yices
 CHECK: test: add-normalize ok
@@ -19,8 +23,13 @@ CHECK: test: provenance ok
 CHECK: test: node-view ok
 CHECK: test: null ok
 CHECK: test: prune-size0 ok
+CHECK: test: segment ok
 CHECK: random: terms=300
 CHECK: random-arm: terms=150
+CHECK: random-segments: terms=150
+CHECK: test: random-segments ok
+CHECK: random-arm-segments: terms=75
+CHECK: test: random-arm-segments ok
 CHECK: failures: 0
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors

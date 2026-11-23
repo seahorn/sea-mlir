@@ -381,8 +381,12 @@ struct Exporter {
       o["value"] = isOpX<TRUE>(e);
       return o;
     }
-    if (bind::isFapp(e) && e->arity() == 1) {
-      std::string name = printed(bind::fname(e->arg(0)));
+    // an object (PTR_SEGMENT, docs/design/PtrSegment.md step 1) is
+    // exported as its symbol obj.<k>, whose address `side` states, as
+    // before the segment term: schema 3 has no segment node
+    if ((bind::isFapp(e) && e->arity() == 1) || ptr::isSegment(e)) {
+      std::string name = ptr::isSegment(e) ? ptr::segmentSymbol(e)
+                                           : printed(bind::fname(e->arg(0)));
       auto [it, added] = symbolSorts.emplace(name, ty);
       if (!added && it->second != ty)
         bad("symbol name used at different sorts: " + name);
@@ -695,7 +699,11 @@ int main(int argc, char **argv) {
                              {"memory", ex.term(value(op.getOperand(0)))},
                              {"address", ex.term(value(op.getOperand(1)))}});
     }
-  for (auto e : side) {
+  // the layout (addr(obj.k) = base), which sea-vc states at the boundary,
+  // first: where OpSem's side conditions had it before PTR_SEGMENT
+  ExprVector layout;
+  sem.layoutConjuncts(layout);
+  for (auto e : llvm::concat<Expr>(layout, side)) {
     conditions.push_back(ex.term(e));
     erasedConditions.push_back(erasedEx.term(sem.solverTerm(e)));
   }

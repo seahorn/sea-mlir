@@ -59,8 +59,9 @@ SeaHorn dev18 port): the multi-step rewriter of SeaHorn's branch seam-dev14
 and a minimal rule set; see the comments at the top of `ExprRewriter.hh`
 for what differs from the branch and from z3. Tested by
 `unittests/ExprRewriter` (`test/Expr/rewriter.test`).
-`BaseRegistry.hh`: the object base constants of a SeaM VC (`obj.<name>`)
-with allocation order, size and kind; filled by `SeaOpSem` (`--seam`), read
+`BaseRegistry.hh`: the objects of a SeaM VC (`PTR_SEGMENT(<name>, <base>)`
+terms, `ExprOpPtr.hh`, docs/design/PtrSegment.md; their erased twins
+`obj.<name>` as aliases) with allocation order, size and kind; filled by `SeaOpSem` (`--seam`), read
 by the rewriter's rules.
 `SeaMRules.hh`: the SeaM rewrite rules (pointer normalization, object-aware
 compare, read over store / ite, ite and Boolean rules) as one config

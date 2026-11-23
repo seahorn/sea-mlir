@@ -363,10 +363,12 @@ Expr SeaOpSem::firingPremise(const RewriteTrail &trail,
       return Expr();
   } else if (f.premises & seam::PremLayout) {
     // LAYOUT alone (shadow.distinct-base): the placement equations, a fact
-    // of the VC (its side conditions), nothing about the program
+    // of the VC (the boundary states them: layoutFacts), nothing about the
+    // program. Erased with the firing, they bind the objects' twins, which
+    // are free constants otherwise: a firing without LAYOUT is checked at
+    // every base value
     ExprVector conj;
-    for (const ObjectBase &o : bases.objects())
-      conj.push_back(mk<EQ>(mk<ADDR>(o.constant), bvnum(o.base)));
+    layoutConjuncts(conj);
     base = mknary<AND>(trueE, conj);
   } else {
     base = trueE;
@@ -401,13 +403,36 @@ Expr SeaOpSem::firingPremise(const RewriteTrail &trail,
   return mknary<AND>(trueE, conj);
 }
 
+void SeaOpSem::layoutConjuncts(ExprVector &out) {
+  // ADDR(PTR_SEGMENT(k, a)) = a: a tautology before the boundary, which the
+  // eraser makes obj.<k> = a over the object's twin (PtrSegment.md, step 1)
+  for (const ObjectBase &o : bases.objects())
+    out.push_back(mk<EQ>(mk<ADDR>(o.term), bvnum(o.base)));
+}
+
 Expr SeaOpSem::layoutFacts() {
   ExprVector conj;
-  for (const ObjectBase &o : bases.objects())
-    conj.push_back(mk<EQ>(mk<ADDR>(o.constant), bvnum(o.base)));
-  // for a solver: erased (the object constants are ptr(w), registered with
-  // SeaM only)
+  layoutConjuncts(conj);
+  // for a solver: erased (the objects are ptr(w), registered with SeaM only)
   return solverTerm(mknary<AND>(trueE, conj));
+}
+
+Expr SeaOpSem::withLayoutFacts(const Expr &query) {
+  if (bases.empty())
+    return query;
+  ExprVector conj;
+  layoutConjuncts(conj);
+  for (Expr &c : conj)
+    c = solverTerm(c);
+  // false stays false (a conjunction with false was false before)
+  if (isOpX<FALSE>(query))
+    return query;
+  // first, where the side conditions put them when OpSem stated them
+  if (isOpX<AND>(query))
+    conj.insert(conj.end(), query->args_begin(), query->args_end());
+  else if (!isOpX<TRUE>(query))
+    conj.push_back(query);
+  return mknary<AND>(trueE, conj);
 }
 
 Expr SeaOpSem::accessPremise(const RewriteTrail &trail,
@@ -419,8 +444,7 @@ Expr SeaOpSem::accessPremise(const RewriteTrail &trail,
   // memories (firingObligation)
   if (isMemOpTerm(f.lhs)) {
     ExprVector conj;
-    for (const ObjectBase &o : bases.objects())
-      conj.push_back(mk<EQ>(mk<ADDR>(o.constant), bvnum(o.base)));
+    layoutConjuncts(conj);
     llvm::SmallVector<std::pair<Expr, Expr>, 2> ranges;
     seamRw->rules().accessRanges(f.lhs, ranges);
     for (const auto &[d, n] : ranges) {
@@ -448,10 +472,9 @@ Expr SeaOpSem::accessPremise(const RewriteTrail &trail,
     return Expr();
   }
   ExprVector conj;
-  // the layout: a fact of the VC (its side conditions), needed to read
+  // the layout: a fact of the VC (the boundary states it), needed to read
   // "different objects" as "different addresses"
-  for (const ObjectBase &o : bases.objects())
-    conj.push_back(mk<EQ>(mk<ADDR>(o.constant), bvnum(o.base)));
+  layoutConjuncts(conj);
   for (const auto &[a, units] : spans) {
     bool violated = false;
     Expr inb = seamRw->rules().inBounds(a, units, violated);
@@ -799,19 +822,20 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
     curOp = &op;
     auto in = [&](unsigned i) { return lookup(op.getOperand(i), ctx); };
     // A segment is the base address of a placed object. By default it is
-    // the numeral. With SeaM it is the named constant obj.<name>, equal to
-    // that numeral by a side constraint (a fact about the layout, true on
-    // every path), and the object goes to the base registry.
+    // the numeral. With SeaM it is the object PTR_SEGMENT(name, numeral)
+    // (docs/design/PtrSegment.md): the address is in the term, no side
+    // condition states it (the boundary does: layoutFacts), and the object
+    // goes to the base registry.
     if (auto seg = dyn_cast<SegmentOp>(op)) {
       Expr base = bvnum(seg.getBase());
       if (seamMode) {
-        Expr obj = op::ptr::ptrConst(
-            mkTerm<std::string>("obj." + seg.getName().str(), ef),
-            seg.getBase().getBitWidth());
+        Expr obj = op::ptr::segment(seg.getName().str(), base);
         // The rewriter takes the constants for distinct objects with
         // disjoint address ranges (placement makes them so; a hand-written
         // placed program may not).
-        if (bases.isBase(obj)) {
+        // one name, one object: a second segment of the name (another base
+        // gives another node) would share its twin obj.<name>
+        if (bases.isBase(obj) || bases.isBase(op::ptr::segmentTwin(obj))) {
           diag::error("vc.seam-segment-duplicate",
                       "two sea.segment ops are named \"" + seg.getName().str() +
                           "\": --seam needs one segment per object",
@@ -830,13 +854,8 @@ LogicalResult SeaOpSem::exec(Block &b, OpSemContext &ctx) {
         }
         bases.add(obj, seg.getName().str(), seg.getKind().str(), seg.getBase(),
                   seg.getSize(), seg.getAlign());
-        // its erased twin (the same name at bv(w)) names it too
-        bases.addAlias(
-            bv::bvConst(mkTerm<std::string>("obj." + seg.getName().str(), ef),
-                        seg.getBase().getBitWidth()),
-            obj);
-        // the layout: the address of the object (ADDR, S2d)
-        ctx.addSide(mk<EQ>(mk<ADDR>(obj), base));
+        // its erased twin, the bv(w) constant obj.<name>, names it too
+        bases.addAlias(op::ptr::segmentTwin(obj), obj);
         base = obj;
       } else if (ptrSorted()) {
         // no SeaM: the pointer whose address is the numeral (S2g)

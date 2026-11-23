@@ -47,7 +47,8 @@ enum class PtrOpKind {
   PTR_TO_BITS,
   PTR_FROM_BITS,
   PTR_EQ,
-  IS_OVERLAP
+  IS_OVERLAP,
+  PTR_SEGMENT
 };
 
 namespace typeCheck {
@@ -147,8 +148,38 @@ struct IsOverlap : public TypeCheckBase {
     return sort::boolTy(exp->efac());
   }
 };
+/// PTR_SEGMENT(k, a): STRING x bv(w) numeral -> ptr(w). A symbolic \p a
+/// is ill-sorted (docs/design/PtrSegment.md, "The term").
+struct Segment : public TypeCheckBase {
+  inline Expr inferType(Expr exp, TypeChecker &tc) override {
+    if (exp->arity() != 2 || !isOpX<STRING>(exp->arg(0)))
+      return sort::errorTy(exp->efac());
+    unsigned w;
+    if (!bv::isBvNum(exp->arg(1), w) || w == 0)
+      return sort::errorTy(exp->efac());
+    return ptr::ptrsort(w, exp->efac());
+  }
+};
 } // namespace ptrType
 } // namespace typeCheck
+
+namespace ps {
+/// segment(obj.<k>, 0x<a>): the object's name as the VC names it, and its
+/// placed base
+struct SEGMENT {
+  static inline void print(std::ostream &OS, int depth, bool brkt,
+                           const std::string &name,
+                           const std::vector<ENode *> &args) {
+    if (args.size() != 2 || !isOpX<STRING>(args[0]) ||
+        !bv::is_bvnum(Expr(args[1]))) {
+      ::expr::ps::FUNCTIONAL::print(OS, depth, brkt, name, args);
+      return;
+    }
+    OS << "segment(obj." << getTerm<std::string>(Expr(args[0])) << ", 0x"
+       << bv::toMpz(Expr(args[1])).to_string(16) << ")";
+  }
+};
+} // namespace ps
 
 NOP_BASE(PtrOp)
 /// The offset part of a PTR_INDEX, without base and promise (PtrSort.md, B1;
@@ -192,6 +223,15 @@ NOP(PTR_EQ, "ptr-eq", FUNCTIONAL, PtrOp, typeCheck::ptrType::PtrEq)
 /// to. Built by the ROW steps (rowCompare, W-ROW-*) for the compare they
 /// leave; program compares stay PTR_EQ.
 NOP(IS_OVERLAP, "overlap", FUNCTIONAL, PtrOp, typeCheck::ptrType::IsOverlap)
+/// An object (a placed segment), with its placed base address \p a in the
+/// term (docs/design/PtrSegment.md): PTR_SEGMENT(k, a), k the segment's
+/// name (a STRING terminal), a a bv(w) numeral; sort ptr(w). A
+/// constructor: never stripped, never rewritten into another pointer
+/// operator, and no rule reads its numeral as the value of an observation
+/// of it. Hash-consing makes it one node per object. Erased at the boundary
+/// to its twin, the bv(w) constant obj.<k> (PtrIndexExpander); the
+/// boundary states obj.<k> = a (SeaOpSem::withLayoutFacts).
+NOP(PTR_SEGMENT, "ptr-segment", ps::SEGMENT, PtrOp, typeCheck::ptrType::Segment)
 NOP(PTR_INDEX, "ptr-index", FUNCTIONAL, PtrOp, typeCheck::ptrType::PtrIndex)
 NOP(PTR_INDEX_NUSW, "ptr-index-nusw", FUNCTIONAL, PtrOp,
     typeCheck::ptrType::PtrIndex)
@@ -204,6 +244,28 @@ inline bool isPtrIndex(ENode *e) {
          isOpX<PTR_INDEX_NUW>(e);
 }
 inline bool isPtrIndex(const Expr &e) { return isPtrIndex(e.get()); }
+
+/// PTR_SEGMENT(k, a) (docs/design/PtrSegment.md).
+inline Expr segment(const std::string &k, const Expr &a) {
+  return mk<PTR_SEGMENT>(mkTerm<std::string>(k, a->efac()), a);
+}
+inline bool isSegment(const ENode *e) { return isOpX<PTR_SEGMENT>(e); }
+inline bool isSegment(const Expr &e) { return isSegment(e.get()); }
+/// k of a segment: the sea.segment op's name
+inline std::string segmentName(const Expr &e) {
+  return getTerm<std::string>(e->arg(0));
+}
+/// the placed base a of a segment (a bv(w) numeral)
+inline Expr segmentBase(const Expr &e) { return e->arg(1); }
+/// the name the VC gives the object: obj.<k>
+inline std::string segmentSymbol(const Expr &e) {
+  return "obj." + segmentName(e);
+}
+/// The erased twin of a segment: the bv(w) constant obj.<k>
+inline Expr segmentTwin(const Expr &e) {
+  return bv::bvConst(mkTerm<std::string>(segmentSymbol(e), e->efac()),
+                     bv::widthBvNum(segmentBase(e)));
+}
 /// One of the five markers (identities at the boundary).
 inline bool isMarker(ENode *e) {
   return isOpX<ADDR>(e) || isOpX<PTR_TO_INT>(e) || isOpX<PTR_FROM_INT>(e) ||
@@ -559,6 +621,10 @@ public:
         res = overlapArith(res);
       } else if (isOpX<OFFSET>(res)) {
         res = offsetArith(res);
+      } else if (op::ptr::isSegment(res)) {
+        // the object's twin, the bv(w) constant obj.<k> (PtrSegment.md,
+        // step 1); the boundary states obj.<k> = a
+        res = op::ptr::segmentTwin(res);
       } else if (isOpX<PTRSORT>(res)) {
         // the sort renaming (S2e): a constant, an fdecl, an array sort
         // whose kid is ptr(w) is rebuilt over bv(w) with the same name
@@ -571,7 +637,8 @@ public:
     return m_memo.at(root.get());
   }
 
-  /// Does \p e contain a PTR_INDEX node? (memoized, keys pinned)
+  /// Does \p e contain a pointer operator or sort (a node, a marker, a
+  /// segment, ptr(w)) for expand to erase? (memoized, keys pinned)
   bool has(const Expr &e) {
     auto it = m_has.find(e.get());
     if (it != m_has.end())
@@ -584,7 +651,7 @@ public:
         continue;
       if (op::ptr::isPtrIndex(n) || isOpX<OFFSET>(n) || isOpX<PTR_DIFF>(n) ||
           op::ptr::isMarker(n) || isOpX<PTR_EQ>(n) || isOpX<IS_OVERLAP>(n) ||
-          isOpX<PTRSORT>(n)) {
+          op::ptr::isSegment(n) || isOpX<PTRSORT>(n)) {
         m_has[n] = true;
         m_pinned.push_back(Expr(n));
         continue;

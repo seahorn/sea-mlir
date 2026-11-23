@@ -1,6 +1,9 @@
 # Object identity as a pointer constructor: `PTR_SEGMENT(k, a)`
 
-Status: design, not implemented (X38). Line numbers below are of the
+Status: step 1 of the migration is implemented: the term, erased to its
+twin `obj.<k>`, with `obj.<k> = a` stated at the boundary
+(`SeaOpSem::withLayoutFacts`). Step 3 is deferred. Open question 1 is
+settled (the per-leaf invariant below). Line numbers below are of the
 commit this note was written on.
 
 ## The problem
@@ -93,14 +96,19 @@ compares of ROW, `ptrEq`, `overlap`, ARM, `cmp.layout`, `mem.in-layout`,
 A decision replaces a compare by `true` / `false`. It does not rebuild a
 pointer or an offset with the numeral in it.
 
+Agreed per-leaf form (open question 1, settled): per leaf, the protected
+set is the view base, or else the mentioned bases; a leaf changes only by
+a decided arm or by same-base cancellation; no leaf gains a base. The
+unit checks (`sea-seam-rules-test`, segment, random-segments) pin it on
+the shape of the fold case and on random reads.
+
 As stated the invariant is about terms. Exact simplifications that drop an
 ite arm (a decided condition, a Boolean fact of the fold) turn
 `ite(c, seg_1, seg_2)`, which has no view, into `seg_1`, which has one.
 Pushing an ite out of an offset followed by `diff.same-base` does the
 same to `seg_5 + (ADDR(ite(c, seg_4 + 4, seg_5)) - ADDR(seg_4))` in its
 c arm. Both are wanted. A per-leaf statement that admits them and
-excludes the fold bug (proposed, to agree with the formal model; open
-question 1): **every leaf keeps the bases it mentions, except that an
+excludes the fold bug: **every leaf keeps the bases it mentions, except that an
 arm is dropped by deciding its condition or a base pair cancels by
 same-base cancellation.** The fold bug removed `ADDR(obj.4)` by
 substitution, which is neither.
@@ -349,12 +357,12 @@ first, seeds for variance) before the step lands.
 
 ## Open questions for the maintainer
 
-1. **The invariant's wording.** "Same base, or still no view" per term
-   excludes exact ite simplifications that the fold and SeaM rely on (a
-   decided condition turns a no-view ite into a segment). Proposed
-   per-leaf form: every leaf keeps the bases it mentions, except that an
-   arm is dropped by a decided condition or a base pair cancels by
-   same-base cancellation. To agree with the formal-model reviewer.
+1. **The invariant's wording.** Settled: the per-leaf form ("The
+   invariant": per leaf, the protected set is the view base, or else the
+   mentioned bases; a leaf changes only by a decided arm or by same-base
+   cancellation; no leaf gains a base). "Same base, or still no view" per
+   term excluded exact ite simplifications that the fold and SeaM rely on
+   (a decided condition turns a no-view ite into a segment).
 2. **Stop after step 1?** Step 1 removes the fold hazard (no layout facts
    before the boundary) with a byte-identical query and no change after
    the boundary. Step 3 is what the formal model wants (the layout read

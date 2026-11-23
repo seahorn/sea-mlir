@@ -44,12 +44,13 @@ PTRSORT): a pointer into a w-bit address space. `op::bv::width` is for
 `ptr::addrSortWidth` / `ptr::addrWidth(a, tc)`.
 
 Constructors (every way a pointer comes to exist):
-- `obj.k : ptr(w)` (`ptrConst`): a placed object (the segment), with SeaM.
-  Its address is the layout side condition `ADDR(obj.k) = <numeral>`.
-  Without SeaM a segment is `PTR_FROM_INT(<numeral>)`.
-  Planned: the constructor `PTR_SEGMENT(k, a)`, which carries the address
-  in the term and replaces `obj.k` and its side condition
-  ([PtrSegment.md](PtrSegment.md)).
+- `PTR_SEGMENT(k, a) : ptr(w)` (`ptr::segment`): a placed object (the
+  segment `k`), with SeaM; `a`, a bv(w) numeral, is its placed address,
+  in the term ([PtrSegment.md](PtrSegment.md)). Printed
+  `segment(obj.<k>, 0x<a>)`. No side condition states the address: the
+  boundary erases the segment to its twin, the bv(w) constant `obj.<k>`,
+  and adds `obj.<k> = a` to the erased query. Without SeaM a segment is
+  `PTR_FROM_INT(<numeral>)`.
 - ptr constants: registers of `!sea.addr` values (block arguments, nondet
   pointers after placement).
 - `PTR_INDEX*(p, x_k, s_k, c, K)`: the only pointer arithmetic
@@ -143,9 +144,11 @@ arithmetic. The arithmetic:
   (`flat`), so the erased query is the one SeaM's sums gave before the sort;
 - without it: the lowering's term, `bvadd(b, ((x_1*s_1 + ...) + (c + K)))`,
   with `x` for a stride-1 index (S2g; `bvmul(x, 1)` before).
-An erased object constant `obj.k : bv(w)` is registered as an alias of its
-pointer (`BaseRegistry::addAlias`), so consumers after the boundary
-(Ackermann's layout values, the eq audit) still see the object. A
+A segment is erased to its twin `obj.k : bv(w)`, registered as an alias
+of the segment (`BaseRegistry::addAlias`), so consumers after the
+boundary (Ackermann's layout values, the eq audit) still see the object;
+the boundary adds the layout `obj.k = <numeral>` to the erased query
+(`SeaOpSem::withLayoutFacts`). A
 pointer-sorted term left after `solverTerm` is the error
 `vc.ptr-sort-at-boundary` (checked before Ackermann). Models: a pointer
 constant is evaluated through its erased twin; replay reads pointers as
