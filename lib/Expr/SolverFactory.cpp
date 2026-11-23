@@ -157,7 +157,7 @@ std::unique_ptr<Solver> makeSolver(expr::ExprFactory &efac, Backend backend,
     }
     auto z = std::make_unique<z3_solver_impl>(
         efac, config.z3Logic.empty() ? nullptr : config.z3Logic.c_str());
-    if (logic)
+    if (logic && config.z3LogicGuard)
       z->setLogicGuard(std::move(*logic),
                        config.kindPrefix + "z3-logic-mismatch");
     if (config.z3PlantError)

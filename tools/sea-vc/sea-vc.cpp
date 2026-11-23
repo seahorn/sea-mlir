@@ -8002,6 +8002,9 @@ int main(int argc, char **argv) {
         // --z3-tactic: the solver of the verdict only (SeaHorn's BmcEngine,
         // Bmc.cc:38-43, set it globally)
         config.z3Logic = z3Logic;
+        // --smt2 prints the query and never checks it (the z3 dialect
+        // declares ALL, LogicGuard.h's wrong sat is a check's): no guard
+        config.z3LogicGuard = !smt2;
         if (z3Tactic != "default") {
           config.z3Tactic = z3Tactic;
           config.z3SatEuf =

@@ -90,6 +90,10 @@ struct SolverConfig {
   /// checked against the logic (<kindPrefix>z3-logic-mismatch: add fails;
   /// sea/Expr/Smt/LogicGuard.h)
   std::string z3Logic;
+  /// z3: check every term given to a solver made for z3Logic (on by
+  /// default). Off only for a solver that never checks, whose query is
+  /// printed (sea-vc --smt2: the query z3 would get, named with its logic)
+  bool z3LogicGuard = true;
   /// z3: test hook (sea-vc --z3-plant-error): make an invalid z3 API call
   /// on the new solver's context, as an internal error would
   bool z3PlantError = false;
