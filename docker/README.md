@@ -56,7 +56,8 @@ this table in sync.
 The release packaging takes the solver pins from the `Z3_REVISION`,
 `BITWUZLA_TAG` and `YICES_TAG` arguments (`docker/release.py` reads them
 from `docker/Dockerfile` and passes them on). It refuses a z3 whose
-`--version` names another commit than a `Z3_REVISION` commit, and a
+`--version` names a commit other than `Z3_REVISION` (when it is a full
+commit hash), and a
 `sea-vc` whose `--version` does not report that z3 version and the Yices
 version of `YICES_TAG`. The `solvers` stage saves Bitwuzla's
 two wrap files in `/opt/solvers/share/pins`, and `docker/package-release.py`

@@ -91,6 +91,25 @@ class LicenseTests(PrefixCase):
             libraries["libyices.so.2.8"]["license"].endswith("Yices-LICENSE.txt")
         )
 
+    def test_yices_ships_notices(self):
+        # NOTICES section 1 (MiniSat, CPython timsort) covers every binary
+        legal = dict(pr.yices_legal("yices-2.8.0"))
+        self.assertEqual(
+            set(legal),
+            {
+                "Yices-LICENSE.txt",
+                "Yices-NOTICES.txt",
+                "Yices-CPython-3.4.0a3-LICENSE.txt",
+                "Yices-MIT.txt",
+            },
+        )
+        self.assertTrue(legal["Yices-NOTICES.txt"].endswith("/yices-2.8.0/etc/NOTICES"))
+        self.assertTrue(all("/yices-2.8.0/" in url for url in legal.values()))
+        # the library's license entry is one of the shipped files
+        _, libraries, _, copied = self.bundle("libyices.so.2.8")
+        pr.require_licenses(libraries, copied)
+        self.assertIn(libraries["libyices.so.2.8"]["license"].rsplit("/", 1)[1], legal)
+
     def test_library_with_manifest_license_accepted(self):
         _, libraries, _, copied = self.bundle("libother.so.1")
         libraries["libother.so.1"]["license"] = "share/release-licenses/x.txt"
@@ -201,7 +220,9 @@ class SolverTests(unittest.TestCase):
         text = VERSION.replace(
             "yices 2.8.0", "yices: not built (--solver=yices disabled)"
         )
-        with self.assertRaisesRegex(RuntimeError, "expected yices 2.8.0"):
+        with self.assertRaisesRegex(
+            RuntimeError, "reports 'yices: not built.*expected yices 2.8.0"
+        ):
             pr.check_solvers(text, "5.4.2", "2.8.0")
 
     def test_other_solver_version_refused(self):

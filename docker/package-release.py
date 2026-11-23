@@ -238,14 +238,30 @@ def check_solvers(version_text, z3, yices):
     without Yices, or with other solver versions than the pins, is refused."""
     lines = [line.strip() for line in version_text.splitlines()]
     for name, version in (("z3", z3), ("yices", yices)):
-        found = [line for line in lines if line.split(" ", 1)[0] == name]
+        # `yices: not built (...)` counts as the yices line
+        found = [line for line in lines if line.split(" ", 1)[0].rstrip(":") == name]
         if not found or not re.fullmatch(
             rf"{name} {re.escape(version)}(\.0)*", found[0]
         ):
-            raise RuntimeError(
-                f"sea-vc reports {found[0] if found else 'no ' + name!r}, "
-                f"expected {name} {version}"
-            )
+            reported = repr(found[0]) if found else f"no {name} line"
+            raise RuntimeError(f"sea-vc reports {reported}, expected {name} {version}")
+
+
+def yices_legal(tag):
+    """Yices' legal files for a binary distribution: its license, the
+    third-party notices (etc/NOTICES, section 1 covers every binary: MiniSat
+    and CPython timsort material) and the license texts NOTICES names for
+    them; (file name in the release, upstream URL)."""
+    base = f"https://raw.githubusercontent.com/SRI-CSL/yices2/{tag}"
+    return [
+        ("Yices-LICENSE.txt", f"{base}/LICENSE.txt"),
+        ("Yices-NOTICES.txt", f"{base}/etc/NOTICES"),
+        (
+            "Yices-CPython-3.4.0a3-LICENSE.txt",
+            f"{base}/LICENSES/CPython-3.4.0a3-LICENSE.txt",
+        ),
+        ("Yices-MIT.txt", f"{base}/LICENSES/MIT.txt"),
+    ]
 
 
 def set_runpaths(prefix, lib, visited):
@@ -382,10 +398,9 @@ def main():
             "Bitwuzla-COPYING.txt",
             f"https://raw.githubusercontent.com/bitwuzla/bitwuzla/{args.bitwuzla_tag}/COPYING",
         ),
-        upstream_license(
-            license_dir,
-            "Yices-LICENSE.txt",
-            f"https://raw.githubusercontent.com/SRI-CSL/yices2/{args.yices_tag}/LICENSE.txt",
+        *(
+            upstream_license(license_dir, name, url)
+            for name, url in yices_legal(args.yices_tag)
         ),
         upstream_license(
             license_dir,
@@ -419,6 +434,8 @@ sea-mlir: Apache-2.0 WITH LLVM-exception; LICENSE at the prefix root.
 LLVM/MLIR: Apache-2.0 WITH LLVM-exception; pin in LLVM_REVISION.
 Z3 {z3} ({z3_short}): MIT. Bitwuzla {args.bitwuzla_tag}: MIT.
 Yices {yices}: BSD 3-Clause; built without MCSAT, so LibPoly is not linked.
+  Its third-party notices (MiniSat, CPython timsort) are in Yices-NOTICES.txt,
+  Yices-MIT.txt and Yices-CPython-3.4.0a3-LICENSE.txt.
 CaDiCaL {cadical_version}: MIT; linked into Bitwuzla.
 SymFPU {symfpu_revision[:7]}: BSD 3-Clause option; linked into Bitwuzla.
 Boost: Boost Software License; headers used by sea-mlir.
