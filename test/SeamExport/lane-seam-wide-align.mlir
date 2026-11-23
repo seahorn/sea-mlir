@@ -6,9 +6,9 @@
 // RUN: sea-seam-export %s --lane=seam-wide --address-bits=16 --firings | %python %S/Inputs/show.py | FileCheck %s
 // RUN: sea-seam-export %s --lane=seam-wide-stride --address-bits=16 --firings | %python %S/Inputs/show.py | FileCheck %s
 // CHECK: firing 0 rules=wide.row-aligned premises=ALIGN op=load units=2
-// CHECK-NEXT: lhs: wselect(wstore(constMem(0), index(obj.a, nd.2_0*1, c=0, K=0, plain), nd.1_0, bytes=2, align=2), index(obj.a, nd.3_0*1, c=0, K=0, plain), bytes=2, align=2)
+// CHECK-NEXT: lhs: wselect(wstore(constMem(0), index(segment(obj.a, 16), nd.2_0*1, c=0, K=0, plain), nd.1_0, bytes=2, align=2), index(segment(obj.a, 16), nd.3_0*1, c=0, K=0, plain), bytes=2, align=2)
 // CHECK-NEXT: rhs: ite(unitOverlap(
-// CHECK-NEXT: premise: and(true, eq(bvand(addr(index(obj.a, nd.3_0*1, c=0, K=0, plain)), 1), 0), eq(bvand(addr(index(obj.a, nd.2_0*1, c=0, K=0, plain)), 1), 0))
+// CHECK-NEXT: premise: and(true, eq(bvand(addr(index(segment(obj.a, 16), nd.3_0*1, c=0, K=0, plain)), 1), 0), eq(bvand(addr(index(segment(obj.a, 16), nd.2_0*1, c=0, K=0, plain)), 1), 0))
 // CHECK: firings: {{[1-9][0-9]*}} unexpressible=0
 !am = !sea.mem<!sea.addr<16>, i8>
 sea.program @wide {

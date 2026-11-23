@@ -3,9 +3,9 @@
 // --seam-stride): R-STRIDE fires in both (program of lane-seam-stride.mlir).
 // RUN: sea-seam-export %s --lane=seam-inb0-stride --firings | %python %S/Inputs/show.py | FileCheck %s --check-prefixes=INB0
 // RUN: sea-seam-export %s --lane=seam-wide-stride --firings | %python %S/Inputs/show.py | FileCheck %s --check-prefixes=WIDE
-// INB0: header: schema=3 lane=seam-inb0-stride sea_vc='sea-vc --seam --seam-premises=0 --seam-stride' {{.*}}ainb=false
+// INB0: header: schema=5 lane=seam-inb0-stride sea_vc='sea-vc --seam --seam-premises=0 --seam-stride' {{.*}}ainb=false
 // INB0: firing {{[0-9]+}} rules={{[^ ]*}}row.smap-abort-stride{{[^ ]*}} {{.*}}op=load
-// WIDE: header: schema=3 lane=seam-wide-stride sea_vc='sea-vc --seam --seam-wide --seam-stride' {{.*}}ainb=true
+// WIDE: header: schema=5 lane=seam-wide-stride sea_vc='sea-vc --seam --seam-wide --seam-stride' {{.*}}ainb=true
 // WIDE: firing {{[0-9]+}} rules={{[^ ]*}}row.smap-abort-stride{{[^ ]*}} {{.*}}op=load
 !am = !sea.mem<!sea.addr<8>, i8>
 sea.program @stride {

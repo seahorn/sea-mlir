@@ -200,21 +200,24 @@ OPTIONS: --lane=<name>, --rewrite (old name of the second lane),
 --firings (rule firings; needs a lane with rules), --address-bits=<n>
 (default 8), --version, --help.
 
-OUTPUT (stdout, one JSON document, schema 3; keys sorted):
-  schema 3 | lane | sea_vc (command, "" if none) | ptr_mode address|opaque
+OUTPUT (stdout, one JSON document, schema 5; keys sorted):
+  schema 5 | lane | sea_vc (command, "" if none) | ptr_mode address|opaque
   address_bits | ainb (the premises A-SEP, A-NULL, A-NOWRAP used) |
   rewrite (memory rules on)
   roots: [{name, location, operation, term}]  every iN / addr / memory result
-  side: [term]          side conditions (layout equations obj = base, ...)
+  side: [term]          side conditions (no layout: a segment node carries
+                        its address)
   sources: [{site, term} | {fixed, term}]  nondet / mem.nondet / memhavoc
                         by site; sea.segment with its placed base
   probes: [{location, bytes, memory, address}]  each load's operands
   erased_roots: [{name, location, term}], erased_side: [term]
-                        the same after solverTerm (no pointer sort left)
+                        the same after solverTerm (no pointer sort left);
+                        erased_side starts with the layout obj.<k> = base
   firings (--firings): [{id, rules, premises, op, [loc], [units], lhs, rhs,
                         premise} | {id, rules, premises, op, unexpressible}]
   firings_unexpressible (--firings): count
-Terms: {sort: bv|bool|ptr|memory, [bits], op, args, ...}; ops and their
+Terms: {sort: bv|bool|ptr|memory, [bits], op, args, ...}; an object is
+{op: segment, sort: ptr, bits, name: obj.<k>, addr: <numeral>}; ops and their
 fields are listed in docs/SeamExport.md (bit-vector operators as in
 SMT-LIB, total: udiv x 0 = all ones, urem x 0 = x, shift >= width gives 0
 (ashr: the sign fill); compares ne ugt uge sgt sge slt sle are bool
@@ -381,12 +384,17 @@ struct Exporter {
       o["value"] = isOpX<TRUE>(e);
       return o;
     }
-    // an object (PTR_SEGMENT, docs/design/PtrSegment.md step 1) is
-    // exported as its symbol obj.<k>, whose address `side` states, as
-    // before the segment term: schema 3 has no segment node
-    if ((bind::isFapp(e) && e->arity() == 1) || ptr::isSegment(e)) {
-      std::string name = ptr::isSegment(e) ? ptr::segmentSymbol(e)
-                                           : printed(bind::fname(e->arg(0)));
+    // an object (PTR_SEGMENT, docs/design/PtrSegment.md): the segment
+    // node, its twin's name and its placed address (schema 5); no side
+    // condition states the address
+    if (ptr::isSegment(e)) {
+      o["op"] = "segment";
+      o["name"] = ptr::segmentSymbol(e);
+      o["addr"] = numeral(ptr::segmentBase(e));
+      return o;
+    }
+    if (bind::isFapp(e) && e->arity() == 1) {
+      std::string name = printed(bind::fname(e->arg(0)));
       auto [it, added] = symbolSorts.emplace(name, ty);
       if (!added && it->second != ty)
         bad("symbol name used at different sorts: " + name);
@@ -699,16 +707,18 @@ int main(int argc, char **argv) {
                              {"memory", ex.term(value(op.getOperand(0)))},
                              {"address", ex.term(value(op.getOperand(1)))}});
     }
-  // the layout (addr(obj.k) = base), which sea-vc states at the boundary,
-  // first: where OpSem's side conditions had it before PTR_SEGMENT
+  // the side conditions: no layout (each segment node carries its
+  // address). erased_side, the conditions of the erased query, starts
+  // with the layout obj.<k> = base that sea-vc's boundary adds
+  // (SeaOpSem::withLayoutFacts): the erased objects are variables
+  for (auto e : side)
+    conditions.push_back(ex.term(e));
   ExprVector layout;
   sem.layoutConjuncts(layout);
-  for (auto e : llvm::concat<Expr>(layout, side)) {
-    conditions.push_back(ex.term(e));
+  for (auto e : llvm::concat<Expr>(layout, side))
     erasedConditions.push_back(erasedEx.term(sem.solverTerm(e)));
-  }
 
-  llvm::json::Object doc{{"schema", 3},
+  llvm::json::Object doc{{"schema", 5},
                          {"lane", lane->name},
                          {"sea_vc", lane->seaVc},
                          {"ptr_mode", addressMode ? "address" : "opaque"},

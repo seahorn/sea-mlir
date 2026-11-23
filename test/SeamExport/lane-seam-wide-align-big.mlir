@@ -4,7 +4,7 @@
 // aligned; the numeral 0x1ffff does not fit 16 bits.
 // RUN: sea-seam-export %s --lane=seam-wide --address-bits=16 --firings | %python %S/Inputs/show.py | FileCheck %s
 // CHECK: firing 0 rules=wide.row-aligned premises=ALIGN op=load units=2
-// CHECK: premise: and(true, eq(bvand(addr(index(obj.a, nd.3_0*1, c=0, K=0, plain)), 0xffff), 0), eq(bvand(addr(index(obj.a, nd.2_0*1, c=0, K=0, plain)), 0xffff), 0))
+// CHECK: premise: and(true, eq(bvand(addr(index(segment(obj.a, 16), nd.3_0*1, c=0, K=0, plain)), 0xffff), 0), eq(bvand(addr(index(segment(obj.a, 16), nd.2_0*1, c=0, K=0, plain)), 0xffff), 0))
 !am = !sea.mem<!sea.addr<16>, i8>
 sea.program @wide {
   %a = sea.segment "a" base 16 : i16 size 8 : i16 align 8 kind "stack" : !sea.addr<16>

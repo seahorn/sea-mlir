@@ -16,7 +16,7 @@
 // RUN: sea-seam-export %s --lane=seam-inb0-stride | %python %S/Inputs/show.py | FileCheck %s --allow-unused-prefixes --check-prefixes=ALL,SEAMENC,SEAM -DLANE=seam-inb0-stride
 // RUN: sea-seam-export %s --lane=plain | %python %S/Inputs/show.py | FileCheck %s --allow-unused-prefixes --check-prefixes=ALL,NOSEAM,PLAIN -DLANE=plain
 // RUN: sea-seam-export %s --lane=simplify | %python %S/Inputs/show.py | FileCheck %s --allow-unused-prefixes --check-prefixes=ALL,NOSEAM,SIMP -DLANE=simplify
-// ALL: header: schema=3 lane=[[LANE]]
+// ALL: header: schema=5 lane=[[LANE]]
 // RAW: root %q sea.ptr.index ptr: index(fromBits(nd.0_0), nd.1_0*254, 1*4, c=255, K=0, plain)
 // RAW: root %a sea.addr.add ptr: index(fromBits(nd.0_0), nd.1_0*254, 1*4, c=0, K=0, plain)
 // RAW: root %d sea.addr.diff bv: diff(index(

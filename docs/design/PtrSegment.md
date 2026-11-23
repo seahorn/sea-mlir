@@ -65,10 +65,14 @@ The name matches `sea.segment`, PtrSort.md's "the segment", and the
 
 Printing:
 
-- Expr dumps before the boundary (trail text, `--seam-trail-text`,
-  `sea-seam-export`, debug logs): `segment(obj.<k>, 0x<a>)`. The `obj.`
-  prefix keeps the names that tests and readers grep for; the numeral is
-  shown because the formal model reads it off the term.
+- Expr dumps before the boundary (trail text, `--seam-trail-text`, debug
+  logs): `segment(obj.<k>, 0x<a>)`. The `obj.` prefix keeps the names that
+  tests and readers grep for; the numeral is shown because the formal
+  model reads it off the term.
+- `sea-seam-export` (schema 5): the term node `{"op": "segment", "sort":
+  "ptr", "bits": <address bits>, "name": "obj.<k>", "addr": <numeral>}`,
+  `addr` in the canonical numeral form of `bv` nodes; a segment's `fixed`
+  source equals `addr`.
 - `--smt2`: no pointer reaches SMT-LIB. After step 3 of the migration
   (below) the erased term is the numeral `#x...` and the query declares no
   `obj.<k>` symbols. Before step 3 (step 1) the erased term is the
@@ -169,7 +173,7 @@ key, unless noted):
 | `Split::IteCensus::ground` | `lib/VC/Split.cpp:1152-1163` | a segment is ground (a fixed address); today it is found by `isFapp` + `isBase`, then by `isOpX<PTR_SEGMENT>` |
 | split leaf names (`leaf:obj.heap.1`) | `test/VC/split/alias.mlir` | print `obj.<k>` (the name, not the dump) so the names stay |
 | `firingPremise`, `accessPremise`, `layoutFacts` | `OpSem.cpp:343-450` | the LAYOUT conjuncts `obj.<k> = a` over the generalized erasure (above); without it they are tautologies |
-| `sea-seam-export` (`side:` lists the layout equations) | `tools/sea-seam-export/sea-seam-export.cpp:208`, `:239` | no layout side conditions; terms print `segment(obj.<k>, 0x<a>)`, which the formal model reads |
+| `sea-seam-export` (`side:` listed the layout equations) | `tools/sea-seam-export/sea-seam-export.cpp:208`, `:239` | schema 5: no layout equation in `side` (the formal model's importer rebuilds `ADDR(obj.<k>) = a` from the node); an object is the `segment` node with `name` and `addr`; `erased_side` starts with the erased layout `obj.<k> = a` the boundary adds |
 
 After the boundary (the erased query; today they key on the erased twin
 `obj.k : bv(w)`, `BaseRegistry::addAlias`):
