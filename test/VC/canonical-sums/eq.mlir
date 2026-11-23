@@ -9,8 +9,8 @@
 // CHECK-DAG: (= (bvadd nd.0_0 nd.2_0 #x01) nd.1_0)
 // SOLVE: vc.canonical-sums-eqs: 2
 // SOLVE: vc.canonical-sums-eqs-changed: 2
-// SOLVE: result: sat
 // SOLVE: validate: checked={{[0-9]+}} mismatches=0
+// SOLVE: result: sat
 sea.program @p {
   %x = sea.nondet "f" [0] : i8
   %y = sea.nondet "f" [1] : i8
