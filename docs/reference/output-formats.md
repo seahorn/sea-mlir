@@ -380,7 +380,7 @@ is `premise-failed`, counted as `premise`, and its `premise.failed:` line
 follows, with `part=<i>`: the job prints `result: sat` and exits 4 (the
 premise class; with a sat part too, the same). In jsonl the records are
 `check-inb`, `check-inb.solver` (solver, reason, ro_arrays (`uf` or `array`),
-ro_arrays_reason (`default` or `--ro-arrays`)),
+ro_arrays_reason (`default`, `--ro-arrays` or `--z3-logic`)),
 `check-inb.split` (folded, parts, trivial, to_solve),
 `check-inb-dir` (path), `check-inb.manifest` (path,
 parts), `check-inb.part`, `premise` (the part's fields and `part`),

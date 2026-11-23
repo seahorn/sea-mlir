@@ -20,7 +20,7 @@
 // RUN: %if bitwuzla %{ FileCheck %s --check-prefix=CFG-B < %t.s/parts.cfg %}
 // A z3-only option without --solver keeps z3 for the parts, with its own
 // reason; uf applies as usual.
-// RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off --z3-logic=QF_BV | FileCheck %s --check-prefix=LOGIC
+// RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off --z3-logic=QF_UFBV | FileCheck %s --check-prefix=LOGIC
 // RUN: sea-vc %s --check-inb --lower --seam --ackermannize=off --z3-param=verbose=0 | FileCheck %s --check-prefix=PARAM
 // With an explicit non-z3 solver the option is ignored: one warning at the job.
 // RUN: %if yices %{ sea-vc %s --check-inb --lower --seam --ackermannize=off --solver=yices --z3-tactic=smtfd 2>&1 | FileCheck %s --check-prefix=IGN %}

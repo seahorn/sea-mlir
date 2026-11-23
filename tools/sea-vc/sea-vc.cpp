@@ -491,8 +491,10 @@ static cl::opt<std::string> z3Logic(
     "z3-logic",
     cl::desc("z3's solver for this logic (SMT-LIB: ALL, or "
              "[QF_][A|AX][UF][BV][LIA|LRA|LIRA|NIA|NRA|NIRA]; e.g. QF_BV, "
-             "QF_ABV, QF_UFBV, QF_AUFBV) for the solver of the verdict only "
-             "(also its reach and --ack-relax solvers). z3 solves the "
+             "QF_ABV, QF_UFBV, QF_AUFBV) for the solver of the verdict, the "
+             "reach, --ack-relax and --split part solvers, and the "
+             "--check-inb parts (each gets the option; not the auxiliary "
+             "checks). z3 solves the "
              "first check with the logic's tactic and a check after more "
              "assertions (--ack-relax-mode=incremental) with its incremental "
              "solver: QF_BV its incremental SAT solver, the others and the "
@@ -3034,8 +3036,10 @@ TYPICAL:
   sea-vc p.mlir --z3-logic=QF_BV  # z3's solver for that logic (ALL, or
                                  #   [QF_][A|AX][UF][BV][LIA|..|NIRA]: QF_BV,
                                  #   QF_ABV, QF_UFBV, QF_AUFBV, ...), the
-                                 #   solver of the verdict (and its reach /
-                                 #   --ack-relax solvers) only; default: z3's
+                                 #   solver of the verdict, the reach,
+                                 #   --ack-relax and --split part solvers
+                                 #   and the --check-inb parts (not the
+                                 #   auxiliary checks); default: z3's
                                  #   default solver (logic probed). Prints
                                  #   solver.z3-logic: <logic>. A term of the
                                  #   query outside the logic (an array
@@ -3712,7 +3716,11 @@ OUTPUT (stdout, `key: value` lines):
                                   option); else yices if the binary has it
                                   (default), else z3 (no yices in this
                                   build). z3 gets --ro-arrays=uf unless
-                                  given. The lowering follows it.)
+                                  given; with --z3-logic without UF,
+                                  --ro-arrays=array (reason --z3-logic),
+                                  or the job is refused when the logic has
+                                  no arrays either (check-inb.z3-logic).
+                                  The lowering follows it.)
   check-inb.split: folded= parts= trivial= to-solve=
                                   (checks the optimize stages removed
                                   before the split; parts; parts folded to
@@ -4667,7 +4675,7 @@ Kinds and fields:
   check-inb     (--check-inb) checks, static, left, zero_length
   check-inb.solver solver, reason (default | --solver | --z3-<option> | no
                 yices in this build), ro_arrays (uf | array),
-                ro_arrays_reason (default | --ro-arrays)
+                ro_arrays_reason (default | --ro-arrays | --z3-logic)
   check-inb.split folded (checks the optimize stages removed before the
                 split), parts, trivial (folded to true in their own
                 optimize: not run), to_solve
@@ -5807,8 +5815,13 @@ int main(int argc, char **argv) {
       constexpr bool haveYices = false;
 #endif
       std::vector<std::string> ignored;
-      sea::checkinb::partDefaults(jo.partArgs, haveYices, jo.solverName,
-                                  jo.solverReason, jo.roArraysNote, ignored);
+      std::string defaultsError;
+      if (!sea::checkinb::partDefaults(jo.partArgs, haveYices, jo.solverName,
+                                       jo.solverReason, jo.roArraysNote,
+                                       ignored, defaultsError)) {
+        sea::diag::error("check-inb.z3-logic", "--check-inb: " + defaultsError);
+        return 1;
+      }
       // once, at the job: z3-only options given with another solver
       if (!ignored.empty())
         sea::diag::warn("check-inb.z3-option-ignored",

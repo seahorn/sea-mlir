@@ -27,7 +27,8 @@
 //  z3 logic    the logic guard (sea/Expr/Smt/LogicGuard.h): which names
 //              parse; a z3 solver made for a logic refuses (add false,
 //              <prefix>z3-logic-mismatch) an array term, a function symbol,
-//              a quantifier, an Int term, a nonlinear product outside it,
+//              a quantifier, an Int term, a nonlinear product, an Int /
+//              bit-vector conversion outside it,
 //              also as an assumption (unknown), and takes the same terms
 //              under a logic that admits them; a name without a table: null
 //              solver and <prefix>z3-logic
@@ -231,6 +232,13 @@ void testZ3Logic(Terms &T) {
       mk<EQ>(mk<MULT>(n, m), mkTerm<mpz_class>(mpz_class(6UL), T.efac));
   refuses("QF_LIA", nonlin, "a nonlinear product");
   takes("QF_NIA", nonlin, SolverResult::SAT, "a nonlinear product");
+  {
+    // the conversions between bit-vectors and Int carry an Int
+    sea::solver::LogicScan bvOnly(*parseLogic("QF_BV", why));
+    std::string bad = bvOnly.check(mk<BV2INT>(T.var("c", 8)));
+    CHECK(bad.find("conversion") != std::string::npos,
+          "QF_BV refuses bv2int: " + bad);
+  }
   takes("ALL", mk<AND>(arr, mk<AND>(uf, mk<AND>(all, nonlin))),
         SolverResult::SAT, "everything");
   {

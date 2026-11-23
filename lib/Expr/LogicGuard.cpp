@@ -5,6 +5,7 @@
 
 #include "sea/Expr/ExprOpBinder.hh"
 
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <sstream>
@@ -93,9 +94,9 @@ std::string LogicScan::check(const Expr &root) {
   // refused (their arguments may not have been scanned)
   llvm::SmallVector<const ENode *, 32> added;
   // \p admitted: whether the logic admits it; else \p what is the answer
-  auto require = [&](bool admitted, const std::string &what) {
+  auto require = [&](bool admitted, llvm::function_ref<std::string()> what) {
     if (!admitted && bad.empty())
-      bad = what;
+      bad = what();
     return admitted;
   };
   while (!todo.empty() && bad.empty()) {
@@ -109,64 +110,96 @@ std::string LogicScan::check(const Expr &root) {
     switch (op.getFamilyId()) {
     case OpFamilyId::Terminal:
       if (isOpX<MPZ>(e))
-        require(L.ints, "an Int numeral (" + show(e) + ")");
+        require(L.ints, [&] {
+          return std::string("an Int numeral (" + show(e) + ")");
+        });
       else if (isOpX<MPQ>(e))
-        require(L.reals, "a Real numeral (" + show(e) + ")");
+        require(L.reals, [&] {
+          return std::string("a Real numeral (" + show(e) + ")");
+        });
       else if (isOpX<BVSORT>(e))
-        require(L.bv, "a bit-vector sort (" + show(e) + ")");
+        require(L.bv, [&] {
+          return std::string("a bit-vector sort (" + show(e) + ")");
+        });
       else
-        require(false,
-                "a terminal the logic guard cannot classify (" + show(e) + ")");
+        require(false, [&] {
+          return std::string("a terminal the logic guard cannot classify (" +
+                             show(e) + ")");
+        });
       break;
     case OpFamilyId::BoolOp:
       break;
     case OpFamilyId::CompareOp:
       if (!isOpX<EQ>(e) && !isOpX<NEQ>(e))
-        require(L.ints || L.reals,
-                "an arithmetic comparison (" + op.name() + ")");
+        require(L.ints || L.reals, [&] {
+          return std::string("an arithmetic comparison (" + op.name() + ")");
+        });
       break;
     case OpFamilyId::NumericOp: {
-      if (!require(L.ints || L.reals,
-                   "an arithmetic operator (" + op.name() + ")"))
+      if (!require(L.ints || L.reals, [&] {
+            return std::string("an arithmetic operator (" + op.name() + ")");
+          }))
         break;
       if (isOpX<MULT>(e)) {
         unsigned free = 0;
         for (auto *a : llvm::make_range(e->args_begin(), e->args_end()))
           free += !isArithNumeral(Expr(a));
-        require(L.nonlinear || free < 2,
-                "a nonlinear product (" + show(e) + ")");
+        require(L.nonlinear || free < 2, [&] {
+          return std::string("a nonlinear product (" + show(e) + ")");
+        });
       } else if (isOpX<DIV>(e) || isOpX<IDIV>(e) || isOpX<MOD>(e) ||
                  isOpX<REM>(e)) {
         require(L.nonlinear || (e->arity() == 2 && isArithNumeral(e->arg(1))),
-                "a division by a non-numeral (" + show(e) + ")");
+                [&] {
+                  return std::string("a division by a non-numeral (" + show(e) +
+                                     ")");
+                });
       } else if (!isOpX<PLUS>(e) && !isOpX<MINUS>(e) && !isOpX<UN_MINUS>(e)) {
-        require(false, "an arithmetic operator the logic guard cannot "
-                       "classify (" +
-                           op.name() + ")");
+        require(false, [&] {
+          return std::string("an arithmetic operator the logic guard cannot "
+                             "classify (" +
+                             op.name() + ")");
+        });
       }
       break;
     }
     case OpFamilyId::SimpleTypeOp:
       if (isOpX<INT_TY>(e))
-        require(L.ints, "the Int sort");
+        require(L.ints, [&] { return std::string("the Int sort"); });
       else if (isOpX<REAL_TY>(e))
-        require(L.reals, "the Real sort");
+        require(L.reals, [&] { return std::string("the Real sort"); });
       else if (isOpX<ARRAY_TY>(e))
-        require(L.arrays, "an array sort (" + show(e) + ")");
+        require(L.arrays,
+                [&] { return std::string("an array sort (" + show(e) + ")"); });
       else if (!isOpX<BOOL_TY>(e))
-        require(false,
-                "a sort the logic guard cannot classify (" + op.name() + ")");
+        require(false, [&] {
+          return std::string("a sort the logic guard cannot classify (" +
+                             op.name() + ")");
+        });
       break;
     case OpFamilyId::ArrayOp:
       if (isOpX<SELECT>(e) || isOpX<STORE>(e) || isOpX<CONST_ARRAY>(e) ||
           isOpX<ARRAY_DEFAULT>(e) || isOpX<ARRAY_MAP>(e))
-        require(L.arrays, "an array term (" + op.name() + ")");
+        require(L.arrays, [&] {
+          return std::string("an array term (" + op.name() + ")");
+        });
       else
-        require(false, "an array operator the logic guard cannot classify (" +
-                           op.name() + ")");
+        require(false, [&] {
+          return std::string(
+              "an array operator the logic guard cannot classify (" +
+              op.name() + ")");
+        });
       break;
     case OpFamilyId::BvOp:
-      require(L.bv, "a bit-vector term (" + op.name() + ")");
+      // the conversions between bit-vectors and Int carry an Int
+      if (isOpX<INT2BV>(e) || isOpX<BV2INT>(e))
+        require(L.ints, [&] {
+          return std::string("an Int / bit-vector conversion (" + op.name() +
+                             ")");
+        });
+      require(L.bv, [&] {
+        return std::string("a bit-vector term (" + op.name() + ")");
+      });
       // extract: its bounds are terminals of the operator, not terms
       if (isOpX<BEXTRACT>(e))
         from = to - 1;
@@ -174,41 +207,58 @@ std::string LogicScan::check(const Expr &root) {
     case OpFamilyId::BindOp:
       if (isOpX<BIND>(e)) {
         if (bv::is_bvnum(e)) {
-          require(L.bv, "a bit-vector numeral (" + show(e) + ")");
+          require(L.bv, [&] {
+            return std::string("a bit-vector numeral (" + show(e) + ")");
+          });
           to = 0;
         } else if (bind::isBVar(e)) {
           from = 1; // its sort
         } else
-          require(false, "a binding the logic guard cannot classify (" +
-                             show(e) + ")");
+          require(false, [&] {
+            return std::string("a binding the logic guard cannot classify (" +
+                               show(e) + ")");
+          });
       } else if (isOpX<FDECL>(e)) {
-        if (bind::domainSz(e) > 0) {
-          std::ostringstream os;
-          os << *bind::fname(e);
-          require(L.uf, "an uninterpreted function '" + os.str() +
-                            "' of arity " + std::to_string(bind::domainSz(e)));
-        }
+        if (bind::domainSz(e) > 0)
+          require(L.uf, [&] {
+            std::ostringstream os;
+            os << *bind::fname(e);
+            return "an uninterpreted function '" + os.str() + "' of arity " +
+                   std::to_string(bind::domainSz(e));
+          });
         from = 1; // the sorts, not the name
       } else if (isOpX<FAPP>(e)) {
         // a lambda's application: a select
         if (!bind::isFdecl(bind::fname(e)))
-          require(L.arrays, "an application of a lambda (" + show(e) + ")");
+          require(L.arrays, [&] {
+            return std::string("an application of a lambda (" + show(e) + ")");
+          });
       } else
-        require(false, "a binding operator the logic guard cannot classify (" +
-                           op.name() + ")");
+        require(false, [&] {
+          return std::string(
+              "a binding operator the logic guard cannot classify (" +
+              op.name() + ")");
+        });
       break;
     case OpFamilyId::BinderOp:
       if (isOpX<FORALL>(e) || isOpX<EXISTS>(e))
-        require(L.quantifiers, "a quantifier (" + op.name() + ")");
+        require(L.quantifiers, [&] {
+          return std::string("a quantifier (" + op.name() + ")");
+        });
       else if (isOpX<LAMBDA>(e))
-        require(L.arrays, "a lambda (an array term)");
+        require(L.arrays,
+                [&] { return std::string("a lambda (an array term)"); });
       else
-        require(false,
-                "a binder the logic guard cannot classify (" + op.name() + ")");
+        require(false, [&] {
+          return std::string("a binder the logic guard cannot classify (" +
+                             op.name() + ")");
+        });
       break;
     default:
-      require(false, "an operator the logic guard cannot classify (" +
-                         op.name() + ")");
+      require(false, [&] {
+        return std::string("an operator the logic guard cannot classify (" +
+                           op.name() + ")");
+      });
       break;
     }
     for (size_t i = from; i < to; ++i)

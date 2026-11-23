@@ -176,10 +176,16 @@ The job's own options go to every part, with two defaults of the job:
   backend (`docs/design/Ackermann.md`, "Read-only arrays as functions").
   It is passed for z3 only, where it helped; for Yices and Bitwuzla it is
   not passed (they were not measured with it).
-  The read-only arrays then are functions in the parts' queries: with
-  `--z3-logic`, a logic without `UF` (`QF_BV`, `QF_ABV`) makes such a part
-  an error (`vc.z3-logic-mismatch`, the job `unknown`); use `QF_UFBV` /
-  `QF_AUFBV` or `--ro-arrays=array`.
+- With `--z3-logic=L` (z3 parts), the default follows L, since the logic
+  guard holds every part's query to L (`vc.z3-logic-mismatch`) and a part
+  that reads memory keeps it as an array, or with `--ro-arrays=uf` as a
+  function (`--ackermannize=off`): L with `UF` keeps `--ro-arrays=uf`; L
+  with arrays but no `UF` (`QF_ABV`) gets `--ro-arrays=array`
+  (`ro-arrays=array (--z3-logic)` on the `check-inb.solver:` line); L
+  with neither (`QF_BV`) is refused before any part runs
+  (`check-inb.z3-logic`): `--ro-arrays=array` would not help, every part
+  that reads memory would fail. An explicit `--ro-arrays=` wins; a part
+  outside L then fails with `vc.z3-logic-mismatch`.
 
 Measured (`h2fc-blowup-tx-reach-ring.mlir`, `--check-inb --lower --seam
 --widen-memory=4 --ackermannize=off --timeout=300`, 141 parts): z3 took
