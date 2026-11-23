@@ -40,8 +40,8 @@
 // XREAD0: seam.premises: off (lowering: drop-fresh-memhavoc=1 rests on A-SEP)
 // RUN: sea-opt %t/xread.mlir --sea-lower-tracking --sea-lower-fat-pointers --sea-place-static -o %t/xread-placed.mlir
 // RUN: sea-vc %t/xread-placed.mlir --lower | FileCheck %s --check-prefix=PLACED
-// PLACED: result: sat
 // PLACED: replay: assert-failed
+// PLACED: result: sat
 // No access before the memhavoc and its range in the object: no reliance.
 // RUN: sea-vc %t/plain.mlir --lower --place-slots=none | FileCheck %s --check-prefix=PLAIN
 // PLAIN-NOT: assume.a-sep

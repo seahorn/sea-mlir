@@ -14,12 +14,12 @@
 // RUN: sea-run %s --program=first --input=0=5 | FileCheck %s --check-prefix=RUN1
 // RUN: sea-vc %s --program=sassert --lower | FileCheck %s --check-prefix=SASSERT
 
-// SECOND: result: sat
 // SECOND: replay: assert-failed{{$}}
 // SECOND-NEXT: replay: assert-at: foo.c:14:3{{$}}
 // SECOND: replay: assert-op: foo.c:20:5{{$}}
 // SECOND: replay: assert-path: foo.c:14:3 <- foo.c:12:3 <- foo.c:4:3{{$}}
 // SECOND: validate: checked={{[0-9]+}} mismatches=0
+// SECOND: result: sat
 sea.program @second {
   %x = sea.nondet "nondet_u8" [0] : i8 loc("foo.c":3:11)
   %c6 = sea.const 6 : i8
@@ -42,11 +42,11 @@ sea.program @second {
   sea.halt
 }
 
-// FIRST: result: sat
 // FIRST: replay: assert-failed{{$}}
 // FIRST-NEXT: replay: assert-at: foo.c:12:3{{$}}
 // FIRST: replay: assert-op: foo.c:20:5{{$}}
 // FIRST: replay: assert-path: foo.c:12:3{{$}}
+// FIRST: result: sat
 sea.program @first {
   %x = sea.nondet "nondet_u8" [0] : i8 loc("foo.c":3:11)
   %c6 = sea.const 6 : i8
@@ -79,10 +79,10 @@ sea.program @first {
 
 // SeaHorn's sassert shape: `assume !cond; br; assert false`, the error
 // branches unlocated: the condition's line, not the last located branch.
-// SASSERT: result: sat
 // SASSERT: replay: assert-failed{{$}}
 // SASSERT-NEXT: replay: assert-at: bar.c:30:3{{$}}
 // SASSERT: replay: assert-path: bar.c:25:7{{$}}
+// SASSERT: result: sat
 sea.program @sassert {
   %x = sea.nondet "nondet_u8" [0] : i8 loc("bar.c":24:11)
   %c3 = sea.const 3 : i8

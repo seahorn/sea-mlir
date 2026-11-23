@@ -14,8 +14,8 @@
 // 2^64, which breaks the promise) reads a header byte. The promise is what
 // the rule adds; the interpreter warns interp.ptr-index-promise on replay.
 // OFF-NOT: smap-abort-stride
-// OFF: result: sat
 // OFF: validate: checked={{[0-9]+}} mismatches=0
+// OFF: result: sat
 !pm = !sea.mem<!sea.ptr<64>, i8>
 sea.program @header {
   %m0 = sea.mem.nondet "m" [0] : !pm

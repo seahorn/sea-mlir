@@ -23,8 +23,8 @@
 // CHECK-NEXT: sea.assert
 // The assume on the arm not taken leaves the other arm's bug.
 // SAT: vc.sink-assumes: 1
-// SAT: result: sat
 // SAT: validate: checked={{[0-9]+}} mismatches=0
+// SAT: result: sat
 // SAT0: result: sat
 sea.program @diamond {
   %x = sea.nondet "nondet_u8" [0] : i8

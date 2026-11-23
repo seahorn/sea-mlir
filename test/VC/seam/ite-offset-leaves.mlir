@@ -21,8 +21,8 @@
 // BND: seam.rule.wide.expanded-ite-offset: {{[1-9]}}
 // OFF-NOT: ite-offset
 // UNSAT: result: unsat
-// MUT: result: sat
 // MUT: replay: assert-failed
+// MUT: result: sat
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
 // NOSEAM: --seam-offset-leaves{{.*}}need{{.*}}--seam
 !m = !sea.mem<!sea.ptr<64>, i8>

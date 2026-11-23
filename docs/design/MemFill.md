@@ -6,13 +6,18 @@ execution (`lib/Interp/Interpreter.cpp`, `execMem`), its VC lowering
 `sea-expand-mem-fill` (`lib/Transforms/ExpandMemFill.cpp`) and its
 interaction with `sea-widen-memory` (`lib/Transforms/WidenMemory.cpp`).
 The seaimp region form is `seaimp.mem.fill` (docs/design/SeaImp.md).
+Under `--seam` a fill of a byte memory is one term, `mfill`
+(`include/sea/Expr/MemOps.hh`, `SeaMRules.hh` `rowFill`; section "SeaM"
+below).
 Tests: `test/Dialect/Sea/mem-fill.mlir`,
 `test/Dialect/Sea/mem-fill-invalid.mlir`, `test/Interp/mem/fill.mlir`,
 `test/Transforms/expand-mem-fill.mlir`, `test/VC/mem-fill.mlir`,
-`test/VC/mem-fill-4k.test`.
+`test/VC/mem-fill-4k.test`, `test/VC/seam/mfill-*.mlir`,
+`test/VC/seam/mfill-4k.test`, `test/SeamExport/mfill.mlir`, the `mfill`
+cases of `unittests/MemOps` and `unittests/SeaMRules`.
 
-Status: implemented. The VC sees stores; no memory encoding handles a
-fill natively yet.
+Status: implemented. Without `--seam` the VC sees stores; with `--seam`
+a fill of a byte memory is a term, the others are stores.
 
 ## The op
 
@@ -51,9 +56,19 @@ inconclusive.
 `sea-widen-memory`: each fill becomes one store per cell, in order, of
 the memory's cell type, each the constant cell of the data. The first
 store consumes the fill's memory with the fill's `inplace`; the others
-consume a version only the chain uses. Every memory mode (arrays,
-`--mem=lambda`, word layouts, `--seam`) then sees stores. Without
-`--lower` the VC refuses a fill (`vc.mem-fill`).
+consume a version only the chain uses. The arrays, `--mem=lambda` and
+word layouts see stores; `--seam` sees the stores of word and keyed
+memories and an `mfill` term for each fill of a byte memory (section
+"SeaM"). Without `--lower` the VC refuses a fill (`vc.mem-fill`), except
+a byte-memory fill under `--seam`.
+
+With `keep-bytes` (sea-vc `--seam`) the pass keeps the fills of byte
+memories (`MemType::isByteCells`: i8 cells of one index unit, not keyed)
+and expands the others. Its counters, printed by sea-vc for a program
+with a fill: `vc.expand-mem-fill: expanded=<fills> cells=<stores>
+kept=<fills> expanded-word-layout= expanded-keyed= expanded-other=` (the
+last three: fills expanded under `keep-bytes`, by why they are not
+terms).
 
 The expansion is exact: the stores write the cells the fill writes, with
 its values, and nothing else. It does not rest on any assumption.
@@ -108,11 +123,159 @@ z3 does not answer the array query (4096 or 512 nested stores read at a
 symbolic index) within 120 s, while SeaM's rewriting of the read and the
 lambda form answer at once.
 
+## SeaM: the `mfill` term
+
+With `--seam`, `sea.mem.fill %m[%p], <data>` on a byte memory is
+
+    mfill(M, d, n, data)    cell j:  (j - d) <u n ? data[j - d] : M[j]
+
+(`MEM_FILL`, `include/sea/Expr/ExprOpArray.hh`): M the incoming memory,
+d the destination, n the number of bytes as a numeral at the index width
+(the verifier gives 0 < n < 2^w), data the bytes (a `FillData` terminal,
+compared and hashed by content). It shares the range machinery of `mset`
+/ `mcopy` / `mhavoc` (SeaM-memops.md): `memOpDst` / `memOpLen` are d and
+n, the destination range is an access (`accessRange`: counted, its
+A-INB condition stated, a static violation reported), cross-object
+decisions are `decideIn`'s with the premises it names (A-SEP), the
+firing premise states the range (`accessRanges`), and a shadow memory
+gets no premise. The model is seam-lean's `rangeFill`
+(`SeaM/MemOps/Basic.lean`; its `docs/MemFill.md`): the cell at circular
+distance k from d holds byte k when k < data.length, and keeps its value
+otherwise. Scope, as there: byte memories, full bytes (no holes).
+
+The rules (`SeaMRules.hh`; the counter is the rule name in the trail and
+in `--seam-check`), each with the seam-lean theorem it corresponds to: the
+expression-level theorem of namespace `SeaM.RangeFill`
+(`SeaM/MemOps/Wide.lean`) where there is one, with its side conditions (k
+the offset of the read from d, r its width in bytes, 1 for a byte read; n
+the data's length, w the address width):
+
+| rule | when | result | seam-lean theorem |
+|---|---|---|---|
+| `row.mfill-hit` | k = j - d a numeral, k < n | the numeral data[k] | `RangeFill.hit_sound` (r = 1: k + r <= n, k + r <= 2^w) |
+| `wide.mfill-hit` | a wide read of r bytes (`--seam-wide`) at a numeral k, k + r <= n | the numeral of bytes k .. k + r - 1, little endian | `RangeFill.hit_sound` (k + r <= n, k + r <= 2^w) |
+| `row.mfill-skip` | k a numeral, k >= n | select(M, j) | `RangeFill.skip_sound` (r = 1: n <= k, k + r <= 2^w) |
+| `wide.mfill-skip` | a wide read at a numeral k, k >= n, not wrapping onto the data | wselect(M, j) | `RangeFill.skip_sound` (n <= k, k + r <= 2^w) |
+| `row.mfill-skip-disjoint` | j decided outside [d, d + n) by other means: another object (`cmp.diff-base`, `arm.skip`: A-SEP), an object of size 0 (`cmp.size0-vacuous`: A-NULL), an ARM interval of j - d outside the range | select(M, j) | `RangeFill.skip_disjoint_sound` (n < 2^w, `RangeDisjoint`) |
+| `wide.mfill-skip-disjoint` | a wide read decided outside the range by the same means | wselect(M, j) | `RangeFill.skip_disjoint_sound` (n < 2^w, `RangeDisjoint`) |
+| `row.mfill-split` | j or d an ite whose every leaf pair is decided by the byte rules above | the ite of the leaf results (each leaf counted under its rule) | per leaf as above; the split is the ite of reads (exact) |
+| (byte fallback) | a wide read across the range's end or start, or in it at a symbolic offset | its byte reads (`wide.split-read`), each by the `row.mfill-*` rules | `RangeFill.mixed_sound` at a numeral k (each byte decided) |
+| `row.mfill-expand` | anything else: an open in-test, or in the range at an offset that is not one numeral | select(fillStores(mfill), j): the stores the fill expands into, decided by the store rules per byte | `RangeExpr.eval_mfill_eq_fillStores` (n <= 2^w) |
+| `mem.fill-replicate` | every byte of the data is one byte b (the rule scans the data itself, and checks that n is its length) | mset(M, d, n, b) | `rangeFill_replicate` (n < 2^w; memory-level, a RangeExpr form is coming in seam-lean) |
+| boundary | a read over the term left (rules off, interrupted) | ite((j - d) <u n, lookup(j - d), select(M, j)) | the definition `rangeFill` with `inRange_fillLength`; seam-lean's coming `rangeFill_readEq` is the exact target (not `RangeExpr.lower_mfill`) |
+
+Any decided rule may also rest on `mem.in-layout` (LAYOUT: the placed
+address of an object), through `decideIn`, as the rules of the other
+terms do; its premises are those `decideIn` names.
+
+`rangeFill_take` (only the first 2^w bytes matter) and the bounds above
+(n <= 2^w, n < 2^w) need nothing here: the op verifier gives n < 2^w
+(`N * c < 2^w`), so the term is the whole data. `rangeFill_append` (a fill
+split in two) is not used by a rule.
+
+### The fallback: the store expansion
+
+A read whose offset from d is not decided falls back to the store
+expansion of that read, not to the range test of the other terms. The
+range test `ite((j - d) <u n, <hit>, M[j])` would need a hit form for a
+symbolic offset: a lookup of `j - d` in the data, a term the Lean model
+does not have (its scope covers decided offsets; every other read keeps
+the expansion, justified by `rangeFill_eq_fillStores`). The expansion is
+the same stores `sea-expand-mem-fill` makes, as a memory term
+(`fillStores`, MemOps.hh: byte i at d + i, in order), one node per fill
+(hash-consed: every undecided read of the fill reads the same chain, and
+the rewriter normalizes it once). So an undecided read costs what every
+read costs without the term, and a decided read costs one rule. A fill of
+one repeated byte (a zero initializer) is an `mset` instead
+(`mem.fill-replicate`), whose undecided read is one range test.
+
+### The boundary
+
+`solverTerm` (`MemOpTranslator`, MemOps.hh) removes a read over an
+`mfill` left in the query by the read equation of the term,
+
+    select(mfill(M, d, n, data), j) = ite((j - d) <u n, lookup(j - d), select(M, j))
+    lookup(k) = ite(k = 0, data[0], ite(k = 1, data[1], ... ite(k = n-2, data[n-2], data[n-1])))
+
+(k an index-width bit-vector, the compares against numerals; n = 1:
+lookup(k) = data[0]). lookup(k) is data[k] for k < n; for every k
+outside [0, n) it is data[n-1], a value the guard (j - d) <u n never
+selects.
+
+This is seam-lean's definition `rangeFill` (distance below the length:
+the data byte; else the old cell), with `inRange_fillLength` for the
+guard (the distance is below n iff j is in the circular range of length
+n); seam-lean is adding `rangeFill_readEq`, the read equation itself, as
+the exact target. Semantics only: no premise, no address
+decision; counted in `memop.translated`. Only a run with the rules off or
+stopped leaves such a read.
+
+Not the store expansion, which seam-lean's `RangeExpr.lower` uses
+(`RangeLowered.fillChain`, `RangeExpr.lower_mfill`). The two are equal
+(`rangeFill_eq_fillStores`); the read equation was chosen for
+`--seam-check`, which sends both sides of every firing through this
+boundary. Measured on the obligations a firing over a fill makes (z3,
+64-bit addresses, the destination a placed constant):
+
+| obligation | n = 16 | n = 256 | n = 4096 |
+|---|---:|---:|---:|
+| skip of a read past the data, the boundary the store chain | 0.01 s | 0.04 s | 21 s |
+| the same, the boundary the read equation | 0.02 s | 0.04 s | 1.1 s |
+| the store chain = the read equation (`row.mfill-expand`) | 0.02 s | 2.0 s | > 30 s |
+
+and `mem.fill-replicate` of 64 bytes, a store chain against a range
+test: z3 > 60 s, Yices 22 s, Bitwuzla 19 s (the read equation against
+the range test: 0.01 s). With the store chain as the boundary, the
+expansion rule would be valid by construction and every decided rule,
+the ones that use premises, expensive to check; with the read equation
+the decided rules and the replicate rule check at once, and the check of
+a `row.mfill-expand` firing is a real instance of
+`RangeExpr.eval_mfill_eq_fillStores`, which z3 does not settle within the
+default 10 s beyond a few hundred bytes.
+
+So `--seam-check` checks a `row.mfill-expand` firing exactly up to a cap
+of 64 bytes (`kFillExpandCheckCap`, MemOps.hh), and there an unknown is a
+failure: `seam-check-failed: id= rules= bytes= reason=unknown`, counted
+in `failed=` of the summary line, exit status 5 as an invalid firing.
+Above the cap the firing is covered by the theorem and not checked:
+`seam-check-covered: id= rules= bytes= theorem=RangeExpr.eval_mfill_eq_
+fillStores`, counted in `covered=`, never in `valid=` or `unknown=`.
+The summary line always has `covered=` and `failed=`, after
+`unexpressible=` and before the optional `unknown-rlimit=`. (The
+4 KiB read of `test/VC/mem-fill-4k.test` before the cap: 98,336 firings, 0
+invalid, 9 unknown, 8 of them `row.mfill-expand`, one `row.smap-abort` on
+the expansion's stores.) A split of a large fill into checked pieces
+(`rangeFill_append`) is not done. The unit test checks the read equation and
+the expansion against an independent guarded-store reference for every
+length at 4-bit addresses (`unittests/MemOps`, `fill`).
+
+### Export
+
+`sea-seam-export` writes the term as `{op: mfill, sort: memory, args:
+[memory, dst], data: [b0, b1, ...]}`, bytes as integers 0..255 (seam-lean
+`RangeExpr.mfill m dst data` / `MapExpr.mfill`: no length argument, the
+length is the data's; the exporter checks that Expr's numeral n equals
+it). Schema 5, an added op.
+
+### Size
+
+`test/VC/seam/mfill-4k.test`: a 4 KiB initializer read at decided
+offsets (an 8-byte load and a byte) and a 4 KiB zero initializer read at
+a symbolic offset: `vc.dag-size` 19 under `--seam` (no store of either
+fill: nine `row.mfill-hit`, one `mem.fill-replicate` and its one
+`row.mset` range test), 24,889 for the expansion (`--lower` without
+`--seam`). A read at a symbolic offset of varied data costs the
+expansion, as before: the 4 KiB program of `test/VC/mem-fill-4k.test`
+(an 8-byte load at a symbolic aligned offset) is 6,146 nodes under
+`--seam` (6,158 before; RelWithDebInfo, `--lower --seam --dag-stats`).
+
 ## Later
 
-- A native fill in the memory encodings: a constant-array term (or
-  SeaM's store-map) read through one range test, as `mset` / `mcopy` do
-  for memset and memmove (docs/design/SeaM-memops.md). It needs a
-  coordinated SeaM change; until then every mode sees stores.
+- A read in the range at a symbolic offset (a table lookup `tab[i]` with
+  i bounded) falls back to the expansion. A lookup term (an ite over the
+  bytes the offset's interval admits, or a constant array) would make it
+  one range test; it needs a Lean counterpart first.
+- `rangeFill_append`: split a fill at long runs of one byte (mset) and
+  the rest (mfill); and fills of word memories (SeaM-memops.md step 3).
 - The SeaHorn export switches global initializers from byte stores to
   `sea.mem.fill`.

@@ -47,6 +47,8 @@ enum class TerminalKind {
   MLIR_VALUE,
   // mlir::Block * (sea-mlir, see ExprMlir.hh)
   MLIR_BLOCK,
+  // the constant bytes of an mfill term (ExprOpArray.hh, op::array::FillData)
+  FILL_DATA,
   // Reserved for unit tests: test-only terminal types (unittests/)
   TEST_ONLY
 };

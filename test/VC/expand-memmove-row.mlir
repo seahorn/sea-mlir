@@ -17,9 +17,9 @@
 // CHECK: vc.expand-memmove: k=4 expanded=1 bytes=4 kept-symbolic=0 kept-over-k=0
 // CHECK: vc.ackermann-constraints: 0
 // CHECK: result: unsat
-// MUT: result: sat
 // CAP: --expand-memmove=1025 is above the limit (1024)
 // MUT: replay: assert-failed
+// MUT: result: sat
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @row {
   %m0 = sea.mem.nondet "m" [1] : !m

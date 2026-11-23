@@ -3,10 +3,10 @@
 !m8 = !sea.mem<!sea.addr<8>, i8>
 
 // Memory versions merge at the join; the branch taken decides the cell.
-// CHECK: result: sat
 // CHECK: nondet: site=1 callee=nondet_bool width=1 value=0
 // CHECK: replay: assert-failed
 // CHECK: validate: checked={{[0-9]+}} mismatches=0
+// CHECK: result: sat
 sea.program @merge {
   %m0 = sea.mem.nondet "m" [0] : !m8
   %c = sea.nondet "nondet_bool" [1] : i1

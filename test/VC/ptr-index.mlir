@@ -13,9 +13,9 @@
 // assert says it is not: sat, replayed. @raw: a placed program, no
 // lowering: the op reaches the VC as it is.
 // UNSAT: result: unsat
-// SAT: result: sat
 // SAT: replay: assert-failed
 // SAT: validate: checked={{[0-9]+}} mismatches=0
+// SAT: result: sat
 !pm = !sea.mem<!sea.ptr<64>, i8>
 sea.program @unsat {
   %m0 = sea.mem.nondet "m" [0] : !pm

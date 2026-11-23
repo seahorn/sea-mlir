@@ -5,8 +5,8 @@
 // fails when the havoc gives a value other than the stored one.
 // RUN: sea-vc %s --lower | FileCheck %s
 // RUN: sea-run %s --input=3=1,2@heap.1+0=0 | FileCheck %s --check-prefix=INTERP
-// CHECK: result: sat
 // CHECK: replay: assert-failed
+// CHECK: result: sat
 // INTERP: status: assert-failed
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @main {

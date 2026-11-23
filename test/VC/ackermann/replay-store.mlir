@@ -10,10 +10,10 @@
 // RUN: sea-vc %s 2>&1 | FileCheck %s --check-prefix=AUTO
 // CHECK: vc.ackermann: on
 // CHECK: vc.ackermann-arrays: 1
-// CHECK: result: sat
 // CHECK: vc.ackermann-model: defaulted={{[0-9]+}} inconsistent=0
 // CHECK: replay: assert-failed
 // CHECK: validate: checked={{[0-9]+}} mismatches=0
+// CHECK: result: sat
 // AUTO: vc.ackermann: on
 // AUTO: mismatches=0
 !am = !sea.mem<!sea.addr<3>, i8>

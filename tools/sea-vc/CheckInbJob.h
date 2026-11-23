@@ -25,6 +25,7 @@
 #define SEA_VC_TOOL_CHECKINBJOB_H
 
 #include "sea/Dialect/Sea/SeaOps.h"
+#include "sea/Expr/Smt/LogicGuard.h"
 #include "sea/Interp/Interpreter.h"
 #include "sea/Support/Diag.h"
 #include "sea/Support/Output.h"
@@ -52,6 +53,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -93,6 +95,10 @@ struct JobOptions {
   /// the parts' solver and why (`check-inb.solver:`), and the read-only
   /// array mode when the job chose it (partDefaults)
   std::string solverName, solverReason, roArraysNote;
+  /// the job's answer (`none`, its verdict): sea-vc holds it and prints the
+  /// run's one `result:` line once the status is final (a verdict only with
+  /// status 0); unset: a `result:` record on the emitter at once
+  std::function<void(llvm::StringRef)> emitResult;
 };
 
 /// What one part's run said.
@@ -353,16 +359,24 @@ inline bool partArguments(llvm::ArrayRef<const char *> args,
 /// otherwise (said in \p reason). With z3, `--ro-arrays=uf` unless the
 /// command line gave --ro-arrays=: exact, and it cuts z3's time on the
 /// parts' read-only arrays; not passed for Yices and Bitwuzla (not
-/// measured with it). \p roNote: what happened to --ro-arrays. \p ignored:
-/// the z3-only options an explicit non-z3 solver ignores.
-inline void partDefaults(std::vector<std::string> &args, bool haveYices,
+/// measured with it). With z3 and --z3-logic=L (the parts' queries keep
+/// the memory they read as arrays or, with --ro-arrays=uf, functions:
+/// --check-inb needs --ackermannize=off), the default follows L, which
+/// the logic guard holds every part to (sea/Expr/Smt/LogicGuard.h): L
+/// with UF keeps `uf`; L with arrays but no UF gets `--ro-arrays=array`
+/// (roNote `array (--z3-logic)`); L with neither is refused (false,
+/// \p error): every part that reads memory would fail. An explicit
+/// --ro-arrays= wins (the guard refuses a part outside L). \p roNote: what
+/// happened to --ro-arrays. \p ignored: the z3-only options an explicit
+/// non-z3 solver ignores.
+inline bool partDefaults(std::vector<std::string> &args, bool haveYices,
                          std::string &solver, std::string &reason,
-                         std::string &roNote,
-                         std::vector<std::string> &ignored) {
+                         std::string &roNote, std::vector<std::string> &ignored,
+                         std::string &error) {
   static const llvm::StringSet<> z3Only = {"z3-tactic", "z3-logic", "z3-param",
                                            "z3-plant-error",
                                            "seam-check-rlimit"};
-  std::string explicitRo;
+  std::string explicitRo, logic;
   std::vector<std::string> z3Opts;
   bool hasSolver = false, hasRo = false;
   for (const std::string &a : args) {
@@ -379,6 +393,8 @@ inline void partDefaults(std::vector<std::string> &args, bool haveYices,
       // does not count: --z3-tactic=default, --z3-logic=, --z3-param=,
       // --z3-plant-error=false|0, --seam-check-rlimit=0
       bool neutral = false;
+      if (name == "z3-logic")
+        logic = value.str(); // the last one counts, as for cl::opt
       if (name == "z3-tactic")
         neutral = value == "default";
       else if (name == "z3-logic" || name == "z3-param")
@@ -411,14 +427,34 @@ inline void partDefaults(std::vector<std::string> &args, bool haveYices,
     reason = "no yices in this build";
     args.push_back("--solver=z3");
   }
+  std::optional<solver::LogicTheories> theories;
+  if (solver == "z3" && !logic.empty()) {
+    std::string why;
+    theories = solver::parseLogic(logic, why);
+    if (!theories) {
+      error = "--z3-logic '" + logic + "': " + why;
+      return false;
+    }
+  }
   if (hasRo)
-    roNote = explicitRo;
-  else if (solver == "z3") {
+    roNote = explicitRo + " (--ro-arrays)";
+  else if (theories && !theories->uf && theories->arrays) {
+    args.push_back("--ro-arrays=array");
+    roNote = "array (--z3-logic)";
+  } else if (theories && !theories->uf) {
+    error = "--z3-logic=" + logic +
+            " admits neither arrays nor uninterpreted functions, and a part "
+            "that reads memory keeps it as one of them (--check-inb needs "
+            "--ackermannize=off; --ro-arrays=uf states read-only arrays as "
+            "functions): every such part would fail. Use a logic with A or "
+            "UF (QF_ABV, QF_UFBV, QF_AUFBV, ALL)";
+    return false;
+  } else if (solver == "z3") {
     args.push_back("--ro-arrays=uf");
-    roNote = "uf";
+    roNote = "uf (default)";
   } else
-    roNote = "array";
-  roNote += hasRo ? " (--ro-arrays)" : " (default)";
+    roNote = "array (default)";
+  return true;
 }
 
 /// One part as the manifest describes it: everything an outside runner
@@ -443,6 +479,19 @@ inline std::string sha256Of(llvm::StringRef path) {
     return "";
   auto h = llvm::SHA256::hash(llvm::arrayRefFromStringRef((*buf)->getBuffer()));
   return llvm::toHex(h, /*LowerCase=*/true);
+}
+
+/// The job's answer \p v: to JobOptions::emitResult, else a `result:` record
+inline void emitJobResult(const JobOptions &o, out::Emitter &out,
+                          llvm::StringRef v) {
+  if (o.emitResult) {
+    o.emitResult(v);
+    return;
+  }
+  out::Record rec("result");
+  rec.str("value", v);
+  rec.text = ("result: " + v).str();
+  out.emit(rec);
 }
 
 inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
@@ -843,10 +892,7 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
                             dir, specs.size())
                   .str();
     out.emit(pr);
-    out::Record rec("result");
-    rec.str("value", "none");
-    rec.text = "result: none";
-    out.emit(rec);
+    emitJobResult(o, out, "none");
     out.flush();
     return 0;
   }
@@ -898,7 +944,11 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     const bool premiseFailed = r.status == 4 && !r.premiseText.empty();
     if (premiseFailed)
       r.result = "premise-failed";
-    else if (r.status != 0 && r.status != 3 && r.result != "unknown")
+    else if (r.status != 0 && r.status != 3 &&
+             (r.result != "unknown" || r.status == 1 || r.status == 2 ||
+              r.status == 4 || r.status == 6))
+      // a sat the replay does not confirm prints `result: unknown` (sea-vc
+      // settles the answer); its status says why
       r.result = r.status == 4 ? "inconclusive" : "error";
     worst = worseStatus(worst, r.status);
     out::Record rec("check-inb.part");
@@ -1004,12 +1054,12 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
             .str();
     out.emit(rec);
   }
-  // the verdict: sat if a part's failure replayed, a bounds violation or a
-  // failed premise (premise.failed, exit 4: the premise class, as sea-vc
-  // reports it); unsat iff every part is unsat (a trivial part is); else
-  // unknown. A sat part and a failed part: sat, with the failed part's
-  // status (a premise part's 4).
-  std::string verdict = sat || premise                      ? "sat"
+  // the verdict: sat if a part's failure replayed, a bounds violation; a
+  // failed premise (premise.failed) is status 4, the premise class; unsat
+  // iff every part is unsat (a trivial part is); else unknown. A sat part
+  // and a failed part: the failed part's status (a premise part's 4), and
+  // the run's `result:` is unknown (a verdict only with status 0)
+  std::string verdict = sat                                 ? "sat"
                         : unsat == specs.size() && !skipped ? "unsat"
                                                             : "unknown";
   {
@@ -1077,16 +1127,13 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     rec.text = "check-inb.discharges: " + what + " under=" + underText;
     out.emit(rec);
   }
-  {
-    out::Record rec("result");
-    rec.str("value", verdict);
-    rec.text = "result: " + verdict;
-    out.emit(rec);
-  }
+  // the status, then the run's one `result:`: a verdict only with status 0
+  const int status = worst != 0 && worst != 3 ? worst
+                     : verdict == "unknown"   ? 3
+                                              : 0;
+  emitJobResult(o, out, status == 0 ? verdict : "unknown");
   out.flush();
-  if (worst != 0 && worst != 3)
-    return worst;
-  return verdict == "unknown" ? 3 : 0;
+  return status;
 }
 
 } // namespace sea::checkinb

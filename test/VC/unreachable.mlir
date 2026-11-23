@@ -3,9 +3,9 @@
 
 // The branch into sea.unreachable is infeasible: only c = 0 reaches the
 // exit, where the assertion fails.
-// VC: result: sat
 // VC: nondet: site=0 callee=nondet_bool width=1 value=0
 // VC: replay: assert-failed
+// VC: result: sat
 // INTERP: status: assume-blocked
 sea.program @main {
   %c = sea.nondet "nondet_bool" [0] : i1

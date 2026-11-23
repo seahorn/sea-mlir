@@ -90,8 +90,9 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   `sea-expand-mem-fill` (`sea.mem.fill`, constant cells written from an
   address, e.g. a global initializer -> one store per cell of the
   memory's cell type; in the lowering right after sea-widen-memory, which
-  packs a widened memory's fill bytes into words; the VC encodes no fill:
-  `vc.mem-fill`; docs/design/MemFill.md),
+  packs a widened memory's fill bytes into words; `keep-bytes` (sea-vc
+  --seam) keeps the fills of byte memories, SeaM's `mfill` term; otherwise
+  the VC refuses a fill: `vc.mem-fill`; docs/design/MemFill.md),
   `sea-expand-small-memmove` (constant length <= K -> all source loads,
   then the stores: exact; `sea-vc --expand-memmove=K`, off by default,
   for --seam reads whose mcopy range test stays open;
@@ -187,7 +188,8 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   VC may hold it, and whatever goes to a solver or a model evaluation passes
   `SeaOpSem::solverTerm`, which expands it into stores; `--seam` also encodes memset / memmove / memhavoc as
   memory-valued terms (`mset` / `mcopy` / `mhavoc`, `include/sea/Expr/MemOps.hh`,
-  `docs/design/SeaM-memops.md`) read through one range test each, and
+  `docs/design/SeaM-memops.md`) read through one range test each, and a
+  byte-memory `sea.mem.fill` as `mfill` (docs/design/MemFill.md), and
   skips `sea-expand-memset` (symbolic lengths exact); `solverTerm`
   removes them by their read equations only (semantics-only boundary)
 - `test/` — lit + FileCheck; `utils/check-semantics.py` — z3 oracle
@@ -246,7 +248,8 @@ enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
   Mem-SSA chains (memory is a value); `inplace` on updates; the interpreter
   executes in place only; the VC uses the array encoding (load/store;
   constant-length memset/memmove/memhavoc as store chains; `sea.mem.fill`
-  (constant data) expanded into cell stores by a pass; a symbolic
+  (constant data) expanded into cell stores by a pass (under `--seam` a
+  byte-memory fill is the `mfill` term); a symbolic
   memset length is expanded by a pass with an explicit bound; other
   symbolic lengths are errors). The memory type names its layout
   (`!sea.mem<I, iC[, aligned|unaligned]>`): exact (default) = one cell per

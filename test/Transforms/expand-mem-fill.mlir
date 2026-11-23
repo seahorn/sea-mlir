@@ -1,4 +1,7 @@
 // RUN: sea-opt %s --sea-expand-mem-fill | FileCheck %s
+// keep-bytes (sea-vc --seam): the fill of a byte memory stays (SeaM's mfill
+// term), that of a word memory is expanded and counted.
+// RUN: sea-opt %s --sea-expand-mem-fill=keep-bytes=true | FileCheck %s --check-prefix=KEEP
 // RUN: sea-opt %s --sea-widen-memory="k=8 report=true" --sea-expand-mem-fill 2>/dev/null | FileCheck %s --check-prefix=WIDE
 // RUN: sea-opt %s --sea-widen-memory="k=8 report=true" -o /dev/null 2>&1 | FileCheck %s --check-prefix=REM
 // RUN: sea-opt %s --sea-widen-memory="k=8 report=true" 2>/dev/null | FileCheck %s --check-prefix=PACK
@@ -35,6 +38,10 @@
 // CHECK: sea.store %[[S1]][%[[A2]]], %{{.*}} inplace tracked : !sea.mem<!sea.ptr<64>, i8>, i8
 // CHECK-NOT: sea.store
 // CHECK: sea.load
+// KEEP-LABEL: sea.program @bytes
+// KEEP-SAME: sea.expand_mem_fill = {cells = 0 : i64, expanded = 0 : i64, "expanded-keyed" = 0 : i64, "expanded-other" = 0 : i64, "expanded-word-layout" = 0 : i64, kept = 1 : i64}
+// KEEP: sea.mem.fill %{{.*}}, dense<[1, 2, 3]> : tensor<3xi8> inplace tracked
+// KEEP-NOT: sea.store
 sea.program @bytes {
   %m0 = sea.mem.nondet "m" [0] : !m
   %g = sea.global @tab size 4 align 4 : !sea.ptr<64>
@@ -57,6 +64,10 @@ sea.program @bytes {
 // CHECK: sea.store %{{.*}}[%[[W8]]], %{{.*}} inplace : !sea.mem<!sea.ptr<64>, i64, aligned>, i64
 // CHECK-NOT: sea.store
 // CHECK: sea.load
+// KEEP-LABEL: sea.program @words
+// KEEP-SAME: sea.expand_mem_fill = {cells = 2 : i64, expanded = 1 : i64, "expanded-keyed" = 0 : i64, "expanded-other" = 0 : i64, "expanded-word-layout" = 1 : i64, kept = 0 : i64}
+// KEEP-NOT: sea.mem.fill
+// KEEP-COUNT-2: sea.store
 sea.program @words {
   %m0 = sea.mem.nondet "m" [0] : !w
   %g = sea.global @wtab size 16 align 8 : !sea.ptr<64>

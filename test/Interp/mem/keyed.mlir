@@ -24,8 +24,8 @@
 // @overwritten claims the store at p + 1 changed the cell at p: false, so
 // the assertion fails (sat, replayed and validated): the VC does not read
 // keyed cells as covering bytes.
-// NEG: result: sat
 // NEG: validate: checked={{[0-9]+}} mismatches=0
+// NEG: result: sat
 !k = !sea.mem<!sea.ptr<64>, i64, keyed>
 sea.program @keyed {
   %m0 = sea.mem.nondet "m" [0] : !k

@@ -20,8 +20,8 @@ sea.program @memset {
 
 // A load of an earlier version whose cell was clobbered: the VC reads the
 // old value, the in-place interpreter the new one; replay reports it.
-// STALE: result: sat
 // STALE: mismatch: sea.load
+// STALE: result: unknown
 sea.program @clobbered {
   %m0 = sea.mem.nondet "m" [0] : !m8
   %z = sea.const 0 : i8
@@ -35,9 +35,10 @@ sea.program @clobbered {
 }
 
 // The VC accepts persistent updates; replay cannot run them.
-// NOTIP: result: sat
+// NOTIP: solver-answer: sat
 // NOTIP: replay: error
 // NOTIP: message: memory update without inplace
+// NOTIP: result: unknown
 sea.program @not_inplace {
   %m0 = sea.mem.nondet "m" [0] : !m8
   %z = sea.const 0 : i8

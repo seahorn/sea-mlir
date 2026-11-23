@@ -25,8 +25,8 @@
 // RUN: sea-vc %s --lower --program=overwritten --seam --ptr-companion=assume 2>&1 | FileCheck %s --check-prefix=FWD
 // FWD: vc.ptr-companion: loads=0
 // FWD-NOT: seam.ptrint: assumed
-// FWD: result: sat
 // FWD: replay: assert-failed
+// FWD: result: sat
 // RUN: sea-vc %s --lower --lower-opt=false --program=overwritten --seam --ptr-companion=check 2>&1 | FileCheck %s --check-prefix=VIOL
 // RUN: sea-vc %s --lower --program=moved --seam --ptr-companion=check 2>&1 | FileCheck %s --check-prefix=HOLDS
 // With --expand-memmove the memmove of @moved is kept (byte stores would
@@ -37,11 +37,11 @@
 // ASSUME: seam.ptrint: assumed loads=1
 // ASSUME: result: unsat
 // VIOL: seam.ptrint: checked loads=1
-// VIOL: result: sat
 // VIOL: seam.ptrint: not discharged
 // VIOL: replay: assert-failed
 // VIOL: seam.ptrint-violated: {{.*}} stored={{[0-9]+}}
 // VIOL: seam.ptrint-replay: loads=1 holds=0 violated=1 unstored=0
+// VIOL: result: sat
 // HOLDS: seam.ptrint: checked loads=1
 // HOLDS: result: unsat
 // HOLDS: seam.ptrint: holds
@@ -57,8 +57,8 @@
 // PLAIN: result: unsat
 // OVER: vc.ptr-companion: loads=1 stores=1 copies=0
 // OVER: vc.ptr-companion-arrays: 0
-// OVER: result: sat
 // OVER: validate: checked={{[0-9]+}} mismatches=0
+// OVER: result: sat
 // MOVED: vc.ptr-companion: loads=1 stores=1 copies=1
 // MOVED: vc.ptr-companion-arrays: 0
 // MOVED: result: unsat

@@ -6,9 +6,9 @@
 // no-overflow / no-underflow; no lowering needed; the semantics are checked
 // by check-semantics.py --bitwuzla). The assertion "no signed overflow" fails
 // for some x, y.
-// CHECK: result: sat
 // CHECK: replay: assert-failed
 // CHECK: validate: checked={{[0-9]+}} mismatches=0
+// CHECK: result: sat
 sea.program @main {
   %x = sea.nondet "nondet_u8" [0] : i8
   %y = sea.nondet "nondet_u8" [1] : i8

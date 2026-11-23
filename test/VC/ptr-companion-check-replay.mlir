@@ -23,24 +23,24 @@
 // RUN: sea-vc %s --program=overwritten --seam --ptr-companion=check --format=jsonl 2>&1 | FileCheck %s --check-prefix=JSON
 // RUN: sea-vc %s --program=overwritten --seam --ptr-companion=exact 2>&1 | FileCheck %s --check-prefix=EXACT --implicit-check-not=seam.ptrint-
 // UNST: seam.ptrint: checked loads=1
-// UNST: result: sat
 // UNST: seam.ptrint: not discharged
 // UNST: replay: halted
 // UNST: validate: checked={{[0-9]+}} mismatches=0
 // UNST: seam.ptrint-unstored: {{.*}}ptr-companion-check-replay.mlir:79:8 addr=256 obj=&slot[0] bits=513{{$}}
 // UNST: seam.ptrint-replay: loads=1 holds=0 violated=0 unstored=1
+// UNST: result: sat
 // UNST: seam-check: {{.*}} invalid=0
-// OVER: result: sat
 // OVER: seam.ptrint: not discharged
 // OVER: replay: halted
 // OVER: validate: checked={{[0-9]+}} mismatches=0
 // OVER: seam.ptrint-violated: {{.*}}ptr-companion-check-replay.mlir:104:8 addr=256 obj=&slot[0] bits=519 stored=512
 // OVER: seam.ptrint-replay: loads=1 holds=0 violated=1 unstored=0
-// FAILS: result: sat
+// OVER: result: sat
 // FAILS: replay: assert-failed
 // FAILS: validate: checked={{[0-9]+}} mismatches=0
 // FAILS: seam.ptrint-unstored: {{.*}} addr=256 obj=&slot[0] bits=513{{$}}
 // FAILS: seam.ptrint-replay: loads=1 holds=0 violated=0 unstored=1
+// FAILS: result: sat
 // BOTH: result: unsat
 // BOTH: seam.ptrint: holds
 // JSON: {"kind":"ptrint","status":"violated",{{.*}}"addr":256,"obj":"slot","off":0,"bits":519,"stored":512,

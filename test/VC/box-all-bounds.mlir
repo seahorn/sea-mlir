@@ -11,19 +11,19 @@
 // box is true), on boxes whose upper bound is a value (the guarded form).
 // Each sat replays on the interpreter, which evaluates the whole box.
 // SAT: vc.box-all: {{.*}}guarded=1
-// SAT: result: sat
 // SAT: replay: assert-failed
 // SAT: validate: {{.*}} mismatches=0
-// SAT2: result: sat
+// SAT: result: sat
 // SAT2: callee=box.all.b0.0 width=64 value=1
 // SAT2: callee=box.all.b0.1 width=64 value=2
 // SAT2: replay: assert-failed
+// SAT2: result: sat
 // UNSAT: result: unsat
 // EXPANDED: vc.box-all: {{.*}}expanded=1
-// EXPANDED: result: sat
 // EXPANDED: replay: assert-failed
 // EXPANDED: validate: {{.*}} mismatches=0
 // EXPANDED: replay.original: status=assert-failed {{.*}}match=yes {{.*}}box-all-false=(3, 2)
+// EXPANDED: result: sat
 // EXPANDED-OUT: vc.box-all: {{.*}}expanded=1
 // EXPANDED-OUT: result: unsat
 

@@ -16,10 +16,10 @@
 // RUN: not sea-vc %s --lower --seam --simplify --program=mul3 2>&1 | FileCheck %s --check-prefix=REJECT
 // RUN: not sea-vc %s --lower --seam --simplify=0 --program=mul3 2>&1 | FileCheck %s --check-prefix=REJECT
 // REJECT: --simplify is the normalization without SeaM
-// SAT: result: sat
 // SAT: replay: assert-failed
-// REPLAY: result: sat
+// SAT: result: sat
 // REPLAY: validate: checked={{[0-9]+}} mismatches=0
+// REPLAY: result: sat
 
 // a*b*c == a*b is false for a=b=1, c=2.
 sea.program @mul3 {

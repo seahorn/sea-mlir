@@ -15,10 +15,10 @@
 // CROSS: vc.ackermann-own-not-eligible: 0
 // CROSS: vc.ackermann-constraints: 1
 // CROSS: vc.ack-own: on
-// CROSS: result: sat
 // CROSS: vc.ackermann-model: {{.*}} own-broken=0
 // CROSS: replay: assert-failed
 // CROSS: validate: checked={{[0-9]+}} mismatches=0
+// CROSS: result: sat
 // Without the switch: no drop, no premise.
 // RUN: sea-vc %t/cross.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=OFF
 // OFF-NOT: vc.ackermann-own
@@ -79,9 +79,9 @@
 // MCOPY: vc.ackermann-own-not-eligible: 0
 // MCOPY: vc.ack-own-indices: 3
 // MCOPY: vc.ack-own-boundary-indices: 1
-// MCOPY: result: sat
 // MCOPY: vc.ackermann-model: {{.*}} own-broken=0
 // MCOPY: validate: checked={{[0-9]+}} mismatches=0
+// MCOPY: result: sat
 //
 // Reads not in one known object keep their constraints. loaded: a load
 // through a loaded pointer (no known base) against c + j; the bytes of the
@@ -89,8 +89,8 @@
 // RUN: sea-vc %t/loaded.mlir --lower --seam --ack-own 2>&1 | FileCheck %s --check-prefix=LOADED
 // LOADED: vc.ackermann-own-pairs: 8
 // LOADED: vc.ackermann-own-not-eligible: 9
-// LOADED: result: sat
 // LOADED: validate: checked={{[0-9]+}} mismatches=0
+// LOADED: result: sat
 // shadow: the load at a and is_modified(a) share the index a; the latter
 // reads the shadow memory (keyed by object identity, not an access), so the
 // index is in no object and its pair with c + j is kept. noshadow: the same
@@ -98,13 +98,13 @@
 // RUN: sea-vc %t/shadow.mlir --lower --seam --ack-own --ackermannize=on 2>&1 | FileCheck %s --check-prefix=SHADOW
 // SHADOW: vc.ackermann-own-pairs: 0
 // SHADOW: vc.ackermann-own-not-eligible: 1
-// SHADOW: result: sat
 // SHADOW: validate: checked={{[0-9]+}} mismatches=0
+// SHADOW: result: sat
 // RUN: sea-vc %t/noshadow.mlir --lower --seam --ack-own --ackermannize=on 2>&1 | FileCheck %s --check-prefix=NOSHADOW
 // NOSHADOW: vc.ackermann-own-pairs: 1
 // NOSHADOW: vc.ackermann-own-not-eligible: 0
-// NOSHADOW: result: sat
 // NOSHADOW: validate: checked={{[0-9]+}} mismatches=0
+// NOSHADOW: result: sat
 //
 // Without the premises nothing is dropped; without --seam the flag is refused.
 // RUN: sea-vc %t/broken.mlir --lower --seam --seam-premises=0 --ack-own 2>&1 | FileCheck %s --check-prefix=NOPREM

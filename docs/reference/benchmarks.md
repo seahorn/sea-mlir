@@ -70,8 +70,9 @@ frag-reach-busy-K1:
 
 `replay: impossible` is for a `sat` job whose model the interpreter cannot
 run: the program updates memory without `inplace`, so `sea-vc` prints
-`result: sat`, then the error `vc.replay-impossible`, and exits with
-status 1. The verdict is `sat`; the gate fails on such a run unless the
+`solver-answer: sat`, then the error `vc.replay-impossible` and
+`result: unknown`, and exits with status 1. bench.py records the verdict
+`sat` (from `solver-answer:`); the gate fails on such a run unless the
 job carries the field.
 
 `premise-class` is for a job whose counterexamples may leave their object

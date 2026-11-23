@@ -20,9 +20,9 @@
 // STATS-DAG: seam.rule.row.smap-abort: {{[1-9]}}
 // STATS-DAG: seam.rule.smap.expanded: 0
 // UNSAT: result: unsat
-// SAT: result: sat
 // SAT: replay: assert-failed
 // SAT: validate: checked={{[0-9]+}} mismatches=0
+// SAT: result: sat
 // No select over a store-map, no store-map, in the query
 // SMT-NOT: smap
 // SMT-NOT: store-map

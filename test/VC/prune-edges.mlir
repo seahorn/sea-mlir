@@ -53,9 +53,9 @@ sea.program @unr {
 // stays, the failure behind it is found and named (the held assert
 // before it is no failure site).
 // KEEP: vc.prune-edges: edges=1
-// KEEP: result: sat
 // KEEP: replay: assert-op: x.c:9:3
 // KEEP: replay.original: status=assert-failed at=x.c:9:3 match=yes
+// KEEP: result: sat
 // KEEP-LOW-NOT: sea.cond_br {{.*}}"x.c":4:3
 // KEEP-LOW: sea.assume {{.*}}"x.c":4:3
 // KEEP-LOW: sea.assume {{.*}}"x.c":7:3
@@ -86,13 +86,13 @@ sea.program @keep {
 // marked branch into its landing block: a replay names that assert, as
 // the original program fails it.
 // CONT: vc.prune-edges: edges=1
-// CONT: result: sat
 // The failing condition is still found (assert-at: the icmp, not the
 // located branch between it and the assert; the interpreter reads it from
 // the `assume !p` before the marked br).
 // CONT: replay: assert-at: x.c:2:3
 // CONT: replay: assert-op: x.c:3:3
 // CONT: replay.original: status=assert-failed at=x.c:3:3 match=yes
+// CONT: result: sat
 // CONT-LOW-NOT: sea.cond_br {{.*}}"x.c":3:3
 // CONT-LOW: sea.br {{.*}}loc("sea.assert"("x.c":3:3))
 sea.program @cont_dead {

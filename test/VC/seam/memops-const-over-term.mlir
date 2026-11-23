@@ -14,9 +14,9 @@
 // UNSAT: result: unsat
 // CHECK-VALID: result: unsat
 // CHECK-VALID: seam-check: {{.*}} invalid=0
-// SAT: result: sat
 // SAT: replay: assert-failed
 // SAT: validate: checked={{[0-9]+}} mismatches=0
+// SAT: result: sat
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @eq {
   %m0 = sea.mem.nondet "m" [0] : !m

@@ -18,7 +18,7 @@
 // RUN:   --require print.mem:path,obj,lo,hi,bytes,unknown,default --require print.mem.row:path,row \
 // RUN:   --require stat:key,value,accesses,conditions
 // RUN: FileCheck %s --check-prefix=SAT < %t.sat.jsonl
-// SAT: {"kind":"result","value":"sat","text":"result: sat"}
+// SAT: {"kind":"stat","key":"solver-answer","value":"sat",
 // SAT: {"kind":"nondet","site":4,"callee":"nondet_u64","width":64,"value":[[V:[0-9]+]],
 // SAT: {"kind":"replay","status":"assert-failed","at":"{{.*}}replay.mlir:41:9",{{.*}}"op":"{{.*}}replay.mlir:42:3","text":"replay: assert-failed\n
 // SAT: {"kind":"print","path":"a.val","scope":"a","type":"i64","fmt":"s","value":[[V]],"repr":"[[V]] : si64",
@@ -28,6 +28,7 @@
 // SAT: {"kind":"print","path":"bval",{{.*}}"value":0,"default":true,
 // SAT: {"kind":"print.mem","path":"dump","obj":"heap.2","lo":0,"hi":32,"bytes":"{{[0-9a-f]+}}1080040800000000{{0+}}","unknown":[],"default":{{\[\[}}16,32]],
 // SAT: {"kind":"validate","checked":{{[0-9]+}},"mismatches":0,"dontcare":0,
+// SAT: {"kind":"result","value":"sat","text":"result: sat"}
 
 // Tree prints with locations.
 // RUN: sea-vc %S/../print/replay.mlir --lower --place-slots=none --print=tree --print-locs > %t.tree.txt

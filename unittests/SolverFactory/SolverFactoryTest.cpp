@@ -24,11 +24,21 @@
 //              argument): unsat_core on a solver built without it, which
 //              must fail with bitwuzla.unsat-core (a fatal error: its own
 //              process)
+//  z3 logic    the logic guard (sea/Expr/Smt/LogicGuard.h): which names
+//              parse; a z3 solver made for a logic refuses (add false,
+//              <prefix>z3-logic-mismatch) an array term, a function symbol,
+//              a quantifier, an Int term, a nonlinear product, an Int /
+//              bit-vector conversion outside it,
+//              also as an assumption (unknown), and takes the same terms
+//              under a logic that admits them; a name without a table: null
+//              solver and <prefix>z3-logic
 //
 //===----------------------------------------------------------------------===//
 
 #include "sea/Expr/Smt/SolverFactory.h"
 #include "sea/Expr/Expr.hh"
+#include "sea/Expr/ExprOpBinder.hh"
+#include "sea/Expr/Smt/LogicGuard.h"
 #include "sea/Support/Diag.h"
 
 #include "llvm/Support/raw_ostream.h"
@@ -156,6 +166,109 @@ void testZ3(Terms &T) {
   llvm::outs() << "z3: ok\n";
 }
 
+void testZ3Logic(Terms &T) {
+  using sea::solver::parseLogic;
+  std::string why;
+  for (const char *ok : {"ALL", "QF_BV", "QF_ABV", "QF_UFBV", "QF_AUFBV",
+                         "QF_AX", "BV", "AUFLIRA", "QF_NIA", "QF_UFLRA"})
+    CHECK(parseLogic(ok, why), std::string("logic parses: ") + ok);
+  for (const char *bad : {"QF_IDL", "QF_RDL", "QF_FP", "QF_S", "HORN", "QF_",
+                          "FOO", "QF_BVA", "qf_bv", ""})
+    CHECK(!parseLogic(bad, why), std::string("logic refused: ") + bad);
+  {
+    auto t = parseLogic("QF_AUFBV", why);
+    CHECK(t && !t->quantifiers && t->arrays && t->uf && t->bv && !t->ints &&
+              !t->reals,
+          "QF_AUFBV theories");
+  }
+  auto make = [&](const char *logic) {
+    SolverConfig c;
+    c.z3Logic = logic;
+    return sea::solver::makeSolver(T.efac, Backend::Z3, Limits(), c);
+  };
+  const char *kind = "smt.z3-logic-mismatch";
+  auto refuses = [&](const char *logic, const Expr &e, const char *what) {
+    auto s = make(logic);
+    unsigned before = sea::diag::count(kind);
+    CHECK(s && !s->add(e) && sea::diag::count(kind) == before + 1,
+          std::string(logic) + " refuses " + what);
+  };
+  auto takes = [&](const char *logic, const Expr &e, SolverResult r,
+                   const char *what) {
+    auto s = make(logic);
+    unsigned before = sea::diag::count(kind);
+    CHECK(s && s->add(e) && sea::diag::count(kind) == before && s->check() == r,
+          std::string(logic) + " takes " + what);
+  };
+  Expr bv8 = bv::bvsort(8, T.efac);
+  // select(a, i) = 1 with a an array constant
+  Expr a =
+      bind::mkConst(mkTerm<std::string>("a", T.efac), sort::arrayTy(bv8, bv8));
+  Expr arr = mk<EQ>(mk<SELECT>(a, T.var("i", 8)), T.num(1, 8));
+  refuses("QF_BV", arr, "an array term");
+  refuses("QF_UFBV", arr, "an array term");
+  takes("QF_ABV", arr, SolverResult::SAT, "an array term");
+  // f(x) = 1, f a function symbol of arity 1
+  Expr f = bind::fdecl(mkTerm<std::string>("f", T.efac),
+                       std::array<Expr, 2>{bv8, bv8});
+  Expr uf = mk<EQ>(bind::fapp(f, T.var("x", 8)), T.num(1, 8));
+  refuses("QF_BV", uf, "a function symbol");
+  refuses("QF_ABV", uf, "a function symbol");
+  takes("QF_UFBV", uf, SolverResult::SAT, "a function symbol");
+  // forall q. q + 0 = q
+  Expr q = T.var("q", 8);
+  Expr all = bind::abs<FORALL>(q, mk<EQ>(mk<BADD>(q, T.num(0, 8)), q));
+  refuses("QF_BV", all, "a quantifier");
+  refuses("QF_AUFBV", all, "a quantifier");
+  takes("BV", all, SolverResult::SAT, "a quantifier");
+  // n > 0 over Int
+  Expr n = bind::intConst(mkTerm<std::string>("n", T.efac));
+  Expr m = bind::intConst(mkTerm<std::string>("m", T.efac));
+  Expr lin = mk<GT>(n, mkTerm<mpz_class>(mpz_class(0UL), T.efac));
+  refuses("QF_BV", lin, "an Int term");
+  refuses("QF_LRA", lin, "an Int term");
+  takes("QF_LIA", lin, SolverResult::SAT, "an Int term");
+  Expr nonlin =
+      mk<EQ>(mk<MULT>(n, m), mkTerm<mpz_class>(mpz_class(6UL), T.efac));
+  refuses("QF_LIA", nonlin, "a nonlinear product");
+  takes("QF_NIA", nonlin, SolverResult::SAT, "a nonlinear product");
+  {
+    // the conversions between bit-vectors and Int carry an Int
+    sea::solver::LogicScan bvOnly(*parseLogic("QF_BV", why));
+    std::string bad = bvOnly.check(mk<BV2INT>(T.var("c", 8)));
+    CHECK(bad.find("conversion") != std::string::npos,
+          "QF_BV refuses bv2int: " + bad);
+  }
+  takes("ALL", mk<AND>(arr, mk<AND>(uf, mk<AND>(all, nonlin))),
+        SolverResult::SAT, "everything");
+  {
+    // a refused term leaves the solver usable for terms inside the logic,
+    // also when they share nodes with it
+    auto s = make("QF_BV");
+    Expr x = T.var("x", 8);
+    CHECK(s && !s->add(mk<AND>(mk<EQ>(x, T.num(2, 8)), arr)) &&
+              s->add(mk<EQ>(x, T.num(2, 8))) && s->check() == SolverResult::SAT,
+          "QF_BV after a refused term");
+  }
+  {
+    // an assumption outside the logic: unknown, and the error
+    auto s = make("QF_BV");
+    unsigned before = sea::diag::count(kind);
+    ExprVector lits{arr};
+    CHECK(s && s->add(T.easy()) &&
+              s->check_with_assumptions(llvm::make_range(
+                  lits.cbegin(), lits.cend())) == SolverResult::UNKNOWN &&
+              sea::diag::count(kind) == before + 1,
+          "QF_BV refuses an array assumption");
+  }
+  {
+    unsigned before = sea::diag::count("smt.z3-logic");
+    CHECK(!make("QF_IDL") && sea::diag::count("smt.z3-logic") == before + 1,
+          "a logic without a table: null solver");
+  }
+  llvm::outs() << "z3 logic: ok\n";
+}
+
 void testOptional(Terms &T, Backend b) {
   SolverConfig cfg;
   cfg.kindPrefix = "t.";
@@ -276,6 +389,7 @@ int main(int argc, char **argv) {
   if (argc > 1 && std::string(argv[1]) == "bitwuzla-core-without-option")
     return bitwuzlaCoreWithoutOption(T);
   testZ3(T);
+  testZ3Logic(T);
   testOptional(T, Backend::Yices);
   testOptional(T, Backend::Bitwuzla);
   testBitwuzlaCores(T);

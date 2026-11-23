@@ -48,9 +48,9 @@ sea.program @join {
 
 // The same join with a wrong expectation (cell 0 instead of 5 on the write
 // path): sat, and the counterexample is replayed (cells come from the model).
-// BUG: result: sat
 // BUG: replay: assert-failed
 // BUG: validate: checked={{[0-9]+}} mismatches=0
+// BUG: result: sat
 sea.program @bug {
   %z = sea.const 0 : i8
   %m0 = sea.mem.const %z : !sea.mem<!sea.addr<8>, i8>

@@ -3,9 +3,9 @@
 
 // A counterexample replays with and without --seam: the interpreter's value
 // of a segment is checked against the model's (obj.<name> = base).
-// CHECK: result: sat
 // CHECK: replay: assert-failed
 // CHECK: validate: checked={{[0-9]+}} mismatches=0
+// CHECK: result: sat
 !am = !sea.mem<!sea.addr<64>, i8>
 sea.program @x {
   %b = sea.segment "stack.3" base 3221225456 : i64 size 16 : i64 align 8 kind "stack" : !sea.addr<64>

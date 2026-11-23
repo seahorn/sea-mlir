@@ -42,11 +42,11 @@
 // WRAP-NOT: run=2
 // WRAP: vc.ackermann-stride-broken: 1
 // WRAP-NOT: fallback
-// WRAP: result: sat
-// WRAP-NOT: result:
 // WRAP: vc.ack-stride-promise-broken: {{.*}}ack-stride.mlir:[[#GEP:]]:{{[0-9]+}} promise=P{{[123]}} what=inbounds breaks={{[1-9][0-9]*}} via-memory=0
 // WRAP-NEXT: vc.ack-stride-promise-broken-access: sea.load {{.*}}ack-stride.mlir:
 // WRAP: Error: {{.*}}ack-stride.mlir:[[#GEP]]:{{.*}}[vc.ack-stride-promise-broken]
+// WRAP: result: unknown
+// WRAP-NOT: result:
 // WRAP-NOT: run=2
 !pm = !sea.mem<!sea.ptr<64>, i8>
 sea.program @apart {
@@ -87,10 +87,10 @@ sea.program @wrap {
 // classification takes it from there: status 4, via-memory=1, the access
 // named.
 // WRAPMEM: vc.ackermann-stride-broken: 1
-// WRAPMEM: result: sat
 // WRAPMEM: vc.ack-stride-promise-broken: {{.*}}ack-stride.mlir:{{.*}} via-memory=1
 // WRAPMEM-NEXT: vc.ack-stride-promise-broken-access: sea.load {{.*}}ack-stride.mlir:
 // WRAPMEM: (the pointer went through memory){{.*}}[vc.ack-stride-promise-broken]
+// WRAPMEM: result: unknown
 sea.program @wrapmem {
   %m0 = sea.mem.nondet "m" [0] : !pm
   %z = sea.const 0 : i8
@@ -123,10 +123,10 @@ sea.program @wrapmem {
 // explained by the program's Mem-SSA no-clobber claim (status 2 on its own).
 // The run breaks a GEP promise at an access, which is the answer: status 4,
 // and both facts are printed (docs/design/PtrIndex.md section 5).
-// MASK: result: sat
 // MASK: replay: no-clobber-violated: {{.*}}ack-stride.mlir:
 // MASK: vc.ack-stride-promise-broken: {{.*}}ack-stride.mlir:{{[0-9]+}}:{{[0-9]+}} promise=P1 what=inbounds breaks={{[1-9][0-9]*}} via-memory=0
 // MASK-NEXT: vc.ack-stride-promise-broken-access: sea.load {{.*}}ack-stride.mlir:
+// MASK: result: unknown
 // MASKERR: [vc.ack-stride-promise-broken]
 // MASKERR-NOT: [vc.replay-mismatch]
 // MASKJ: "key":"vc.ack-stride-promise-broken","value":"{{.*}}ack-stride.mlir:{{[0-9:]+}}","promise":"P1","what":"inbounds","breaks":{{[0-9]+}},"via-memory":0

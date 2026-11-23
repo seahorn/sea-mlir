@@ -50,11 +50,11 @@
 // PART: result: unsat
 // PRUNE: seam.rule.row.leaf-split-residual-leaves: 16
 // PRUNE: result: unsat
-// PRUNESAT: result: sat
 // PRUNESAT: validate: {{.*}}mismatches=0
+// PRUNESAT: result: sat
 // SAT: seam.rule.row.leaf-split-partial: {{[1-9]}}
-// SAT: result: sat
 // SAT: validate: {{.*}}mismatches=0
+// SAT: result: sat
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
 // CHKZ: seam-check: {{.*}} valid={{[1-9][0-9]*}} invalid=0 unknown={{[0-9]+}} unexpressible=0
 !m = !sea.mem<!sea.ptr<64>, i8>

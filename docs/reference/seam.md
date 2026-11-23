@@ -45,7 +45,11 @@ offset is then a lookup instead of a walk down the chain.
 
 **Memory operations.** `memset`, `memmove` and `memhavoc` of a byte memory
 are one term each, of any length, including a symbolic one. A read over
-such a term is decided once.
+such a term is decided once. So is `sea.mem.fill` of a byte memory, a
+global initializer: a read at a known offset from its start is the
+initializer's byte, or the memory before it; any other read sees the
+initializer's bytes as stores
+([Constant data in memory](../design/MemFill.md#seam-the-mfill-term)).
 
 ## How it decides
 

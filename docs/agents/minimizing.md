@@ -52,7 +52,7 @@ a diagnostic kind, or a counter of the mechanism.
 |---|---|
 | two configurations disagree | `--mode verdict-differs --a="<args>" --b="<args>"` |
 | a crash or a diagnostic | `--mode crash --config="<args>" --signal any` or `--match <regex>` |
-| a result with a given exit status, such as a replay mismatch | `--mode result --config="<args>" --result sat --status 2` |
+| a result with a given exit status, such as a replay mismatch | `--mode result --config="<args>" --result unknown --status 2` |
 | a slowdown | `--mode slow --metric time --a="<args>" --b="<args>" --a-over <s> --b-under <s>` |
 | a counter that blows up | `--mode slow --metric seam.rule.bv.ite-merge ...`, with `--seam-stats` in both configurations |
 

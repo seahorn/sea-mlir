@@ -31,9 +31,9 @@
 // RUN: sea-vc %t/k16.mlir --lower --lower-opt=false | FileCheck %s --check-prefix=UNSAT
 // KEPT: sea.load
 // FWD-NOT: sea.load
-// SAT: result: sat
 // SAT: replay: assert-failed
 // SAT: replay.original: status=assert-failed {{.*}}match=yes
+// SAT: result: sat
 // UNSAT: result: unsat
 // FAIL: status: assert-failed
 

@@ -8,9 +8,9 @@
 // Cells of an abstract memory: <object>+<offset> at the placed base.
 // RUN: sea-vc %t/cell.mlir --lower --replay-original | FileCheck %s --check-prefix=CELL
 // RUN: sea-vc %t/cell.mlir --lower --seam --replay-original | FileCheck %s --check-prefix=CELL
-// CELL: result: sat
 // CELL: replay: assert-failed
 // CELL: replay.original: status=assert-failed at={{.*}}cell.mlir:13:3 match=yes nondets=1 cells=1 defaulted=0 unmapped=0
+// CELL: result: sat
 
 // Off by default.
 // RUN: sea-vc %t/cell.mlir --lower | FileCheck %s --check-prefix=OFF
@@ -57,8 +57,8 @@
 // RUN: sea-vc %t/concrete.mlir --lower --replay-original | FileCheck %s --check-prefix=CONC
 // CONC: replay.original: status=assert-failed {{.*}} match=yes nondets=1 cells=1 defaulted=0 unmapped=0
 // RUN: sea-vc %t/concrete.mlir --replay-original | FileCheck %s --check-prefix=SKIP
-// SKIP: result: sat
 // SKIP: replay.original: skipped (no lowering
+// SKIP: result: sat
 
 // A dropped memhavoc after a memory join: the root through the block
 // argument. A memhavoc on a sea.mem.const chain stays (not fresh).

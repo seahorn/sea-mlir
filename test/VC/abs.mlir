@@ -5,9 +5,9 @@
 // RAW: vc.intrinsic
 // "abs(x) >=s 0" fails exactly at the minimal signed value: sat, and the
 // replay confirms the interpreter's value.
-// SAT: result: sat
 // SAT: replay: assert-failed
 // SAT: mismatches=0
+// SAT: result: sat
 sea.program @main {
   %x = sea.nondet "nondet_i8" [0] : i8
   %z = sea.const 0 : i8

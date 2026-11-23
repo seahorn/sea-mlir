@@ -20,21 +20,21 @@
 // BOX: vc.box-all: dead=0 empty=0 expand-max=0 expanded=0 guarded=0 lowered=1 nondets=1
 // BOX: result: unsat
 // BUG: vc.box-all: {{.*}}lowered=1
-// BUG: result: sat
 // BUG: nondet: site={{[0-9]+}} callee=box.all.eq.0 width=64 value=5
 // BUG: replay: assert-failed
 // BUG: validate: {{.*}} mismatches=0
 // BUG: replay.original: status=assert-failed {{.*}}match=yes {{.*}}box-all-false=(5)
+// BUG: result: sat
 // With the default --box-all-expand (12 cells <= K) the box is expanded:
 // the same verdicts, no index nondet.
 // EXPAND: vc.box-all: {{.*}}expanded=1 {{.*}}lowered=0
 // EXPAND: result: unsat
 // EXPAND-BUG: vc.box-all: {{.*}}expanded=1
-// EXPAND-BUG: result: sat
 // EXPAND-BUG-NOT: callee=box.all
 // EXPAND-BUG: replay: assert-failed
 // EXPAND-BUG: validate: {{.*}} mismatches=0
 // EXPAND-BUG: replay.original: status=assert-failed {{.*}}match=yes {{.*}}box-all-false=(5)
+// EXPAND-BUG: result: sat
 // @unlowered: the VC encodes a box only through its lowering.
 // UNLOWERED: [vc.box-all-unlowered]
 !m = !sea.mem<!sea.ptr<64>, i8>

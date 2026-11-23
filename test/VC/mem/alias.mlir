@@ -6,11 +6,11 @@
 !m8 = !sea.mem<!sea.addr<8>, i8>
 
 // *p = 1; *q = 2; assert *p == 1 fails exactly when p == q.
-// BUG: result: sat
 // BUG: nondet: site=1 callee=nd_p width=8 value=[[P:[0-9]+]]
 // BUG: nondet: site=2 callee=nd_q width=8 value=[[P]]
 // BUG: replay: assert-failed
 // BUG: validate: checked={{[0-9]+}} mismatches=0
+// BUG: result: sat
 sea.program @alias {
   %m0 = sea.mem.nondet "m" [0] : !m8
   %i = sea.nondet "nd_p" [1] : i8
@@ -46,10 +46,10 @@ sea.program @distinct {
 }
 
 // Initial contents come from the model; replay reads them lazily.
-// INIT: result: sat
 // INIT: memread: site=0 addr=7 width=8 value=0
 // INIT: replay: assert-failed
 // INIT: validate: checked={{[0-9]+}} mismatches=0
+// INIT: result: sat
 sea.program @initial {
   %m0 = sea.mem.nondet "m" [0] : !m8
   %c7 = sea.const 7 : i8

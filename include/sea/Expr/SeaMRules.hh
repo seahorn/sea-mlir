@@ -2778,6 +2778,14 @@ public:
   /// read span and the range [d, d + n) through different provenances).
   /// Undecided: unchanged here; rowW then takes the byte fallback (rev 3's "the
   /// term stays" was replaced by the fallback after measurement).
+  /// mfill: In at a numeral k: wide.mfill-hit, the numeral of data bytes
+  /// k .. k + r - 1, little endian (seam-lean `RangeFill.hit_sound`); Out:
+  /// wide.mfill-skip at a numeral k (`RangeFill.skip_sound`),
+  /// wide.mfill-skip-disjoint otherwise (`RangeFill.skip_disjoint_sound`);
+  /// anything else (In at an offset that is
+  /// not one numeral, a partial overlap) is undecided: the byte fallback,
+  /// whose byte reads row.mfill decides (a partial overlap at a numeral k:
+  /// per byte, `RangeFill.mixed_sound`).
   RewriteResult rowWideMemOp(const Expr &exp, const Expr &arr) {
     const Expr j = exp->arg(1), sort = exp->arg(2);
     const uint64_t r = op::bv::width(sort) / 8;
@@ -2794,8 +2802,9 @@ public:
       return {below, RWStatus::RW_1};
     }
     const bool inb = !shadowMemory(arr);
+    const bool fill = isOpX<MEM_FILL>(arr);
     Decision all;
-    unsigned hits = 0, skips = 0;
+    unsigned hits = 0, skips = 0, exactSkips = 0;
     bool done = true; // every leaf value is normal (an mset hit)
     auto leaf = [&](const Expr &ld, const Expr &lj, const Expr &,
                     bool) -> Expr {
@@ -2804,15 +2813,30 @@ public:
       Range rg = decideInPair(lj, ld, haveN, nlo, nhi, dl, &kv, inb, r);
       if (rg == Range::Unknown)
         return Expr();
+      // an mfill read in the range at an offset that is not one numeral, or
+      // past its data: the byte fallback
+      Expr fillValue;
+      if (fill && rg == Range::In) {
+        const std::vector<uint8_t> &bytes = op::array::fillBytes(arr);
+        if (kv.sgn() < 0 || kv + r > mpz_class((unsigned long)bytes.size()))
+          return Expr();
+        mpz_class v = 0;
+        for (uint64_t b = r; b-- > 0;)
+          v = v * 256 + (unsigned long)bytes[kv.get_ui() + b];
+        fillValue = num(v, unsigned(8 * r));
+      }
       if (dl.premises & (PremASep | PremANull))
         checkInbPremise(lj, r, ld, 1); // as wideRelation
       all.add(dl);
       if (rg == Range::Out) {
         ++skips;
+        exactSkips += kv.sgn() >= 0;
         done = false;
         return below;
       }
       ++hits;
+      if (fill)
+        return fillValue;
       if (isOpX<MEM_SET>(arr)) {
         Expr v = arr->arg(3), res = v;
         for (uint64_t b = 1; b < r; ++b)
@@ -2832,7 +2856,20 @@ public:
     if (!res)
       return {exp, RWStatus::RW_DONE};
     const bool split = hits + skips > 1;
-    if (split) {
+    if (fill) {
+      // the names in the trail (count), the leaves in the counter
+      auto leaves = [&](const char *rule, unsigned n) {
+        if (!n)
+          return;
+        m_stats.count(rule);
+        m_stats.rules[rule] += n - 1;
+      };
+      leaves("wide.mfill-hit", hits);
+      leaves("wide.mfill-skip", exactSkips);
+      leaves("wide.mfill-skip-disjoint", skips - exactSkips);
+      if (split)
+        m_stats.count("wide.memop-split");
+    } else if (split) {
       m_stats.count("wide.memop-split");
       if (hits)
         m_stats.rules["wide.memop-leaf-hit"] += hits;
@@ -5928,6 +5965,8 @@ public:
   ///   RW_FULL for the source read of mcopy and for the ite: the new selects
   ///   start their own chains below new sums (s + k, idx - d).
   RewriteResult rowMemOp(const Expr &exp, const Expr &t, const Expr &idx) {
+    if (isOpX<MEM_FILL>(t))
+      return rowFill(exp, t, idx);
     const char *name = isOpX<MEM_COPY>(t)  ? "mcopy"
                        : isOpX<MEM_SET>(t) ? "mset"
                                            : "mhavoc";
@@ -5995,6 +6034,122 @@ public:
             RWStatus::RW_FULL};
   }
 
+  /// select(T, idx) over an mfill term T = mfill(M, d, n, data)
+  /// (docs/design/MemFill.md, "SeaM"; seam-lean SeaM/MemOps), decided by
+  /// decideIn as the other terms, with k = idx - d:
+  ///   row.mfill-hit: k a numeral, k < n: the data byte k, a numeral
+  ///     (`RangeFill.hit_sound`, r = 1). RW_DONE. No premise beyond
+  ///     decideIn's (LAYOUT for mem.in-layout).
+  ///   row.mfill-skip: k a numeral, k >= n: select(M, idx)
+  ///     (`RangeFill.skip_sound`, r = 1). RW_1. No premise beyond decideIn's
+  ///     (LAYOUT for mem.in-layout).
+  ///   row.mfill-skip-disjoint: idx decided outside [d, d + n) otherwise
+  ///     (another object: cmp.diff-base / arm.skip, A-SEP; an object of size
+  ///     0: cmp.size0-vacuous, A-NULL; an ARM interval outside the range, no
+  ///     premise): select(M, idx) (`RangeFill.skip_disjoint_sound`). RW_1.
+  ///   row.mfill-expand: anything else (an open in-test, or in the range at
+  ///     an offset that is not one numeral): the read of the store expansion,
+  ///     select(fillStores(T), idx), which the store rules then decide per
+  ///     byte (`RangeExpr.eval_mfill_eq_fillStores`; its bound n <= 2^w
+  ///     holds: n < 2^w). No premise.
+  ///     RW_FULL (the stores are new). Kept as it is when expandUnknownRow is
+  ///     off (the boundary translates it by its read equation, MemOps.hh).
+  /// The premises are decideIn's, as for mset.
+  RewriteResult rowFill(const Expr &exp, const Expr &t, const Expr &idx) {
+    if (!fillLengthOk(t)) // not a term the VC makes: left as it is
+      return {exp, RWStatus::RW_DONE};
+    Decision dec;
+    Expr k;
+    Range r = decideIn(idx, memOpDst(t), memOpLen(t), dec, k,
+                       /*inb=*/!shadowMemory(t));
+    const bool exact = k && op::bv::isBvNum(k);
+    if (r == Range::Out) {
+      m_stats.count(exact ? "row.mfill-skip" : "row.mfill-skip-disjoint");
+      countReasons(dec);
+      countPremises(dec.premises);
+      return {op::array::select(memOpBase(t), idx), RWStatus::RW_1};
+    }
+    if (r == Range::In && exact) {
+      if (Expr b = fillHit(t, k)) {
+        m_stats.count("row.mfill-hit");
+        countReasons(dec);
+        countPremises(dec.premises);
+        return {b, RWStatus::RW_DONE};
+      }
+    }
+    // an ite address: per leaf (in the range at different numerals, or
+    // undecided as a whole)
+    if (r == Range::Unknown || (r == Range::In && !exact))
+      if (std::optional<RewriteResult> res = rowFillLeaves(t, idx))
+        return *res;
+    if (!m_opts.expandUnknownRow)
+      return {exp, RWStatus::RW_DONE};
+    m_stats.count("row.mfill-expand");
+    return {op::array::select(fillStores(t), idx), RWStatus::RW_FULL};
+  }
+
+  /// rowFill at an ite address (idx or d an ite), when every leaf pair
+  /// (leafTree, as rowWideMemOp) is decided: the ite of the leaf values, a
+  /// data byte for a numeral offset in the data, select(M, idx) for a leaf
+  /// outside (on the paths that select a pair, idx and d are that pair: the
+  /// tree is the read). Counters row.mfill-split and, per leaf, the rule of
+  /// the leaf (row.mfill-hit / -skip / -skip-disjoint, each once in the trail,
+  /// the count of leaves in the counter). uses: the premises of the leaf
+  /// decisions. None when a pair is undecided (the read is expanded).
+  std::optional<RewriteResult> rowFillLeaves(const Expr &t, const Expr &idx) {
+    const Expr d = memOpDst(t);
+    if (!isOpX<ITE>(op::ptr::stripObservation(idx)) &&
+        !isOpX<ITE>(op::ptr::stripObservation(d)))
+      return std::nullopt;
+    mpz_class nlo, nhi;
+    const bool haveN = lenRange(memOpLen(t), nlo, nhi);
+    const bool inb = !shadowMemory(t);
+    const Expr below = op::array::select(memOpBase(t), idx);
+    Decision all;
+    unsigned hits = 0, skips = 0, exactSkips = 0;
+    llvm::SmallVector<std::pair<Expr, Expr>, 4> premised;
+    auto leaf = [&](const Expr &ld, const Expr &lj, const Expr &,
+                    bool) -> Expr {
+      Decision dl;
+      mpz_class kv = -1;
+      Range rg = decideInPair(lj, ld, haveN, nlo, nhi, dl, &kv, inb);
+      if (rg == Range::Unknown)
+        return Expr();
+      Expr v = below;
+      if (rg == Range::In) {
+        v = kv.sgn() >= 0 ? fillHit(t, num(kv, widthOf(ld))) : Expr();
+        if (!v)
+          return Expr();
+        ++hits;
+      } else {
+        ++skips;
+        exactSkips += kv.sgn() >= 0;
+      }
+      if (dl.premises & (PremASep | PremANull))
+        premised.emplace_back(lj, ld);
+      all.add(dl);
+      return v;
+    };
+    Expr res = leafTree(d, idx, leaf);
+    if (!res)
+      return std::nullopt;
+    for (const auto &[lj, ld] : premised)
+      checkInbPremise(lj, 1, ld, 1); // as decideIn
+    auto leaves = [&](const char *rule, unsigned n) {
+      if (!n)
+        return;
+      m_stats.count(rule);
+      m_stats.rules[rule] += n - 1;
+    };
+    m_stats.count("row.mfill-split");
+    leaves("row.mfill-hit", hits);
+    leaves("row.mfill-skip", exactSkips);
+    leaves("row.mfill-skip-disjoint", skips - exactSkips);
+    countReasons(all);
+    countPremises(all.premises);
+    return RewriteResult{res, RWStatus::RW_FULL};
+  }
+
   /// Fig. 4.6 / 2.6, with HIT and SKIP decided by the compare:
   ///   select(store(a, i, v), j) ~> v                  (decideEq: i = j)
   ///   select(store(a, i, v), j) ~> select(a, j)       (decideEq: i != j)
@@ -6054,11 +6209,25 @@ public:
   ///  - a range condition `false` (a numeral n > 0 that cannot fit: a
   ///    definite violation): no rewrite (sea-vc reports it).
   /// Never for a shadow memory.
+  ///
+  /// mem.fill-replicate: an mfill whose bytes are all one byte b is
+  /// mset(M, d, n, b) (seam-lean `rangeFill_replicate`, n < 2^w). Exact, no
+  /// premise; a zero initializer is one mset, read through one range test.
+  /// The rule itself scans the term's data (every byte b) and checks that n
+  /// is the data's length; nothing upstream is trusted.
   RewriteResult memOp(const Expr &exp) {
+    uint8_t b;
+    if (isOpX<MEM_FILL>(exp) && fillLengthOk(exp) &&
+        fillSplat(op::array::fillBytes(exp), b)) {
+      m_stats.count("mem.fill-replicate");
+      return {op::array::memSet(memOpBase(exp), memOpDst(exp), memOpLen(exp),
+                                num(mpz_class((unsigned long)b), 8)),
+              RWStatus::RW_1};
+    }
     if (!m_opts.assumePremises || !m_opts.pruneSize0)
       return {exp, RWStatus::RW_DONE};
     const bool copy = isOpX<MEM_COPY>(exp);
-    const unsigned di = isOpX<MEM_SET>(exp) ? 1 : 2;
+    const unsigned di = isOpX<MEM_SET>(exp) || isOpX<MEM_FILL>(exp) ? 1 : 2;
     const Expr n = memOpLen(exp);
     auto ranged = [&](unsigned i) -> bool { // an ite worth looking at
       return isOpX<ITE>(exp->arg(i));

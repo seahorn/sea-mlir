@@ -12,8 +12,8 @@ RUN: sea-vc %S/Inputs/wide-oversized-true.mlir --lower --seam --seam-wide --seam
 RUN: sea-vc %S/Inputs/wide-oversized-false.mlir --lower 2>&1 | FileCheck %s --check-prefix=SAT
 REFUSED: vc.wide-access
 REFUSED-NOT: result: unsat
-SAT: result: sat
 SAT: replay: assert-failed
+SAT: result: sat
 UNSAT: result: unsat
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors

@@ -16,10 +16,10 @@ RUN: %if bitwuzla %{ sea-vc %S/sat.mlir --lower --seam --ackermannize=off --ro-a
 RUN: %if bitwuzla %{ sea-vc %S/unsat.mlir --lower --seam --ackermannize=off --ro-arrays=uf --vc-defs=hidden --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=UNSAT %}
 SAT: vc.ackermann: off
 SAT: vc.ro-arrays: uf=2 kept-array=0
-SAT: result: sat
 SAT: vc.ackermann-model: defaulted={{[0-9]+}} inconsistent=0
 SAT: replay: assert-failed
 SAT: validate: checked={{[0-9]+}} mismatches=0
+SAT: result: sat
 UNSAT: vc.ro-arrays: uf={{[1-9]}} kept-array=0
 UNSAT: result: unsat
 

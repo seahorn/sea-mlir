@@ -19,8 +19,8 @@
 // SEAM: result: unsat
 // FALLBACK: Warning: {{.*}}running without the premises{{.*}}[vc.seam-out-of-object]
 // FALLBACK: seam.premises: off (fallback: an access leaves its object)
-// FALLBACK: result: sat
 // FALLBACK: replay: assert-failed
+// FALLBACK: result: sat
 // NOINB: seam.premises: off
 // NOINB: result: sat
 sea.program @oob {

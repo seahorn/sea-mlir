@@ -12,13 +12,13 @@
 // RUN: %if yices %{ sea-vc %s --lower --seam --seam-check --solver=yices 2>&1 | FileCheck %s --check-prefix=SEAM %}
 // RUN: not sea-run %s --input=3=1 --missing=zero | FileCheck %s --check-prefix=NULL
 // RUN: not sea-run %s --input=3=0 --missing=zero | FileCheck %s --check-prefix=OOB
-// PLAIN: result: sat
 // PLAIN: replay: assert-failed
+// PLAIN: result: sat
 // SEAM: Warning: {{.*}}[vc.seam-out-of-object]
 // SEAM: seam.premises: assumed
 // SEAM: seam.out-of-object: accesses=1 object=0 shared=0 unknown=0 null=1
-// SEAM: result: sat
 // SEAM: replay: assert-failed
+// SEAM: result: sat
 // SEAM: seam-check: {{.*}} invalid=0 unknown=0
 // NULL: status: error
 // NULL: message: memory access through the null pointer

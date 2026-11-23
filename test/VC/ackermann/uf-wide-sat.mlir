@@ -5,10 +5,10 @@
 // RUN: %if yices %{ sea-vc %s --lower --seam --widen-memory=4 --ackermannize=off --ro-arrays=uf --solver=yices 2>&1 | FileCheck %s %}
 // RUN: %if bitwuzla %{ sea-vc %s --lower --seam --widen-memory=4 --ackermannize=off --ro-arrays=uf --solver=bitwuzla 2>&1 | FileCheck %s %}
 // CHECK: vc.ro-arrays: uf=1 kept-array=0
-// CHECK: result: sat
 // CHECK: vc.ackermann-model: defaulted={{[0-9]+}} inconsistent=0
 // CHECK: replay: assert-failed
 // CHECK: validate: checked={{[0-9]+}} mismatches=0
+// CHECK: result: sat
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @ufwidesat {
   %m0 = sea.mem.nondet "m" [0] : !m

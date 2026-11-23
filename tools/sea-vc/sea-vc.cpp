@@ -18,6 +18,7 @@
 #include "sea/Expr/AckCellsPlan.hh"
 #include "sea/Expr/AckRelax.hh"
 #include "sea/Expr/Ackermann.hh"
+#include "sea/Expr/CanonicalSums.hh"
 #include "sea/Expr/ExprAPInt.hh"
 #include "sea/Expr/ExprMlir.hh"
 #include "sea/Expr/InitialWords.hh"
@@ -29,6 +30,7 @@
 #include "sea/Expr/Smt/BitwuzlaSolverImpl.hh"
 #endif
 #include "sea/Expr/Smt/EZ3.hh"
+#include "sea/Expr/Smt/LogicGuard.h"
 #include "sea/Expr/Smt/SolverFactory.h"
 #include "sea/Expr/Smt/Z3.hh"
 #include "sea/Expr/Smt/Z3Error.h"
@@ -488,14 +490,19 @@ static cl::opt<std::string> z3Tactic(
 
 static cl::opt<std::string> z3Logic(
     "z3-logic",
-    cl::desc("z3's solver for this logic (QF_BV, QF_ABV, QF_UFBV, "
-             "QF_AUFBV) for the solver of the verdict only. z3 solves the "
+    cl::desc("z3's solver for this logic (SMT-LIB: ALL, or "
+             "[QF_][A|AX][UF][BV][LIA|LRA|LIRA|NIA|NRA|NIRA]; e.g. QF_BV, "
+             "QF_ABV, QF_UFBV, QF_AUFBV) for the solver of the verdict, the "
+             "reach, --ack-relax and --split part solvers, and the "
+             "--check-inb parts (each gets the option; not the auxiliary "
+             "checks). z3 solves the "
              "first check with the logic's tactic and a check after more "
              "assertions (--ack-relax-mode=incremental) with its incremental "
              "solver: QF_BV its incremental SAT solver, the others and the "
-             "default its SMT core. A query outside the logic may be unknown. "
-             "default: z3's default solver (the logic probed at the first "
-             "check)"),
+             "default its SMT core. A query outside the logic is an error "
+             "(vc.z3-logic-mismatch: z3 would drop what it does not "
+             "understand). default: z3's default solver (the logic probed at "
+             "the first check)"),
     cl::value_desc("logic"), cl::init(""));
 
 static cl::opt<bool> z3PlantError(
@@ -886,6 +893,12 @@ static cl::opt<bool> foldNoBaseSkip(
              "docs/design/PtrSegment.md, \"What F2 does then\")"),
     cl::init(false));
 
+static cl::opt<bool> memLimitPlantReplay(
+    "x-mem-limit-plant-replay", cl::Hidden,
+    cl::desc("Test only: under --mem-limit, the replay of a sat hits the "
+             "memory limit as it starts (as an allocation that fails there)"),
+    cl::init(false));
+
 static cl::opt<bool> modelTrailPlantSkip(
     "x-model-trail-plant-skip", cl::Hidden,
     cl::desc("Test only: with --vc-fold-top-eqs, the model is not extended "
@@ -922,6 +935,15 @@ static cl::opt<VcDefs> vcDefs(
                           "names defined by two bvule atoms each, no "
                           "top-level equation")),
     cl::init(VcDefs::Inline));
+
+static cl::opt<bool> vcCanonicalSums(
+    "vc-canonical-sums",
+    cl::desc("Canonical linear forms of the query, the last encoding step "
+             "before the solver (docs/design/CanonicalSums.md): every "
+             "maximal bit-vector sum as P + ~N + c over one leaf order, "
+             "equalities with a sum side balanced; exact, no assumption. "
+             "Off by default (not tuned); not with --vc-defs"),
+    cl::init(false));
 
 static cl::opt<bool> dagStats(
     "dag-stats",
@@ -1291,6 +1313,26 @@ static cl::opt<sea::out::Format>
 
 /// stdout: every line goes through it (sea/Support/Output.h); set in main
 static sea::out::Emitter *gOut = nullptr;
+
+/// The run's one `result:` line (docs/reference/output-formats.md): a
+/// verdict `sat` / `unsat` only with exit status 0 and a confirmed answer;
+/// every other ending of a run that reached a solver prints `unknown` (the
+/// error lines and the status say why). It is printed when the answer is
+/// settled: a sat after its replay; a sat / unsat that a failed
+/// --seam-check (5) or an unproven --narrow-check (7) will turn into a
+/// failure status (those checks run before the solve) prints `unknown`; a
+/// run that reached a solver and ends without the line gets `unknown` at
+/// its end (settleResult); the limit handlers print `result: unknown`
+/// themselves when the line is not out yet.
+static volatile bool gResultPrinted = false;
+/// the status the run ends with once its result line is out (a limit hit
+/// after it keeps it: `result: sat` never goes with status 3)
+static volatile int gSettledStatus = 0;
+/// a solver of the verdict answered (solver-answer:)
+static bool gSolverReached = false;
+/// a split run: its parts print their BRUNCH_STAT result, the split's own
+/// `result:` has none
+static bool gSplitRun = false;
 /// text lines of stdout (stat records under --format=jsonl)
 static raw_ostream &vout() { return gOut->lines(); }
 
@@ -1317,6 +1359,33 @@ static void printStats(llvm::function_ref<void(sea::stats::Report &)> add) {
 /// (emitResult), or a split part's `split.part-result:`
 static void resultLine(sea::stats::Report &r, StringRef v) {
   r.line("result").value(v).brunch(sea::stats::Brunch::Value).brunchOnly();
+}
+
+/// The `result:` record now (and its BRUNCH_STAT line, but in a split)
+static void printResultNow(StringRef v, int status) {
+  sea::out::Record rec("result");
+  rec.str("value", v);
+  rec.text = ("result: " + v).str();
+  gOut->emit(rec);
+  if (!gSplitRun)
+    printStats([&](sea::stats::Report &r) { resultLine(r, v); });
+  gOut->flush();
+  gSettledStatus = status;
+  gResultPrinted = true;
+}
+
+/// The run's settled answer \p v (sat / unsat: status 0; `none`: no
+/// verdict; unknown)
+static void emitResultRecord(StringRef v) {
+  printResultNow(v, v == "unknown" ? 3 : 0);
+}
+
+/// At the end of a run with status \p rc: `result: unknown` for a run that
+/// reached a solver and printed no result (an error after the solve, a
+/// split part that failed); nothing otherwise.
+static void settleResult(int rc) {
+  if (!gResultPrinted && gSolverReached)
+    printResultNow("unknown", rc);
 }
 
 static cl::opt<unsigned> solveTimeout(
@@ -1932,12 +2001,36 @@ static uint64_t countOps(Operation *op) {
 /// llvm::report_bad_alloc_error: memLimitHitLlvm). Writes without allocating.
 [[noreturn]] static void memLimitHit() {
   outs().flush();
-  static const char msg[] = "result: unknown\nmem-limit: hit\n";
+  // the run's one `result:` line, unless its answer was settled before
+  static const char res[] = "result: unknown\n";
+  static const char jres[] = "{\"kind\":\"result\",\"value\":\"unknown\","
+                             "\"text\":\"result: unknown\"}\n";
+  static const char msg[] = "mem-limit: hit\n";
   static const char jmsg[] =
-      "{\"kind\":\"result\",\"value\":\"unknown\",\"text\":\"result: "
-      "unknown\"}\n{\"kind\":\"stat\",\"key\":\"mem-limit\",\"value\":"
+      "{\"kind\":\"stat\",\"key\":\"mem-limit\",\"value\":"
       "\"hit\",\"text\":\"mem-limit: hit\"}\n";
-  if (outFormat == sea::out::Format::Jsonl)
+  static const char bres[] = "BRUNCH_STAT result unknown\n";
+  static const char jbres[] =
+      "{\"kind\":\"stat\",\"key\":\"result\",\"value\":\"unknown\","
+      "\"brunch\":true,\"text\":\"BRUNCH_STAT result unknown\"}\n";
+  const bool jsonl = outFormat == sea::out::Format::Jsonl;
+  // a hit after the run's result line keeps its status (the answer is
+  // settled; `result: sat` never goes with status 3)
+  const bool settled = gResultPrinted;
+  if (!settled) {
+    gResultPrinted = true;
+    if (jsonl)
+      (void)!::write(1, jres, sizeof(jres) - 1);
+    else
+      (void)!::write(1, res, sizeof(res) - 1);
+    if (brunchStats && !gSplitRun) {
+      if (jsonl)
+        (void)!::write(1, jbres, sizeof(jbres) - 1);
+      else
+        (void)!::write(1, bres, sizeof(bres) - 1);
+    }
+  }
+  if (jsonl)
     (void)!::write(1, jmsg, sizeof(jmsg) - 1);
   else
     (void)!::write(1, msg, sizeof(msg) - 1);
@@ -1948,7 +2041,7 @@ static uint64_t countOps(Operation *op) {
   static const char err[] =
       "Error: memory limit (--mem-limit) hit [vc.mem-limit]\n";
   (void)!::write(2, err, sizeof(err) - 1);
-  ::_exit(3);
+  ::_exit(settled ? gSettledStatus : 3);
 }
 
 /// z3 ran out of memory outside a check (its memory_max_size, or an
@@ -1962,14 +2055,18 @@ static uint64_t countOps(Operation *op) {
   static const char msg[] = "result: unknown\n";
   static const char jmsg[] = "{\"kind\":\"result\",\"value\":\"unknown\","
                              "\"text\":\"result: unknown\"}\n";
-  if (outFormat == sea::out::Format::Jsonl)
-    (void)!::write(1, jmsg, sizeof(jmsg) - 1);
-  else
-    (void)!::write(1, msg, sizeof(msg) - 1);
+  const bool settled = gResultPrinted;
+  if (!settled) {
+    gResultPrinted = true;
+    if (outFormat == sea::out::Format::Jsonl)
+      (void)!::write(1, jmsg, sizeof(jmsg) - 1);
+    else
+      (void)!::write(1, msg, sizeof(msg) - 1);
+  }
   static const char err[] =
       "Warning: the solver returned unknown (memout) [vc.unknown]\n";
   (void)!::write(2, err, sizeof(err) - 1);
-  ::_exit(3);
+  ::_exit(settled ? gSettledStatus : 3);
 }
 
 /// The LLVM bad-alloc handler (llvm::safe_malloc, SmallVector growth, ...);
@@ -1991,10 +2088,14 @@ static uint64_t countOps(Operation *op) {
   const bool nodes = b == sea::MemWatch::Budget::Nodes;
   const bool test = b == sea::MemWatch::Budget::Test;
   const char *resource = nodes ? "nodes" : test ? "test" : "rss";
-  sea::out::Record res("result");
-  res.str("value", "unknown");
-  res.text = "result: unknown";
-  gOut->emit(res);
+  // the census's report below holds the BRUNCH_STAT result
+  if (!gResultPrinted) {
+    sea::out::Record res("result");
+    res.str("value", "unknown");
+    res.text = "result: unknown";
+    gOut->emit(res);
+    gResultPrinted = true;
+  }
   raw_ostream &os = smt2 && !gOut->jsonl() ? errs() : vout();
   printStats(os, [&](sea::stats::Report &r) {
     sea::stats::Line &l = r.line("budget")
@@ -2510,9 +2611,13 @@ TYPICAL:
                                  #   structs; if abstract: tracking and
                                  #   fat-pointer metadata to memories, then
                                  #   place; widen (--widen-memory=k); expand
-                                 #   fills into cell stores (every memory
-                                 #   mode; without --lower a fill is
-                                 #   refused: vc.mem-fill); expand
+                                 #   fills into cell stores (with --seam:
+                                 #   only those of word / keyed memories;
+                                 #   without --lower and --seam a fill is
+                                 #   refused: vc.mem-fill; prints
+                                 #   vc.expand-mem-fill: expanded= cells=
+                                 #   kept= expanded-word-layout=
+                                 #   expanded-keyed= expanded-other=); expand
                                  #   symbolic memsets (not with --seam);
                                  #   merge asserts, split wide accesses
                                  #   (kept whole with --seam --seam-wide),
@@ -2684,6 +2789,19 @@ TYPICAL:
                                  #   translates what is left by the read
                                  #   equations, no assumption
                                  #   (seam.rule.memop.translated)
+                                 #   sea.mem.fill of a byte memory (a global
+                                 #   initializer) is one term, mfill: a read
+                                 #   at a numeral offset from its start is
+                                 #   the data byte (row.mfill-hit) or below
+                                 #   it (row.mfill-skip), a read decided
+                                 #   outside it is below it (row.mfill-skip-
+                                 #   disjoint), an ite address per leaf
+                                 #   (row.mfill-split); any other read
+                                 #   reads its store expansion
+                                 #   (row.mfill-expand, one
+                                 #   store per byte, as without --seam); a
+                                 #   fill of one repeated byte is an mset
+                                 #   (mem.fill-replicate)
   sea-vc p.mlir --lower --seam --seam-prune-size0=0   # no addr.prune-size0
                                  #   (default on, uses A-NULL): an access
                                  #   address ite(c, null + o, B + x) is
@@ -2935,6 +3053,17 @@ TYPICAL:
                                  #   one node (solver-neutral; z3 flattens
                                  #   it again); inline (default, not tuned):
                                  #   flat sums. docs/design/SumNames.md
+  sea-vc p.mlir --vc-canonical-sums  # (off by default, not tuned) the
+                                 #   last encoding step: every maximal
+                                 #   bit-vector sum as P, P + c or
+                                 #   (P + ~N) + c+1 over one leaf order (by
+                                 #   base: x, zext x, low extract x),
+                                 #   equalities with a sum side balanced
+                                 #   (P + c = N), extracts kept on top of
+                                 #   full-width sums, bitwise terms left
+                                 #   alone. Exact; the in-process query and
+                                 #   --smt2 alike. Not with --vc-defs.
+                                 #   docs/design/CanonicalSums.md
   sea-vc p.mlir --seam --narrow-offsets  # (off by default; rests on
                                  #   A-INB) a program load's read at its own
                                  #   address in an object of size N (also an
@@ -3010,11 +3139,20 @@ TYPICAL:
                                  #   the solver's per-check limit is set
                                  #   when it is made (first round), so one
                                  #   check may run the whole timeout
-  sea-vc p.mlir --z3-logic=QF_BV  # z3's solver for that logic (QF_BV,
-                                 #   QF_ABV, QF_UFBV, QF_AUFBV), the solver
-                                 #   of the verdict only; default: z3's
+  sea-vc p.mlir --z3-logic=QF_BV  # z3's solver for that logic (ALL, or
+                                 #   [QF_][A|AX][UF][BV][LIA|..|NIRA]: QF_BV,
+                                 #   QF_ABV, QF_UFBV, QF_AUFBV, ...), the
+                                 #   solver of the verdict, the reach,
+                                 #   --ack-relax and --split part solvers
+                                 #   and the --check-inb parts (not the
+                                 #   auxiliary checks); default: z3's
                                  #   default solver (logic probed). Prints
-                                 #   solver.z3-logic: <logic>
+                                 #   solver.z3-logic: <logic>. A term of the
+                                 #   query outside the logic (an array
+                                 #   under QF_BV, a function symbol without
+                                 #   UF, ...) is an error
+                                 #   vc.z3-logic-mismatch (z3 would drop it:
+                                 #   a wrong sat)
   sea-vc p.mlir --seam --ack-decider=false  # (default on) the difference decider in
                                  #   the Ackermann lowering: a pair whose
                                  #   indices are never equal by ranges of
@@ -3269,6 +3407,13 @@ OUTPUT (stdout, `key: value` lines):
                                   the fold is off; only when there is one;
                                   each value is a split.assumed-candidate
                                   of --split-candidates)
+  vc.expand-mem-fill: expanded=<n> cells=<n> kept=<n>
+      expanded-word-layout=<n> expanded-keyed=<n> expanded-other=<n>
+                                  (--lower of a program with sea.mem.fill:
+                                  fills expanded into cell stores, the
+                                  stores, fills kept as SeaM mfill terms
+                                  (--seam: byte memories), and under --seam
+                                  the fills expanded by kind of memory)
   vc.widen-memory: bytes=<n> classes=<n> k=<K> other=<n> widened-2=<n>
       widened-4=<n> widened-8=<n>  (--widen-memory=K: memory classes,
                                   widened to each word size, byte memories
@@ -3526,6 +3671,12 @@ OUTPUT (stdout, `key: value` lines):
                                   definition atoms
                                   asserted, bvadd nodes replaced; with
                                   vc-time, stderr with --smt2)
+  vc.canonical-sums: on            (--vc-canonical-sums; then
+                                  vc.canonical-sums-sums / -changed /
+                                  -leaves / -eqs / -eqs-changed: maximal
+                                  sums emitted, of them changed, their
+                                  leaves, balanced equalities, of them
+                                  changed; with vc-time, stderr with --smt2)
   vc.ackermann-stride-broken: <n>  (sat, --ack-stride with stride pairs:
   vc.ackermann-stride-idle: <n>    pairs the rule dropped that the model
                                   puts at one index with different cells;
@@ -3677,7 +3828,11 @@ OUTPUT (stdout, `key: value` lines):
                                   option); else yices if the binary has it
                                   (default), else z3 (no yices in this
                                   build). z3 gets --ro-arrays=uf unless
-                                  given. The lowering follows it.)
+                                  given; with --z3-logic without UF,
+                                  --ro-arrays=array (reason --z3-logic),
+                                  or the job is refused when the logic has
+                                  no arrays either (check-inb.z3-logic).
+                                  The lowering follows it.)
   check-inb.split: folded= parts= trivial= to-solve=
                                   (checks the optimize stages removed
                                   before the split; parts; parts folded to
@@ -3693,8 +3848,8 @@ OUTPUT (stdout, `key: value` lines):
   premise.failed: <name> size= room= at= part=<i>   (after a part with
                                   result=premise-failed: its run failed a
                                   premise assert, --symbolic-size=assert;
-                                  the job then says result: sat and exits
-                                  4, also with a sat part)
+                                  the job then exits 4, also with a sat
+                                  part, and says result: unknown)
   check-inb.parts: total= unsat= sat= unknown= other= skipped= premise=
                   median-time= max-time= solve-time= time=
   check-inb.part-diags: none | <kind>=<parts> ...
@@ -3702,7 +3857,16 @@ OUTPUT (stdout, `key: value` lines):
                   under=<name>,... | none   (the premises an unsat
                                   discharges; under= the assumptions the
                                   result rests on; docs/design/CheckInb.md)
-  result: sat|unsat|unknown|none  (none: --vcgen-only, --split-candidates)
+  solver-answer: sat|unsat|unknown  (the solver's answer, after its check;
+                                  not the verdict)
+  result: sat|unsat|unknown|none  (the verdict, one line per run that
+                                  reached a solver: sat / unsat only with
+                                  exit status 0 and a confirmed answer (a
+                                  sat after its replay confirms it); every
+                                  other ending prints unknown, and the
+                                  error lines and the status say why;
+                                  none: no verdict (--vcgen-only,
+                                  --split-candidates))
   hint: split: open-aliases=<n>[ ackermann-constraints=<m>]; rerun with
                                   --split-candidates ...
                                   (unknown, --seam, not a split, n > 0 open
@@ -4082,8 +4246,16 @@ OUTPUT (stdout, `key: value` lines):
                                   stderr; then seam-trace-lhs: / -rhs: with
                                   the printed terms, cut at 400 characters)
   seam-check: firings=<n> checked=<n> valid=<n> invalid=<n> unknown=<n>
-      unexpressible=<n>           (--seam-check, after the verdict; checked =
-                                  valid + invalid + unknown; unexpressible: a
+      unexpressible=<n> covered=<n> failed=<n> [unknown-rlimit=<n>]
+                                  (--seam-check, after the verdict; checked =
+                                  valid + invalid + unknown + failed;
+                                  covered: row.mfill-expand firings of a
+                                  fill over 64 bytes, covered by the theorem
+                                  RangeExpr.eval_mfill_eq_fillStores, not
+                                  checked (never valid or unknown); failed:
+                                  such a firing of at most 64 bytes the
+                                  solver did not prove (unknown), exit 5 as
+                                  invalid; unexpressible: a
                                   firing whose premise cannot be stated, e.g.
                                   a premise firing while an address is
                                   normalized, or one the boundary cannot
@@ -4096,6 +4268,8 @@ OUTPUT (stdout, `key: value` lines):
   seam-check-smt: <line>          (the SMT-LIB of the failed check: sat means
                                   the rule's result differs from its input)
   seam-check-unknown: id=<n> rules=<r,...> [reason=rlimit]   (timeout, rlimit or solver unknown)
+  seam-check-covered: id=<n> rules=<r,...> bytes=<n> theorem=<name>
+  seam-check-failed: id=<n> rules=<r,...> bytes=<n> reason=unknown
   seam-check-cost: id=<n> rlimit=<n>|- time=<s>   (--seam-check-cost: per
                                   checked firing, valid or not, before its
                                   other lines; the query's z3 rlimit count, the unit of
@@ -4155,7 +4329,7 @@ PTR_EQ; all of it is erased to bit-vectors at the solver boundary (error
 vc.ptr-sort-at-boundary: a pointer-sorted term reached the solver, a
 bug). Accesses spanning several cells and
 abstract pointers need lowering first (--lower). Replay runs memory in place, so updates must be `inplace` (else
-status 1 after the verdict).
+status 1 after `solver-answer: sat`, `result: unknown`).
 
 CONFIG (--config=<file|name>, repeatable; docs/Profiles.md): LLVM config
 files (as clang --config): options separated by whitespace / newlines, `#`
@@ -4622,7 +4796,7 @@ Kinds and fields:
   check-inb     (--check-inb) checks, static, left, zero_length
   check-inb.solver solver, reason (default | --solver | --z3-<option> | no
                 yices in this build), ro_arrays (uf | array),
-                ro_arrays_reason (default | --ro-arrays)
+                ro_arrays_reason (default | --ro-arrays | --z3-logic)
   check-inb.split folded (checks the optimize stages removed before the
                 split), parts, trivial (folded to true in their own
                 optimize: not run), to_solve
@@ -5500,12 +5674,11 @@ int main(int argc, char **argv) {
   if (!z3Logic.empty()) {
     if (backend != Backend::Z3)
       return fail("--z3-logic needs --solver=z3");
-    if (!llvm::is_contained(llvm::ArrayRef<llvm::StringRef>{"QF_BV", "QF_ABV",
-                                                            "QF_UFBV",
-                                                            "QF_AUFBV"},
-                            llvm::StringRef(z3Logic)))
-      return fail("--z3-logic: unknown logic '" + z3Logic +
-                  "' (QF_BV, QF_ABV, QF_UFBV, QF_AUFBV)");
+    // the names the logic guard has a table for (LogicGuard.h): any other
+    // is refused, since the guard could not check the query against it
+    std::string why;
+    if (!sea::solver::parseLogic(z3Logic, why))
+      return fail("--z3-logic: unknown logic '" + z3Logic + "': " + why);
   }
   if (narrowOffsets && !seam)
     return fail("--narrow-offsets needs --seam (it rests on A-INB of the "
@@ -5539,6 +5712,7 @@ int main(int argc, char **argv) {
                 "(the Yices and Bitwuzla marshalers refuse lambdas)");
   // case splitting (sea/VC/Split.h)
   const bool splitOn = !splitBool.empty() || !splitLeaves.empty() || splitAuto;
+  gSplitRun = splitOn;
   if (splitCandidatesOpt) {
     if (splitOn)
       return fail("--split-candidates lists split targets without solving: "
@@ -5763,8 +5937,13 @@ int main(int argc, char **argv) {
       constexpr bool haveYices = false;
 #endif
       std::vector<std::string> ignored;
-      sea::checkinb::partDefaults(jo.partArgs, haveYices, jo.solverName,
-                                  jo.solverReason, jo.roArraysNote, ignored);
+      std::string defaultsError;
+      if (!sea::checkinb::partDefaults(jo.partArgs, haveYices, jo.solverName,
+                                       jo.solverReason, jo.roArraysNote,
+                                       ignored, defaultsError)) {
+        sea::diag::error("check-inb.z3-logic", "--check-inb: " + defaultsError);
+        return 1;
+      }
       // once, at the job: z3-only options given with another solver
       if (!ignored.empty())
         sea::diag::warn("check-inb.z3-option-ignored",
@@ -5792,6 +5971,7 @@ int main(int argc, char **argv) {
     jo.lower.ptrCompanion = ptrCompanion != CompanionMode::Off;
     jo.lower.boxAllExpand = boxAllExpandOpt;
     jo.lower.widenPerClass = widenMemoryPerClass;
+    jo.lower.expandByteFills = !seam;
     // the pointer mode of the input (the parts are lowered programs)
     {
       bool intToPtr = false;
@@ -5815,7 +5995,10 @@ int main(int argc, char **argv) {
     jo.source = inputFilename;
     for (int i = 1; i < argc; ++i)
       jo.jobArgs.push_back(argv[i]);
-    return sea::checkinb::runJob(*module, program, jo, *gOut);
+    jo.emitResult = [](llvm::StringRef v) { emitResultRecord(v); };
+    const int jrc = sea::checkinb::runJob(*module, program, jo, *gOut);
+    settleResult(jrc);
+    return jrc;
   }
   // With --seam the answer rests on the premises. A sat whose replay fails may
   // be an artifact of a program that leaves its objects; the abstract program
@@ -5903,7 +6086,8 @@ int main(int argc, char **argv) {
         logPhase.on(sea::log::Flow) ? countOps(*module) : 0;
     PassManager pm(&context);
     // with --seam, memset / memmove / memhavoc are terms (SeaM-memops.md):
-    // no sea-expand-memset, symbolic lengths are exact
+    // no sea-expand-memset, symbolic lengths are exact; so are the fills of
+    // byte memories (MemFill.md)
     sea::buildVCLoweringPipeline(
         pm, abstract, nativeMulOverflow,
         /*fold=*/true, widenMemory,
@@ -5914,7 +6098,7 @@ int main(int argc, char **argv) {
         sea::PlaceFiles{placeIn, placeOut, symbolicSizeOpt, maxSymbolicSizeOpt,
                         placeSlotsOpt},
         rangeFoldOpt, expandMemMoveOpt, ptrCompanion != CompanionMode::Off,
-        boxAllExpandOpt, widenMemoryPerClass);
+        boxAllExpandOpt, widenMemoryPerClass, /*expandByteFills=*/!seam);
     // pm keeps a reference to the phase's scope; SEA_PHASE_END resets it after
     // pm.run, and the reference is not used after that
     if (failed(configurePM(pm, lowerPhase.timing())) || failed(pm.run(*module)))
@@ -6046,6 +6230,15 @@ int main(int argc, char **argv) {
          {"k", "expanded", "bytes", "kept-symbolic", "kept-over-k",
           "kept-word-layout", "kept-abstract", "kept-tracked",
           "kept-companion-mirror", "kept-ptr-companion"})
+      if (auto i = d.getAs<IntegerAttr>(key))
+        l.kv(key, i.getInt());
+  }
+  // sea-expand-mem-fill's counters (a program with a fill)
+  if (auto d = program->getAttrOfType<DictionaryAttr>(
+          sea::kExpandMemFillStatsAttr)) {
+    sea::stats::Line &l = lowerStats.line("vc.expand-mem-fill");
+    for (StringRef key : {"expanded", "cells", "kept", "expanded-word-layout",
+                          "expanded-keyed", "expanded-other"})
       if (auto i = d.getAs<IntegerAttr>(key))
         l.kv(key, i.getInt());
   }
@@ -7873,6 +8066,33 @@ int main(int argc, char **argv) {
                     clash + "'");
       lap("vc-defs");
     }
+    // canonical linear forms (the last encoding step of the query; exact,
+    // docs/design/CanonicalSums.md)
+    std::optional<expr::CanonicalSums::Stats> canonStats;
+    if (vcCanonicalSums) {
+      if (vcDefs != VcDefs::Inline)
+        return fail("--vc-canonical-sums is not combined with --vc-defs: "
+                    "the canonical form flattens the nested and named sums "
+                    "(docs/design/CanonicalSums.md)");
+      expr::CanonicalSums canon;
+      const expr::Expr before = query;
+      query = canon.rewrite(query);
+      canonStats = canon.stats();
+      if (relaxOn &&
+          !relaxQ.rename([&](const expr::Expr &n) { return canon.image(n); },
+                         before, query))
+        return fail("--ack-relax: the query after --vc-canonical-sums is not "
+                    "the image of the lowered query (a bug)");
+      if (originsOn)
+        origins = origins.through(
+            [&](const expr::Expr &n) { return canon.image(n); });
+      if (canonStats->opaque)
+        sea::diag::warn("vc.canonical-sums-opaque",
+                        Twine(canonStats->opaque) +
+                            " bvsub / bvneg node(s) of an unexpected arity "
+                            "are left as leaves (not canonical)");
+      lap("canonical-sums");
+    }
     // --ack-relax: with every candidate kept, a round's query is the whole
     // query (one node)
     if (relaxOn &&
@@ -7934,6 +8154,9 @@ int main(int argc, char **argv) {
         // --z3-tactic: the solver of the verdict only (SeaHorn's BmcEngine,
         // Bmc.cc:38-43, set it globally)
         config.z3Logic = z3Logic;
+        // --smt2 prints the query and never checks it (the z3 dialect
+        // declares ALL, LogicGuard.h's wrong sat is a check's): no guard
+        config.z3LogicGuard = !smt2;
         if (z3Tactic != "default") {
           config.z3Tactic = z3Tactic;
           config.z3SatEuf =
@@ -8265,6 +8488,14 @@ int main(int argc, char **argv) {
         r.line("vc.defs-atoms").value(defStats->atoms);
         r.line("vc.defs-rewritten").value(defStats->rewritten);
       }
+      if (canonStats) {
+        r.line("vc.canonical-sums").value("on");
+        r.line("vc.canonical-sums-sums").value(canonStats->sums);
+        r.line("vc.canonical-sums-changed").value(canonStats->sumsChanged);
+        r.line("vc.canonical-sums-leaves").value(canonStats->leaves);
+        r.line("vc.canonical-sums-eqs").value(canonStats->eqs);
+        r.line("vc.canonical-sums-eqs-changed").value(canonStats->eqsChanged);
+      }
       // the named assumptions of the VC (BRUNCH_STAT <key>-<field>)
       sea::assume::Ledger vcAssumes;
       using sea::assume::Name;
@@ -8476,6 +8707,10 @@ int main(int argc, char **argv) {
       size_t m = (checkSample && checkSample < n) ? checkSample : n;
       uint64_t valid = 0, invalid = 0, unknown = 0, unexpr = 0;
       uint64_t unknownRlimit = 0;
+      // row.mfill-expand (docs/design/MemFill.md, "The boundary"): checked
+      // up to kFillExpandCheckCap bytes, where an unknown is a failure;
+      // above it covered by its theorem, not checked
+      uint64_t covered = 0, failed = 0;
       unsigned ms = seamCheckTimeout * 1000;
       // a fresh solver per query. Hypothesis (measured, not read in z3's
       // source): z3 decides its auto-configuration at the first push, before
@@ -8504,6 +8739,19 @@ int main(int argc, char **argv) {
       for (size_t k = 0; k < m; ++k) {
         const expr::RewriteTrail::Firing &f = fs[m == n ? k : k * n / m];
         const expr::RewriteTrail::Context &c = trail.context(f.ctx);
+        // the expansion of a fill: its bytes (0: not one)
+        uint64_t fillBytes = 0;
+        if (expr::isOpX<expr::SELECT>(f.lhs) &&
+            expr::isOpX<expr::MEM_FILL>(f.lhs->arg(0)) &&
+            StringRef(trail.rulesOf(f)).split(',').first == "row.mfill-expand")
+          fillBytes = expr::op::array::fillBytes(f.lhs->arg(0)).size();
+        if (fillBytes > expr::kFillExpandCheckCap) {
+          ++covered;
+          os << "seam-check-covered: id=" << f.id
+             << " rules=" << trail.rulesOf(f) << " bytes=" << fillBytes
+             << " theorem=RangeExpr.eval_mfill_eq_fillStores\n";
+          continue;
+        }
         std::string why;
         expr::Expr prem = sem.firingPremise(trail, f, why);
         if (!prem) {
@@ -8581,6 +8829,14 @@ int main(int argc, char **argv) {
           ++valid;
           continue;
         }
+        if (res != sea::solver::SolverResult::SAT && fillBytes) {
+          // an expansion within the cap must be proved
+          ++failed;
+          os << "seam-check-failed: id=" << f.id
+             << " rules=" << trail.rulesOf(f) << " bytes=" << fillBytes
+             << " reason=unknown\n";
+          continue;
+        }
         if (res != sea::solver::SolverResult::SAT) {
           ++unknown;
           const bool viaRlimit = backend == Backend::Z3 &&
@@ -8621,13 +8877,14 @@ int main(int argc, char **argv) {
         }
       }
       os << "seam-check: firings=" << n
-         << " checked=" << (valid + invalid + unknown) << " valid=" << valid
-         << " invalid=" << invalid << " unknown=" << unknown
-         << " unexpressible=" << unexpr;
+         << " checked=" << (valid + invalid + unknown + failed)
+         << " valid=" << valid << " invalid=" << invalid
+         << " unknown=" << unknown << " unexpressible=" << unexpr
+         << " covered=" << covered << " failed=" << failed;
       if (seamCheckRlimit)
         os << " unknown-rlimit=" << unknownRlimit;
       os << "\n";
-      checkInvalid += invalid;
+      checkInvalid += invalid + failed;
     };
 
     // --narrow-offsets: each narrowed index against its representative
@@ -8877,13 +9134,15 @@ int main(int argc, char **argv) {
         splitPart.result = v.str();
         printStats([&](sea::stats::Report &r) {
           r.line("split.part-result").value(v);
+          resultLine(r, v);
         });
         return;
       }
-      sea::out::Record rec("result");
-      rec.str("value", v);
-      rec.text = ("result: " + v).str();
-      gOut->emit(rec);
+      // a failed --seam-check / unproven --narrow-check (run before the
+      // solve) makes the status 5 / 7: no verdict
+      if ((v == "sat" || v == "unsat") && (checkInvalid || narrowUnproven))
+        v = "unknown";
+      emitResultRecord(v);
     };
     {
       sea::out::Record rec("program");
@@ -8949,7 +9208,6 @@ int main(int argc, char **argv) {
         sea::diag::warn("vc.vcgen-only-check-skipped",
                         "--seam-check does not run: --vcgen-only skips it");
       emitResult("none");
-      printStats([](sea::stats::Report &r) { resultLine(r, "none"); });
       return 0;
     }
     runSeamCheck();
@@ -9335,6 +9593,13 @@ int main(int argc, char **argv) {
         for (const std::string &kv : yicesParams)
           r.line("solver.yices-param").value(kv);
       }
+      // the solver's answer; the run's `result:` is the settled one (a sat
+      // only once its replay confirms it)
+      r.line("solver-answer")
+          .value(res == sea::solver::SolverResult::SAT     ? "sat"
+                 : res == sea::solver::SolverResult::UNSAT ? "unsat"
+                                                           : "unknown");
+      gSolverReached = true;
       r.print(vout(), brunchStats);
     }
     if (res == sea::solver::SolverResult::UNSAT) {
@@ -9342,13 +9607,11 @@ int main(int argc, char **argv) {
       sea::stats::Report r;
       if (sem.ptrIntChecking() && sem.companionChecked())
         r.line("seam.ptrint").value("holds");
-      resultLine(r, "unsat");
       r.print(vout(), brunchStats);
       return 0;
     }
     if (res != sea::solver::SolverResult::SAT) {
       emitResult("unknown");
-      printStats([](sea::stats::Report &r) { resultLine(r, "unknown"); });
       // why, when a limit of the run explains it: the backend's reason
       // (z3, Yices' watchdog); else the time spent reached --timeout; for
       // Bitwuzla (complete for the VC's logics) an unknown under
@@ -9454,14 +9717,20 @@ int main(int argc, char **argv) {
                       "again with --ptr-companion=exact");
       return kRetryExactCompanion;
     }
-    emitResult("sat");
-    {
-      sea::stats::Report r;
-      resultLine(r, "sat");
-      if (sem.ptrIntChecking() && sem.companionChecked())
+    if (sem.ptrIntChecking() && sem.companionChecked())
+      printStats([](sea::stats::Report &r) {
         r.line("seam.ptrint").value("not discharged");
-      r.printEach(vout(), brunchStats);
-    }
+      });
+    // the answer settles with the replay: `result: sat` when the run
+    // confirms it (status 0), `result: unknown` on every other exit (the
+    // status and its error say why: 1 replay-impossible or an error, 2 a
+    // mismatch, 4 a premise, 6 the lowering); a --mem-limit hit in the
+    // replay prints its own `result: unknown`
+    auto settleSat = [&](int rc) -> int {
+      emitResult(rc == 0 ? "sat" : "unknown");
+      gOut->flush();
+      return rc;
+    };
 
     auto solverModel = solver->get_model();
     // --vc-fold-top-eqs: the model extended by the trail (a model of the
@@ -9487,6 +9756,8 @@ int main(int argc, char **argv) {
         wordsModel ? static_cast<sea::solver::Model &>(*wordsModel)
                    : solvedModel;
     Phase replayPhase("replay");
+    if (memLimitPlantReplay && memLimit)
+      memLimitHit();
     sea::ReplayResult replay =
         sea::replayAndValidate(program, replayModel, sem, ctx, addr0IsNull,
                                memhavocNull == MemhavocNull::Noop);
@@ -9812,7 +10083,7 @@ int main(int argc, char **argv) {
                 "that keeps the promises, remove the promise of that GEP from "
                 "the input, or strip all GEP promises, and check again",
             gep->getLoc());
-        return 4;
+        return settleSat(4);
       }
       // no GEP promise broken in the run: a premise of the rule's K or
       // size-0 firings (A-INB, checked below), else the replay errors below
@@ -9861,7 +10132,7 @@ int main(int argc, char **argv) {
                 "breaks; inconclusive (a memory-safety check of the program "
                 "discharges A-INB; without --narrow-offsets the VC does not "
                 "use it)");
-        return 4;
+        return settleSat(4);
       }
     }
     if (replayFailed && inb && abstractModule) {
@@ -9908,7 +10179,7 @@ int main(int argc, char **argv) {
             "VC only, not from the lowering's dropped memhavocs, "
             "assume.a-sep)",
             abs.at ? std::optional<Location>(abs.at->getLoc()) : std::nullopt);
-        return 4;
+        return settleSat(4);
       }
       vout() << "seam.inb-violation: undetermined ("
              << sea::stringifyRunStatus(abs.status)
@@ -9924,7 +10195,7 @@ int main(int argc, char **argv) {
                        replay.run.at
                            ? std::optional<Location>(replay.run.at->getLoc())
                            : std::nullopt);
-      return 1;
+      return settleSat(1);
     }
     // with initial words, a trusted `align` that does not hold makes the
     // annotated fast path read a word the bytes do not form: the word query
@@ -9966,7 +10237,7 @@ int main(int argc, char **argv) {
                              "of an earlier memory version whose cell was "
                              "clobbered" +
                              strideNote);
-      return 2;
+      return settleSat(2);
     }
     if (ptrIntCheck && !claimSeen) {
       sea::diag::error("vc.replay-no-failure",
@@ -9975,7 +10246,7 @@ int main(int argc, char **argv) {
                        "(status: " +
                            sea::stringifyRunStatus(replay.run.status) +
                            "): a VC or interpreter bug" + strideNote);
-      return 2;
+      return settleSat(2);
     }
     if (!ptrIntCheck && replay.run.status != sea::RunStatus::AssertFailed) {
       sea::diag::error("vc.replay-no-failure",
@@ -9983,10 +10254,10 @@ int main(int argc, char **argv) {
                        "assertion (status: " +
                            sea::stringifyRunStatus(replay.run.status) +
                            "): a VC or interpreter bug" + strideNote);
-      return 2;
+      return settleSat(2);
     }
     if (ackModel && ackModel->inconsistent() && !ownExcused)
-      return 2;
+      return settleSat(2);
     // a premise assert failed (kPremiseAttr; --symbolic-size=assert): the run
     // breaks a premise the answer would otherwise rest on, not the
     // property; inconclusive, as a sat that breaks a premise (status 4)
@@ -9994,11 +10265,12 @@ int main(int argc, char **argv) {
       if (auto premise = pa->getAttrOfType<StringAttr>(sea::kPremiseAttr)) {
         reportPremiseFailed(premise.getValue(), *pa, replay.run, replayModel,
                             sem, ctx);
-        return 4;
+        return settleSat(4);
       }
     if (originalModule)
-      return replayOnOriginal(replayModel, sem, ctx, replay.run, ptrIntCheck);
-    return 0;
+      return settleSat(
+          replayOnOriginal(replayModel, sem, ctx, replay.run, ptrIntCheck));
+    return settleSat(0);
   };
   // one VC and solver run with its fallbacks (a part of a split, or the
   // whole query)
@@ -10203,11 +10475,7 @@ int main(int argc, char **argv) {
                    " loc=" + (c.loc.empty() ? "-" : c.loc);
         gOut->emit(rec);
       }
-      sea::out::Record rec("result");
-      rec.str("value", "none");
-      rec.text = "result: none";
-      gOut->emit(rec);
-      printStats([](sea::stats::Report &r) { resultLine(r, "none"); });
+      emitResultRecord("none");
       gOut->flush();
       return 0;
     }();
@@ -10410,10 +10678,8 @@ int main(int argc, char **argv) {
             r.line("split.unknown-part").value(u);
         });
       }
-      sea::out::Record rec("result");
-      rec.str("value", verdict);
-      rec.text = std::string("result: ") + verdict;
-      gOut->emit(rec);
+      // as emitResult: the checks' failure statuses (5 / 7) give no verdict
+      emitResultRecord(checkInvalid || narrowUnproven ? "unknown" : verdict);
       gOut->flush();
       return nSat || nUnknown == 0 ? 0 : 3;
     }();
@@ -10429,9 +10695,10 @@ int main(int argc, char **argv) {
       sea::diag::error("seam.check-invalid",
                        Twine(checkInvalid) +
                            " rule firing(s) or narrowed read indices are "
-                           "not valid under their premises: a rewriting bug "
-                           "(seam-check-invalid / narrow-check-invalid "
-                           "lines)");
+                           "not valid under their premises, or fill "
+                           "expansions within the check cap not proved: a "
+                           "rewriting bug (seam-check-invalid / "
+                           "seam-check-failed / narrow-check-invalid lines)");
       rc = 5;
     }
     if (narrowUnproven && (rc == 0 || rc == 3)) {
@@ -10445,6 +10712,8 @@ int main(int argc, char **argv) {
     }
   }
   gOut->flush();
+  // the run's one result line, now that no check can change its status
+  settleResult(rc);
   {
     sea::stats::Report r;
     r.line("status").value(rc).brunch(sea::stats::Brunch::Value).brunchOnly();

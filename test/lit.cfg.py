@@ -60,6 +60,7 @@ llvm_config.add_tool_substitutions(
         "sea-int-ranges-test",
         "sea-diff-decider-test",
         "sea-fold-top-eqs-test",
+        "sea-canonical-sums-test",
     ],
     [sea_test_bin_dir],
 )

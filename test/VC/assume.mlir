@@ -15,9 +15,9 @@ sea.program @guarded {
 }
 
 // An assume on a branch not taken does not constrain the other branch.
-// BUG: result: sat
 // BUG: replay: assert-failed
 // BUG: validate: checked={{[0-9]+}} mismatches=0
+// BUG: result: sat
 sea.program @branch_assume {
   %x = sea.nondet "nondet_u8" [0] : i8
   %b = sea.nondet "nondet_bool" [1] : i1

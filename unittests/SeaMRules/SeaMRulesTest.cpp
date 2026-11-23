@@ -28,6 +28,7 @@
 // (a Release build does not export the instantiations from libSeaExpr).
 #include "sea/Expr/SeaMRules.hh"
 #include "sea/Expr/Expr.hh"
+#include "sea/Expr/MemOps.hh"
 #include "sea/Expr/Smt/Yices2SolverImpl.hh"
 #include <boost/functional/hash.hpp>
 
@@ -2208,6 +2209,85 @@ void testSlots() {
   CHECK(!reg.ownsSlot(get("i")), "i's slot is in h's range");
 }
 
+/// mfill (docs/design/MemFill.md, "SeaM"): a read of another object over a
+/// fill is skipped under A-SEP in a data memory and never by a premise in a
+/// shadow memory; a read at an ite address is split into its leaves, each
+/// decided (a data byte, a skip). Checked after the boundary translation.
+void testFill() {
+  Fixture F;
+  // byte memories (a fill is a byte-memory term)
+  Expr byteMem = sort::arrayTy(F.ptrSort, op::bv::bvsort(8, F.efac));
+  auto mem = [&](const char *n) {
+    return op::bind::mkConst(mkTerm<std::string>(n, F.efac), byteMem);
+  };
+  Expr M = mem("bytes");
+  Expr S = mem("shadow-bytes");
+  F.reg.addShadowRoot(S);
+  auto fill = [&](const Expr &m, const Expr &d) {
+    return op::array::memFill(m, d, F.num(3),
+                              op::array::fillData({1, 2, 3}, F.efac));
+  };
+  auto translated = [&](const Expr &e) {
+    MemOpTranslator tr;
+    std::string why;
+    Expr r = tr.translate(e, why);
+    CHECK(r, "translation refused: " << why);
+    return r;
+  };
+  Expr ox = F.add({F.o1, F.x});
+  // data memory: another object, A-SEP; valid under the A-INB of the read and
+  // of the fill's range
+  {
+    SeaMRewriter rw(F.efac, F.reg, P1());
+    Expr in = F.sel(fill(M, ox), F.o2);
+    Expr out = rw.rewrite(in);
+    CHECK(out == F.sel(M, F.o2) &&
+              rw.stats().get("row.mfill-skip-disjoint") == 1 &&
+              rw.stats().get("premise.a-sep") == 1,
+          "mfill data skip: " << str(out));
+    bool vio = false;
+    Expr prem = mk<AND>(rw.rules().inBounds(F.o2, 1, vio),
+                        rw.rules().rangeInBounds(ox, F.num(3), vio));
+    CHECK(!vio && F.satisfiable(prem), "mfill skip premise satisfiable");
+    CHECK(F.equivalentUnder(translated(in), out, prem),
+          "mfill data skip: valid under its premise");
+  }
+  // shadow memory: no premise rule; the result is valid without one
+  {
+    RewriteStats st;
+    Expr in = F.sel(fill(S, ox), F.o2);
+    Expr out = F.rewrite(in, P1(), st);
+    CHECK(st.get("premise.a-sep") + st.get("premise.a-null") == 0 &&
+              st.get("row.mfill-skip-disjoint") == 0,
+          "mfill shadow: a premise rule fired: " << str(out));
+    CHECK(F.equivalent(translated(in), translated(out), true),
+          "mfill shadow: premise-free");
+  }
+  // an ite address: o1 + 1 (byte 1 of the data) or o2 (another object)
+  {
+    SeaMRewriter rw(F.efac, F.reg, P1());
+    Expr idx = mk<ITE>(F.a, F.add({F.o1, F.num(1)}), F.o2);
+    Expr in = F.sel(fill(M, F.o1), idx);
+    Expr out = rw.rewrite(in);
+    CHECK(rw.stats().get("row.mfill-hit") == 1 &&
+              rw.stats().get("row.mfill-skip-disjoint") == 1 &&
+              rw.stats().get("row.mfill-expand") == 0,
+          "mfill ite address, per leaf: " << str(out));
+    CHECK(F.equivalent(translated(in), out, true), "mfill ite address exact");
+    // both leaves in the data, at different offsets: two bytes
+    SeaMRewriter rw2(F.efac, F.reg, P1());
+    Expr idx2 = mk<ITE>(F.a, F.add({F.o1, F.num(1)}), F.add({F.o1, F.num(2)}));
+    Expr in2 = F.sel(fill(M, F.o1), idx2);
+    Expr out2 = rw2.rewrite(in2);
+    CHECK(rw2.stats().get("row.mfill-hit") == 2 &&
+              rw2.stats().get("row.mfill-expand") == 0 && isOpX<ITE>(out2) &&
+              op::bv::is_bvnum(out2->arg(1)) && op::bv::is_bvnum(out2->arg(2)),
+          "mfill ite address, both in the data: " << str(out2));
+    CHECK(F.equivalent(translated(in2), out2, true),
+          "mfill ite address in the data exact");
+  }
+}
+
 int main(int argc, char **argv) {
   unsigned randomCount = 300;
   if (argc > 1)
@@ -2232,7 +2312,8 @@ int main(int argc, char **argv) {
                {"shadow", testShadow},
                {"overlap-width", testOverlapWidth},
                {"slots", testSlots},
-               {"segment", testSegment}};
+               {"segment", testSegment},
+               {"fill", testFill}};
   for (const Test &t : tests) {
     int before = failures;
     t.fn();

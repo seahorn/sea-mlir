@@ -34,8 +34,8 @@ RUN: not sea-vc %S/../memops/memhavoc.mlir --program=unsat --lower --mem=lambda 
 RUN: %if yices %{ not sea-vc %S/../memops/memhavoc.mlir --program=unsat --lower --mem=lambda --solver=yices 2>&1 | FileCheck %s --check-prefix=NOYICES %}
 UNSAT: lambda.writes: {{[1-9][0-9]*}}
 UNSAT: result: unsat
-SAT: result: sat
 SAT: replay: assert-failed
+SAT: result: sat
 FINAL: lambda.simplify.skipped: {{[1-9][0-9]*}}
 FINAL: lambda.final-simplify-time:
 FINAL: result: unsat

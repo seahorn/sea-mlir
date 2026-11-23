@@ -13,8 +13,8 @@
 // RUN: sea-vc %t/flags.mlir --lower --seam --seam-stride 2>&1 | FileCheck %s --check-prefix=SAT
 // RUN: sea-vc %t/sum.mlir --lower --seam --seam-stride 2>&1 | FileCheck %s --check-prefix=SAT
 // RUN: sea-vc %t/fold.mlir --lower --seam --seam-stride 2>&1 | FileCheck %s --check-prefix=SAT
-// SAT: result: sat
 // SAT: replay: assert-failed
+// SAT: result: sat
 // RUN: sea-run %t/flags.mlir --input=1=-85 --input=2=1 2>&1 | FileCheck %s --check-prefix=INTERP
 // RUN: sea-run %t/sum.mlir --input=1=-85 --input=2=1 2>&1 | FileCheck %s --check-prefix=INTERP
 // RUN: sea-run %t/fold.mlir --input=1=-85 --input=2=1 2>&1 | FileCheck %s --check-prefix=INTERP

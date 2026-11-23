@@ -20,8 +20,8 @@
 // SELF: seam.rule.diff.self: {{[1-9]}}
 // OTHER: seam.rule.diff.erase: {{[1-9]}}
 // UNSAT: result: unsat
-// SAT: result: sat
 // SAT: replay: assert-failed
+// SAT: result: sat
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @same {
   %c16 = sea.const 16 : i64

@@ -4,8 +4,8 @@
 // The VC refuses intrinsics; --lower expands them first.
 // RAW: vc.intrinsic
 // The assertion "no unsigned overflow" fails for some x, y; replay confirms.
-// VC: result: sat
 // VC: replay: assert-failed
+// VC: result: sat
 sea.program @main {
   %x = sea.nondet "nondet_u8" [0] : i8
   %y = sea.nondet "nondet_u8" [1] : i8

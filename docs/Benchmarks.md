@@ -61,7 +61,8 @@ frag-reach-busy-K1:
 `replay: impossible` is for a sat job whose model the interpreter cannot
 run: the program updates memory without `inplace`
 ([In place](design/Memory.md#in-place-the-inplace-attribute)), so sea-vc
-prints `result: sat`, then error `vc.replay-impossible` and exits 1. The VC
+prints `solver-answer: sat`, then error `vc.replay-impossible` and
+`result: unknown`, and exits 1. The VC
 is exact and the verdict is sat, but the counterexample is not confirmed.
 bench.py records such a run as verdict `sat` with `replay=impossible` (the
 `replay` column of `stats.csv`); the gate fails on it (`FAIL:

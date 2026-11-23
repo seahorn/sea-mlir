@@ -14,11 +14,11 @@
 // RUN1-NEXT: at: loc("claim.small"("<stdin>":{{[0-9]+}}:{{[0-9]+}})){{$}}
 // RUN1: assert-op: <stdin>:{{[0-9]+}}:{{[0-9]+}} name=claim.small{{$}}
 
-// FIRST: result: sat
 // FIRST: replay: assert-failed{{$}}
-// FIRST: at: loc("claim.small"("{{.*}}merged-assert-location.mlir":[[#L1:@LINE+10]]:3)){{$}}
+// FIRST: at: loc("claim.small"("{{.*}}merged-assert-location.mlir":[[#L1:@LINE+11]]:3)){{$}}
 // FIRST: replay: assert-op: {{.*}}merged-assert-location.mlir:[[#L1]]:3 name=claim.small{{$}}
 // FIRST: validate: checked={{[0-9]+}} mismatches=0
+// FIRST: result: sat
 sea.program @first {
   %x = sea.nondet "nondet_u8" [0] : i8 loc("t.c":3:11)
   %c5 = sea.const 5 : i8
@@ -32,10 +32,10 @@ sea.program @first {
   sea.halt
 }
 
-// SECOND: result: sat
 // SECOND: replay: assert-failed{{$}}
 // SECOND: at: loc("claim.ne"("t.c":7:3)){{$}}
 // SECOND: replay: assert-op: t.c:7:3 name=claim.ne{{$}}
+// SECOND: result: sat
 // JSON: "kind":"replay"
 // JSON-SAME: "loc":"loc(\"claim.ne\"(\"t.c\":7:3))"
 // JSON-SAME: "op":"t.c:7:3","op_name":"claim.ne"

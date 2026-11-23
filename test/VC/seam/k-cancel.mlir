@@ -24,9 +24,9 @@
 // PULL: seam.rule.ptr.load-resolve-concat.unshared: 1
 // PULL: result: unsat
 // SAT: seam.rule.ptr.overlap.cancel-num: {{[1-9]}}
-// SAT: result: sat
 // SAT: replay: assert-failed
 // SAT: validate: {{.*}} mismatches=0
+// SAT: result: sat
 // CHECK: seam.alias.open.all: 15
 // CHECK: seam.rule.ptr.overlap.cancel-num: {{[1-9]}}
 // CHECK: result: unsat

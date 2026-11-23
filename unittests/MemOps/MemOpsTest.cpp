@@ -23,7 +23,13 @@
 //    (4 bits: d = 14, n = 4, j = 0 is a hit), ARM ranges, n = 0, undecided;
 //    every rewrite checked against the expansion under its premises;
 //  - the boundary without the rules (expandUnknownRow off, a rewrite stopped
-//    at maxRuleCalls) and its refusal of a term that is not read.
+//    at maxRuleCalls) and its refusal of a term that is not read;
+//  - mfill (docs/design/MemFill.md, "SeaM"): its read equation against the
+//    guarded-store reference (every length 1..15, wraparound), its store
+//    expansion (seam-lean rangeFill_eq_fillStores), the rules
+//    row.mfill-hit / -skip / -skip-disjoint / -expand, wide.mfill-hit and
+//    the byte fallback, mem.fill-replicate, each against the reference
+//    under its premises.
 //
 // Soundness is checked with Yices 2 (QF_ABV): `premises and in != out` unsat.
 //
@@ -192,6 +198,15 @@ struct Fixture {
     Expr res = refB(memOpBase(m), j);
     for (unsigned long k = 0; k < (1ul << kW); ++k) {
       Expr kk = num(k), cell = add(dd, kk);
+      if (isOpX<MEM_FILL>(m)) {
+        // byte k of the data at d + k, k < n (n is the data's length)
+        const std::vector<uint8_t> &bytes = op::array::fillBytes(m);
+        if (k < bytes.size())
+          res = mk<ITE>(
+              mk<EQ>(cell, j),
+              op::bv::bvnum(mpz_class((unsigned long)bytes[k]), kV, efac), res);
+        continue;
+      }
       Expr val = isOpX<MEM_COPY>(m)  ? refB(m->arg(1), add(m->arg(3), kk))
                  : isOpX<MEM_SET>(m) ? m->arg(3)
                                      : sel(m->arg(1), cell);
@@ -219,8 +234,9 @@ struct Fixture {
     ta = px.expand(ta);
     tb = px.expand(tb);
     if (countOp<MEM_COPY>(ta) + countOp<MEM_SET>(ta) + countOp<MEM_HAVOC>(ta) +
-            countOp<MEM_COPY>(tb) + countOp<MEM_SET>(tb) +
-            countOp<MEM_HAVOC>(tb) !=
+            countOp<MEM_FILL>(ta) + countOp<MEM_COPY>(tb) +
+            countOp<MEM_SET>(tb) + countOp<MEM_HAVOC>(tb) +
+            countOp<MEM_FILL>(tb) !=
         0)
       return false;
     sea::solver::yices_solver_impl sv(efac);
@@ -242,6 +258,13 @@ struct Fixture {
 Expr mcopy(const Expr &md, const Expr &ms, const Expr &d, const Expr &s,
            const Expr &n) {
   return op::array::memCopy(md, ms, d, s, n);
+}
+
+/// mfill(m, d, |bytes|, bytes), the length at the address width
+Expr mfill(Fixture &F, const Expr &m, const Expr &d,
+           const std::vector<uint8_t> &bytes) {
+  return op::array::memFill(m, d, F.num(bytes.size()),
+                            op::array::fillData(bytes, F.efac));
 }
 
 //===----------------------------------------------------------------------===//
@@ -1344,6 +1367,148 @@ void testIteOffset() {
   }
 }
 
+//===----------------------------------------------------------------------===//
+// mfill (docs/design/MemFill.md, "SeaM"; seam-lean SeaM/MemOps)
+//===----------------------------------------------------------------------===//
+
+void testFill() {
+  Fixture F;
+  auto byte = [&](unsigned long b) {
+    return op::bv::bvnum(mpz_class(b), kV, F.efac);
+  };
+  // non-uniform data of every length the verifier admits at 4 bits (< 16)
+  auto data = [](size_t n) {
+    std::vector<uint8_t> v;
+    for (size_t i = 0; i < n; ++i)
+      v.push_back(uint8_t(i * 37 + 11));
+    return v;
+  };
+  // the read equation (the boundary) and the store expansion (rangeFill_eq_
+  // fillStores) against the guarded-store reference, symbolic d and j
+  {
+    bool allEq = true, allStores = true;
+    for (size_t n = 1; n < (1u << kW); ++n) {
+      Expr t = mfill(F, F.Md, F.d, data(n));
+      allEq = allEq && F.equivalent(F.sel(t, F.j), F.ref(t, F.j));
+      allStores =
+          allStores && F.equivalent(F.sel(fillStores(t), F.j), F.ref(t, F.j));
+    }
+    CHECK(allEq, "mfill read equation, n = 1..15");
+    CHECK(allStores, "mfill store expansion, n = 1..15");
+    llvm::outs() << "read-eq: mfill " << (allEq ? "ok" : "FAILED") << "\n";
+    llvm::outs() << "fill-stores: " << (allStores ? "ok" : "FAILED") << "\n";
+    // over a store, over an ite, a term over it
+    Expr t = mfill(F, op::array::store(F.Md, F.x, F.y), F.d, data(5));
+    CHECK(F.equivalent(F.sel(t, F.j), F.ref(t, F.j)), "mfill over a store");
+    Expr ti = mfill(F, mk<ITE>(F.c, F.M1, F.M2), F.d, data(3));
+    CHECK(F.equivalent(F.sel(ti, F.j), F.ref(ti, F.j)), "mfill over an ite");
+    Expr over = op::array::memSet(t, F.x, F.n, F.v);
+    CHECK(F.equivalent(F.sel(over, F.j), F.ref(over, F.j)),
+          "mset over an mfill");
+    // wraparound: d = 14, 4 bytes: j = 0 is byte 2
+    Expr w = mfill(F, F.Md, F.pnum(14), {1, 2, 3, 4});
+    CHECK(F.equivalent(F.sel(w, F.pnum(0)), byte(3)),
+          "wrap: 0 is byte 2 of [14, 14 + 4)");
+    CHECK(F.equivalent(F.sel(w, F.pnum(2)), F.sel(F.Md, F.pnum(2))),
+          "wrap: 2 is not in [14, 14 + 4)");
+  }
+  // row.mfill-hit / -skip at numeral offsets, no premise
+  {
+    RuleRun R(F);
+    Expr t = mfill(F, F.Md, F.at(F.oa, 1), {7, 8});
+    Expr hit = R.read(t, F.at(F.oa, 2));
+    Expr skip = R.read(t, F.at(F.oa, 3));
+    CHECK(hit == byte(8) && R.get("row.mfill-hit") == 1, "mfill numeral hit");
+    CHECK(R.get("row.mfill-skip") == 1 && R.premises() == 0 &&
+              skip == F.sel(F.Md, F.at(F.oa, 3)),
+          "mfill numeral skip, no premise: " << str(skip));
+    CHECK(F.equivalent(F.ref(t, F.at(F.oa, 2)), hit) &&
+              F.equivalent(F.ref(t, F.at(F.oa, 3)), skip),
+          "mfill hit / skip exact");
+    // circular: a fill at offset 15 of the address space covers 0
+    RuleRun R2(F);
+    Expr wt = mfill(F, F.Md, F.pnum(15), {5, 6});
+    Expr wr = R2.read(wt, F.pnum(0));
+    CHECK(wr == byte(6) && R2.get("row.mfill-hit") == 1,
+          "mfill circular hit: " << str(wr));
+  }
+  // row.mfill-skip-disjoint: a read of b over a fill of a at a symbolic
+  // offset (A-SEP), valid under the range premise, not without it
+  {
+    RuleRun R(F);
+    Expr t = mfill(F, F.Md, F.add(F.oa, F.x), {1, 2, 3});
+    Expr j = F.add(F.ob, F.k);
+    Expr r = R.read(t, j);
+    CHECK(R.get("row.mfill-skip-disjoint") == 1 &&
+              R.get("premise.a-sep") == 1 && countOp<MEM_FILL>(r) == 0,
+          "mfill cross-object skip: " << str(r));
+    ExprVector prem = inbPremise(F, R.rw, t, j);
+    CHECK(F.satisfiable(prem), "the mfill skip premise is satisfiable");
+    CHECK(F.equivalent(F.ref(t, j), r, prem), "mfill cross-object skip exact");
+    ExprVector part = F.layout;
+    bool vio = false;
+    part.push_back(R.rw.rules().inBounds(j, 1, vio));
+    CHECK(!F.equivalent(F.ref(t, j), r, part),
+          "the mfill skip needs the destination range");
+  }
+  // row.mfill-expand: a read at a symbolic offset of the same object reads
+  // the store expansion (the store rules then go on); exact, no premise
+  {
+    RuleRun R(F);
+    Expr t = mfill(F, F.Md, F.oa, {1, 2, 3});
+    Expr j = F.add(F.oa, F.k);
+    Expr r = R.read(t, j);
+    CHECK(R.get("row.mfill-expand") == 1 && R.get("row.mfill-hit") == 0 &&
+              countOp<MEM_FILL>(r) == 0 && R.premises() == 0,
+          "mfill undecided: expansion: " << str(r));
+    CHECK(F.equivalent(F.ref(t, j), r), "mfill expansion exact");
+    // with the rules off the term stays, the boundary translates it
+    SeaMOptions o;
+    o.expandUnknownRow = false;
+    RuleRun R0(F, o);
+    Expr r0 = R0.read(t, j);
+    CHECK(countOp<MEM_FILL>(r0) == 1 && R0.get("row.mfill-expand") == 0,
+          "mfill kept with row-expand off");
+    CHECK(F.equivalent(F.ref(t, j), r0), "mfill boundary exact");
+  }
+  // mem.fill-replicate: a fill of one repeated byte is an mset
+  {
+    RuleRun R(F);
+    Expr t = mfill(F, F.Md, F.d, {9, 9, 9, 9, 9});
+    Expr r = R.rewrite(t);
+    CHECK(isOpX<MEM_SET>(r) && R.get("mem.fill-replicate") == 1,
+          "replicate: " << str(r));
+    CHECK(F.equivalent(F.sel(t, F.j), F.sel(r, F.j)), "replicate exact");
+  }
+  // wide: a 2-byte read inside the data is one numeral (little endian);
+  // across the end of the data: the byte fallback, decided per byte
+  {
+    using op::array::wselect;
+    Expr bv16 = op::bv::bvsort(16, F.efac);
+    RuleRun R(F);
+    Expr t = mfill(F, F.Md, F.oa, {0x11, 0x22, 0x33});
+    Expr in = wselect(t, F.at(F.oa, 1), bv16);
+    Expr r = R.rewrite(in);
+    CHECK(r == op::bv::bvnum(mpz_class(0x3322UL), 16, F.efac) &&
+              R.get("wide.mfill-hit") == 1,
+          "wide mfill hit: " << str(r));
+    CHECK(F.equivalent(in, r), "wide mfill hit exact");
+    RuleRun R2(F);
+    Expr across = wselect(t, F.at(F.oa, 2), bv16);
+    Expr r2 = R2.rewrite(across);
+    CHECK(R2.get("wide.split-read") == 1 && R2.get("row.mfill-hit") == 1 &&
+              R2.get("row.mfill-skip") == 1,
+          "wide mfill across the end: per byte: " << str(r2));
+    CHECK(F.equivalent(across, r2), "wide mfill across the end exact");
+    RuleRun R3(F);
+    Expr past = wselect(t, F.at(F.oa, 3), bv16);
+    Expr r3 = R3.rewrite(past);
+    CHECK(R3.get("wide.mfill-skip") == 1 &&
+              r3 == wselect(F.Md, F.at(F.oa, 3), bv16),
+          "wide mfill skip: " << str(r3));
+  }
+}
+
 } // namespace
 
 /// The log tag yices.const-array: an assertion in which a const-array
@@ -1386,7 +1551,8 @@ int main(int argc, char **argv) {
                {"store-map", testStoreMap},
                {"boundary", testBoundary},
                {"ptr-index", testPtrIndex},
-               {"ite-offset", testIteOffset}};
+               {"ite-offset", testIteOffset},
+               {"fill", testFill}};
   // its own run: yices refuses the assertion after the event (fatal)
   if (argc > 1 && llvm::StringRef(argv[1]) == "const-array-log") {
     testConstArrayLog();

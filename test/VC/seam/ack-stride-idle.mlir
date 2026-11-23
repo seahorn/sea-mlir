@@ -19,9 +19,9 @@
 // IDLE: vc.ackermann-stride-idle: 1
 // IDLE-NOT: vc.ackermann-stride-broken
 // IDLE-NOT: vc.ackermann-stride: fallback
-// IDLE: result: sat
 // IDLE: replay: assert-failed
 // IDLE: validate: checked={{[0-9]+}} mismatches=0
+// IDLE: result: sat
 //
 // @mixed: one read executes (entry, the failing path needs it to be 7),
 // the other is in ^rd (5 there). The array's cell at that index is the
@@ -30,9 +30,9 @@
 // MIXED: vc.ackermann-stride-idle: 1
 // MIXED-NOT: vc.ackermann-stride-broken
 // MIXED-NOT: vc.ackermann-stride: fallback
-// MIXED: result: sat
 // MIXED: replay: assert-failed
 // MIXED: validate: checked={{[0-9]+}} mismatches=0
+// MIXED: result: sat
 // MIXED-NOT: vc.replay-no-failure
 !pm = !sea.mem<!sea.ptr<64>, i8>
 sea.program @idle {
@@ -118,10 +118,10 @@ sea.program @mixed {
 // THREE-NOT: run=2
 // THREE: vc.ackermann-stride-broken: 1
 // THREE-NOT: fallback
-// THREE: result: sat
 // THREE: vc.ack-stride-promise-broken: {{.*}} promise=P{{[123]}} what=inbounds
 // THREE-NEXT: vc.ack-stride-promise-broken-access: sea.load
 // THREE: [vc.ack-stride-promise-broken]
+// THREE: result: unknown
 // THREE-NOT: run=2
 sea.program @three {
   %m0 = sea.mem.nondet "m" [0] : !pm

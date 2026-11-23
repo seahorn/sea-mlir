@@ -23,6 +23,7 @@ add_mlir_library(SeaExpr
   Z3Error.cpp
   ArithShape.cpp
   ExprUtil.cpp
+  LogicGuard.cpp
   ConstArrayDefs.cpp
   MarshalYices.cpp
   SolverFactory.cpp

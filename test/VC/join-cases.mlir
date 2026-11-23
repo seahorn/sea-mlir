@@ -72,7 +72,7 @@ sea.program @vals {
 // MEM: cases.default-not-most-frequent: 1 scalar=0 memory=1
 // SOLVE: cases.joins: 2
 // SOLVE: result: sat
-// OFF-NOT: cases.
+// OFF-NOT: {{^}}cases.
 // OFF: result: sat
 // EQ: --vc-join-cases builds the ite joins: needs --vc-join=ite
 sea.program @mem {

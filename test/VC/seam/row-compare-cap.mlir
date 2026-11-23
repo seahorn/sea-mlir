@@ -8,8 +8,8 @@
 // CHECK-NOT: seam.alias.open.diff-object
 // CHECK: seam.alias.open.same-object: 1
 // CHECK: seam.rule.premise.a-sep: {{[1-9]}}
-// CHECK: result: sat
 // CHECK: validate: checked={{[0-9]+}} mismatches=0
+// CHECK: result: sat
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @p {

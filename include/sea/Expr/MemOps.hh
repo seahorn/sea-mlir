@@ -9,13 +9,16 @@
 //   mcopy(Md, Ms, d, s, n)   cell j:  in(j, d, n) ? Ms[s + (j - d)] : Md[j]
 //   mset(M, d, n, v)         cell j:  in(j, d, n) ? v : M[j]
 //   mhavoc(M, H, d, n)       cell j:  in(j, d, n) ? H[j] : M[j]
+//   mfill(M, d, n, data)     cell j:  in(j, d, n) ? data[j - d] : M[j]
+//                                      (n = the number of bytes, 0 < n < 2^w)
 //
 //   in(j, d, n) := (j - d) <u n        (modulo 2^w: exact for n = 0 and for a
 //                                       range that wraps around 2^w)
 //
 // Ms is the memory version a memmove reads (its source operand), so an
 // overlapping copy is exact. H is the fresh array of a memhavoc (nd.<site>),
-// one per op: every read of the term reads the same H.
+// one per op: every read of the term reads the same H. The data of mfill is
+// constant (sea.mem.fill: a global initializer; docs/design/MemFill.md).
 //
 // Like store-map (StoreMap.hh) the terms are internal: memory values of the VC
 // hold them, no solver knows them. Two things live here.
@@ -37,6 +40,12 @@
 //    select(mset(M, d, n, v), j)     = ite((j - d) <u n, v, select(M, j))
 //    select(mhavoc(M, H, d, n), j)   = ite((j - d) <u n, select(H, j),
 //    select(M, j))
+//    select(mfill(M, d, n, data), j) = ite((j - d) <u n, lookup(j - d),
+//                                          select(M, j))
+//  with lookup(k) = ite(k = 0, data[0], ite(k = 1, data[1], ...
+//  data[n-1])): seam-lean's definition `rangeFill` (the cell at distance k
+//  < n holds byte k). The rules never build this lookup: a read they do not
+//  decide reads the store expansion instead (fillStores, rowFill).
 //  and stops at a memory with no term below it (select(M, j) is kept: the
 //  solver's array theory). No assumption (no premise), no address reasoning (no
 //  ARM, no compare decided), no dependence on what the rewriter did: a
@@ -61,30 +70,102 @@
 
 namespace expr {
 
-/// One of mcopy / mset / mhavoc.
+/// One of mcopy / mset / mhavoc / mfill.
 inline bool isMemOpTerm(const Expr &e) {
-  return isOpX<MEM_COPY>(e) || isOpX<MEM_SET>(e) || isOpX<MEM_HAVOC>(e);
+  return isOpX<MEM_COPY>(e) || isOpX<MEM_SET>(e) || isOpX<MEM_HAVOC>(e) ||
+         isOpX<MEM_FILL>(e);
 }
 
 /// The memory a term writes (the result outside the range).
 inline Expr memOpBase(const Expr &t) { return t->arg(0); }
 /// The destination address d of a term.
 inline Expr memOpDst(const Expr &t) {
-  return t->arg(isOpX<MEM_SET>(t) ? 1 : 2);
+  return t->arg(isOpX<MEM_SET>(t) || isOpX<MEM_FILL>(t) ? 1 : 2);
 }
 /// The length n of a term (index units).
 inline Expr memOpLen(const Expr &t) {
-  return isOpX<MEM_COPY>(t)  ? t->arg(4)
-         : isOpX<MEM_SET>(t) ? t->arg(2)
-                             : t->arg(3);
+  return isOpX<MEM_COPY>(t)                        ? t->arg(4)
+         : isOpX<MEM_SET>(t) || isOpX<MEM_FILL>(t) ? t->arg(2)
+                                                   : t->arg(3);
 }
 
 /// The membership test in(j, d, n) = (j - d) <u n, given k = j - d.
 inline Expr memOpIn(const Expr &k, const Expr &n) { return mk<BULT>(k, n); }
 
+/// The store expansion of an mfill term \p t (seam-lean `fillStores`, the
+/// stores sea-expand-mem-fill emits on a byte memory): byte i of the data
+/// stored at d + i, in order, over the memory below. The same node for the
+/// same term (hash-consing): a rule and the boundary share it.
+inline Expr fillStores(const Expr &t) {
+  const Expr d = memOpDst(t), n = memOpLen(t);
+  const std::vector<uint8_t> &bytes = op::array::fillBytes(t);
+  unsigned w = 0;
+  [[maybe_unused]] bool num = op::bv::isBvNum(n, w);
+  assert(num && "mfill: the length is a numeral");
+  ExprFactory &ef = t->efac();
+  Expr byteVal[256];
+  Expr m = memOpBase(t);
+  for (size_t i = 0; i < bytes.size(); ++i) {
+    Expr &v = byteVal[bytes[i]];
+    if (!v)
+      v = op::bv::bvnum(mpz_class((unsigned long)bytes[i]), 8, ef);
+    Expr at = i == 0
+                  ? d
+                  : op::ptr::addressPlus(
+                        d, op::bv::bvnum(mpz_class((unsigned long)i), w, ef));
+    m = op::array::store(m, at, v);
+  }
+  return m;
+}
+
+/// sea-vc --seam-check proves a row.mfill-expand firing (the store expansion
+/// of a fill against its read equation) for fills of at most this many
+/// bytes; above it the firing is covered by seam-lean's
+/// RangeExpr.eval_mfill_eq_fillStores and not checked (docs/design/
+/// MemFill.md, "The boundary": z3 needs ~2 s at 256 bytes, > 30 s at 4096).
+inline constexpr uint64_t kFillExpandCheckCap = 64;
+
+/// The byte of an mfill term \p t at the numeral offset \p k from its
+/// destination, as a numeral (seam-lean `rangeFill_hit`); null when k is not
+/// a numeral below the length.
+inline Expr fillHit(const Expr &t, const Expr &k) {
+  unsigned w;
+  if (!k || !op::bv::isBvNum(k, w))
+    return Expr();
+  mpz_class kv = op::bv::toMpz(k);
+  const std::vector<uint8_t> &bytes = op::array::fillBytes(t);
+  if (kv >= mpz_class((unsigned long)bytes.size()))
+    return Expr();
+  return op::bv::bvnum(mpz_class((unsigned long)bytes[kv.get_ui()]), 8,
+                       t->efac());
+}
+
+/// Is the length of mfill \p t the numeral of its data's length (the term's
+/// invariant; the rules that use the data check it)?
+inline bool fillLengthOk(const Expr &t) {
+  unsigned w;
+  return op::bv::isBvNum(memOpLen(t), w) &&
+         op::bv::toMpz(memOpLen(t)) ==
+             mpz_class((unsigned long)op::array::fillBytes(t).size());
+}
+
+/// Do all bytes of \p bytes have one value (a splat initializer)? Then \p v
+/// is that byte.
+inline bool fillSplat(const std::vector<uint8_t> &bytes, uint8_t &v) {
+  if (bytes.empty())
+    return false;
+  v = bytes[0];
+  for (uint8_t b : bytes)
+    if (b != v)
+      return false;
+  return true;
+}
+
 /// The hit form of a read of term \p t at \p j, with k = j - d: the source
 /// read select(Ms, s + k) for mcopy, v for mset, select(H, j) for mhavoc.
+/// Not for mfill (fillHit: a numeral k only).
 inline Expr memOpHit(const Expr &t, const Expr &j, const Expr &k) {
+  assert(!isOpX<MEM_FILL>(t) && "mfill: fillHit");
   if (isOpX<MEM_COPY>(t))
     return op::array::select(t->arg(1), op::ptr::addressPlus(t->arg(3), k));
   if (isOpX<MEM_SET>(t))
@@ -92,11 +173,35 @@ inline Expr memOpHit(const Expr &t, const Expr &j, const Expr &k) {
   return op::array::select(t->arg(1), j);
 }
 
+/// The lookup of the byte at the offset \p k (an index-width bit-vector,
+/// below the length) in the data of mfill \p t: an ite per byte on k, the
+/// last byte the default.
+inline Expr fillLookup(const Expr &t, const Expr &k) {
+  const std::vector<uint8_t> &bytes = op::array::fillBytes(t);
+  unsigned w = 0;
+  (void)op::bv::isBvNum(memOpLen(t), w);
+  ExprFactory &ef = t->efac();
+  Expr byteVal[256];
+  auto byte = [&](uint8_t b) -> Expr {
+    Expr &v = byteVal[b];
+    if (!v)
+      v = op::bv::bvnum(mpz_class((unsigned long)b), 8, ef);
+    return v;
+  };
+  Expr res = byte(bytes.back());
+  for (size_t i = bytes.size() - 1; i-- > 0;)
+    res = mk<ITE>(mk<EQ>(k, op::bv::bvnum(mpz_class((unsigned long)i), w, ef)),
+                  byte(bytes[i]), res);
+  return res;
+}
+
 /// The defining read equation of term \p t at \p j (the header), one level:
-/// ite((j - d) <u n, <hit>, select(base, j)).
+/// ite((j - d) <u n, <hit>, select(base, j)); for mfill the hit is the
+/// lookup of j - d in the data.
 inline Expr memopRead(const Expr &t, const Expr &j) {
   Expr k = mk<PTR_DIFF>(j, memOpDst(t));
-  return mk<ITE>(memOpIn(k, memOpLen(t)), memOpHit(t, j, k),
+  return mk<ITE>(memOpIn(k, memOpLen(t)),
+                 isOpX<MEM_FILL>(t) ? fillLookup(t, k) : memOpHit(t, j, k),
                  op::array::select(memOpBase(t), j));
 }
 
@@ -491,6 +596,23 @@ private:
         return true;
       }
       setR(m, j, mk<ITE>(t(m->arg(0)), r(m->arg(1), j), r(m->arg(2), j)));
+      st.pop_back();
+      return true;
+    }
+    if (isOpX<MEM_FILL>(m)) {
+      // the read equation (the header): one compare, the lookup of the
+      // offset in the data, the read below
+      if (f.stage == 0) {
+        st[top].stage = 1;
+        needT(st, memOpDst(m));
+        needR(st, memOpBase(m), j);
+        return true;
+      }
+      Expr k = mk<PTR_DIFF>(j, t(memOpDst(m))); // erased with the nodes after
+      ++m_translated;
+      setR(m, j,
+           mk<ITE>(memOpIn(k, memOpLen(m)), fillLookup(m, k),
+                   r(memOpBase(m), j)));
       st.pop_back();
       return true;
     }

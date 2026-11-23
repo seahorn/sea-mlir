@@ -76,18 +76,19 @@ result: sat
 - `result: unsat` iff every part is unsat. `sat` if some part's
   counterexample replays: an execution reaches that access out of its
   object, every earlier check holding. Otherwise `unknown` (exit 3), or
-  the worst error status of a part (1, 2, 4, 5 or 6). The two can meet:
-  with one sat part and one part that failed, the job prints
-  `result: sat` and exits with the failed part's status. A failed part's
+  the worst error status of a part (1, 2, 4, 5 or 6). The `result:` line
+  is a verdict only with exit 0: with one sat part and one part that
+  failed, the job exits with the failed part's status and prints
+  `result: unknown`. A failed part's
   line ends with `error=<kind>`, and `check-inb.part-error` gives its
   first error line.
 - A failed premise is the answer (`--symbolic-size=assert`): a part whose
   run ends with `premise.failed` (status 4) is `result=premise-failed`,
   counted as `premise=` (not `other`), and its `premise.failed:` line
   follows the part's line, with `part=<i>`, naming the allocation, its
-  size and its room. The job then prints `result: sat` and exits 4, the
-  premise class of a single run; with a sat part as well, the same (the
-  rule above: sat, the failed part's status). Nothing is discharged
+  size and its room. The job then exits 4 and prints `result: unknown`,
+  as a single sea-vc run with a failed premise does; with a sat part as
+  well, the same (the failed part's status). Nothing is discharged
   (`check-inb.discharges: none`).
 - `check-inb.discharges: a-inb a-sep a-null a-nowrap` comes with
   `result: unsat`: every access of every execution within the bound stays
@@ -176,6 +177,16 @@ The job's own options go to every part, with two defaults of the job:
   backend (`docs/design/Ackermann.md`, "Read-only arrays as functions").
   It is passed for z3 only, where it helped; for Yices and Bitwuzla it is
   not passed (they were not measured with it).
+- With `--z3-logic=L` (z3 parts), the default follows L, since the logic
+  guard holds every part's query to L (`vc.z3-logic-mismatch`) and a part
+  that reads memory keeps it as an array, or with `--ro-arrays=uf` as a
+  function (`--ackermannize=off`): L with `UF` keeps `--ro-arrays=uf`; L
+  with arrays but no `UF` (`QF_ABV`) gets `--ro-arrays=array`
+  (`ro-arrays=array (--z3-logic)` on the `check-inb.solver:` line); L
+  with neither (`QF_BV`) is refused before any part runs
+  (`check-inb.z3-logic`): `--ro-arrays=array` would not help, every part
+  that reads memory would fail. An explicit `--ro-arrays=` wins; a part
+  outside L then fails with `vc.z3-logic-mismatch`.
 
 Measured (`h2fc-blowup-tx-reach-ring.mlir`, `--check-inb --lower --seam
 --widen-memory=4 --ackermannize=off --timeout=300`, 141 parts): z3 took

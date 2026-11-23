@@ -9,9 +9,9 @@
 // RUN: sea-vc %s --lower --seam --seam-wide --seam-words=auto --words-check 2>&1 | FileCheck %s --check-prefix=CHECKW
 // RUN: sea-vc %s --lower --seam --seam-wide --seam-words=all 2>&1 | FileCheck %s
 
-// CHECK: result: sat
 // CHECK: replay: assert-failed
 // CHECK: validate: {{.*}} mismatches=0
+// CHECK: result: sat
 // CHECKW: words.check: ok
 // CHECKW: result: sat
 

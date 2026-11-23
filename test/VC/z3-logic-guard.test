@@ -1,0 +1,147 @@
+// --z3-logic=L: z3's solver for logic L drops a term it does not understand
+// and goes on, which can answer a wrong sat. Every term given to that solver
+// is checked against L first (sea/Expr/Smt/LogicGuard.h); a term outside L
+// is the error vc.z3-logic-mismatch, naming the construct and the logic.
+// RUN: split-file %s %t
+//
+// arrays: the query keeps its array (no --seam: no Ackermann lowering), so
+// a logic without A is refused; QF_ABV / QF_AUFBV / ALL decide it (unsat).
+// RUN: not sea-vc %t/array.mlir --lower --z3-logic=QF_BV 2>&1 | FileCheck %s --check-prefix=NOARR
+// RUN: not sea-vc %t/array.mlir --lower --z3-logic=QF_UFBV 2>&1 | FileCheck %s --check-prefix=NOARR
+// NOARR: Error: {{.*}}logic QF_{{(UF)?}}BV{{.*}}an array term (select){{.*}}[vc.z3-logic-mismatch]
+// NOARR-NOT: result:
+// the --split part solvers and the reach solvers get the logic too
+// RUN: not sea-vc %t/array.mlir --lower --split=nd.4 --z3-logic=QF_BV 2>&1 | FileCheck %s --check-prefix=NOARR
+// RUN: not sea-vc %t/reach.mlir --lower --reach --z3-logic=QF_BV 2>&1 | FileCheck %s --check-prefix=NOARR
+// RUN: sea-vc %t/reach.mlir --lower --reach --z3-logic=QF_ABV 2>&1 | FileCheck %s --check-prefix=REACH
+// REACH-NOT: z3-logic-mismatch
+// REACH: reach.summary: targets=2 reachable=1 unreachable=1 unknown=0
+// RUN: sea-vc %t/array.mlir --lower --z3-logic=QF_ABV 2>&1 | FileCheck %s --check-prefix=UNSAT
+// RUN: sea-vc %t/array.mlir --lower --z3-logic=QF_AUFBV 2>&1 | FileCheck %s --check-prefix=UNSAT
+// RUN: sea-vc %t/array.mlir --lower --z3-logic=ALL 2>&1 | FileCheck %s --check-prefix=UNSAT
+// UNSAT-NOT: z3-logic-mismatch
+// UNSAT: result: unsat
+//
+// uninterpreted functions: --ro-arrays=uf states the read-only array as a
+// function of arity 1, which QF_ABV does not admit; QF_UFBV and QF_AUFBV do.
+// RUN: not sea-vc %t/ro.mlir --lower --ackermannize=off --ro-arrays=uf --z3-logic=QF_ABV 2>&1 | FileCheck %s --check-prefix=NOUF
+// NOUF: Error: {{.*}}logic QF_ABV{{.*}}an uninterpreted function '{{.*}}' of arity 1{{.*}}[vc.z3-logic-mismatch]
+// NOUF-NOT: result:
+// RUN: sea-vc %t/ro.mlir --lower --ackermannize=off --ro-arrays=uf --z3-logic=QF_UFBV 2>&1 | FileCheck %s --check-prefix=UNSAT
+// RUN: sea-vc %t/ro.mlir --lower --ackermannize=off --ro-arrays=uf --z3-logic=QF_AUFBV 2>&1 | FileCheck %s --check-prefix=UNSAT
+//
+// the check-inb parts get the logic (each part is a sea-vc process of its
+// own; --check-inb needs --ackermannize=off, so a part that reads memory
+// keeps an array, or with --ro-arrays=uf a function): a logic with UF keeps
+// the z3 default --ro-arrays=uf, one with arrays but no UF gets
+// --ro-arrays=array, one with neither is refused before any part runs
+// RUN: sea-vc %t/inb.mlir --check-inb --lower --seam --ackermannize=off --z3-logic=QF_ABV 2>&1 | FileCheck %s --check-prefix=INBA
+// INBA: check-inb.solver: z3 (--z3-logic) ro-arrays=array (--z3-logic)
+// INBA: result: unsat
+// RUN: sea-vc %t/inb.mlir --check-inb --lower --seam --ackermannize=off --z3-logic=QF_AUFBV 2>&1 | FileCheck %s --check-prefix=INBAUF
+// INBAUF: check-inb.solver: z3 (--z3-logic) ro-arrays=uf (default)
+// INBAUF: result: unsat
+// RUN: not sea-vc %t/inb.mlir --check-inb --lower --seam --ackermannize=off --z3-logic=QF_BV 2>&1 | FileCheck %s --check-prefix=INBBV
+// INBBV: Error: --check-inb: --z3-logic=QF_BV admits neither arrays nor uninterpreted functions{{.*}}[check-inb.z3-logic]
+// INBBV-NOT: check-inb.part:
+// INBBV-NOT: result:
+// an explicit --ro-arrays= wins: the part outside the logic fails
+// RUN: not sea-vc %t/inb.mlir --check-inb --lower --seam --ackermannize=off --ro-arrays=uf --z3-logic=QF_ABV 2>&1 | FileCheck %s --check-prefix=INBRO
+// INBRO: check-inb.part: 0 {{.*}}result=error {{.*}}error=vc.z3-logic-mismatch
+//
+// a logic without bit-vectors: the first bit-vector term is refused
+// RUN: not sea-vc %t/array.mlir --lower --z3-logic=QF_LIA 2>&1 | FileCheck %s --check-prefix=NOBV
+// NOBV: Error: {{.*}}logic QF_LIA{{.*}}bit-vector{{.*}}[vc.z3-logic-mismatch]
+//
+// a name the guard has no table for is refused before any solving
+// RUN: not sea-vc %t/array.mlir --lower --z3-logic=QF_IDL 2>&1 | FileCheck %s --check-prefix=IDL
+// IDL: --z3-logic: unknown logic 'QF_IDL': difference logic
+// RUN: not sea-vc %t/array.mlir --lower --z3-logic=QF_FP 2>&1 | FileCheck %s --check-prefix=FP
+// FP: --z3-logic: unknown logic 'QF_FP': not a logic the logic guard has a table for
+//
+// Quantifiers, Int / Real terms and nonlinear arithmetic: no sea-vc query
+// has them; the unit test covers them (test/Tools/solver-factory.test).
+
+//--- array.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @logic {
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %c16 = sea.const 16 : i64
+  %o1 = sea.alloca %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %o2 = sea.alloca %c16 align 8 [2] : i64 -> !sea.ptr<64>
+  %o3 = sea.alloca %c16 align 8 [3] : i64 -> !sea.ptr<64>
+  %b = sea.nondet "b" [4] : i1
+  %p = sea.select %b, %o2, %o3 : !sea.ptr<64>
+  %v1 = sea.const 1 : i8
+  %v9 = sea.const 9 : i8
+  %m1 = sea.store %m0[%o1], %v1 inplace : !m, i8
+  %m2 = sea.store %m1[%p], %v9 inplace : !m, i8
+  %x = sea.load %m2[%o1] : !m -> i8
+  %ok = sea.icmp eq, %x, %v1 : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- ro.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @ro {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %k = sea.nondet "k" [2] : i64
+  %j = sea.nondet "j" [3] : i64
+  %pk = sea.ptr.add %a, %k : !sea.ptr<64>, i64
+  %pj = sea.ptr.add %a, %j : !sea.ptr<64>, i64
+  %xk = sea.load %m0[%pk] : !m -> i8
+  %xj = sea.load %m0[%pj] : !m -> i8
+  %eq = sea.icmp eq, %k, %j : i64
+  %ne = sea.icmp ne, %xk, %xj : i8
+  %bad = sea.and %eq, %ne : i1
+  %t = sea.const 1 : i1
+  %ok = sea.xor %bad, %t : i1
+  sea.assert %ok
+  sea.halt
+}
+//--- reach.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @logic {
+  %z = sea.const 0 : i8
+  %m0 = sea.mem.const %z : !m
+  %c16 = sea.const 16 : i64
+  %o1 = sea.alloca %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %o2 = sea.alloca %c16 align 8 [2] : i64 -> !sea.ptr<64>
+  %o3 = sea.alloca %c16 align 8 [3] : i64 -> !sea.ptr<64>
+  %b = sea.nondet "b" [4] : i1
+  %p = sea.select %b, %o2, %o3 : !sea.ptr<64>
+  %v1 = sea.const 1 : i8
+  %v9 = sea.const 9 : i8
+  %m1 = sea.store %m0[%o1], %v1 inplace : !m, i8
+  %m2 = sea.store %m1[%p], %v9 inplace : !m, i8
+  %x = sea.load %m2[%o1] : !m -> i8
+  %ok = sea.icmp eq, %x, %v1 : i8
+  %ne = sea.icmp ne, %x, %v1 : i8
+  sea.assume %ne
+  %tt = sea.const 1 : i1
+  sea.assert %tt
+  sea.halt
+}
+//--- inb.mlir
+!m = !sea.mem<!sea.ptr<64>, i8>
+sea.program @inb {
+  %m0 = sea.mem.nondet "m" [0] : !m
+  %c16 = sea.const 16 : i64
+  %a = sea.malloc %c16 align 8 [1] : i64 -> !sea.ptr<64>
+  %i8 = sea.load %m0[%a] : !m -> i8
+  %c15 = sea.const 15 : i8
+  %i8m = sea.and %i8, %c15 : i8
+  %i = sea.zext %i8m : i8 to i64
+  %q = sea.ptr.add %a, %i : !sea.ptr<64>, i64
+  %x = sea.load %m0[%q] : !m -> i8
+  %z = sea.const 0 : i8
+  %ok = sea.icmp uge, %x, %z : i8
+  sea.assert %ok
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

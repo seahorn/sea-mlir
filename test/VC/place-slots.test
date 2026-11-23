@@ -14,8 +14,8 @@
 // NONE: place.objects: 2
 // NONE: vc.narrow-base-aligned: 1
 // NONE: vc.narrow-base-unaligned: 3
-// NONE: result: sat
 // NONE: validate: checked={{[0-9]+}} mismatches=0
+// NONE: result: sat
 
 // aligned (the default): the global's slot is 4 units, the heap object's 8192, at
 // 0x0804a000; same verdict, the model replays.
@@ -29,8 +29,8 @@
 // ALIGNED: place.over-aligned: 2
 // ALIGNED: vc.narrow-base-aligned: 4
 // ALIGNED: vc.narrow-base-unaligned: 0
-// ALIGNED: result: sat
 // ALIGNED: validate: checked={{[0-9]+}} mismatches=0
+// ALIGNED: result: sat
 // RUN: %{vc} %t/p.mlir --place-slots=aligned --vc-fold-top-eqs=false --smt2 2>/dev/null | FileCheck %s --check-prefix=BASE
 // BASE: (= obj.heap.1 #x000000000804a000)
 
@@ -48,8 +48,8 @@
 // RUN: %{vc} %t/p.mlir --place-in=%t/odd.place 2>&1 | FileCheck %s --check-prefix=ODD
 // ODD: vc.narrow-base-aligned: 1
 // ODD: vc.narrow-base-unaligned: 3
-// ODD: result: sat
 // ODD: validate: checked={{[0-9]+}} mismatches=0
+// ODD: result: sat
 
 // Slots that do not fit the stack window: the plain placement, reported.
 // RUN: sea-vc %t/big.mlir --lower --place-slots=aligned --vcgen-only 2>&1 | FileCheck %s --check-prefix=FALLBACK

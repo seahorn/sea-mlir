@@ -1201,10 +1201,11 @@ which repeats one value. The cells written must fit the index space
 (`N * c < 2^w`). `inplace` and `tracked` are those of the other
 updates (a tracked fill marks the object of `addr` as modified).
 
-The VC does not encode it: the VC lowering expands it into one store
-per cell (`sea-expand-mem-fill`, after `sea-widen-memory`, which packs
-the bytes of a fill on a widened memory into words), so every memory
-mode sees stores; docs/design/MemFill.md.
+The VC lowering expands it into one store per cell
+(`sea-expand-mem-fill`, after `sea-widen-memory`, which packs the bytes
+of a fill on a widened memory into words), except under `sea-vc
+--seam`, where a fill of a byte memory stays and is encoded as the
+`mfill` term; docs/design/MemFill.md.
 
 ```mlir
 %m1 = sea.mem.fill %m0[%p], dense<[1, 2, 3]> : tensor<3xi8> inplace : !sea.mem<!sea.ptr<64>, i8>

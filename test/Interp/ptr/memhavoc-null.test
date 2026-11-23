@@ -34,10 +34,10 @@
 // RUN: bash -c 'sea-vc %t/compact.mlir --lower --place-slots=none --replay-original --memhavoc-null=error > %t.err.out 2>&1; test $? -eq 4'
 // RUN: FileCheck %s --check-prefix=VCERR < %t.err.out
 // VCERR-NOT: assume.memhavoc-null-noop: vc
-// VCERR: result: sat
 // VCERR: replay: assert-failed
 // VCERR: replay.original: status=memory-error
 // VCERR: [vc.replay-original-memory-error]
+// VCERR: result: unknown
 // REQUIRES: z3
 
 //--- null.mlir

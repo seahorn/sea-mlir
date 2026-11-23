@@ -4,8 +4,8 @@
 
 // Mul overflow is native for z3 (no lowering needed); Yices needs the
 // expansion. The assertion "no signed overflow" fails for some x, y.
-// CHECK: result: sat
 // CHECK: replay: assert-failed
+// CHECK: result: sat
 // YICES: vc.intrinsic
 sea.program @main {
   %x = sea.nondet "nondet_u8" [0] : i8

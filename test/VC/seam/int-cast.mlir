@@ -4,8 +4,8 @@
 // sat (the assertion fails).
 // RUN: sea-vc %s --lower | FileCheck %s
 // RUN: sea-vc %s --lower --seam | FileCheck %s
-// CHECK: result: sat
 // CHECK: replay: assert-failed
+// CHECK: result: sat
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @int {
   %z = sea.const 0 : i8

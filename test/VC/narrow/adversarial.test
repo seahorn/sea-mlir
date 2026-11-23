@@ -15,9 +15,9 @@
 // t1bad: the same with the wrong branch compared: sat, and the model
 // replays and validates (the out-of-range read does not execute).
 // RUN: sea-vc %t/t1bad.mlir --lower --seam --narrow-offsets 2>&1 | FileCheck %s --check-prefix=T1BAD
-// T1BAD: result: sat
 // T1BAD: replay: assert-failed
 // T1BAD: validate: checked={{[0-9]+}} mismatches=0
+// T1BAD: result: sat
 //
 // t2: the read address is an ite of two addresses into one object; its
 // bound is discharged through the ites of the index and the premise.
@@ -37,18 +37,18 @@
 // T3: result: unsat
 // T3: narrow-check: indices=2 checked=2 valid=2 invalid=0 unknown=0 unexpressible=0 not-narrowed=0 syntactic=2
 // RUN: sea-vc %t/t3.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=T3OFF
-// T3OFF: result: sat
 // T3OFF: validate: checked={{[0-9]+}} mismatches=0
+// T3OFF: result: sat
 //
 // t5: as t3 with x == 7 && y == 7 failing: a model with i < 16 reads both
 // cells at p + i (the second narrowed from p + i + 16); the run reads p + i
 // + 16 and does not fail. Validation sees the narrowed cell differ, and the
 // answer is classified as resting on a broken A-INB: status 4.
 // RUN: not sea-vc %t/t5.mlir --lower --seam --narrow-offsets --brunch-stats 2>&1 | FileCheck %s --check-prefix=T5
-// T5: result: sat
 // T5: validate: checked={{[0-9]+}} mismatches={{[1-9]}}
 // T5: seam.narrow-inb-violation: reads=1
 // T5: vc.narrow-inb-spurious
+// T5: result: unknown
 // T5: BRUNCH_STAT status 4
 //
 // memmove: the load of b + i reads the copy of a: the select at a + i is
@@ -57,8 +57,8 @@
 // RUN: sea-vc %t/mcopy.mlir --lower --seam --narrow-offsets 2>&1 | FileCheck %s --check-prefix=MCOPY
 // MCOPY: vc.narrow-skip-not-own: 1
 // MCOPY: vc.narrow-reads: 1
-// MCOPY: result: sat
 // MCOPY: validate: checked={{[0-9]+}} mismatches=0
+// MCOPY: result: sat
 //
 // shared: the load at a + i and the memmove's source read for the load at
 // b + i are one node (the read's normal form is a + i). Only a load's own
@@ -80,8 +80,8 @@
 // its selects are not own.
 // RUN: sea-vc %t/mcopy.mlir --lower --seam --narrow-offsets --seam-row-expand=0 2>&1 | FileCheck %s --check-prefix=MCOPYB
 // MCOPYB: vc.narrow-skip-not-own: {{[1-9]}}
-// MCOPYB: result: sat
 // MCOPYB: validate: checked={{[0-9]+}} mismatches=0
+// MCOPYB: result: sat
 //
 // --narrow-check with an obligation it does not prove (z3 rlimit 1):
 // reported, and the run exits 7.
@@ -89,6 +89,16 @@
 // UNPROVEN: narrow-check-unknown: index={{.*}} reason=rlimit
 // UNPROVEN: vc.narrow-check-unproven
 // UNPROVEN: BRUNCH_STAT status 7
+// The unsat of a run whose narrowing is not discharged is no verdict:
+// status 7 and one `result: unknown`.
+// RUN: bash -c 'sea-vc %t/t1.mlir --lower --seam --narrow-offsets --narrow-check --narrow-check-rlimit=1 > %t.unproven 2>&1; test $? -eq 7'
+// RUN: FileCheck %s --check-prefix=UNPROVEN-RES < %t.unproven
+// RUN: grep -c '^result:' %t.unproven | FileCheck %s --check-prefix=ONE
+// UNPROVEN-RES: solver-answer: unsat
+// UNPROVEN-RES-NOT: result: unsat
+// UNPROVEN-RES: {{^}}result: unknown
+// UNPROVEN-RES: [vc.narrow-check-unproven]
+// ONE: {{^}}1{{$}}
 // Under --seam-check alone the same unknown is listed and, as its other
 // unknowns, does not change the exit status.
 // RUN: sea-vc %t/t1.mlir --lower --seam --narrow-offsets --seam-check --narrow-check-rlimit=1 --brunch-stats 2>&1 | FileCheck %s --check-prefix=SCUNK

@@ -20,9 +20,9 @@
 // MAX4: vc.widen-memory: bytes=1 classes=4 k=4 other=0 widened-2=1 widened-4=2 widened-8=0
 // WORDS: words.check: ok
 // UNSAT: result: unsat
-// SAT: result: sat
 // SAT: validate: {{.*}} mismatches=0
 // ORIG: replay.original: status=assert-failed {{.*}}match=yes
+// SAT: result: sat
 // CHECKED: seam-check: {{.*}} invalid=0
 
 !m = !sea.mem<!sea.ptr<64>, i8>

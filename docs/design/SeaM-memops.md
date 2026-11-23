@@ -7,8 +7,9 @@
 > A-INB below names the stronger property that implies them.
 
 Status: Step 1 (MCOPY / MSET / MHAVOC, read rules, boundary, and `--seam`
-without `sea-expand-memset`) is implemented. Steps 2 (MFILL) and 3 (word
-layouts) are not started.
+without `sea-expand-memset`) is implemented. Step 2 (MFILL) is
+implemented for byte memories (docs/design/MemFill.md, "SeaM"; section
+"Step 2 implementation" below). Step 3 (word layouts) is not started.
 
 ## Why
 
@@ -48,7 +49,7 @@ memory values may hold them; no solver sees them (the boundary,
 | `MCOPY(Md, Ms, d, s, n)` | `sea.memmove` | in(j, d, n) ? Ms[s + (j - d)] : Md[j] |
 | `MSET(M, d, n, v)` | `sea.memset` | in(j, d, n) ? v (one unit; a word cell is k copies) : M[j] |
 | `MHAVOC(M, H, d, n)` | `sea.memhavoc` | in(j, d, n) ? H[j] : M[j] (H a fresh array, as now) |
-| `MFILL(M, d, bytes)` | `sea.memfill` (new op) | in(j, d, len) ? bytes[j - d] : M[j] |
+| `MFILL(M, d, n, bytes)` | `sea.mem.fill` | in(j, d, n) ? bytes[j - d] : M[j] (n = len(bytes)) |
 
 - `in(j, d, n) := (j - d) <u n`, modulo 2^w. One compare; no no-wrap
   premise; n = 0 gives false (a no-op). Exact for wrapping ranges too: with
@@ -253,11 +254,36 @@ array at j and is left as is.
   vcc / array-crafted bench: no verdict change within the old domain;
   every change explained (n > K).
 
+## Step 2 implementation
+
+`MEM_FILL` (`mfill(M, d, n, data)`, n the data's length as a numeral) is
+the fourth memory-operation term: `isMemOpTerm`, `memOpDst`, `memOpLen`
+cover it, so the range machinery (decideIn, accessRanges, rangeInBounds,
+addr.prune-size0 over its range, shadow memories, leaf splitting) is
+shared. What differs, and why (docs/design/MemFill.md, "SeaM", has the
+rule table with the seam-lean theorem of each rule):
+
+- the hit form: a numeral offset only (the data byte); a read whose
+  offset is not decided falls back to the store expansion of the fill
+  (`row.mfill-expand`), not to one range test: the hit form of a symbolic
+  offset would be a lookup in the data, outside the Lean scope;
+- the boundary: `select(mfill, j)` is its read equation, one compare and
+  a lookup of j - d in the data (seam-lean's `rangeFill`; not its
+  `RangeExpr.lower`, the store chain: MemFill.md says why);
+- a fill of one repeated byte is an `mset` (`mem.fill-replicate`);
+- the encoding: `sea-expand-mem-fill{keep-bytes}` keeps byte-memory fills
+  under `--seam`; word and keyed memories are expanded and counted
+  (`vc.expand-mem-fill`).
+
+The [OPEN] above on store-map entries stays open for MFILL: a fill is a
+term, and ends the store-map run below it as the others do.
+
 ## Order
 
 1. MCOPY / MSET / MHAVOC terms, the read rules, `solverTerm`; `--seam`
    skips `sea-expand-memset`. Tests, array_list_swap acceptance.
-2. `sea.memfill` op, exporter change in SeaHorn, MFILL term.
+2. `sea.mem.fill` op (done), MFILL term (done, byte memories), exporter
+   change in SeaHorn.
 3. Word layouts.
 
 ## Step 1 implementation

@@ -19,8 +19,8 @@
 // an 8-byte load, split into bytes (ptr.add of a constant to the GEP: still
 // checked), bounded.
 // HOLDS: result: unsat
-// BROKEN: result: sat
 // BROKEN: validate: checked={{[0-9]+}} mismatches=0
+// BROKEN: result: sat
 // BOTH: vc.check-jobs
 !pm = !sea.mem<!sea.ptr<64>, i8>
 sea.program @bounded {

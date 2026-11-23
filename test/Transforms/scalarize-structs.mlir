@@ -12,8 +12,8 @@
 // CHECK-NOT: !sea.struct
 // STATUS: status: assert-failed
 // RAW: vc.struct
-// VC: result: sat
 // VC: replay: assert-failed
+// VC: result: sat
 sea.program @main {
   %a = sea.nondet "nondet_u16" [0] : i16
   %b = sea.nondet "nondet_u32" [1] : i32

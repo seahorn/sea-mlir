@@ -10,14 +10,14 @@
 // agrees. The mutant: the expanded one copies 3 bytes, a cell differs.
 // CHECK: vc.expand-memmove: k=4 expanded=1 bytes=4 kept-symbolic=1 kept-over-k=1
 // CHECK: result: unsat
-// MUT: result: sat
 // MUT: replay: assert-failed
+// MUT: result: sat
 // @interleaved: the same check with q's copy written by hand as a chain
 // that loads each byte from the current version right before storing it
 // (no memmove): sat, since an overlapping copy then reads bytes it already
 // wrote. This pins that the check sees the order of loads and stores.
-// INTER: result: sat
 // INTER: replay: assert-failed
+// INTER: result: sat
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @equiv {
   %m0 = sea.mem.nondet "m" [1] : !m

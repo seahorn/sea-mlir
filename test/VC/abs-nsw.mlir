@@ -5,8 +5,8 @@
 // nsw on sea.abs is LLVM's is_int_min_poison: a promise that x is not the
 // minimal signed value. The VC ignores it (the value wraps), so
 // "abs(x) >=s 0" fails at INT_MIN; assumed by sea-wrap-flags, it holds.
-// WRAP: result: sat
 // WRAP: replay: assert-failed
+// WRAP: result: sat
 // ASSUME: result: unsat
 // mode=assert checks it with the negation's overflow bit.
 // ASSERT: sea.nego

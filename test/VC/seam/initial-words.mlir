@@ -35,22 +35,22 @@
 // OFFSET: words.check: ok
 // OFFSET: words.masked-reads: 2
 // OFFSET: result: unsat
-// SAT: result: sat
 // SAT: words.model: decoded={{[1-9][0-9]*}} defaulted=0
 // SAT: replay: assert-failed
 // SAT: validate: checked={{[0-9]+}} mismatches=0
+// SAT: result: sat
 // HAVOC: words.check: ok
 // HAVOC: words.chosen: 2
-// HAVOC: result: sat
 // HAVOC: replay: assert-failed
 // HAVOC: validate: checked={{[0-9]+}} mismatches=0
+// HAVOC: result: sat
 // TRUSTED: words.check: ok
 // TRUSTED: words.aligned-by-annotation: 1
 // TRUSTED: result: unsat
 // MISLEAD: words.check: ok
-// MISLEAD: result: sat
 // MISLEAD: vc.words-align-trusted
 // MISLEAD: vc.replay-no-failure
+// MISLEAD: result: unknown
 // AUTO: words.chosen: 0
 // AUTO: words.array: name=nd.0_0 chosen=0 {{.*}} reason=byte-dominated
 // NOSEAM: --seam-words needs --seam
@@ -200,9 +200,9 @@ sea.program @offset {
 // word cache was keyed by the index alone, so the second array reused the
 // first array's word: a wrong unsat. Keyed by (array, index) now.
 // CROSS-NOT: words.check: mismatch
-// CROSS: result: sat
 // CROSS: replay: assert-failed
 // CROSS: validate: checked={{[0-9]+}} mismatches=0
+// CROSS: result: sat
 !mc = !sea.mem<!sea.ptr<64>, i8>
 sea.program @cross_array {
   %m0 = sea.mem.nondet "a" [0] : !mc

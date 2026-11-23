@@ -4,10 +4,10 @@
 // RUN: %if yices %{ sea-vc %s --program=safe --solver=yices | FileCheck %s --check-prefix=SAFE %}
 
 // y = x < 10 ? x + x : 1; assert y < 18 fails only for x = 9.
-// BUG: result: sat
 // BUG: nondet: site=0 callee=nondet_u8 width=8 value=9
 // BUG: replay: assert-failed
 // BUG: validate: checked={{[0-9]+}} mismatches=0
+// BUG: result: sat
 sea.program @bug {
   %x = sea.nondet "nondet_u8" [0] : i8
   %c10 = sea.const 10 : i8

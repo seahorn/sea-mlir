@@ -11,11 +11,11 @@
 // assert-at falls back to the last located op, inside the callee.
 // RUN: sea-vc %s --program=unlocated --lower | FileCheck %s --check-prefix=UNLOC
 
-// LOC: result: sat
 // LOC: replay: assert-failed{{$}}
 // LOC-NEXT: replay: assert-at: main.c:33:3{{$}}
 // LOC: replay: assert-op: main.c:33:3{{$}}
 // LOC: replay: assert-path: main.c:33:3 <- main.c:30:7{{$}}
+// LOC: result: sat
 // INTERP: status: assert-failed
 // INTERP: assert-at: main.c:33:3{{$}}
 // INTERP: assert-op: main.c:33:3{{$}}
@@ -37,11 +37,11 @@ sea.program @located {
   sea.halt loc("main.c":33:3)
 }
 
-// UNLOC: result: sat
 // UNLOC: replay: assert-failed{{$}}
 // UNLOC-NEXT: replay: assert-at: verify.c:12:3 inlined-at=main.c:31:7{{$}}
-// UNLOC: replay: assert-op: {{.*}}assert-at-reach.mlir:[[#@LINE+16]]:3{{$}}
+// UNLOC: replay: assert-op: {{.*}}assert-at-reach.mlir:[[#@LINE+17]]:3{{$}}
 // UNLOC: replay: assert-path: main.c:30:7{{$}}
+// UNLOC: result: sat
 sea.program @unlocated {
   %x = sea.nondet "nd_u8" [0] : i8 loc("main.c":20:11)
   %c5 = sea.const 5 : i8 loc("main.c":30:11)
