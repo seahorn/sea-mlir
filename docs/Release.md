@@ -1,4 +1,4 @@
-# sea-mlir 0.4.0
+# sea-mlir 0.5.0
 
 This release freezes the functionality of sea-mlir so that applications can
 build on a fixed version instead of the development branch. It is a

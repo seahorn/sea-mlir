@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.5.0
+
+A minor release: the solver pins change (a dependency switch with behaviour
+change) and the `sea-seam-export` output changes incompatibly (schema 5)
+(docs/Release.md, "Version numbers of the 0.x preview"). Triage verdict
+differences against v0.4.0, which stays the compare point on the old pins
+(z3 5.3.3, Yices 2.7.0).
+
+### Verdict changes
+- None are expected from the code changes. The pin switch was measured
+  against v0.4.0: lit passes, the 228 vcc jobs give the same verdicts, and
+  firedancer hard (120 jobs) has no verdict disagreement and no replay
+  mismatch. Two jobs are newly solved (`txn-mut-programid-zero`,
+  `txn-mut-writable-nonstrict`) and none is lost. (#144)
+
+### Output and command-line changes
+- Solver pins: z3 moves to the master commit `bbd46c9` (it reports 5.4.2;
+  a master commit, not a release) and Yices to 2.8.0. Bitwuzla stays 0.9.1.
+  `sea-vc --version` shows z3 5.4.2.0 and yices 2.8.0. Models and timings
+  can differ from v0.4.0 for solver reasons. (#144)
+- `sea-seam-export` writes schema 5. An object is a segment node,
+  `{"op":"segment","sort":"ptr","bits":n,"name":"obj.<k>","addr":"<numeral>"}`,
+  and the layout equations `obj.<k> = a` leave `side`; `erased_side` keeps
+  them, as the solver sees them. Schema 3 readers must be updated. (#145)
+- The counter `vc.fold-top-eqs-skipped-ptr` is renamed
+  `vc.fold-top-eqs-skipped-base`. `--vc-fold-top-eqs` now skips only a fact
+  that mentions an object (outside a memory read); facts on loaded
+  pointers, their integer values and differences are substituted. Without
+  `--seam` there are no segments, so under `--simplify --vc-fold-top-eqs`
+  pointer facts are now substituted too; the substitution is exact and the
+  option is opt-in. (#145)
+- Diagnostics flush stdout first, so the output of `2>&1` is in program
+  order. Before, a diagnostic could appear inside a line printed earlier,
+  at a position set by the buffer size. Five tests that checked the old
+  order now check the new one. (#145)
+
+### New flags and features
+- Release binaries include Yices, which is BSD-3-Clause from 2.8.0. The
+  release ships Yices' licence and third-party notices (MiniSat, CPython
+  timsort). Packaging refuses a z3 that is not the pinned commit and a
+  `sea-vc` without the pinned z3 and Yices. The Docker build builds Yices
+  by default. (#144)
+- `PTR_SEGMENT(k, a)` (`docs/design/PtrSegment.md`, steps 1 and 2): under
+  `--seam`, a placed object's address is a pointer term that holds the
+  object and its address. It erases at the solver boundary to the constant
+  `obj.k`, and the boundary adds `obj.k = a` to the query. The OpSem side
+  condition `ADDR(obj) = a` is gone. No rewrite rule looks inside a
+  segment, so no rule decides from `a`; `--seam-check` stays parametric.
+  Queries are identical to v0.4.0 up to the order of conjuncts. (#145)
+- `--x-fold-top-eqs-no-base-skip` (hidden, testing only) turns the object
+  skip of `--vc-fold-top-eqs` off and prints the warning
+  `vc.fold-top-eqs-no-base-skip`. (#145)
+
+### Performance
+- Against v0.4.0 on the new pins, firedancer hard jobs solved on both sides
+  take about 23% less wall time and 16% less RSS in total. On vcc, z3 CPU
+  falls by 3%. (#144)
+- Some QF_BV queries are slower on this z3: its `max-bv-sharing` preamble
+  step now runs (it was a no-op in 5.3.3, from a missing initialisation).
+  Examples are vcc `hash_table_eq` and firedancer `step-claims-frag` and
+  `txn-pf-legacy-*` (1.4 to 2 times slower). The cause is how z3 shapes
+  linear sums, and it is being addressed in z3. No `sea-vc` option changes
+  it. (#144)
+
+### Docs
+- `docs/design/PtrSegment.md`, the plan for object identity in the pointer
+  term. (#145)
+- Docs drop the GPL text for Yices and the planned `yices-smt2`
+  workaround. (#144)
+
 ## 0.4.0
 
 A minor release: the default slot placement and the default query fold
