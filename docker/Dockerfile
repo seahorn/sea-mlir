@@ -13,7 +13,7 @@
 ARG UBUNTU=ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
 ARG LLVM_BASE=base
 # z3: a commit of master (it reports 5.4.2), not a release
-ARG Z3_REVISION=2c835ec393be5754f67a96ad0c6e76a32237166e
+ARG Z3_REVISION=bbd46c9ebdd5955333682fe9f3cefc2b7c883e9c
 ARG BITWUZLA_TAG=0.9.1
 ARG YICES_TAG=yices-2.8.0
 

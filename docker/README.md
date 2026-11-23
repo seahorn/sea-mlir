@@ -43,7 +43,7 @@ this table in sync.
 |---|---|---|
 | base image | `ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852` | |
 | LLVM + MLIR | the `commit:` line of `LLVM_REVISION` | Apache-2.0 WITH LLVM-exception |
-| z3 | master commit `2c835ec` (`Z3_REVISION`; it reports 5.4.2), not a release; fetched by commit | MIT |
+| z3 | master commit `bbd46c9` (`Z3_REVISION`; it reports 5.4.2), not a release; fetched by commit | MIT |
 | Bitwuzla | tag `0.9.1` (`BITWUZLA_TAG`) | MIT |
 | Yices | tag `yices-2.8.0` (`YICES_TAG`), without MCSAT; left out with `YICES=0` | BSD 3-Clause (GPLv3 before 2.8.0) |
 | CaDiCaL | tag from Bitwuzla's `subprojects/cadical.wrap` (currently `rel-2.1.2`); not set by hand | MIT |

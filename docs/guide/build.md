@@ -9,7 +9,7 @@ the only platform that is built and tested.
 | Dependency | Version | Notes |
 |---|---|---|
 | LLVM and MLIR | the commit in `LLVM_REVISION` (`302c842d6601`) | built with `-DLLVM_ENABLE_PROJECTS=mlir -DLLVM_ENABLE_ASSERTIONS=ON -DLLVM_INSTALL_UTILS=ON`, then installed; other revisions are not supported |
-| z3 | pinned to master commit `2c835ec` (it reports 5.4.2), not a release; 5.3.3 and 4.12.0 were tested up to 0.4.0 | the supported solver |
+| z3 | pinned to master commit `bbd46c9` (it reports 5.4.2), not a release; 5.3.3 and 4.12.0 were tested up to 0.4.0 | the supported solver |
 | Yices 2 | pinned to 2.8.0; 2.6.4 and 2.7.0 were tested up to 0.4.0 | optional secondary solver (`-DSEA_ENABLE_YICES=AUTO\|ON\|OFF`); in release binaries (BSD-3-Clause from 2.8.0) |
 | Bitwuzla | 0.9 (at least 0.5) | optional secondary solver |
 | Boost | 1.71 or later, headers only | tested with 1.83 |

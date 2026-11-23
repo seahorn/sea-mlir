@@ -195,7 +195,7 @@ VERSION = """sea-vc (sea-mlir 0.5.0 (v0.5.0))
 
 class SolverTests(unittest.TestCase):
     def test_z3_version(self):
-        commit = "2c835ec393be5754f67a96ad0c6e76a32237166e"
+        commit = "bbd46c9ebdd5955333682fe9f3cefc2b7c883e9c"
         text = "Z3 version 5.4.2 - 64 bit - build hashcode " + commit + "\n"
         self.assertEqual(pr.z3_version(text, commit), "5.4.2")
         self.assertEqual(
@@ -205,7 +205,7 @@ class SolverTests(unittest.TestCase):
             pr.z3_version("z3: command not found", "z3-5.3.3")
 
     def test_z3_other_commit_refused(self):
-        commit = "2c835ec393be5754f67a96ad0c6e76a32237166e"
+        commit = "bbd46c9ebdd5955333682fe9f3cefc2b7c883e9c"
         with self.assertRaisesRegex(RuntimeError, "expected the pin"):
             pr.z3_version(
                 "Z3 version 5.4.2 - 64 bit - build hashcode " + "0" * 40, commit
