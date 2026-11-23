@@ -65,7 +65,8 @@ struct Limits {
 /// backend; another backend does not read them.
 struct SolverConfig {
   /// diag kinds: <prefix>solver-unavailable, <prefix>yices-config,
-  /// <prefix>yices-param, <prefix>z3-tactic, <prefix>limit-unsupported,
+  /// <prefix>yices-param, <prefix>z3-tactic, <prefix>z3-logic,
+  /// <prefix>z3-logic-mismatch, <prefix>limit-unsupported,
   /// <prefix>limit-clamped (sea-vc: "vc.")
   std::string kindPrefix = "smt.";
   /// z3: relevancy 0 and one push before anything is asserted (sea-vc
@@ -83,7 +84,11 @@ struct SolverConfig {
   /// z3: the solver for this logic (sea-vc --z3-logic; empty: z3's default
   /// solver, which probes the logic at the first check). The logic also
   /// picks the incremental solver z3 uses for a check after more
-  /// assertions: QF_BV its incremental SAT solver, other logics its SMT core
+  /// assertions: QF_BV its incremental SAT solver, other logics its SMT core.
+  /// A name the logic guard has no table for is a diag::error
+  /// (<kindPrefix>z3-logic), null solver; every term given to the solver is
+  /// checked against the logic (<kindPrefix>z3-logic-mismatch: add fails;
+  /// sea/Expr/Smt/LogicGuard.h)
   std::string z3Logic;
   /// z3: test hook (sea-vc --z3-plant-error): make an invalid z3 API call
   /// on the new solver's context, as an internal error would

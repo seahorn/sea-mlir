@@ -29,6 +29,7 @@
 #include "sea/Expr/Smt/BitwuzlaSolverImpl.hh"
 #endif
 #include "sea/Expr/Smt/EZ3.hh"
+#include "sea/Expr/Smt/LogicGuard.h"
 #include "sea/Expr/Smt/SolverFactory.h"
 #include "sea/Expr/Smt/Z3.hh"
 #include "sea/Expr/Smt/Z3Error.h"
@@ -488,14 +489,17 @@ static cl::opt<std::string> z3Tactic(
 
 static cl::opt<std::string> z3Logic(
     "z3-logic",
-    cl::desc("z3's solver for this logic (QF_BV, QF_ABV, QF_UFBV, "
-             "QF_AUFBV) for the solver of the verdict only. z3 solves the "
+    cl::desc("z3's solver for this logic (SMT-LIB: ALL, or "
+             "[QF_][A|AX][UF][BV][LIA|LRA|LIRA|NIA|NRA|NIRA]; e.g. QF_BV, "
+             "QF_ABV, QF_UFBV, QF_AUFBV) for the solver of the verdict only "
+             "(also its reach and --ack-relax solvers). z3 solves the "
              "first check with the logic's tactic and a check after more "
              "assertions (--ack-relax-mode=incremental) with its incremental "
              "solver: QF_BV its incremental SAT solver, the others and the "
-             "default its SMT core. A query outside the logic may be unknown. "
-             "default: z3's default solver (the logic probed at the first "
-             "check)"),
+             "default its SMT core. A query outside the logic is an error "
+             "(vc.z3-logic-mismatch: z3 would drop what it does not "
+             "understand). default: z3's default solver (the logic probed at "
+             "the first check)"),
     cl::value_desc("logic"), cl::init(""));
 
 static cl::opt<bool> z3PlantError(
@@ -3027,11 +3031,18 @@ TYPICAL:
                                  #   the solver's per-check limit is set
                                  #   when it is made (first round), so one
                                  #   check may run the whole timeout
-  sea-vc p.mlir --z3-logic=QF_BV  # z3's solver for that logic (QF_BV,
-                                 #   QF_ABV, QF_UFBV, QF_AUFBV), the solver
-                                 #   of the verdict only; default: z3's
+  sea-vc p.mlir --z3-logic=QF_BV  # z3's solver for that logic (ALL, or
+                                 #   [QF_][A|AX][UF][BV][LIA|..|NIRA]: QF_BV,
+                                 #   QF_ABV, QF_UFBV, QF_AUFBV, ...), the
+                                 #   solver of the verdict (and its reach /
+                                 #   --ack-relax solvers) only; default: z3's
                                  #   default solver (logic probed). Prints
-                                 #   solver.z3-logic: <logic>
+                                 #   solver.z3-logic: <logic>. A term of the
+                                 #   query outside the logic (an array
+                                 #   under QF_BV, a function symbol without
+                                 #   UF, ...) is an error
+                                 #   vc.z3-logic-mismatch (z3 would drop it:
+                                 #   a wrong sat)
   sea-vc p.mlir --seam --ack-decider=false  # (default on) the difference decider in
                                  #   the Ackermann lowering: a pair whose
                                  #   indices are never equal by ranges of
@@ -5534,12 +5545,11 @@ int main(int argc, char **argv) {
   if (!z3Logic.empty()) {
     if (backend != Backend::Z3)
       return fail("--z3-logic needs --solver=z3");
-    if (!llvm::is_contained(llvm::ArrayRef<llvm::StringRef>{"QF_BV", "QF_ABV",
-                                                            "QF_UFBV",
-                                                            "QF_AUFBV"},
-                            llvm::StringRef(z3Logic)))
-      return fail("--z3-logic: unknown logic '" + z3Logic +
-                  "' (QF_BV, QF_ABV, QF_UFBV, QF_AUFBV)");
+    // the names the logic guard has a table for (LogicGuard.h): any other
+    // is refused, since the guard could not check the query against it
+    std::string why;
+    if (!sea::solver::parseLogic(z3Logic, why))
+      return fail("--z3-logic: unknown logic '" + z3Logic + "': " + why);
   }
   if (narrowOffsets && !seam)
     return fail("--narrow-offsets needs --seam (it rests on A-INB of the "

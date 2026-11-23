@@ -4,9 +4,13 @@
 #pragma once
 
 #include "sea/Expr/Smt/EZ3.hh"
+#include "sea/Expr/Smt/LogicGuard.h"
 #include "sea/Expr/Smt/Solver.hh"
 #include "sea/Expr/Smt/Z3ModelImpl.hh"
+#include "sea/Support/Diag.h"
 #include "llvm/Support/raw_ostream.h"
+
+#include <optional>
 
 namespace sea {
 namespace solver {
@@ -18,6 +22,26 @@ class z3_solver_impl : public Solver {
   SolverResult m_last_result;
   /// the logic of the solver (empty: z3's default), for the printed query
   std::string m_logic;
+  /// the logic guard of a solver made for a logic (LogicGuard.h)
+  std::optional<LogicScan> m_guard;
+  std::string m_guardKind;
+
+  /// Whether \p e is inside the guarded logic (always, without a guard);
+  /// else a diag::error of the guard's kind
+  bool admitted(const expr::Expr &e) {
+    if (!m_guard)
+      return true;
+    std::string bad = m_guard->check(e);
+    if (bad.empty())
+      return true;
+    sea::diag::error(m_guardKind,
+                     "the z3 solver for logic " + m_guard->logic().name +
+                         " gets a term outside that logic: " + bad +
+                         " (z3 would drop what it does not understand and "
+                         "may answer sat wrongly; choose a logic that "
+                         "admits it, or no --z3-logic)");
+    return false;
+  }
 
 public:
   using model_ref = typename Solver::model_ref;
@@ -33,6 +57,14 @@ public:
 
   ~z3_solver_impl() = default;
 
+  /// Checks every term asserted (add) or assumed (check_with_assumptions)
+  /// against \p logic; a term outside it is a diag::error of \p kind and is
+  /// not given to z3
+  void setLogicGuard(LogicTheories logic, std::string kind) {
+    m_guard.emplace(std::move(logic));
+    m_guardKind = std::move(kind);
+  }
+
   SolverKind get_kind() const override { return SolverKind::Z3; }
 
   EZ3 &get_context() { return *m_zctx; }
@@ -40,6 +72,8 @@ public:
   ZSolver<EZ3> &get_solver() { return *m_solver; }
 
   virtual bool add(expr::Expr exp) override {
+    if (!admitted(exp))
+      return false;
     m_solver->assertExpr(exp);
     return true;
   }
@@ -59,6 +93,9 @@ public:
 
   virtual SolverResult
   check_with_assumptions(const expr_const_it_range &lits) override {
+    for (const expr::Expr &l : lits)
+      if (!admitted(l))
+        return m_last_result = SolverResult::UNKNOWN;
     auto res = m_solver->solveAssuming(lits);
     if (res) {
       m_last_result = SolverResult::SAT;

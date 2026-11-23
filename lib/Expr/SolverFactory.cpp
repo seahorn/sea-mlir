@@ -143,8 +143,23 @@ std::unique_ptr<Solver> makeSolver(expr::ExprFactory &efac, Backend backend,
                                    const SolverConfig &config) {
   switch (backend) {
   case Backend::Z3: {
+    // a logic z3's solver is made for: the guard checks every term given to
+    // the solver against it (LogicGuard.h)
+    std::optional<LogicTheories> logic;
+    if (!config.z3Logic.empty()) {
+      std::string why;
+      logic = parseLogic(config.z3Logic, why);
+      if (!logic) {
+        sea::diag::error(config.kindPrefix + "z3-logic",
+                         "--z3-logic '" + config.z3Logic + "': " + why);
+        return nullptr;
+      }
+    }
     auto z = std::make_unique<z3_solver_impl>(
         efac, config.z3Logic.empty() ? nullptr : config.z3Logic.c_str());
+    if (logic)
+      z->setLogicGuard(std::move(*logic),
+                       config.kindPrefix + "z3-logic-mismatch");
     if (config.z3PlantError)
       plantZ3Error(z->get_context().raw_context());
     z3Limits(*z, limits, config, config.z3Relevancy0Push);

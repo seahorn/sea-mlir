@@ -148,7 +148,7 @@
 // RUN: %if yices %{ not sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --solver=yices --yices-config=mode=one-shot 2>&1 | FileCheck %s --check-prefix=ONESHOT %}
 // ONESHOT: not with --yices-config mode=one-shot
 // RUN: not sea-vc %t/unsat.mlir --lower --seam --z3-logic=QF_LIA 2>&1 | FileCheck %s --check-prefix=BADLOGIC
-// BADLOGIC: --z3-logic: unknown logic 'QF_LIA'
+// BADLOGIC: logic QF_LIA gets a term outside that logic{{.*}}[vc.z3-logic-mismatch]
 // RUN: %if yices %{ not sea-vc %t/unsat.mlir --lower --seam --z3-logic=QF_BV --solver=yices 2>&1 | FileCheck %s --check-prefix=LOGICZ3 %}
 // LOGICZ3: --z3-logic needs --solver=z3
 // RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ackermannize=off 2>&1 | FileCheck %s --check-prefix=NOACK
