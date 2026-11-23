@@ -162,8 +162,9 @@ struct Fixture {
   }
 
   Expr canon(const Expr &e, CanonicalSums::Stats *st = nullptr,
-             CanonicalSums::NegForm neg = CanonicalSums::NegForm::Bvnot) {
-    CanonicalSums c(neg);
+             CanonicalSums::NegForm neg = CanonicalSums::NegForm::Bvnot,
+             CanonicalSums::EqForm eq = CanonicalSums::EqForm::Balance) {
+    CanonicalSums c(neg, eq);
     Expr r = c.rewrite(e);
     if (st)
       *st = c.stats();
@@ -246,6 +247,47 @@ void testSub() {
   // equalities have no negation: the same balanced form
   F.expect("sub.eq", mk<EQ>(mk<BADD>(x, c(1)), mk<BSUB>(y, z)),
            mk<EQ>(mk<BADD>(F.add({x, z}), c(1)), y), NF::Sub);
+}
+
+/// EqForm: which equalities are balanced. S = x - y, T = z.
+void testEqModes() {
+  Fixture F;
+  using EF = CanonicalSums::EqForm;
+  using NF = CanonicalSums::NegForm;
+  Expr x = F.var("x", 8), y = F.var("y", 8), z = F.var("z", 8);
+  Expr S = mk<BSUB>(x, y);
+  Expr cS = mk<BADD>(mk<BADD>(x, mk<BNOT>(y)), F.num(1, 8));
+  Expr balanced = mk<EQ>(F.add({y, z}), x), kept = mk<EQ>(cS, z);
+  struct Case {
+    const char *name;
+    EF mode;
+    bool shared;
+    Expr expect;
+    uint64_t bal, keptShared, keptAll;
+  } cases[] = {
+      {"eqmode.balance-sole", EF::Balance, false, balanced, 1, 0, 0},
+      {"eqmode.balance-shared", EF::Balance, true, balanced, 1, 0, 0},
+      {"eqmode.unshared-sole", EF::Unshared, false, balanced, 1, 0, 0},
+      {"eqmode.unshared-shared", EF::Unshared, true, kept, 0, 1, 0},
+      {"eqmode.keep-sole", EF::Keep, false, kept, 0, 0, 1},
+      {"eqmode.keep-shared", EF::Keep, true, kept, 0, 0, 1},
+  };
+  for (const Case &c : cases) {
+    // shared: S has a second use, in a compare
+    Expr in = mk<EQ>(S, z);
+    if (c.shared)
+      in = mk<AND>(in, mk<BULE>(S, z));
+    CanonicalSums::Stats st;
+    Expr out = F.canon(in, &st, NF::Bvnot, c.mode);
+    Expr got = c.shared ? Expr(out->arg(0)) : out;
+    CHECK(got == c.expect,
+          c.name << ": got " << str(got) << ", expected " << str(c.expect));
+    CHECK(st.eqs == c.bal && st.eqsKeptShared == c.keptShared &&
+              st.eqsKept == c.keptAll,
+          c.name << ": counters balanced=" << st.eqs << " kept-shared="
+                 << st.eqsKeptShared << " kept=" << st.eqsKept);
+    CHECK(F.equivalent(in, out), c.name << ": not equivalent");
+  }
 }
 
 /// 2: one leaf order at every width; equal forms are one node
@@ -462,8 +504,12 @@ bool hasSubOrNeg(const Expr &e, bool sub = true) {
   return false;
 }
 
-void testRandom(unsigned count, CanonicalSums::NegForm neg) {
+void testRandom(unsigned count, CanonicalSums::NegForm neg,
+                CanonicalSums::EqForm eqf = CanonicalSums::EqForm::Balance) {
   const bool subForm = neg == CanonicalSums::NegForm::Sub;
+  const char *eqName = eqf == CanonicalSums::EqForm::Keep       ? "keep"
+                       : eqf == CanonicalSums::EqForm::Unshared ? "unshared"
+                                                                : "balance";
   unsigned sums = 0, eqs = 0, unknown = 0;
   const char *backend = "";
   for (unsigned i = 0; i < count; ++i) {
@@ -476,7 +522,7 @@ void testRandom(unsigned count, CanonicalSums::NegForm neg) {
       CanonicalSums::Stats st;
       if (getenv("CANON_TEST_TRACE"))
         llvm::errs() << "random " << i << ": " << str(q) << "\n";
-      Expr out = F.canon(q, &st, neg);
+      Expr out = F.canon(q, &st, neg, eqf);
       text[run] = str(out);
       if (getenv("CANON_TEST_TRACE"))
         llvm::errs() << "  -> " << text[run] << "\n";
@@ -500,8 +546,9 @@ void testRandom(unsigned count, CanonicalSums::NegForm neg) {
     CHECK(text[0] == text[1], "random " << i << ": not deterministic");
   }
   llvm::outs() << "random: neg=" << (subForm ? "sub" : "bvnot")
-               << " terms=" << count << " sums=" << sums << " eqs=" << eqs
-               << " miter=" << backend << " unknown=" << unknown << "\n";
+               << " eq=" << eqName << " terms=" << count << " sums=" << sums
+               << " eqs=" << eqs << " miter=" << backend
+               << " unknown=" << unknown << "\n";
 }
 
 } // namespace
@@ -516,7 +563,7 @@ int main(int argc, char **argv) {
   } tests[] = {{"shape", testShape},     {"order", testOrder},
                {"eq", testEq},           {"extract", testExtract},
                {"bitwise", testBitwise}, {"image", testImage},
-               {"sub", testSub}};
+               {"sub", testSub},         {"eq-modes", testEqModes}};
   for (const Test &t : tests) {
     int before = failures;
     t.fn();
@@ -530,6 +577,16 @@ int main(int argc, char **argv) {
   before = failures;
   testRandom(randomCount / 2, CanonicalSums::NegForm::Sub);
   llvm::outs() << "test: random-sub " << (failures == before ? "ok" : "FAILED")
+               << "\n";
+  before = failures;
+  testRandom(randomCount / 4, CanonicalSums::NegForm::Bvnot,
+             CanonicalSums::EqForm::Unshared);
+  llvm::outs() << "test: random-unshared "
+               << (failures == before ? "ok" : "FAILED") << "\n";
+  before = failures;
+  testRandom(randomCount / 4, CanonicalSums::NegForm::Bvnot,
+             CanonicalSums::EqForm::Keep);
+  llvm::outs() << "test: random-keep " << (failures == before ? "ok" : "FAILED")
                << "\n";
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;

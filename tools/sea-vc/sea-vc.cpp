@@ -970,6 +970,21 @@ static cl::opt<expr::CanonicalSums::NegForm> vcCanonicalSumsNeg(
                           "solver's polynomial view of sums")),
     cl::init(expr::CanonicalSums::NegForm::Bvnot));
 
+static cl::opt<expr::CanonicalSums::EqForm> vcCanonicalSumsEq(
+    "vc-canonical-sums-eq",
+    cl::desc("With --vc-canonical-sums: which equalities with a sum side "
+             "are balanced (docs/design/CanonicalSums.md, \"Balancing "
+             "equalities\")"),
+    cl::values(clEnumValN(expr::CanonicalSums::EqForm::Balance, "balance",
+                          "every one (default; not tuned)"),
+               clEnumValN(expr::CanonicalSums::EqForm::Unshared, "unshared",
+                          "only one with a side that is a sum used once in "
+                          "the query (no other use): an equality of shared "
+                          "sums keeps its canonical sides"),
+               clEnumValN(expr::CanonicalSums::EqForm::Keep, "keep",
+                          "none: each side's sum canonical on its own")),
+    cl::init(expr::CanonicalSums::EqForm::Balance));
+
 static cl::opt<bool> dagStats(
     "dag-stats",
     cl::desc("Print the size of the query as a DAG (vc.dag-size) and the "
@@ -3105,6 +3120,10 @@ TYPICAL:
                                  #   the negative leaves as (P + c) - N
                                  #   instead of (P + ~N) + c+1 (bvnot, the
                                  #   default, not tuned)
+  sea-vc p.mlir --vc-canonical-sums --vc-canonical-sums-eq=unshared
+                                 #   balance an equality only when a side
+                                 #   is a sum with no other use (keep: none;
+                                 #   balance: all, the default, not tuned)
   sea-vc p.mlir --seam --narrow-offsets  # (off by default; rests on
                                  #   A-INB) a program load's read at its own
                                  #   address in an object of size N (also an
@@ -3714,12 +3733,16 @@ OUTPUT (stdout, `key: value` lines):
                                   vc-time, stderr with --smt2)
   vc.solver-nary-sums: on         (--solver-nary-sums; with vc-time,
                                   stderr with --smt2)
-  vc.canonical-sums: on neg=bvnot|sub  (--vc-canonical-sums; then
+  vc.canonical-sums: on neg=bvnot|sub eq=balance|unshared|keep
+                                  (--vc-canonical-sums; then
                                   vc.canonical-sums-sums / -changed /
-                                  -leaves / -eqs / -eqs-changed: maximal
+                                  -leaves / -eqs-balanced / -eqs-changed /
+                                  -eqs-kept-shared / -eqs-kept: maximal
                                   sums emitted, of them changed, their
                                   leaves, balanced equalities, of them
-                                  changed; with vc-time, stderr with --smt2)
+                                  changed, equalities with a sum side not
+                                  balanced (unshared: both sides shared;
+                                  keep); with vc-time, stderr with --smt2)
   vc.ackermann-stride-broken: <n>  (sat, --ack-stride with stride pairs:
   vc.ackermann-stride-idle: <n>    pairs the rule dropped that the model
                                   puts at one index with different cells;
@@ -5546,6 +5569,8 @@ int main(int argc, char **argv) {
                 "block guards the trail may eliminate)");
   if (vcCanonicalSumsNeg.getNumOccurrences() && !vcCanonicalSums)
     return fail("--vc-canonical-sums-neg needs --vc-canonical-sums");
+  if (vcCanonicalSumsEq.getNumOccurrences() && !vcCanonicalSums)
+    return fail("--vc-canonical-sums-eq needs --vc-canonical-sums");
   if (reach && sinkAssumes)
     return fail("--reach: --sink-assumes moves every assume before the "
                 "assertion, which changes what reaches a target");
@@ -8119,7 +8144,7 @@ int main(int argc, char **argv) {
         return fail("--vc-canonical-sums is not combined with --vc-defs: "
                     "the canonical form flattens the nested and named sums "
                     "(docs/design/CanonicalSums.md)");
-      expr::CanonicalSums canon(vcCanonicalSumsNeg);
+      expr::CanonicalSums canon(vcCanonicalSumsNeg, vcCanonicalSumsEq);
       const expr::Expr before = query;
       query = canon.rewrite(query);
       canonStats = canon.stats();
@@ -8541,12 +8566,20 @@ int main(int argc, char **argv) {
             .value("on")
             .kv("neg", vcCanonicalSumsNeg == expr::CanonicalSums::NegForm::Sub
                            ? "sub"
-                           : "bvnot");
+                           : "bvnot")
+            .kv("eq",
+                vcCanonicalSumsEq == expr::CanonicalSums::EqForm::Keep ? "keep"
+                : vcCanonicalSumsEq == expr::CanonicalSums::EqForm::Unshared
+                    ? "unshared"
+                    : "balance");
         r.line("vc.canonical-sums-sums").value(canonStats->sums);
         r.line("vc.canonical-sums-changed").value(canonStats->sumsChanged);
         r.line("vc.canonical-sums-leaves").value(canonStats->leaves);
-        r.line("vc.canonical-sums-eqs").value(canonStats->eqs);
+        r.line("vc.canonical-sums-eqs-balanced").value(canonStats->eqs);
         r.line("vc.canonical-sums-eqs-changed").value(canonStats->eqsChanged);
+        r.line("vc.canonical-sums-eqs-kept-shared")
+            .value(canonStats->eqsKeptShared);
+        r.line("vc.canonical-sums-eqs-kept").value(canonStats->eqsKept);
       }
       // the named assumptions of the VC (BRUNCH_STAT <key>-<field>)
       sea::assume::Ledger vcAssumes;

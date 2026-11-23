@@ -71,6 +71,37 @@ are the other bit-vector nodes, with their own kids rewritten first. A
 5. **Bitwise terms.** `bvnot`, `bvxor`, `bvand`, ... are leaves: `~x = y`
    stays as it is, and `~x + 1` stays the sum of the leaf `~x` and `1`.
 
+## Balancing equalities (`--vc-canonical-sums-eq`)
+
+Balancing an equality (item 3) cancels the terms its two sides share and
+builds a new chain for the rest. When both sides are sums that the query
+uses elsewhere too (an Ackermann pair of two address sums), the solver
+already has an adder for each side; the balanced equality adds another
+one, per equality, instead of comparing the two existing ones. Which
+equalities are balanced is a choice:
+
+- `balance` (default, not tuned): every equality with a sum side, as
+  above.
+- `unshared`: an equality is balanced only when one of its sides is a sum
+  that is used once. Otherwise it keeps its two sides, each the canonical
+  form of its own sum.
+- `keep`: no equality is balanced; each side's sum is canonical on its
+  own.
+
+*Used once* is exact: the uses of a node are counted in the step's input,
+the final query DAG before the step. A use is an argument slot of a
+distinct node of that DAG: a node appearing in two slots of one parent
+has two uses, and a node that is an inner part of another sum (a linear
+node under a linear node) is used there too. A side used once has the
+equality as its only use. Kept equalities are exact trivially: each side
+is replaced by an equal term.
+
+Counters: `vc.canonical-sums-eqs-balanced`, `-eqs-changed` (of the
+balanced ones), `-eqs-kept-shared` (`unshared`: equalities with a sum
+side whose sides are not used once), `-eqs-kept` (`keep`: equalities
+with a sum side). The stat line names the mode,
+`eq=balance|unshared|keep`.
+
 ## The negation (`--vc-canonical-sums-neg`)
 
 How the negative chain `N` is written is a choice per solver, not a
@@ -178,7 +209,8 @@ points (z3; always decided), and that two fresh factories give the same
 text. When the miter is unknown, the ground check takes 64 points and
 the corner values `0`, `1`, `2^(w-1)`, `2^w - 1` of each constant; the
 number of unknowns is bounded in the lit test. z3 does not decide some
-16-bit miters of rearranged adders within minutes; Yices and Bitwuzla decide them in milliseconds, which is the
+16-bit miters of rearranged adders within minutes; Yices and Bitwuzla
+decide them in milliseconds, which is the
 problem this step addresses. The lit tests (`test/VC/canonical-sums/`)
 check items 1 to 5 on `--smt2` and the replay of a model of the
 rewritten query.
@@ -243,10 +275,11 @@ What the switch does not cover:
 ## Counters
 
 With the flag (with `vc-time`; stderr with `--smt2`): `vc.canonical-sums:
-on neg=bvnot|sub`, `vc.canonical-sums-sums` (maximal sums emitted, not
-counting numerals and single leaves), `-changed` (of them, a different
-node than the input), `-leaves` (leaves of the emitted chains, equalities
-included), `-eqs` (balanced equalities), `-eqs-changed`. A `bvsub` or
+on neg=bvnot|sub eq=balance|unshared|keep`, `vc.canonical-sums-sums`
+(maximal sums emitted, not counting numerals and single leaves),
+`-changed` (of them, a different node than the input), `-leaves` (leaves
+of the emitted chains, equalities included), `-eqs-balanced`,
+`-eqs-changed`, `-eqs-kept-shared`, `-eqs-kept` (above). A `bvsub` or
 `bvneg` of another arity is a leaf, with the warning
 `vc.canonical-sums-opaque`.
 

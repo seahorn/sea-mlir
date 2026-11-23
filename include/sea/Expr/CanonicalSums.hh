@@ -38,9 +38,11 @@
 //    canonical) sum: extracts are never pushed into a sum;
 //  - bvnot, and every bitwise operator, is a leaf: ~x stays ~x.
 // An equality with a linear side (a sum, not a single leaf or a numeral) is
-// balanced: the form D = a - b (or -D, the one with fewer negative leaves;
-// ties by the leaf keys, then by the constant) becomes (= P -c), (= (bvadd P c)
-// N) or (= P N), never one isolated term; an empty form is true or false.
+// balanced (EqForm: Balance; Unshared only when a side is a sum used once;
+// Keep never, each side then canonical on its own): the form D = a - b (or -D,
+// the one with fewer negative leaves; ties by the leaf keys, then by the
+// constant) becomes (= P -c), (= (bvadd P c) N) or (= P N), never one isolated
+// term; an empty form is true or false.
 //
 // Every step is an identity of SMT-LIB bit-vector arithmetic (no
 // assumption): the forms are equal to their terms modulo 2^w; P - N + c =
@@ -75,21 +77,34 @@ public:
   /// reads sums as polynomials and ~N as a bit-array term.
   enum class NegForm { Bvnot, Sub };
 
-  explicit CanonicalSums(NegForm neg = NegForm::Bvnot) : m_neg(neg) {}
+  /// Which equalities with a sum side are balanced (sea-vc
+  /// --vc-canonical-sums-eq): Balance, every one; Unshared, one with a
+  /// side that is a sum used once in the input (that equality is its only
+  /// use), so an equality between shared sums keeps its two (canonical)
+  /// sides; Keep, none: each side is canonical on its own.
+  enum class EqForm { Balance, Unshared, Keep };
+
+  explicit CanonicalSums(NegForm neg = NegForm::Bvnot,
+                         EqForm eq = EqForm::Balance)
+      : m_neg(neg), m_eq(eq) {}
 
   struct Stats {
-    uint64_t sums = 0;        ///< maximal linear terms emitted (not a leaf)
-    uint64_t sumsChanged = 0; ///< of them, a different node than the input
-    uint64_t leaves = 0;      ///< leaves of the emitted sums (P and N)
-    uint64_t eqs = 0;         ///< balanced equalities
-    uint64_t eqsChanged = 0;  ///< of them, a different node than the input
-    uint64_t opaque = 0;      ///< bvsub / bvneg of another arity: leaves
+    uint64_t sums = 0;          ///< maximal linear terms emitted (not a leaf)
+    uint64_t sumsChanged = 0;   ///< of them, a different node than the input
+    uint64_t leaves = 0;        ///< leaves of the emitted sums (P and N)
+    uint64_t eqs = 0;           ///< balanced equalities
+    uint64_t eqsChanged = 0;    ///< of them, a different node than the input
+    uint64_t eqsKeptShared = 0; ///< Unshared: not balanced, both sides shared
+    uint64_t eqsKept = 0;       ///< Keep: not balanced
+    uint64_t opaque = 0;        ///< bvsub / bvneg of another arity: leaves
   };
 
   /// \p query with every maximal linear term and every equality with a
   /// linear side in the canonical form.
   Expr rewrite(const Expr &query) {
     m_efac = &query->efac();
+    if (m_eq == EqForm::Unshared)
+      countUses(query);
     walk(query);
     return imageOf(query.get());
   }
@@ -206,10 +221,42 @@ private:
     }
     if (isOpX<EQ>(n) && n->arity() == 2 &&
         (isSum(n->arg(0)) || isSum(n->arg(1)))) {
-      m_new.emplace(n, balance(n));
-      return;
+      if (m_eq == EqForm::Keep) {
+        ++m_stats.eqsKept;
+      } else if (m_eq == EqForm::Unshared && !soleUse(n->arg(0)) &&
+                 !soleUse(n->arg(1))) {
+        ++m_stats.eqsKeptShared;
+      } else {
+        m_new.emplace(n, balance(n));
+        return;
+      }
     }
     rebuild(n);
+  }
+
+  /// a sum whose only use in the input is one argument slot (Unshared)
+  bool soleUse(ENode *side) const {
+    if (!isSum(side))
+      return false;
+    auto it = m_uses.find(side);
+    return it != m_uses.end() && it->second == 1;
+  }
+
+  /// the uses of every node of the input: argument slots of its distinct
+  /// parents (a parent with the node in two slots counts two)
+  void countUses(const Expr &root) {
+    std::unordered_set<ENode *> seen;
+    std::vector<ENode *> stack{root.get()};
+    while (!stack.empty()) {
+      ENode *n = stack.back();
+      stack.pop_back();
+      if (!seen.insert(n).second)
+        continue;
+      for (size_t i = 0; i < n->arity(); ++i) {
+        ++m_uses[n->arg(i)];
+        stack.push_back(n->arg(i));
+      }
+    }
   }
 
   /// a linear node with a proper form
@@ -467,6 +514,8 @@ private:
   }
 
   NegForm m_neg;
+  EqForm m_eq;
+  std::unordered_map<ENode *, unsigned> m_uses;
   ExprFactory *m_efac = nullptr;
   TypeChecker m_tc;
   std::unordered_map<ENode *, Form> m_form;
