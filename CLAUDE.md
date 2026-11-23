@@ -25,8 +25,8 @@ default, not tuned; one worker per core otherwise). Override:
 (configured without it: `-sv`); set `-DLLVM_LIT_ARGS` once.
 
 Also needs Boost (headers), GMP and z3 (`Z3_ROOT`). Yices 2 is optional
-(`-DSEA_ENABLE_YICES=AUTO|ON|OFF`, `YICES2_ROOT` if not system-wide; GPLv3:
-release binaries are built without it; tests that need it: `REQUIRES: yices`
+(`-DSEA_ENABLE_YICES=AUTO|ON|OFF`, `YICES2_ROOT` if not system-wide; the pin,
+2.8.0, is BSD-3-Clause and release binaries link it; tests that need it: `REQUIRES: yices`
 or `%if yices %{ ... %}`). Bitwuzla 0.9 is optional: `-DBITWUZLA_ROOT=<install>`
 enables `--solver=bitwuzla` (`docs/design/Bitwuzla.md`).
 

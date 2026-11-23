@@ -5171,7 +5171,7 @@ int main(int argc, char **argv) {
     statOut() << "vc.config: " << p << "\n";
 #ifndef WITH_YICES2
   // Yices is optional at build time (SEA_ENABLE_YICES); release binaries
-  // omit it (GPLv3, docs/Release.md)
+  // from v0.5.0 link it (docs/Release.md)
   if (backend == Backend::Yices || !yicesParams.empty() ||
       !yicesConfig.empty() || !yicesLogic.empty())
     return fail("this sea-vc was built without Yices: --solver=yices and "

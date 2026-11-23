@@ -28,7 +28,7 @@ include it (see [Reporting a bug](#reporting-a-bug)).
   (lit, fuzz, vcc, benchmarks) run with it. Yices 2 and Bitwuzla are
   secondary: they work and are smoke-tested, the best solver differs per
   workload (Yices wins on some, times out on others), and both are
-  optional at build time. Release binaries do not include Yices (see
+  optional at build time. Release binaries include Yices (see
   [Runtime requirements](#runtime-requirements)). In a build with Yices,
   the parts of `--check-inb` default to Yices (see
   [CheckInb.md](design/CheckInb.md)). It includes:
@@ -60,8 +60,8 @@ is part of SeaHorn, not of this release.
 | Dependency | Version | Notes |
 |---|---|---|
 | LLVM + MLIR | the commit in `LLVM_REVISION` (`302c842d6601`, LLVM 24 `main`) | built with `-DLLVM_ENABLE_PROJECTS=mlir -DLLVM_ENABLE_ASSERTIONS=ON -DLLVM_INSTALL_UTILS=ON`, then installed. Other revisions are not supported. |
-| z3 | tested with 4.12.0 and 5.3.3 | `-DZ3_ROOT=<install>`, and `-DSEA_Z3=<z3 binary>` for the tests |
-| Yices 2 | tested with 2.6.4 (Ubuntu `libyices2-dev`) and 2.7.0 | optional: `-DSEA_ENABLE_YICES=AUTO` (default: used when found), `ON` (required) or `OFF`; `-DYICES2_ROOT=<install>` if it is not installed system-wide |
+| z3 | the pin: master commit `2c835ec` (it reports 5.4.2), not a release. Up to v0.4.0 the pin was 5.3.3, and 4.12.0 was also tested. | `-DZ3_ROOT=<install>`, and `-DSEA_Z3=<z3 binary>` for the tests |
+| Yices 2 | the pin: 2.8.0. Up to v0.4.0 the pin was 2.7.0, and 2.6.4 (Ubuntu `libyices2-dev`) was also tested. | optional: `-DSEA_ENABLE_YICES=AUTO` (default: used when found), `ON` (required) or `OFF`; `-DYICES2_ROOT=<install>` if it is not installed system-wide |
 | Bitwuzla | 0.9 (>= 0.5, the C++ `TermManager` API) | optional: `-DBITWUZLA_ROOT=<install>` enables `--solver=bitwuzla` |
 | Boost | >= 1.71 (headers only; tested with 1.83) | |
 | GMP | with `gmpxx` (tested with 6.3) | |
@@ -168,15 +168,14 @@ solver) link the solvers as shared libraries:
 - with Yices, `libyices.so.2.*` (and `libpoly` if Yices was built with
   MCSAT).
 
-Release binaries omit Yices for licensing reasons. z3 and Bitwuzla are
-MIT-licensed; Yices is GPLv3, and a binary that links `libyices` would
-have to be distributed under the terms of the GPLv3. Yices is available in
-builds that link it: build from source with Yices installed
-(`-DSEA_ENABLE_YICES=AUTO` or `ON`). Without it, `--solver=yices` and the
-`--yices-*` options are errors, and `sea-vc --version` prints
-`yices: not built`. A backend that runs the `yices-smt2` executable over
-SMT-LIB2 (no linking) is planned before the first major release; until
-then this is a known limitation of the release binaries.
+Release binaries include z3, Bitwuzla and Yices. z3 and Bitwuzla are
+MIT-licensed. Yices is BSD-3-Clause from 2.8.0 (earlier releases are
+GPLv3). GMP, and LibPoly when Yices is built with MCSAT, are LGPL: the
+release links them dynamically, as replaceable shared libraries, so a user
+can substitute a modified build. The release's Yices is built without
+MCSAT and links GMP only. A build from source without Yices
+(`-DSEA_ENABLE_YICES=OFF`, or Yices not found) rejects `--solver=yices` and
+the `--yices-*` options, and `sea-vc --version` prints `yices: not built`.
 
 The installed binaries keep the RUNPATH of the solver directories they were
 linked against (`Z3_ROOT`, `BITWUZLA_ROOT`, a non-system `YICES2_ROOT`). An
@@ -414,9 +413,6 @@ affected.
   error (exit 4): the replay check is of bounds, not of separation.
 - `--ptr-mode=address` can be much slower on code that aligns pointers by
   integer arithmetic.
-- Release binaries do not include Yices (GPLv3; see
-  [Runtime requirements](#runtime-requirements)): `--solver=yices` needs a
-  build from source that links it.
 
 ## Defaults are not tuned
 

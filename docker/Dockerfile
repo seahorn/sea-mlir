@@ -6,16 +6,16 @@
 # tested (check-sea), and a runtime image with the installed tools.
 # docker/README.md describes the stages; `just docker-build` builds it.
 #
-#   docker build -f docker/Dockerfile -t sea-mlir .     # z3 + Bitwuzla
-#   docker build -f docker/Dockerfile --build-arg YICES=1 --target sea-mlir \
-#     -t sea-mlir-test:yices .    # build test with Yices: not a runtime image
+#   docker build -f docker/Dockerfile -t sea-mlir .     # z3, Bitwuzla, Yices
+#   docker build -f docker/Dockerfile --build-arg YICES=0 -t sea-mlir:no-yices .
 #
 # The pins: keep docker/README.md ("Pins") in sync.
 ARG UBUNTU=ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
 ARG LLVM_BASE=base
-ARG Z3_TAG=z3-5.3.3
+# z3: a commit of master (it reports 5.4.2), not a release
+ARG Z3_REVISION=2c835ec393be5754f67a96ad0c6e76a32237166e
 ARG BITWUZLA_TAG=0.9.1
-ARG YICES_TAG=yices-2.7.0
+ARG YICES_TAG=yices-2.8.0
 
 # ---------------------------------------------------------------- base
 # the toolchain of every build stage (clang 18 and lld, as the tested
@@ -68,15 +68,20 @@ RUN set -eux; \
     cd / && rm -rf /src
 
 # ---------------------------------------------------------------- solvers
-# z3 and Bitwuzla (MIT) in /opt/solvers; Yices (GPLv3) only with
-# --build-arg YICES=1, for build tests and solver comparisons: the runtime
-# image refuses it (docker/README.md, "Yices").
+# z3 and Bitwuzla (MIT) and Yices (BSD-3-Clause from 2.8.0) in
+# /opt/solvers; --build-arg YICES=0 leaves Yices out. z3 is fetched by
+# commit (a shallow fetch, as LLVM), so Z3_REVISION may be a commit or a tag.
+# Yices is configured without MCSAT: it links GMP only (no LibPoly).
 FROM base AS solvers
 ARG JOBS=8
-ARG Z3_TAG
+ARG Z3_REVISION
 ARG BITWUZLA_TAG
 RUN set -eux; \
-    git clone -q --depth 1 --branch "$Z3_TAG" https://github.com/Z3Prover/z3.git /src/z3; \
+    git init -q /src/z3 && cd /src/z3; \
+    git remote add origin https://github.com/Z3Prover/z3.git; \
+    git fetch -q --depth 1 origin "$Z3_REVISION"; \
+    git checkout -q FETCH_HEAD; \
+    cd /; \
     cmake -S /src/z3 -B /src/z3/build -GNinja -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_INSTALL_PREFIX=/opt/solvers -DZ3_BUILD_TEST_EXECUTABLES=OFF; \
     ninja -C /src/z3/build -j"$JOBS" install; \
@@ -93,7 +98,7 @@ RUN set -eux; \
     cd / && rm -rf /src/bitwuzla
 # declared here, so that z3 and Bitwuzla stay cached across YICES=0/1
 ARG YICES_TAG
-ARG YICES=0
+ARG YICES=1
 RUN set -eux; \
     if [ "$YICES" = 1 ]; then \
       git clone -q --depth 1 --branch "$YICES_TAG" https://github.com/SRI-CSL/yices2.git /src/yices2; \
@@ -111,7 +116,7 @@ RUN set -eux; \
 # to /opt/sea-mlir. The build tree stays in /build (`just docker-check`).
 FROM base AS sea-mlir
 ARG JOBS=8
-ARG YICES=0
+ARG YICES=1
 ARG SEA_GIT_DESCRIBE=docker
 COPY --from=llvm /opt/llvm /opt/llvm
 COPY --from=solvers /opt/solvers /opt/solvers
@@ -135,8 +140,8 @@ RUN set -eux; \
     /opt/sea-mlir/bin/sea-vc --version
 
 # ---------------------------------------------------------------- runtime
-# the installed tools and the solver libraries (z3, Bitwuzla), nothing
-# else; never with Yices (release binaries omit it: docs/Release.md)
+# the installed tools and the solver libraries (z3, Bitwuzla, Yices unless
+# YICES=0), nothing else
 FROM ${UBUNTU} AS runtime
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -144,10 +149,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=solvers /opt/solvers /opt/solvers
 COPY --from=sea-mlir /opt/sea-mlir /opt/sea-mlir
-RUN if ls /opt/solvers/lib/libyices* >/dev/null 2>&1; then \
-      echo "the runtime image is built without Yices: drop YICES=1" \
-           "(use --target sea-mlir for a Yices build test)" >&2; exit 1; \
-    fi
 ENV PATH=/opt/sea-mlir/bin:/opt/solvers/bin:$PATH
 RUN sea-vc --version && ! ldd /opt/sea-mlir/bin/sea-vc | grep 'not found'
 WORKDIR /work

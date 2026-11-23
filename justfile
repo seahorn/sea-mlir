@@ -80,17 +80,17 @@ docs-dialect *tblgen="":
 llvm-drift *args="":
     python3 utils/llvm-drift.py {{args}}
 
-# build the Docker image sea-mlir:dev (docker/README.md): LLVM at the pin, z3 + Bitwuzla, sea-mlir built and tested (check-sea); -j$SEA_DOCKER_JOBS (8)
+# build the Docker image sea-mlir:dev (docker/README.md): LLVM at the pin, z3 + Bitwuzla + Yices, sea-mlir built and tested (check-sea); -j$SEA_DOCKER_JOBS (8)
 docker-build *args="":
     docker build -f docker/Dockerfile --build-arg JOBS=${SEA_DOCKER_JOBS:-8} \
       --build-arg SEA_GIT_DESCRIBE="$(git describe --tags --always --dirty --abbrev=12)" \
       -t sea-mlir:dev {{args}} .
 
-# the Docker build test with Yices (sea-mlir-test:yices, never a runtime image): check-sea inside it, then a sat and an unsat smoke run of sea-mlir:dev
+# the Docker build test (sea-mlir-test:yices, the build stage with its build tree): check-sea inside it, then a sat and an unsat smoke run of sea-mlir:dev
 docker-check:
     docker build -f docker/Dockerfile --build-arg JOBS=${SEA_DOCKER_JOBS:-8} \
       --build-arg SEA_GIT_DESCRIBE="$(git describe --tags --always --dirty --abbrev=12)" \
-      --build-arg YICES=1 --target sea-mlir -t sea-mlir-test:yices .
+      --target sea-mlir -t sea-mlir-test:yices .
     docker run --rm sea-mlir-test:yices sh -c 'ninja -C /build check-sea && /build/bin/sea-vc --version'
     docker run --rm -v "$PWD/test:/test:ro" sea-mlir:dev sea-vc /test/VC/print/replay.mlir --lower | grep -E '^(tool.version|result|replay):'
     docker run --rm -v "$PWD/test:/test:ro" sea-mlir:dev sea-vc /test/VC/seam/inb-ok.mlir --config=seam | grep -E '^(result|vc.config):'

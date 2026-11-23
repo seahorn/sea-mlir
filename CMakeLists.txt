@@ -74,9 +74,9 @@ message(STATUS "Z3: ${Z3_LIBRARY}")
 
 # Yices 2 (optional): SEA_ENABLE_YICES = AUTO (default: used when found),
 # ON (required) or OFF. Found => the backend is compiled (WITH_YICES2).
-# Yices is GPLv3 (z3 and Bitwuzla are MIT): a binary that links libyices is
-# distributed under GPLv3 terms, so release binaries are built with OFF
-# (docs/Release.md, "Runtime requirements"). Without it, --solver=yices and
+# Yices is BSD-3-Clause from 2.8.0 (the pin; earlier releases are GPLv3),
+# and release binaries link it (docs/Release.md, "Runtime requirements").
+# Without it, --solver=yices and
 # the --yices-* options are errors and the tests that need it are
 # unsupported (lit feature `yices`).
 set(SEA_ENABLE_YICES AUTO CACHE STRING
@@ -88,8 +88,8 @@ if(SEA_ENABLE_YICES)  # ON, AUTO (a non-false string)
   find_library(YICES2_LIBRARY yices HINTS ${YICES2_ROOT}/lib)
   if(YICES2_INCLUDE_DIR AND YICES2_LIBRARY)
     set(SEA_WITH_YICES ON)
-    message(STATUS "Yices2: ${YICES2_LIBRARY} (GPLv3: a binary linking it "
-                   "is distributed under GPLv3 terms)")
+    message(STATUS "Yices2: ${YICES2_LIBRARY} (BSD-3-Clause from 2.8.0; "
+                   "earlier releases are GPLv3)")
   elseif(SEA_ENABLE_YICES STREQUAL "AUTO")
     message(STATUS "Yices2: not found (YICES2_ROOT=${YICES2_ROOT}); "
                    "--solver=yices disabled")

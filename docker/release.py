@@ -222,10 +222,10 @@ def project_version(source):
 
 
 def pins(source):
-    """Solver tags: the ARGs of docker/Dockerfile are their only definition."""
+    """Solver pins: the ARGs of docker/Dockerfile are their only definition."""
     text = (source / "docker" / "Dockerfile").read_text()
     result = []
-    for name in ("Z3_TAG", "BITWUZLA_TAG"):
+    for name in ("Z3_REVISION", "BITWUZLA_TAG", "YICES_TAG"):
         found = re.search(rf"^ARG {name}=(\S+)$", text, re.MULTILINE)
         if not found:
             raise SystemExit(f"error: no ARG {name}= in docker/Dockerfile")
@@ -293,7 +293,7 @@ def main():
         except ValueError as error:
             parser.error(str(error))
     job = ReleaseJob(source, output, end)
-    common = ["YICES=0"]
+    common = ["YICES=1"]
     if args.llvm_image:
         common += ["LLVM_BASE=" + args.llvm_image, "REUSE_LLVM=1"]
     describe = job.record["source"][:12] + "-release-build"

@@ -206,5 +206,16 @@ class CancellationTests(unittest.TestCase):
         self.assertEqual(self.job.record["stages"][-1]["exit"], 124)
 
 
+class PinTests(unittest.TestCase):
+    def test_solver_pins_from_dockerfile(self):
+        # the packaging gets all three solver pins, from docker/Dockerfile
+        found = release.pins(Path(__file__).resolve().parent.parent)
+        self.assertEqual(
+            [pin.split("=", 1)[0] for pin in found],
+            ["Z3_REVISION", "BITWUZLA_TAG", "YICES_TAG"],
+        )
+        self.assertTrue(all(pin.split("=", 1)[1] for pin in found))
+
+
 if __name__ == "__main__":
     unittest.main()
