@@ -1,0 +1,17 @@
+// The canonical linear forms of the query (include/sea/Expr/CanonicalSums.hh,
+// sea-vc --vc-canonical-sums): each item of the form on exact terms, and
+// random linear terms at widths 1 to 64, each equivalent to its rewrite (a
+// miter, unknowns within its limit shown) and equal at random ground points.
+// unittests/CanonicalSums.
+RUN: sea-canonical-sums-test 200 | FileCheck %s
+CHECK: test: shape ok
+CHECK: test: order ok
+CHECK: test: eq ok
+CHECK: test: extract ok
+CHECK: test: bitwise ok
+CHECK: random: terms=200
+CHECK: test: random ok
+CHECK: failures: 0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

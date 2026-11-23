@@ -22,7 +22,7 @@ configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
   )
 
-set(SEA_TEST_DEPENDS sea-opt sea-reduce sea-run sea-expr-eval sea-vc sea-seam-export sea-expr-rewriter-test sea-addr-range-test sea-log-test sea-timer-test sea-stats-test sea-solver-factory-test sea-expr-core-test sea-expr-api-test sea-small-arith-test sea-join-cases-test sea-int-ranges-test sea-diff-decider-test sea-fold-top-eqs-test)
+set(SEA_TEST_DEPENDS sea-opt sea-reduce sea-run sea-expr-eval sea-vc sea-seam-export sea-expr-rewriter-test sea-addr-range-test sea-log-test sea-timer-test sea-stats-test sea-solver-factory-test sea-expr-core-test sea-expr-api-test sea-small-arith-test sea-join-cases-test sea-int-ranges-test sea-diff-decider-test sea-fold-top-eqs-test sea-canonical-sums-test)
 if(SEA_WITH_YICES)
   list(APPEND SEA_TEST_DEPENDS sea-seam-rules-test sea-bv-rules-test sea-store-map-test sea-memops-test sea-ackermann-test)
 endif()

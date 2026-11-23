@@ -18,6 +18,7 @@
 #include "sea/Expr/AckCellsPlan.hh"
 #include "sea/Expr/AckRelax.hh"
 #include "sea/Expr/Ackermann.hh"
+#include "sea/Expr/CanonicalSums.hh"
 #include "sea/Expr/ExprAPInt.hh"
 #include "sea/Expr/ExprMlir.hh"
 #include "sea/Expr/InitialWords.hh"
@@ -934,6 +935,15 @@ static cl::opt<VcDefs> vcDefs(
                           "names defined by two bvule atoms each, no "
                           "top-level equation")),
     cl::init(VcDefs::Inline));
+
+static cl::opt<bool> vcCanonicalSums(
+    "vc-canonical-sums",
+    cl::desc("Canonical linear forms of the query, the last encoding step "
+             "before the solver (docs/design/CanonicalSums.md): every "
+             "maximal bit-vector sum as P + ~N + c over one leaf order, "
+             "equalities with a sum side balanced; exact, no assumption. "
+             "Off by default (not tuned); not with --vc-defs"),
+    cl::init(false));
 
 static cl::opt<bool> dagStats(
     "dag-stats",
@@ -3043,6 +3053,17 @@ TYPICAL:
                                  #   one node (solver-neutral; z3 flattens
                                  #   it again); inline (default, not tuned):
                                  #   flat sums. docs/design/SumNames.md
+  sea-vc p.mlir --vc-canonical-sums  # (off by default, not tuned) the
+                                 #   last encoding step: every maximal
+                                 #   bit-vector sum as P, P + c or
+                                 #   (P + ~N) + c+1 over one leaf order (by
+                                 #   base: x, zext x, low extract x),
+                                 #   equalities with a sum side balanced
+                                 #   (P + c = N), extracts kept on top of
+                                 #   full-width sums, bitwise terms left
+                                 #   alone. Exact; the in-process query and
+                                 #   --smt2 alike. Not with --vc-defs.
+                                 #   docs/design/CanonicalSums.md
   sea-vc p.mlir --seam --narrow-offsets  # (off by default; rests on
                                  #   A-INB) a program load's read at its own
                                  #   address in an object of size N (also an
@@ -3650,6 +3671,12 @@ OUTPUT (stdout, `key: value` lines):
                                   definition atoms
                                   asserted, bvadd nodes replaced; with
                                   vc-time, stderr with --smt2)
+  vc.canonical-sums: on            (--vc-canonical-sums; then
+                                  vc.canonical-sums-sums / -changed /
+                                  -leaves / -eqs / -eqs-changed: maximal
+                                  sums emitted, of them changed, their
+                                  leaves, balanced equalities, of them
+                                  changed; with vc-time, stderr with --smt2)
   vc.ackermann-stride-broken: <n>  (sat, --ack-stride with stride pairs:
   vc.ackermann-stride-idle: <n>    pairs the rule dropped that the model
                                   puts at one index with different cells;
@@ -8039,6 +8066,33 @@ int main(int argc, char **argv) {
                     clash + "'");
       lap("vc-defs");
     }
+    // canonical linear forms (the last encoding step of the query; exact,
+    // docs/design/CanonicalSums.md)
+    std::optional<expr::CanonicalSums::Stats> canonStats;
+    if (vcCanonicalSums) {
+      if (vcDefs != VcDefs::Inline)
+        return fail("--vc-canonical-sums is not combined with --vc-defs: "
+                    "the canonical form flattens the nested and named sums "
+                    "(docs/design/CanonicalSums.md)");
+      expr::CanonicalSums canon;
+      const expr::Expr before = query;
+      query = canon.rewrite(query);
+      canonStats = canon.stats();
+      if (relaxOn &&
+          !relaxQ.rename([&](const expr::Expr &n) { return canon.image(n); },
+                         before, query))
+        return fail("--ack-relax: the query after --vc-canonical-sums is not "
+                    "the image of the lowered query (a bug)");
+      if (originsOn)
+        origins = origins.through(
+            [&](const expr::Expr &n) { return canon.image(n); });
+      if (canonStats->opaque)
+        sea::diag::warn("vc.canonical-sums-opaque",
+                        Twine(canonStats->opaque) +
+                            " bvsub / bvneg node(s) of an unexpected arity "
+                            "are left as leaves (not canonical)");
+      lap("canonical-sums");
+    }
     // --ack-relax: with every candidate kept, a round's query is the whole
     // query (one node)
     if (relaxOn &&
@@ -8433,6 +8487,14 @@ int main(int argc, char **argv) {
         r.line("vc.defs-names").value(defStats->names);
         r.line("vc.defs-atoms").value(defStats->atoms);
         r.line("vc.defs-rewritten").value(defStats->rewritten);
+      }
+      if (canonStats) {
+        r.line("vc.canonical-sums").value("on");
+        r.line("vc.canonical-sums-sums").value(canonStats->sums);
+        r.line("vc.canonical-sums-changed").value(canonStats->sumsChanged);
+        r.line("vc.canonical-sums-leaves").value(canonStats->leaves);
+        r.line("vc.canonical-sums-eqs").value(canonStats->eqs);
+        r.line("vc.canonical-sums-eqs-changed").value(canonStats->eqsChanged);
       }
       // the named assumptions of the VC (BRUNCH_STAT <key>-<field>)
       sea::assume::Ledger vcAssumes;
