@@ -37,15 +37,17 @@
 //  - bvnot, and every bitwise operator, is a leaf: ~x stays ~x.
 // An equality with a linear side (a sum, not a single leaf or a numeral) is
 // balanced: the form D = a - b (or -D, the one with fewer negative leaves;
-// ties by the leaf keys) becomes (= P -c), (= (bvadd P c) N) or (= P N),
-// never one isolated term; an empty form is true or false.
+// ties by the leaf keys, then by the constant) becomes (= P -c), (= (bvadd P c)
+// N) or (= P N), never one isolated term; an empty form is true or false.
 //
 // Every step is an identity of SMT-LIB bit-vector arithmetic (no
 // assumption): the forms are equal to their terms modulo 2^w; P - N + c =
 // P + ~N + (c + 1); a = b iff a - b = 0 iff P + c = N; zext / concat 0 / low
 // extract of a leaf name its low bits. The unit test (sea-canonical-sums-
-// test) checks each case and random linear terms at several widths with an
-// equivalence miter in z3.
+// test) checks each case with a z3 miter, and random linear terms at several
+// widths with a miter (Yices, else Bitwuzla, else z3, with a limit) plus
+// random ground points checked in z3 (more, and corner values, when the
+// miter is unknown).
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/ExprOpBv.hh"
 #include "sea/Expr/SmallArith.hh"
@@ -79,14 +81,33 @@ public:
   Expr rewrite(const Expr &query) {
     m_efac = &query->efac();
     walk(query);
-    return image(query);
+    return imageOf(query.get());
   }
 
   const Stats &stats() const { return m_stats; }
 
-  /// After rewrite(): the image of a node of its input query (null: the
-  /// node is not in the query).
-  Expr image(const Expr &n) { return imageOf(n.get()); }
+  /// After rewrite(): the image of a node of its input query, made by no
+  /// call (null: the node has none). A non-linear node and a maximal sum:
+  /// its rewritten term. A linear node inside a sum is no term of the
+  /// output; a product k * leaf (one leaf, no constant) has the term its
+  /// leaf gets in a chain, (bvmul k' leaf) for k' != 1, which is in the output
+  /// when its coefficient did not merge with another term's (the origins of
+  /// --arith-stats follow a multiplication this way); else null.
+  Expr image(const Expr &n) {
+    auto it = m_new.find(n.get());
+    if (it != m_new.end())
+      return it->second;
+    if (!isOpX<BMUL>(n) || !m_linear.count(n.get()))
+      return Expr();
+    const Form &f = m_form.at(n.get());
+    if (f.c != 0 || f.coef.size() != 1)
+      return Expr();
+    std::vector<Item> pos, neg;
+    split(f, pos, neg);
+    const Item &item = pos.empty() ? neg[0] : pos[0];
+    // coefficient 1: the leaf itself, which is not this product
+    return item.k == 1 ? Expr() : leaf(item, f.w);
+  }
 
 private:
   /// the low eff bits of base, zero-extended
@@ -357,7 +378,9 @@ private:
     Form e;
     e.w = w;
     addScaled(e, d, smallarith::modPow2(mpz_class(-1L), w));
-    // the orientation: fewer negative leaves, then the smaller key sequence
+    // the orientation: fewer negative leaves, then the smaller key sequence,
+    // then the smaller constant (when every coefficient is 2^(w-1), D and
+    // -D have the same leaves and differ in the constant only)
     std::vector<Item> dp, dn, ep, en;
     split(d, dp, dn);
     split(e, ep, en);
@@ -368,7 +391,9 @@ private:
           r.emplace_back(it.key.base->getId(), it.key.eff, it.k);
       return std::make_pair(q.size(), r);
     };
-    const bool flip = rank(ep, en) < rank(dp, dn);
+    const auto re = rank(ep, en), rd = rank(dp, dn);
+    const bool flip = re < rd || (re == rd && smallarith::modPow2(e.c, w) <
+                                                  smallarith::modPow2(d.c, w));
     const Form &f = flip ? e : d;
     std::vector<Item> &pos = flip ? ep : dp, &neg = flip ? en : dn;
     ++m_stats.eqs;

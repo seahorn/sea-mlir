@@ -9,7 +9,8 @@ CHECK: test: order ok
 CHECK: test: eq ok
 CHECK: test: extract ok
 CHECK: test: bitwise ok
-CHECK: random: terms=200
+CHECK: test: image ok
+CHECK: random: terms=200 {{.*}} unknown={{[0-9]$}}
 CHECK: test: random ok
 CHECK: failures: 0
 

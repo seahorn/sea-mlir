@@ -59,7 +59,9 @@ are the other bit-vector nodes, with their own kids rewritten first. A
    Its form `D = a - b`, or `-D`, is written as `(= P -c)`,
    `(= (bvadd P c) N)` or `(= P N)`; `true` or `false` if `D` has no leaf.
    Of `D` and `-D` the one with fewer negative leaves is kept, ties broken
-   by the sequence of leaf keys: `a = b` and `b = a` give one term. No term
+   by the sequence of leaf keys, then by the smaller constant (when every
+   coefficient is `2^(w-1)`, `D` and `-D` have the same leaves: `128y = 3`
+   and `128y = 253` at 8 bits): `a = b` and `b = a` give one term. No term
    is isolated.
 4. **Full width.** An extract over a sum is a leaf whose base is the sum,
    which is canonical at its own width: the extract stays on top. Pushing
@@ -96,6 +98,17 @@ model-trail elimination of `--vc-fold-top-eqs` and the place of
 - The Ackermann lowering decides its pairs on the query before this step,
   so its pair tests (`LinearForms.hh`) see the forms they were written for.
 
+What sees the step's terms:
+
+- after it: the query of the solver of the verdict, the `--smt2` dump,
+  `--split-smt2` and every split part, the reach queries, the parts of
+  `--check-inb` (sea-vc processes with the job's options) and the rounds
+  of `--ack-relax`;
+- before it: the side checks, which build their own terms from the VC
+  (`--seam-check`, `--narrow-check`, `--split-check`, `--eq-audit`,
+  `--words-check`), and the model trail written by `--model-trail-out`.
+  Their questions are about the VC, not about its spelling.
+
 Interactions:
 
 - `--vc-defs` (named or nested address sums, [SumNames](SumNames.md)) is
@@ -105,7 +118,14 @@ Interactions:
 - `--ack-relax`: its parts are renamed through the step's image, as through
   `--vc-defs`; with every candidate kept, the query is the whole query.
 - `--arith-stats` and the other origin users follow the query through the
-  step's image.
+  step's image: a non-linear node and a maximal sum go to their rewritten
+  term; a multiplication `k * x` inside a sum goes to the term its leaf
+  gets in the chain, `(bvmul k' x)`, which is in the query unless its
+  coefficient merged with another term of `x` (`2x + x = 3x`: then the
+  product is unattributed). A product the step makes from a sum that had
+  no multiplication (a coefficient from repeated terms) has no origin
+  either and counts as unattributed. A sum inside a sum is no term of the
+  query and has no image.
 - Replay and model evaluation read the original terms. The step keeps
   every constant that matters: a constant can only disappear when its
   coefficients cancel (`x - x`), and then no value of the query depends on
@@ -134,8 +154,10 @@ two terms at up to 8 bits, zext / concat / low and high extracts, bitwise
 terms, ite, in equalities and compares): each with a miter (Yices, else
 Bitwuzla, else z3, with a limit; unknowns are shown) and at random ground
 points (z3; always decided), and that two fresh factories give the same
-text. z3 does not decide some 16-bit miters of rearranged adders within
-minutes; Yices and Bitwuzla decide them in milliseconds, which is the
+text. When the miter is unknown, the ground check takes 64 points and
+the corner values `0`, `1`, `2^(w-1)`, `2^w - 1` of each constant; the
+number of unknowns is bounded in the lit test. z3 does not decide some
+16-bit miters of rearranged adders within minutes; Yices and Bitwuzla decide them in milliseconds, which is the
 problem this step addresses. The lit tests (`test/VC/canonical-sums/`)
 check items 1 to 5 on `--smt2` and the replay of a model of the
 rewritten query.

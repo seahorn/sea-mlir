@@ -17,7 +17,9 @@
 //    compares, at widths 1 to 64. For each:
 //    the output is equivalent to the input (a miter: Yices, else Bitwuzla,
 //    else z3, with a limit, its unknowns shown) and equal to it at 8 random
-//    ground points (z3; always decided), it has no bvsub and no
+//    ground points (z3; always decided; 64 and the corner values 0, 1,
+//    2^(w-1), 2^w - 1 of each constant when the miter is unknown), it has
+//    no bvsub and no
 //    bvneg, and two fresh factories give the same text (determinism).
 //
 //===----------------------------------------------------------------------===//
@@ -109,29 +111,52 @@ struct Fixture {
   }
 
   /// \p in = \p out under \p n random assignments of the bit-vector
-  /// constants (ground, so z3 decides each at once); false on a difference
+  /// constants (ground, so z3 decides each at once), and with \p corners
+  /// also at every corner value (0, 1, 2^(w-1), 2^w - 1) of each constant,
+  /// the others random; false on a difference
   bool groundEqual(const Expr &in, const Expr &out, std::mt19937_64 &rng,
-                   unsigned n) {
-    ExprSet consts;
-    filter(in, op::bind::IsConst(), std::inserter(consts, consts.begin()));
+                   unsigned n, bool corners = false) {
+    ExprSet all;
+    filter(in, op::bind::IsConst(), std::inserter(all, all.begin()));
     TypeChecker tc;
-    for (unsigned k = 0; k < n; ++k) {
+    std::vector<std::pair<Expr, unsigned>> consts;
+    for (const Expr &c : all) {
+      Expr t = tc.typeOf(c);
+      if (isOpX<op::BVSORT>(t))
+        consts.emplace_back(c, op::bv::width(t));
+    }
+    auto random = [&](unsigned w) {
+      mpz_class v = 0L;
+      for (unsigned b = 0; b < w; b += 32)
+        v = v * mpz_class(4294967296UL) +
+            mpz_class((unsigned long)(rng() & 0xffffffffUL));
+      return smallarith::modPow2(v, w);
+    };
+    // constant \p fixed (npos: none) at \p value, the others random
+    auto point = [&](size_t fixed, const mpz_class &value) {
       ExprVector conj{mk<NEG>(mk<EQ>(in, out))};
-      for (const Expr &c : consts) {
-        Expr t = tc.typeOf(c);
-        if (!isOpX<op::BVSORT>(t))
-          continue;
-        unsigned w = op::bv::width(t);
-        mpz_class v = 0L;
-        for (unsigned b = 0; b < w; b += 32)
-          v = v * mpz_class(4294967296UL) +
-              mpz_class((unsigned long)(rng() & 0xffffffffUL));
-        conj.push_back(mk<EQ>(c, num(smallarith::modPow2(v, w), w)));
+      for (size_t i = 0; i < consts.size(); ++i) {
+        auto [c, w] = consts[i];
+        conj.push_back(mk<EQ>(c, num(i == fixed ? value : random(w), w)));
       }
       sea::solver::z3_solver_impl s(efac);
       s.add(mknary<AND>(conj.begin(), conj.end()));
-      if (s.check() != sea::solver::SolverResult::UNSAT)
+      return s.check() == sea::solver::SolverResult::UNSAT;
+    };
+    for (unsigned k = 0; k < n; ++k)
+      if (!point(size_t(-1), mpz_class(0L)))
         return false;
+    if (!corners)
+      return true;
+    for (size_t i = 0; i < consts.size(); ++i) {
+      unsigned w = consts[i].second;
+      mpz_class half, ones;
+      mpz_ui_pow_ui(half.get_mpz_t(), 2, w - 1);
+      ones = smallarith::modPow2(mpz_class(-1L), w);
+      for (const mpz_class &v :
+           {mpz_class(0L), smallarith::modPow2(mpz_class(1L), w), half, ones})
+        if (!point(i, v))
+          return false;
     }
     return true;
   }
@@ -219,6 +244,31 @@ void testOrder() {
   Expr out = c.rewrite(mk<BULE>(a, b));
   CHECK(isOpX<BULE>(out) && out->arg(0) == out->arg(1),
         "order.hash-cons: got " << str(out));
+  // the low byte of X and X are two leaves of one base (keys (X, 8) and
+  // (X, 32)): they do not merge, and X cancels alone
+  Expr X32 = F.var("X32", 32);
+  Expr lo = op::bv::zext(op::bv::extract(7, 0, X32), 32);
+  F.expect("order.no-merge", ctx(F.add({X32, lo})), ctx(F.add({lo, X32})));
+  F.expect("order.cancel-full", ctx(F.add({X32, lo, mk<BNEG>(X32)})), ctx(lo));
+}
+
+/// image(): a product k * x inside a sum maps to its term in the chain
+/// (the origins of --arith-stats); a sum inside a sum has no image
+void testImage() {
+  Fixture F;
+  Expr x = F.var("x", 8), y = F.var("y", 8), z = F.var("z", 8);
+  Expr m = mk<BMUL>(x, F.num(3, 8));
+  Expr inner = mk<BADD>(m, y);
+  Expr q = ctx(mk<BADD>(inner, z));
+  CanonicalSums c;
+  Expr out = c.rewrite(q);
+  Expr m3 = mk<BMUL>(F.num(3, 8), x);
+  CHECK(out == ctx(F.add({m3, y, z})), "image: got " << str(out));
+  CHECK(c.image(m) == m3,
+        "image.product: got " << (c.image(m) ? str(c.image(m)) : "null"));
+  CHECK(!c.image(inner), "image.inner-sum: not null");
+  CanonicalSums::Stats st = c.stats();
+  CHECK(st.sums == 1, "image: image() changed the counters: sums=" << st.sums);
 }
 
 /// 3: equalities with a sum side are balanced
@@ -241,6 +291,15 @@ void testEq() {
            mk<TRUE>(F.efac));
   // no sum side: unchanged
   F.expect("eq.plain", mk<EQ>(x, c(4)), mk<EQ>(x, c(4)));
+  // every coefficient 2^(w-1): D and -D have the same leaves and differ in
+  // the constant; 128y = 3 and 3 = 128y are one term
+  {
+    CanonicalSums cs;
+    Expr h = mk<BMUL>(c(128), y);
+    Expr out = cs.rewrite(mk<AND>(mk<EQ>(h, c(3)), mk<EQ>(c(3), h)));
+    CHECK(isOpX<AND>(out) && out->arity() == 2 && out->arg(0) == out->arg(1),
+          "eq.half-tie: got " << str(out));
+  }
 }
 
 /// 4: an extract stays on top of the full-width sum
@@ -400,7 +459,9 @@ void testRandom(unsigned count) {
             "random " << i << ": not equivalent: " << str(q) << " -> "
                       << text[run]);
       unknown += r == sea::solver::SolverResult::UNKNOWN;
-      CHECK(F.groundEqual(q, out, rng, 8),
+      // an undecided miter: more ground points and the corner values
+      const bool undecided = r == sea::solver::SolverResult::UNKNOWN;
+      CHECK(F.groundEqual(q, out, rng, undecided ? 64 : 8, undecided),
             "random " << i << ": differs at a ground point: " << str(q)
                       << " -> " << text[run]);
       CHECK(!hasSubOrNeg(out),
@@ -422,11 +483,9 @@ int main(int argc, char **argv) {
   struct Test {
     const char *name;
     void (*fn)();
-  } tests[] = {{"shape", testShape},
-               {"order", testOrder},
-               {"eq", testEq},
-               {"extract", testExtract},
-               {"bitwise", testBitwise}};
+  } tests[] = {{"shape", testShape},     {"order", testOrder},
+               {"eq", testEq},           {"extract", testExtract},
+               {"bitwise", testBitwise}, {"image", testImage}};
   for (const Test &t : tests) {
     int before = failures;
     t.fn();
