@@ -4078,11 +4078,9 @@ OUTPUT (stdout, `key: value` lines):
                                   stderr; then seam-trace-lhs: / -rhs: with
                                   the printed terms, cut at 400 characters)
   seam-check: firings=<n> checked=<n> valid=<n> invalid=<n> unknown=<n>
-      unexpressible=<n> [covered=<n> failed=<n>] [unknown-rlimit=<n>]
+      unexpressible=<n> covered=<n> failed=<n> [unknown-rlimit=<n>]
                                   (--seam-check, after the verdict; checked =
                                   valid + invalid + unknown + failed;
-                                  covered / failed (only when the run has a
-                                  row.mfill-expand firing):
                                   covered: row.mfill-expand firings of a
                                   fill over 64 bytes, covered by the theorem
                                   RangeExpr.eval_mfill_eq_fillStores, not
@@ -8495,7 +8493,7 @@ int main(int argc, char **argv) {
       // row.mfill-expand (docs/design/MemFill.md, "The boundary"): checked
       // up to kFillExpandCheckCap bytes, where an unknown is a failure;
       // above it covered by its theorem, not checked
-      uint64_t covered = 0, failed = 0, fillExpands = 0;
+      uint64_t covered = 0, failed = 0;
       unsigned ms = seamCheckTimeout * 1000;
       // a fresh solver per query. Hypothesis (measured, not read in z3's
       // source): z3 decides its auto-configuration at the first push, before
@@ -8530,7 +8528,6 @@ int main(int argc, char **argv) {
             expr::isOpX<expr::MEM_FILL>(f.lhs->arg(0)) &&
             StringRef(trail.rulesOf(f)).split(',').first == "row.mfill-expand")
           fillBytes = expr::op::array::fillBytes(f.lhs->arg(0)).size();
-        fillExpands += fillBytes != 0;
         if (fillBytes > expr::kFillExpandCheckCap) {
           ++covered;
           os << "seam-check-covered: id=" << f.id
@@ -8663,11 +8660,8 @@ int main(int argc, char **argv) {
       os << "seam-check: firings=" << n
          << " checked=" << (valid + invalid + unknown + failed)
          << " valid=" << valid << " invalid=" << invalid
-         << " unknown=" << unknown << " unexpressible=" << unexpr;
-      // only for a run with fill expansions: other summaries stay as they
-      // were
-      if (fillExpands)
-        os << " covered=" << covered << " failed=" << failed;
+         << " unknown=" << unknown << " unexpressible=" << unexpr
+         << " covered=" << covered << " failed=" << failed;
       if (seamCheckRlimit)
         os << " unknown-rlimit=" << unknownRlimit;
       os << "\n";

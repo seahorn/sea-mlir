@@ -240,9 +240,8 @@ in `failed=` of the summary line, exit status 5 as an invalid firing.
 Above the cap the firing is covered by the theorem and not checked:
 `seam-check-covered: id= rules= bytes= theorem=RangeExpr.eval_mfill_eq_
 fillStores`, counted in `covered=`, never in `valid=` or `unknown=`.
-The summary line has `covered=` and `failed=` only when the run has a
-`row.mfill-expand` firing, after `unexpressible=` (other summaries are
-unchanged). (The
+The summary line always has `covered=` and `failed=`, after
+`unexpressible=` and before the optional `unknown-rlimit=`. (The
 4 KiB read of `test/VC/mem-fill-4k.test` before the cap: 98,336 firings, 0
 invalid, 9 unknown, 8 of them `row.mfill-expand`, one `row.smap-abort` on
 the expansion's stores.) A split of a large fill into checked pieces

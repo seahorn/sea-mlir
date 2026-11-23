@@ -41,7 +41,11 @@ def main():
     if n < 10000:
         return fail(f"the largest count, {n}, is too small to bisect")
     above = run(base + [f"--seam-check-rlimit={2 * n}"])
-    if not re.search(r"^seam-check: .* unknown=0 .*unknown-rlimit=0$", above, re.M):
+    if not re.search(
+        r"^seam-check: .* unknown=0 unexpressible=\d+ covered=\d+ failed=0 unknown-rlimit=0$",
+        above,
+        re.M,
+    ):
         return fail(f"not every firing is decided at rlimit {2 * n}")
     below = run(base + [f"--seam-check-rlimit={n // 10}"])
     if not re.search(
