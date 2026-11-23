@@ -16,6 +16,8 @@ class z3_solver_impl : public Solver {
   std::unique_ptr<EZ3> m_zctx;
   std::unique_ptr<ZSolver<EZ3>> m_solver;
   SolverResult m_last_result;
+  /// the logic of the solver (empty: z3's default), for the printed query
+  std::string m_logic;
 
 public:
   using model_ref = typename Solver::model_ref;
@@ -27,7 +29,7 @@ public:
       : Solver(), m_efac(efac), m_zctx(new EZ3(m_efac)),
         m_solver(logic ? new ZSolver<EZ3>(*m_zctx, logic)
                        : new ZSolver<EZ3>(*m_zctx)),
-        m_last_result(SolverResult::UNKNOWN) {}
+        m_last_result(SolverResult::UNKNOWN), m_logic(logic ? logic : "") {}
 
   ~z3_solver_impl() = default;
 
@@ -131,9 +133,18 @@ public:
     return n;
   }
 
-  /** Write asserted formulas to SMT-LIB format **/
-  virtual void to_smt_lib(llvm::raw_ostream &o) override {
-    m_solver->toSmtLib(o);
+  /// Write asserted formulas to SMT-LIB format: a header (the dialect, the
+  /// constructs some solver does not read, the logic: smt2Header), then the
+  /// assertions; \p dialect Portable
+  /// expands what has an exact portable form (sea/Expr/Smt/Smt2Dialect.hh)
+  virtual void to_smt_lib(llvm::raw_ostream &o,
+                          Smt2Dialect dialect = Smt2Dialect::Native,
+                          bool warn = true) override {
+    expr::ExprVector asserts;
+    m_solver->assertions(std::back_inserter(asserts));
+    Smt2Scan scan = smt2Scan(asserts, dialect);
+    smt2Header(o, dialect, scan, m_logic, warn);
+    m_solver->toSmtLibOf(o, asserts, expr::ExprVector());
   }
 };
 } // namespace solver

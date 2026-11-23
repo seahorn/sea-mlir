@@ -630,6 +630,15 @@ public:
 #else
     ExprVector asserts;
     assertions(std::back_inserter(asserts));
+    return toSmtLibOf(out, asserts, rng);
+#endif
+  }
+
+  /// \p asserts (terms of this solver's context, as assertions() gives
+  /// them) in SMT-LIB: their declarations, one assert, check-sat
+  template <typename OutputStream, typename Range>
+  OutputStream &toSmtLibOf(OutputStream &out, const ExprVector &asserts,
+                           const Range &rng) {
     out << z3.toSmtLibDecls(asserts);
     out << "\n";
 #ifdef ZSOLVER_PRETTY_PRINT
@@ -639,7 +648,6 @@ public:
 #else
     Z3_set_ast_print_mode(ctx, Z3_PRINT_SMTLIB2_COMPLIANT);
     out << "(assert " << z3.toSmtLib(boolop::land(asserts, efac)) << ")\n";
-#endif
 #endif
     out << "(check-sat";
     for (const Expr &a : rng)

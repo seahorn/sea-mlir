@@ -161,8 +161,14 @@ BLOCK_IDS = re.compile(r"; sea\.block-ids (\S+) (\S+)")
 
 
 def strip_comments(text):
-    """The query without its comment lines (the block ids)."""
-    return "\n".join(x for x in text.splitlines() if not x.lstrip().startswith(";"))
+    """The query without its comment lines (the block ids, sea-vc's header)
+    and its set-logic line (sea-vc's (set-logic ALL), which z3 sets up as no
+    logic; Query ignores it too)."""
+    return "\n".join(
+        x
+        for x in text.splitlines()
+        if not x.lstrip().startswith(";") and not x.startswith("(set-logic ")
+    )
 
 
 def tokens(s):
