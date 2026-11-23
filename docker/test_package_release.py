@@ -42,23 +42,11 @@ class ForbiddenTests(PrefixCase):
     def test_clean_prefix_passes(self):
         pr.check_forbidden(self.prefix)
 
-    def test_yices_library_refused(self):
-        (self.prefix / "lib" / "libyices.so.2.7").write_bytes(ELF)
-        with self.assertRaisesRegex(RuntimeError, "Yices"):
-            pr.check_forbidden(self.prefix)
-
-    def test_yices_binary_refused(self):
+    def test_yices_allowed(self):
+        # Yices 2.8.0 is BSD-3-Clause: release binaries include it
+        (self.prefix / "lib" / "libyices.so.2.8").write_bytes(ELF)
         (self.prefix / "bin" / "yices-smt2").write_bytes(ELF)
-        with self.assertRaisesRegex(RuntimeError, "Yices"):
-            pr.check_forbidden(self.prefix)
-
-    def test_yices_dependency_refused(self):
-        deps = [("libyices.so.2", self.library("libyices.so.2"))]
-        with (
-            patch.object(pr, "dependencies", return_value=deps),
-            self.assertRaisesRegex(RuntimeError, "Yices"),
-        ):
-            pr.bundle_libraries(self.prefix, self.prefix / "lib", {})
+        pr.check_forbidden(self.prefix)
 
     def test_clang_refused(self):
         (self.prefix / "bin" / "clang-18").write_bytes(ELF)
@@ -95,6 +83,32 @@ class LicenseTests(PrefixCase):
         _, libraries, _, copied = self.bundle("libz3.so.5.3")
         pr.require_licenses(libraries, copied)
         self.assertTrue(libraries["libz3.so.5.3"]["license"].endswith("Z3-LICENSE.txt"))
+
+    def test_yices_library_has_upstream_license(self):
+        _, libraries, _, copied = self.bundle("libyices.so.2.8")
+        pr.require_licenses(libraries, copied)
+        self.assertTrue(
+            libraries["libyices.so.2.8"]["license"].endswith("Yices-LICENSE.txt")
+        )
+
+    def test_yices_ships_notices(self):
+        # NOTICES section 1 (MiniSat, CPython timsort) covers every binary
+        legal = dict(pr.yices_legal("yices-2.8.0"))
+        self.assertEqual(
+            set(legal),
+            {
+                "Yices-LICENSE.txt",
+                "Yices-NOTICES.txt",
+                "Yices-CPython-3.4.0a3-LICENSE.txt",
+                "Yices-MIT.txt",
+            },
+        )
+        self.assertTrue(legal["Yices-NOTICES.txt"].endswith("/yices-2.8.0/etc/NOTICES"))
+        self.assertTrue(all("/yices-2.8.0/" in url for url in legal.values()))
+        # the library's license entry is one of the shipped files
+        _, libraries, _, copied = self.bundle("libyices.so.2.8")
+        pr.require_licenses(libraries, copied)
+        self.assertIn(libraries["libyices.so.2.8"]["license"].rsplit("/", 1)[1], legal)
 
     def test_library_with_manifest_license_accepted(self):
         _, libraries, _, copied = self.bundle("libother.so.1")
@@ -168,6 +182,54 @@ class RelocatableTests(PrefixCase):
             self.assertRaisesRegex(RuntimeError, "missing dependency"),
         ):
             pr.dependencies(self.tool, {})
+
+
+VERSION = """sea-vc (sea-mlir 0.5.0 (v0.5.0))
+  LLVM/MLIR 24.0.0git at 302c842d6601
+  build: Release, assertions on
+  z3 5.4.2.0
+  yices 2.8.0
+  bitwuzla 0.9.1
+"""
+
+
+class SolverTests(unittest.TestCase):
+    def test_z3_version(self):
+        commit = "bbd46c9ebdd5955333682fe9f3cefc2b7c883e9c"
+        text = "Z3 version 5.4.2 - 64 bit - build hashcode " + commit + "\n"
+        self.assertEqual(pr.z3_version(text, commit), "5.4.2")
+        self.assertEqual(
+            pr.z3_version("Z3 version 5.3.3 - 64 bit\n", "z3-5.3.3"), "5.3.3"
+        )
+        with self.assertRaisesRegex(RuntimeError, "z3 version"):
+            pr.z3_version("z3: command not found", "z3-5.3.3")
+
+    def test_z3_other_commit_refused(self):
+        commit = "bbd46c9ebdd5955333682fe9f3cefc2b7c883e9c"
+        with self.assertRaisesRegex(RuntimeError, "expected the pin"):
+            pr.z3_version(
+                "Z3 version 5.4.2 - 64 bit - build hashcode " + "0" * 40, commit
+            )
+        with self.assertRaisesRegex(RuntimeError, "no commit"):
+            pr.z3_version("Z3 version 5.4.2 - 64 bit\n", commit)
+
+    def test_pinned_solvers_accepted(self):
+        pr.check_solvers(VERSION, "5.4.2", "2.8.0")
+
+    def test_release_without_yices_refused(self):
+        text = VERSION.replace(
+            "yices 2.8.0", "yices: not built (--solver=yices disabled)"
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, "reports 'yices: not built.*expected yices 2.8.0"
+        ):
+            pr.check_solvers(text, "5.4.2", "2.8.0")
+
+    def test_other_solver_version_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "expected z3 5.3.3"):
+            pr.check_solvers(VERSION, "5.3.3", "2.8.0")
+        with self.assertRaisesRegex(RuntimeError, "expected yices 2.8"):
+            pr.check_solvers(VERSION.replace("2.8.0", "2.8.10"), "5.4.2", "2.8.0")
 
 
 class PinTests(PrefixCase):

@@ -7,14 +7,17 @@ prefix=$1
 fixtures=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 export PATH="$prefix/bin:$PATH"
 unset LD_LIBRARY_PATH
-sea-vc --version
+sea-vc --version > version.log
+cat version.log
+# release binaries link Yices (BSD-3-Clause from 2.8.0)
+grep -Eq '^ *yices [0-9]' version.log
 for binary in "$prefix"/bin/* "$prefix"/lib/*.so*; do
   [ -f "$binary" ] || continue
   magic=$(od -An -tx1 -N4 "$binary" | tr -d ' \n')
   [ "$magic" = 7f454c46 ] || continue
   dependencies=$(ldd "$binary")
   printf 'ldd: %s\n%s\n' "$binary" "$dependencies"
-  if printf '%s\n' "$dependencies" | grep -E 'not found|[Yy]ices'; then
+  if printf '%s\n' "$dependencies" | grep 'not found'; then
     exit 1
   fi
 done
@@ -26,6 +29,11 @@ grep -q 'mismatches=0' sat.log
 sea-vc "$fixtures/unsat.mlir" --lower --config=seam > unsat.log
 cat unsat.log
 grep -q '^result: unsat$' unsat.log
+# the unsat fixture needs no query; the sat one reaches the solver
+sea-vc "$fixtures/sat.mlir" --lower --solver=yices > sat-yices.log
+cat sat-yices.log
+grep -q '^result: sat$' sat-yices.log
+grep -q 'mismatches=0' sat-yices.log
 if [ "${2:-}" = bundle ]; then
   clang-18 --version
   python3 --version

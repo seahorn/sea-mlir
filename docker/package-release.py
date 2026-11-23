@@ -29,6 +29,7 @@ SYSTEM = re.compile(
 UPSTREAM_LICENSE = (
     (re.compile(r"libz3\.so.*"), "Z3-LICENSE.txt"),
     (re.compile(r"libbitwuzla.*\.so.*"), "Bitwuzla-COPYING.txt"),
+    (re.compile(r"libyices\.so.*"), "Yices-LICENSE.txt"),
 )
 
 
@@ -161,11 +162,6 @@ def archive(prefix, output, epoch, suffix=""):
 
 
 def check_forbidden(prefix):
-    for path in prefix.rglob("*"):
-        if "yices" in path.name.lower() and (
-            path.parent == prefix / "bin" or ".so" in path.name or path.suffix == ".a"
-        ):
-            raise RuntimeError(f"Yices binary is forbidden in a release: {path}")
     if any(path.name.startswith("clang") for path in (prefix / "bin").iterdir()):
         raise RuntimeError("clang must remain an external dependency")
 
@@ -183,8 +179,6 @@ def bundle_libraries(prefix, lib, env):
             continue
         visited.add(path)
         for name, source in dependencies(path, env):
-            if "yices" in name.lower():
-                raise RuntimeError("Yices dependency is forbidden")
             if SYSTEM.fullmatch(name):
                 libraries.setdefault(name, {"system": True})
                 continue
@@ -222,6 +216,54 @@ def require_licenses(libraries, copied):
             )
 
 
+def z3_version(text, revision):
+    """The version in `z3 --version` output (a master commit reports one too).
+    A z3 built from a git checkout also reports its commit (`build hashcode`);
+    a revision given as a full commit must be that one."""
+    found = re.search(r"^Z3 version (\S+)", text, re.M)
+    if not found:
+        raise RuntimeError(f"cannot read the z3 version from: {text!r}")
+    if re.fullmatch(r"[0-9a-f]{40}", revision):
+        built = re.search(r"build hashcode ([0-9a-f]{40})", text)
+        if not built or built.group(1) != revision:
+            raise RuntimeError(
+                f"z3 reports {built.group(1) if built else 'no commit'}, "
+                f"expected the pin {revision}"
+            )
+    return found.group(1)
+
+
+def check_solvers(version_text, z3, yices):
+    """`sea-vc --version` must report the pinned z3 and Yices: a release
+    without Yices, or with other solver versions than the pins, is refused."""
+    lines = [line.strip() for line in version_text.splitlines()]
+    for name, version in (("z3", z3), ("yices", yices)):
+        # `yices: not built (...)` counts as the yices line
+        found = [line for line in lines if line.split(" ", 1)[0].rstrip(":") == name]
+        if not found or not re.fullmatch(
+            rf"{name} {re.escape(version)}(\.0)*", found[0]
+        ):
+            reported = repr(found[0]) if found else f"no {name} line"
+            raise RuntimeError(f"sea-vc reports {reported}, expected {name} {version}")
+
+
+def yices_legal(tag):
+    """Yices' legal files for a binary distribution: its license, the
+    third-party notices (etc/NOTICES, section 1 covers every binary: MiniSat
+    and CPython timsort material) and the license texts NOTICES names for
+    them; (file name in the release, upstream URL)."""
+    base = f"https://raw.githubusercontent.com/SRI-CSL/yices2/{tag}"
+    return [
+        ("Yices-LICENSE.txt", f"{base}/LICENSE.txt"),
+        ("Yices-NOTICES.txt", f"{base}/etc/NOTICES"),
+        (
+            "Yices-CPython-3.4.0a3-LICENSE.txt",
+            f"{base}/LICENSES/CPython-3.4.0a3-LICENSE.txt",
+        ),
+        ("Yices-MIT.txt", f"{base}/LICENSES/MIT.txt"),
+    ]
+
+
 def set_runpaths(prefix, lib, visited):
     # Every object gets its own relative search path; RUNPATH is not transitive.
     for path in sorted(visited):
@@ -256,8 +298,17 @@ def main():
     parser.add_argument("--name", required=True)
     parser.add_argument("--source-revision", default="unknown")
     parser.add_argument("--seahorn", type=Path)
-    parser.add_argument("--z3-tag", required=True)
+    parser.add_argument(
+        "--z3-revision", required=True, help="the commit or tag z3 was built from"
+    )
     parser.add_argument("--bitwuzla-tag", required=True)
+    parser.add_argument("--yices-tag", required=True)
+    parser.add_argument(
+        "--z3",
+        type=Path,
+        default=Path("/opt/solvers/bin/z3"),
+        help="the z3 binary of the solvers stage (its version for the notices)",
+    )
     parser.add_argument(
         "--wrap-dir",
         type=Path,
@@ -325,7 +376,11 @@ def main():
     llvm_pin = Path("/opt/llvm/LLVM_REVISION").read_text()
     llvm_commit = re.search(r"^commit:\s*(\S+)", llvm_pin, re.M).group(1)
     cadical_tag, symfpu_revision = source_pins(args.wrap_dir)
-    z3_version = args.z3_tag.removeprefix("z3-")
+    z3 = z3_version(run(str(args.z3), "--version"), args.z3_revision)
+    z3_short = args.z3_revision
+    if re.fullmatch(r"[0-9a-f]{40}", z3_short):
+        z3_short = "commit " + z3_short[:7]
+    yices = args.yices_tag.removeprefix("yices-")
     cadical_version = cadical_tag.removeprefix("rel-")
     licenses = [
         upstream_license(
@@ -336,12 +391,16 @@ def main():
         upstream_license(
             license_dir,
             "Z3-LICENSE.txt",
-            f"https://raw.githubusercontent.com/Z3Prover/z3/{args.z3_tag}/LICENSE.txt",
+            f"https://raw.githubusercontent.com/Z3Prover/z3/{args.z3_revision}/LICENSE.txt",
         ),
         upstream_license(
             license_dir,
             "Bitwuzla-COPYING.txt",
             f"https://raw.githubusercontent.com/bitwuzla/bitwuzla/{args.bitwuzla_tag}/COPYING",
+        ),
+        *(
+            upstream_license(license_dir, name, url)
+            for name, url in yices_legal(args.yices_tag)
         ),
         upstream_license(
             license_dir,
@@ -366,21 +425,27 @@ def main():
     clean_env = dict(os.environ)
     clean_env.pop("LD_LIBRARY_PATH", None)
     elf_report = check_relocatable(prefix, visited, clean_env)
+    sea_vc_version = run(str(prefix / "bin/sea-vc"), "--version", env=clean_env)
+    check_solvers(sea_vc_version, z3, yices)
 
     text = f"""Third-party components in this install prefix
 
 sea-mlir: Apache-2.0 WITH LLVM-exception; LICENSE at the prefix root.
 LLVM/MLIR: Apache-2.0 WITH LLVM-exception; pin in LLVM_REVISION.
-Z3 {z3_version}: MIT. Bitwuzla {args.bitwuzla_tag}: MIT.
+Z3 {z3} ({z3_short}): MIT. Bitwuzla {args.bitwuzla_tag}: MIT.
+Yices {yices}: BSD 3-Clause; built without MCSAT, so LibPoly is not linked.
+  Its third-party notices (MiniSat, CPython timsort) are in Yices-NOTICES.txt,
+  Yices-MIT.txt and Yices-CPython-3.4.0a3-LICENSE.txt.
 CaDiCaL {cadical_version}: MIT; linked into Bitwuzla.
 SymFPU {symfpu_revision[:7]}: BSD 3-Clause option; linked into Bitwuzla.
 Boost: Boost Software License; headers used by sea-mlir.
-GMP/GMPXX and MPFR: LGPL; dynamically linked, replaceable libraries in lib/.
+GMP/GMPXX and MPFR: LGPL; dynamically linked (by sea-vc, Yices and
+Bitwuzla), replaceable libraries in lib/.
 zlib and Zstandard: their package copyright/license texts are included.
 
 Full license texts and package copyrights: share/licenses/release/.
 The included GPL text is incorporated by LGPL-3's terms; it does not indicate
-that Yices or a GPL-only solver is included. Yices is not present.
+that a GPL-only component is included.
 Ubuntu 24.04 supplies glibc, libstdc++, libgcc and its dynamic loader.
 Compiler and solver source pins, dependency versions and hashes are recorded
 in RELEASE-MANIFEST.json. Obtain Ubuntu library sources with apt source for
@@ -410,12 +475,17 @@ maintainer relicenses it.
         "source_revision": args.source_revision,
         "distribution_hold": bool(args.seahorn),
         "llvm_commit": llvm_commit,
+        "solvers": {
+            "z3": {"revision": args.z3_revision, "version": z3},
+            "bitwuzla": {"tag": args.bitwuzla_tag},
+            "yices": {"tag": args.yices_tag, "version": yices},
+        },
         "licenses": licenses,
         "packages": packages,
         "seahorn_runtime_packages": seahorn_packages,
         "libraries": libraries,
         "elf": elf_report,
-        "sea_vc_version": run(str(prefix / "bin/sea-vc"), "--version", env=clean_env),
+        "sea_vc_version": sea_vc_version,
     }
     (prefix / "RELEASE-MANIFEST.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n"

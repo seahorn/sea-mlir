@@ -149,7 +149,7 @@ longer check its bounds check.
 The job's own options go to every part, with two defaults of the job:
 
 - Solver: Yices when the binary has it, else z3 (release binaries before
-  v0.4.0 are built without Yices), said on the `check-inb.solver:` line
+  v0.5.0 are built without Yices), said on the `check-inb.solver:` line
   (`yices (default)`, `z3 (no yices in this build)`, `z3 (--solver)`). An
   explicit `--solver=` on the job's command line (or in its profile) wins
   and is passed through, whatever it is.

@@ -9,8 +9,8 @@ the only platform that is built and tested.
 | Dependency | Version | Notes |
 |---|---|---|
 | LLVM and MLIR | the commit in `LLVM_REVISION` (`302c842d6601`) | built with `-DLLVM_ENABLE_PROJECTS=mlir -DLLVM_ENABLE_ASSERTIONS=ON -DLLVM_INSTALL_UTILS=ON`, then installed; other revisions are not supported |
-| z3 | tested with 4.12.0 and 5.3.3 | the supported solver |
-| Yices 2 | tested with 2.6.4 and 2.7.0 | optional secondary solver (`-DSEA_ENABLE_YICES=AUTO\|ON\|OFF`); not in release binaries (GPLv3) |
+| z3 | pinned to master commit `bbd46c9` (it reports 5.4.2), not a release; 5.3.3 and 4.12.0 were tested up to 0.4.0 | the supported solver |
+| Yices 2 | pinned to 2.8.0; 2.6.4 and 2.7.0 were tested up to 0.4.0 | optional secondary solver (`-DSEA_ENABLE_YICES=AUTO\|ON\|OFF`); in release binaries (BSD-3-Clause from 2.8.0) |
 | Bitwuzla | 0.9 (at least 0.5) | optional secondary solver |
 | Boost | 1.71 or later, headers only | tested with 1.83 |
 | GMP | with `gmpxx` | tested with 6.3 |
@@ -44,7 +44,7 @@ leaves it out. Without it, `--solver=yices` and the `--yices-*` options
 are errors and the tests that need it are reported as unsupported.
 
 `just docker-build` builds the same in Docker from scratch: LLVM at the
-pin, z3 and Bitwuzla at pinned versions, sea-mlir with `check-sea`
+pin, z3, Bitwuzla and Yices at their pins, sea-mlir with `check-sea`
 (`docker/README.md`).
 
 ## Check the build
@@ -54,8 +54,8 @@ $ sea-vc --version
 sea-vc (sea-mlir 0.4.0 (...))
   LLVM/MLIR 24.0.0git at 302c842d6601
   build: Release, assertions on
-  z3 4.12.0.0
-  yices 2.6.4
+  z3 5.4.2.0
+  yices 2.8.0
   bitwuzla 0.9.1
 ```
 

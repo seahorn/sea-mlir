@@ -10,14 +10,16 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG VERSION
 ARG SOURCE_DATE_EPOCH=0
 ARG SOURCE_REVISION=unknown
-ARG Z3_TAG
+ARG Z3_REVISION
 ARG BITWUZLA_TAG
+ARG YICES_TAG
 RUN apt-get update && apt-get install -y --no-install-recommends patchelf \
   && rm -rf /var/lib/apt/lists/*
 COPY docker/package-release.py /release-tools/package-release.py
 RUN python3 /release-tools/package-release.py \
       --name "sea-mlir-${VERSION}-linux-x86_64" \
-      --z3-tag "$Z3_TAG" --bitwuzla-tag "$BITWUZLA_TAG" \
+      --z3-revision "$Z3_REVISION" --bitwuzla-tag "$BITWUZLA_TAG" \
+      --yices-tag "$YICES_TAG" \
       --source-revision "$SOURCE_REVISION" --epoch "$SOURCE_DATE_EPOCH"
 
 FROM ${UBUNTU} AS runtime
@@ -32,13 +34,15 @@ FROM package AS bundle-package
 ARG VERSION
 ARG SOURCE_DATE_EPOCH=0
 ARG SOURCE_REVISION=unknown
-ARG Z3_TAG
+ARG Z3_REVISION
 ARG BITWUZLA_TAG
+ARG YICES_TAG
 COPY --from=seahorn-install /opt/seahorn /opt/seahorn
 RUN python3 /release-tools/package-release.py \
       --name "sea-mlir-bundle-${VERSION}-linux-x86_64" --seahorn /opt/seahorn \
       --output /artifacts/held \
-      --z3-tag "$Z3_TAG" --bitwuzla-tag "$BITWUZLA_TAG" \
+      --z3-revision "$Z3_REVISION" --bitwuzla-tag "$BITWUZLA_TAG" \
+      --yices-tag "$YICES_TAG" \
       --source-revision "$SOURCE_REVISION" --epoch "$SOURCE_DATE_EPOCH"
 
 FROM ${UBUNTU} AS bundle-runtime

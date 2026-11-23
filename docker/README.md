@@ -13,8 +13,8 @@ From the root of a sea-mlir checkout (the build context is the source
 tree; `.dockerignore` leaves out build trees and benchmark checkouts):
 
 ```bash
-just docker-build        # image sea-mlir:dev (z3 + Bitwuzla)
-just docker-check        # Yices build test with check-sea, smoke runs of sea-mlir:dev
+just docker-build        # image sea-mlir:dev (z3, Bitwuzla, Yices)
+just docker-check        # build stage with check-sea, smoke runs of sea-mlir:dev
 docker run --rm -v "$PWD:/work" sea-mlir:dev sea-vc p.mlir --lower
 ```
 
@@ -30,7 +30,7 @@ a change to sea-mlir rebuilds only the sea-mlir and runtime stages.
 |---|---|
 | `base` | Ubuntu 24.04 with clang 18, lld, CMake, Ninja, Python 3, Boost, GMP, MPFR and the tools the solver builds need |
 | `llvm` | a shallow fetch of the commit in `LLVM_REVISION`; LLVM + MLIR, Release with assertions, X86 only, `LLVM_INSTALL_UTILS=ON` (FileCheck, not, count), installed in `/opt/llvm` with lit (`/opt/llvm/share/lit/lit.py`) |
-| `solvers` | z3 and Bitwuzla built from source into `/opt/solvers`; Yices only with `--build-arg YICES=1` |
+| `solvers` | z3, Bitwuzla and Yices built from source into `/opt/solvers`; `--build-arg YICES=0` leaves Yices out |
 | `sea-mlir` | configure against `/opt/llvm` and `/opt/solvers`, build, `check-sea`, install to `/opt/sea-mlir`; the build tree stays in `/build` |
 | `runtime` (default) | Ubuntu 24.04 with the runtime libraries, `/opt/sea-mlir` and `/opt/solvers`; `sea-vc` on `PATH` |
 
@@ -43,9 +43,9 @@ this table in sync.
 |---|---|---|
 | base image | `ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852` | |
 | LLVM + MLIR | the `commit:` line of `LLVM_REVISION` | Apache-2.0 WITH LLVM-exception |
-| z3 | tag `z3-5.3.3` (`Z3_TAG`) | MIT |
+| z3 | master commit `bbd46c9` (`Z3_REVISION`; it reports 5.4.2), not a release; fetched by commit | MIT |
 | Bitwuzla | tag `0.9.1` (`BITWUZLA_TAG`) | MIT |
-| Yices | tag `yices-2.7.0` (`YICES_TAG`), only with `YICES=1` | GPLv3 |
+| Yices | tag `yices-2.8.0` (`YICES_TAG`), without MCSAT; left out with `YICES=0` | BSD 3-Clause (GPLv3 before 2.8.0) |
 | CaDiCaL | tag from Bitwuzla's `subprojects/cadical.wrap` (currently `rel-2.1.2`); not set by hand | MIT |
 | SymFPU | revision from Bitwuzla's `subprojects/symfpu.wrap` (currently `40bdec0`); not set by hand | BSD 3-Clause |
 | SeaHorn | `SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` (`4f7fdaf`) | held pending relicensing |
@@ -53,9 +53,13 @@ this table in sync.
 | llvm-seahorn | `LLVM_SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` (`6cfacb8`) | held with SeaHorn |
 | SeaHorn's z3 | `SEAHORN_Z3_REVISION`, `docker/SeaHorn.Dockerfile`: z3 4.12.0 (`feda706`), the version this SeaHorn checkout is built with locally | MIT |
 
-The release packaging takes the z3 and Bitwuzla tags from the `Z3_TAG` and
-`BITWUZLA_TAG` arguments (`docker/release.py` reads them from
-`docker/Dockerfile` and passes them on). The `solvers` stage saves Bitwuzla's
+The release packaging takes the solver pins from the `Z3_REVISION`,
+`BITWUZLA_TAG` and `YICES_TAG` arguments (`docker/release.py` reads them
+from `docker/Dockerfile` and passes them on). It refuses a z3 whose
+`--version` names a commit other than `Z3_REVISION` (when it is a full
+commit hash), and a
+`sea-vc` whose `--version` does not report that z3 version and the Yices
+version of `YICES_TAG`. The `solvers` stage saves Bitwuzla's
 two wrap files in `/opt/solvers/share/pins`, and `docker/package-release.py`
 reads the CaDiCaL and SymFPU pins from them for the license downloads and the
 notices. The artifact version is the `project(sea-mlir VERSION ...)` of
@@ -66,19 +70,15 @@ current at build time on top of the pinned base image.
 
 ## Yices
 
-The runtime image contains z3 and Bitwuzla only. Yices is GPLv3, and a
-binary that links it would have to be distributed under the GPLv3, so
-release binaries and images omit it (docs/Release.md, "Runtime
-requirements"). `--build-arg YICES=1` builds Yices into the `solvers`
-stage and sea-mlir with it, for build tests and solver comparisons:
+The runtime image and the release binaries include Yices. Yices is
+BSD-3-Clause from 2.8.0 (earlier releases are GPLv3). It is built without
+MCSAT, so it links GMP (LGPL, dynamically linked) and not LibPoly
+(docs/Release.md, "Runtime requirements"). `--build-arg YICES=0` builds
+the solvers and sea-mlir without it:
 
 ```bash
-docker build -f docker/Dockerfile --build-arg YICES=1 --target sea-mlir \
-  -t sea-mlir-test:yices .
+docker build -f docker/Dockerfile --build-arg YICES=0 -t sea-mlir:no-yices .
 ```
-
-The `runtime` stage fails when Yices is present, so such a build is never
-a runtime image.
 
 
 ## Local binary releases
@@ -114,7 +114,7 @@ stops its own remaining build or smoke containers (exit 124). Rerun the
 command later to reuse Docker's cached layers. The driver works with Docker's
 legacy builder; BuildKit cancellation has not been separately validated.
 It creates only `sea-mlir-release:*` images and does not prune the cache.
-Both release builders disable Yices.
+The release build includes Yices (`YICES=1`).
 
 To reuse an existing LLVM image, pass `--llvm-image IMAGE`. The image must
 contain the LLVM installation at `/opt/llvm` and the build dependencies of
@@ -130,14 +130,15 @@ The manifest records the packaged files and resolved ELF dependencies.
 Packaging fails when a copied shared library has neither an owning Ubuntu
 package (whose copyright file is included) nor a known upstream license, or
 when a dependency would resolve outside the package.
-The smoke test checks the version, SAT with counterexample replay, and
-UNSAT after relocating the tarball into a fresh container.
+The smoke test checks the version (with Yices), SAT with counterexample
+replay (with z3 and with Yices), and UNSAT after relocating the tarball
+into a fresh container.
 
 ### SeaHorn bundle
 
 `--bundle` builds SeaHorn separately against Ubuntu's LLVM 18, with the
 source and dependency pins in `docker/SeaHorn.Dockerfile`. SeaHorn uses
-Z3 4.12; sea-mlir uses Z3 5.3.3. The bundle preserves their distinct shared
+Z3 4.12; sea-mlir uses a z3 master commit (5.4.2). The bundle preserves their distinct shared
 library names. The builders exchange programs through the exported MLIR
 text format and do not share an LLVM installation.
 
