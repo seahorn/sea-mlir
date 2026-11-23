@@ -1,5 +1,193 @@
 # Changelog
 
+## 0.4.0
+
+A minor release: the default slot placement and the default query fold
+change the queries, a `--seam` provenance fix changes verdicts, and new
+lines, options and an exit status appear (docs/Release.md, "Version numbers
+of the 0.x preview"). Triage verdict differences against v0.3.0. The solver
+pins are those of 0.3.0 (z3 5.3.3, Yices 2.7.0, Bitwuzla 0.9.1).
+
+### Verdict changes
+- **Verdict change.** Under `--seam`, pointer arithmetic (`ptr.add` /
+  `ptr.index`) keeps its operand's provenance whatever the offset mentions;
+  an access that reaches another object this way, e.g. `p + (to_int(q) -
+  to_int(p))`, was sat and is now unsat under A-SEP, and `--check-inb`
+  reports it. A chain of such ops takes the view of its pointer operand, and
+  an ite of leaves with one base gives that base. Before, an offset that
+  mentioned a base left the access without a view and a memmove's range test
+  stayed open. The h2 flow-control ring jobs (`h2fc-blowup-tx-reach-ring`)
+  no longer run out of memory: undecided memmove range tests fall from 2052
+  to 0 and the encoding to 0.12 M terms. (#140)
+- **Verdict change.** A sat model that breaks a promised GEP stride is
+  answered at once; before, `sea-vc` reran the query without the stride
+  rule. The replay classifies it: exit 0 when the assertion fails with every
+  value matching, exit 4 when a GEP promise breaks at an access in the run
+  (the broken promise is the answer), exit 2 (`vc.replay-mismatch`,
+  `vc.replay-no-failure`) otherwise. Jobs whose rerun did not finish now
+  answer. `--reach` keeps its rerun (`vc.ack-stride-reach-retry`). (#128,
+  #130)
+
+### Output and command-line changes
+- `--place-slots=aligned` is the default: each placed object owns a
+  power-of-two slot aligned to its size, so an object's base and its offsets
+  occupy disjoint bits. `--place-slots=none` is the old packed placement.
+  Addresses in queries, models and replays change. (#135)
+- `--vc-fold-top-eqs` is on by default. Top-level equalities `x = numeral`
+  and Boolean facts are substituted into the query, and the folded
+  definitions go to a model trail, so a sat still replays. The folded query
+  is equisatisfiable with the VC, not equivalent. The same folded query is
+  written under `--smt2`. Facts from which a pointer address is reachable
+  are skipped (`vc.fold-top-eqs-skipped-ptr`); the concat-ite hoist is bound
+  to numerals (`--vc-fold-concat-ite`); the status line is
+  `vc.fold-top-eqs-status`. The query tools (`query-diff`, `encoding-diff`,
+  `cover-diff`, `memops-equiv`) turn the fold off in `utils/seavc_flags.py`,
+  and a fold flag given by the user wins. `--vc-fold-top-eqs=false` restores
+  the unfolded query. (#138)
+- `--seam-congruence` (rule `cmp.congruence`) is on by default;
+  `--seam-congruence=false` turns it off. The rule decides two addresses
+  apart when their linear difference is `sum(c_k x_k) + d` with 2^t dividing
+  every `c_k` but not `d`. It is exact and needs no premise. On
+  step-reach-sz `row.store-skip` rises from 269 to 1870. (#126)
+- A budget stop has its own exit status 8 and the bench verdict `budget`
+  (see `--max-nodes` and `--max-rss` below). With `--check-inb`, status 8
+  ranks among the part statuses. (#139)
+- `assume.memset-bound` is counted when `sea-expand-memset` records the
+  bounds it assumes (`sea.memset_bound = {count, bound}`), not from the
+  assumes left after the lowering. A bound that a later fold erased is now
+  reported, and a bound that a fold made redundant is still counted. On vcc
+  9 jobs report `count=3` instead of `count=1` (the fat-pointer lowering
+  turns one memmove into three). Queries are unchanged. (#122)
+- An allocation of symbolic size prints the ledger line
+  `assume.symbolic-size-bound: allocs=<n> room=<r>`, counted at placement;
+  169 of 228 vcc jobs print it. Queries are unchanged. (#124)
+- `bv.eq.low-zero` also decides `A + d = B` when both sides have low zero
+  bits and `d mod 2^z != 0` (counter `bv.eq.low-zero2`). It is exact and
+  needs no premise; vcc queries are byte-identical. (#125)
+- The interpreter's `interp.ptr-index-promise` warning is reported at the
+  executed access whose address carries the poison of a broken GEP, not
+  where the GEP is evaluated, and it says when the pointer went through
+  memory. It is gone where no access uses the pointer. (#129)
+- The `vc.ack-stride-promise-broken` and `vc.ack-stride-promise-broken-access`
+  lines report a stride-broken model; `vc.ackermann-stride-idle`,
+  `-exec-unknown` and `-exec-overflow` count the pairs left out of the
+  stride-broken judgment. `utils/bench.py` labels these runs
+  `promise-broken`. (#128, #130)
+- `--check-inb` parts use Yices when the build has it; an explicit
+  `--solver` wins, and a z3-only option (`--z3-tactic`, `--z3-logic`, ...)
+  keeps z3. z3 parts get `--ro-arrays=uf` unless `--ro-arrays` is given.
+  The job lowers for the parts' solver (mul-overflow intrinsics). The line
+  `check-inb.solver:` states the choice and why. On the ring job (141 parts)
+  Yices takes 324 s and z3 with `--ro-arrays=uf` 2166 s with the same
+  verdicts; before, z3 left 101 parts undecided after 1200 s. (#141)
+- `--solver=bitwuzla` no longer sets `produce-unsat-assumptions`. A caller
+  that reads a core sets `SolverConfig::unsatCores`; `unsat_core()` on a
+  solver built without it is the error `bitwuzla.unsat-core`. (#121)
+
+### New flags and features
+- `--check-inb`: a job that discharges A-INB (every access stays in its
+  object), the premise behind the `--seam` encoding, with a separate check.
+  `sea-check-inb` puts a `sea.ptr.dereferenceable` assert before every
+  access and drops the program's own asserts; constant offsets into objects
+  of constant size are proved statically; `sea-split-asserts` makes one
+  program per remaining assert; each part runs with `--seam
+  --ackermannize=off`. The line `check-inb.discharges: a-inb a-sep a-null
+  [a-nowrap] under=<assumptions>` names what the result rests on. The job
+  directory is self-contained and relocatable (`manifest.json`,
+  `parts.cfg`); `--check-inb-keep` keeps it, and `--check-inb --vcgen-only`
+  writes it without solving. A failed premise part is the job's answer, with
+  exit 4. Design: `docs/design/CheckInb.md`. (#123, #124)
+- `--symbolic-size=assume|assert|refuse` controls the room of an allocation
+  of symbolic size (`--max-symbolic-size`, default 4096). In assert mode the
+  bound is an assert marked `sea.premise`; a failure is reported as
+  `premise.failed: symbolic-size-bound size=<n> room=<r> at=<alloc>` with
+  exit 4. `--check-align` and `--check-ptr-index` keep premise asserts. The
+  bench tool labels these runs `premise-failed`. (#124)
+- `--ack-cells-plan` counts a cells plan for the eager Ackermann lowering:
+  the objects come from ARM (the address-range map), and the plan names the
+  reads and cells each object needs. It reports only; no query changes.
+  (#136)
+- `--ack-arm` drops the Ackermann constraint of two reads whose indices ARM
+  places in different objects; the pair is counted. It rests on A-SEP.
+  (#137)
+- `--mem-trace` writes a heartbeat with live terms, top operators, rules
+  fired and the source sites that made the most terms. `--max-nodes` and
+  `--max-rss` turn an out-of-memory kill into a stop with a census,
+  `result: unknown` and exit status 8. A budget never replaces a verdict.
+  ExprFactory watches node creation with one comparison per new node.
+  Recipe: `docs/agents/blowups.md`. (#139)
+- `seaimp` gets variables and memory. Programs declare and assign
+  variables, and `sea-lower-seaimp` lowers them to `sea` through Mem2Reg;
+  unused variables are accepted and pointer variables start null. Memory is
+  reached only through region ops (`seaimp.alloca`, `seaimp.malloc` and
+  `seaimp.global` name the region of their object). `sea-erase-mem-ssa`
+  rewrites one memory's SSA to a region and reports refusals as
+  `erase-mem-ssa.unsupported`. `sea-vc` lowers `seaimp` one program at a
+  time, in module order. `sea.nondet` sites go through
+  `NondetSiteOpInterface`. (#131, #132)
+- `sea.mem.fill` writes constant cells from an address, with
+  `seaimp.mem.fill`, a constant start for regions, `sea-expand-mem-fill`
+  and interpreter support. (#132)
+- `sea-split-asserts`, `sea-check-inb` and the bench configurations
+  `fold-top-eqs` and `ack-arm`. (#123, #138)
+
+### Fixes
+- The interpreter binds block arguments as a parallel copy. A back edge
+  that swaps two arguments gave both the same value, which missed an
+  out-of-bounds access, printed the wrong provenance, or lost a memory
+  buffer. It still rejects one memory version passed to two arguments of an
+  edge. Only `sea-run` on programs with loops was affected. (#127)
+- The interpreter's GEP promise breaks only at an access and follows LLVM
+  poison through value ops, structs, `box.all`, `is_modified` and memory;
+  marks are kept in a stable order. (#129)
+- `strideBroken` counts only pairs whose two reads execute in the model.
+  Before, a model could look stride-broken from reads it never executes and
+  `sea-vc` reran without the rule (on firedancer txn-mut-programid-zero the
+  rerun did not finish). (#128)
+- `--vc-fold-top-eqs` fixes: a refused top concat stays memoized, and
+  every fold fact derived from a pointer address is skipped. (#138)
+- `--check-inb` fixes: objects are sized from the placed segments,
+  `assume.memhavoc-null-noop` is reported when a null check folds away and
+  counted only for may-be-null pointers, `a-nowrap` is decided from the
+  program's objects, boxes are lowered before the instrumentation, the
+  failing check is named by assert op, and diagnostic options stay out of
+  the parts. (#123, #124)
+- `assume.symbolic-size-bound` adds to an existing count at placement, and
+  a pruned premise failure is reported. (#124)
+- Tests: the Bitwuzla core checks of the factory test are guarded (#121).
+  A test that needs an optional part the build lacks (`REQUIRES: yices`,
+  `bitwuzla`, `z3`, `sea-git-tree`, or `UNSUPPORTED: yices`) is excluded from
+  discovery, so a good run is all passes; disabled tests still show as
+  UNSUPPORTED. (#142)
+- `utils/output-diff.py` in full mode skips four jobs that do not terminate
+  (lambda on `nki-dyn-add-M4H4-good`, `nki-dyn-add-M4H4-nopre` and
+  `nki-scatter-K4-int8`, reach on `array_list_swap`; each ran past 1200 s).
+  Skipped jobs are reported (`nonterminating-skipped`,
+  `skipped-nonterminating`); `--include-nonterminating` runs them. Quick
+  mode is unchanged. (#133)
+
+### Performance
+- `--solver=bitwuzla` skips the preprocessing passes and the assumption
+  per assertion that `produce-unsat-assumptions` forced on. On firedancer
+  step-reach-sz, with `--lower --seam --widen-memory=4 --ackermannize=on`,
+  a run that timed out at 150 s is sat in 12.9 s; h2fc-settings-proof goes
+  from 12.6 s to 9.4 s. (#121)
+- The h2 flow-control ring job (`h2fc-blowup-tx-reach-ring`) is sat in 41 s
+  instead of running out of memory (#140); its `--check-inb` parts take 324 s
+  with Yices (#141).
+
+### Docs
+- The blowup recipe (`docs/agents/blowups.md`) with a worked example on an
+  h2 flow-control job. (#139)
+- `docs/design/CheckInb.md` (#123); the core contract and the reason the
+  option is off in `docs/design/Bitwuzla.md` (#121).
+- Region ops, linear versions, allocation forms and `sea.mem.fill` of
+  `seaimp`. (#131, #132)
+- SeaHorn exports global initializers of any size as `sea.mem.fill`, so
+  initializers over 16 KiB are no longer listed as an exporter gap in the
+  known limitations; pointer and constant-expression initializers are still
+  dropped. (#134)
+
 ## 0.3.0
 
 A minor release: fixes to the lowering and to `--seam` change verdicts,
