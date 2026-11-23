@@ -3,9 +3,10 @@
 // ite arms is hoisted once per distinct concat, not once per path, and does
 // not grow; the numeral mode refuses a non-numeral leaf and a hoist that
 // makes more ites than the parts hold (counted); every hoist z3-exact.
-// ptr-facts: a fact whose term or concat part derives from a pointer's
-// address outside a memory read is not substituted ("Pointer
-// observations").
+// ptr-facts: a fact whose term or concat part mentions an object (a
+// PTR_SEGMENT) outside a memory read is not substituted; one that mentions
+// none is, pointer observations of registers included ("Pointer
+// observations"; docs/design/PtrSegment.md, "What F2 does then").
 RUN: sea-fold-top-eqs-test | FileCheck %s
 CHECK: shared: mode=numeral concat-ite=47 refused=0
 CHECK: test: shared ok
@@ -16,13 +17,19 @@ CHECK: test: budget ok
 CHECK: refused-memo: order 0 concat-ite=1 refused=1
 CHECK: refused-memo: order 1 concat-ite=1 refused=1
 CHECK: test: refused-memo ok
-CHECK: ptr-facts: addr folded=0
-CHECK: ptr-facts: extract folded=0
-CHECK: ptr-facts: sum folded=0
-CHECK: ptr-facts: diff folded=0
-CHECK: ptr-facts: read folded=1
-CHECK: ptr-facts: value folded=1
-CHECK: ptr-facts: concat-part x-folded=1 addr-folded=0
+CHECK: ptr-facts: addr folded=1 skipped-base=0
+CHECK: ptr-facts: extract folded=1 skipped-base=0
+CHECK: ptr-facts: sum folded=1 skipped-base=0
+CHECK: ptr-facts: diff folded=1 skipped-base=0
+CHECK: ptr-facts: read folded=1 skipped-base=0
+CHECK: ptr-facts: value folded=1 skipped-base=0
+CHECK: ptr-facts: seg-addr folded=0 skipped-base=1
+CHECK: ptr-facts: seg-extract folded=0 skipped-base=1
+CHECK: ptr-facts: seg-sum folded=0 skipped-base=1
+CHECK: ptr-facts: seg-diff folded=0 skipped-base=1
+CHECK: ptr-facts: seg-node folded=0 skipped-base=1
+CHECK: ptr-facts: seg-read folded=1 skipped-base=0
+CHECK: ptr-facts: concat-part x-folded=1 addr-folded=0 skipped-base={{[1-9][0-9]*}}
 CHECK: test: ptr-facts ok
 CHECK: failures: 0
 

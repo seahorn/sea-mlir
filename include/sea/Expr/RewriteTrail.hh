@@ -233,8 +233,10 @@ private:
   static void textRec(ENode *n, size_t max, std::string &s) {
     if (s.size() > max)
       return;
+    // an object (PTR_SEGMENT) prints as segment(obj.<k>, 0x<a>)
     const bool leaf = n->arity() == 0 || isOpX<BIND>(n) ||
-                      (isOpX<FAPP>(n) && n->arity() == 1);
+                      (isOpX<FAPP>(n) && n->arity() == 1) ||
+                      isOpX<PTR_SEGMENT>(n);
     if (leaf) {
       std::ostringstream ss;
       ss << *n;
@@ -340,7 +342,8 @@ private:
       if (m_printed.count(n->getId()))
         continue;
       const bool leaf = n->arity() == 0 || isOpX<BIND>(n) ||
-                        (isOpX<FAPP>(n) && n->arity() == 1);
+                        (isOpX<FAPP>(n) && n->arity() == 1) ||
+                        isOpX<PTR_SEGMENT>(n);
       if (!leaf && !expanded) {
         stack.push_back({n, true});
         for (size_t i = n->arity(); i-- > 0;)

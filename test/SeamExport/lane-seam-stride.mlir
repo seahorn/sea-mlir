@@ -9,12 +9,12 @@
 // entries.
 // RUN: sea-seam-export %s --lane=seam-stride --firings | %python %S/Inputs/show.py | FileCheck %s --check-prefixes=CHECK,STRIDE
 // RUN: sea-seam-export %s --lane=seam --firings | %python %S/Inputs/show.py | FileCheck %s --check-prefixes=CHECK,NOSTRIDE
-// STRIDE: header: schema=3 lane=seam-stride sea_vc='sea-vc --seam --seam-stride' {{.*}}ainb=true
-// NOSTRIDE: header: schema=3 lane=seam sea_vc='sea-vc --seam' {{.*}}ainb=true
+// STRIDE: header: schema=5 lane=seam-stride sea_vc='sea-vc --seam --seam-stride' {{.*}}ainb=true
+// NOSTRIDE: header: schema=5 lane=seam sea_vc='sea-vc --seam' {{.*}}ainb=true
 // STRIDE: firing {{[0-9]+}} rules={{[^ ]*}}row.smap-abort-stride{{[^ ]*}} premises={{[^ ]*}}PTR-INDEX{{[^ ]*}} op=load
 // STRIDE-NOT: unexpressible
 // STRIDE: premise: {{.*}}sle(0x3ffff80, mul(sext(nd.1_0, bits=26), 3))
-// STRIDE-SAME: zext(addr(obj.heap.1), bits=26)
+// STRIDE-SAME: zext(addr(segment(obj.heap.1, 1)), bits=26)
 // NOSTRIDE-NOT: row.smap-abort-stride
 // CHECK: firings: {{[0-9]+}} unexpressible=0
 !am = !sea.mem<!sea.addr<8>, i8>

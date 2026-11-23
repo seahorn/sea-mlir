@@ -21,10 +21,11 @@ namespace expr {
 namespace rules {
 
 /// \brief Terms without operands to rewrite: numerals and declarations (BIND),
-/// constants (a FAPP of a declaration only), and nodes without kids.
+/// constants (a FAPP of a declaration only), objects (PTR_SEGMENT: a name
+/// and a numeral, docs/design/PtrSegment.md), and nodes without kids.
 inline bool isLeaf(const Expr &e) {
   return e->arity() == 0 || isOpX<BIND>(e) ||
-         (isOpX<FAPP>(e) && e->arity() == 1);
+         (isOpX<FAPP>(e) && e->arity() == 1) || isOpX<PTR_SEGMENT>(e);
 }
 
 /// \brief Fig. 2.1: ite(c, x, y) with c true / false, or x = y.

@@ -151,8 +151,9 @@ of two stores, never by a compare in the program: a compare is not an
 access, and `a + 16 == b` (one past the end of a against the next object) is
 legal C. Objects of size 0 are never "different" by base in a program compare
 (in the SeaHorn layout they share a base with a neighbour). No rule replaces
-`obj.k` by its placed numeral inside SeaM, so an access address keeps its
-provenance; a step that substituted layout numerals into access addresses
+an object (`PTR_SEGMENT(k, a)`), or an observation of one, by its placed
+numeral inside SeaM, so an access address keeps its provenance (a unit
+check, `sea-seam-rules-test` segment); a step that substituted layout numerals into access addresses
 before the ROW compares would lose it (the layout rules `cmp.layout` and
 `mem.in-layout` run only without the premises).
 
@@ -341,7 +342,9 @@ VC encoding (OpSem / VCGen, Expr)      load / store encoding  --->  SeaM rewrite
    object is, and no second marker op is needed. Placement is still an
    MLIR -> MLIR pass; VCGen only encodes.
 2. **The VC keeps bases symbolic.** Each object base becomes a named
-   constant `obj.k`, with a side equality `obj.k = 0x1000`. The concrete
+   object `obj.k` (since PtrSegment.md step 1 the term
+   `PTR_SEGMENT(k, 0x1000)`, which carries its address; the boundary
+   erases it to the constant `obj.k` and states `obj.k = 0x1000`). The concrete
    model is unchanged: `ptr.to_int`, alignment and replay all work as now.
    VCGen hands the rewriter a **base registry**: the set of `obj.k`
    constants, each with its allocation order and size. The rewriter never
@@ -653,8 +656,10 @@ sides expanded through `SeaOpSem::solverTerm`) on the run's solver, with
 `--seam-check-timeout` (10 s; not for Yices). The premise
 (`SeaOpSem::firingPremise`): `true` for a firing without premises (the rule
 must be valid over plain bit-vectors and arrays, without the layout); for a
-firing that uses A-SEP, A-NULL or A-NOWRAP, the layout (`obj.k = base`, a
-fact of the VC) and `Rules::inBounds` of each access address the rule compares
+firing that uses A-SEP, A-NULL or A-NOWRAP, the layout (`obj.k = base`
+over the erased objects, a fact of the VC that the boundary states; without
+it each object erases to a free constant, so a premise-free firing is
+checked at every base value) and `Rules::inBounds` of each access address the rule compares
 (`Rules::accessAddresses`: the select index or store address, and the
 address of the write below it, or every entry of the store-map below it), at
 the access size of the context: A-INB of those accesses, a sufficient

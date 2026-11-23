@@ -2300,8 +2300,9 @@ func or null (`label`: the allocation's, if it had one); the name is `<kind>.<si
 and functions; the null object (docs/design/SeaM-null.md) is the segment
 "null", base 0, size 0, kind null, whose result replaces sea.ptr.null. The program is the same one with the numeral `base` in its
 place: the interpreter evaluates the op to `base`, and the VC encodes it
-as that numeral (as a named constant `obj.<name>` with a side equality
-when SeaM is on).
+as that numeral (as the object term `PTR_SEGMENT(<name>, base)` when
+SeaM is on, erased at the solver boundary to the constant `obj.<name>`
+with `obj.<name> = base`; docs/design/PtrSegment.md).
 
 The op has no folder, on purpose: constant propagation (sccp) must not
 replace the result by a numeral, or the provenance is lost.

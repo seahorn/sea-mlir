@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-"""Test helper: checks the structure of a sea-seam-export document (schema 3,
+"""Test helper: checks the structure of a sea-seam-export document (schema 5,
 docs/SeamExport.md) and prints it one record per line, terms as
 op(args), so FileCheck can pin the key lines. Exits 1 on a structural error.
 """
@@ -42,6 +42,17 @@ def term(t, erased):
         return "true" if t["value"] else "false"
     if op == "var":
         return t["name"]
+    if op == "segment":
+        if (
+            erased
+            or t["sort"] != "ptr"
+            or t["bits"] != BITS
+            or "args" in t
+            or not isinstance(t.get("addr"), str)
+            or not str(t.get("name", "")).startswith("obj.")
+        ):
+            raise SystemExit(f"bad segment: {t}")
+        return f"segment({t['name']}, {t['addr']})"
     args = [term(a, erased) for a in t["args"]]
     if op == "index":
         args += [f"{term(i['value'], erased)}*{i['stride']}" for i in t["indices"]]
@@ -62,8 +73,9 @@ keys = set(d)
 extra = keys - TOP - {"firings", "firings_unexpressible"}
 if not TOP <= keys or extra:
     raise SystemExit(f"top-level keys: missing {TOP - keys}, unknown {extra}")
-if d["schema"] != 3:
+if d["schema"] != 5:
     raise SystemExit("schema")
+BITS = d["address_bits"]
 print(
     f"header: schema={d['schema']} lane={d['lane']} sea_vc='{d['sea_vc']}' "
     f"ainb={str(d['ainb']).lower()} rewrite={str(d['rewrite']).lower()} "
@@ -77,6 +89,12 @@ for t in d["side"]:
     print(f"side: {term(t, False)}")
 for s in d["sources"]:
     key = f"site={s['site']}" if "site" in s else f"fixed={s['fixed']}"
+    if (
+        "fixed" in s
+        and s["term"]["op"] == "segment"
+        and s["term"]["addr"] != s["fixed"]
+    ):
+        raise SystemExit(f"segment addr differs from fixed: {s}")
     print(f"source {key}: {term(s['term'], False)}")
 for p in d["probes"]:
     print(

@@ -52,10 +52,9 @@ struct FoldTopEqsStats {
   /// facts not used: masked (`bvand(x, m) = c`), a concat part of unknown
   /// width
   uint64_t skippedMasked = 0, skippedUntyped = 0;
-  /// facts not used (terms and concat parts): the key's value derives from
-  /// a pointer's address outside a memory read (TopEqFolder::addressDerived;
-  /// the layout facts addr(obj.k) = c)
-  uint64_t skippedPtr = 0;
+  /// facts not used (terms and concat parts): the key mentions an object (a
+  /// PTR_SEGMENT) outside a memory read (TopEqFolder::mentionsObject)
+  uint64_t skippedBase = 0;
   /// the round bound stopped the iteration (not a fixpoint)
   bool roundCap = false;
 };
@@ -84,11 +83,13 @@ class TopEqFolder {
 public:
   using Simplify = std::function<expr::Expr(expr::Expr)>;
   /// \p simplify: the normalization run after each substitution
+  /// \p baseSkip false (testing only): no fact is skipped for mentioning
+  /// an object (mentionsObject)
   explicit TopEqFolder(Simplify simplify,
                        ConcatIte concatIte = ConcatIte::Numeral,
-                       unsigned maxRounds = 64)
+                       unsigned maxRounds = 64, bool baseSkip = true)
       : simplify(std::move(simplify)), concatIte(concatIte),
-        maxRounds(maxRounds) {}
+        maxRounds(maxRounds), baseSkip(baseSkip) {}
 
   /// \p query with every fact substituted; the facts themselves kept
   expr::Expr fold(expr::Expr query);
@@ -109,14 +110,16 @@ private:
                std::vector<std::tuple<expr::Expr, expr::Expr, Kind>> &out);
   void splitConcat(const expr::Expr &t, const expr::Expr &c,
                    std::vector<std::tuple<expr::Expr, expr::Expr, Kind>> &out);
-  /// Is the value of \p e derived from the address of a pointer outside a
-  /// memory read? True when a pointer operator (op::ptr::PtrOp: addr,
-  /// to_int, to_bits, ptr-diff, ptr-eq, overlap, offset, a node) is reached
-  /// from \p e without passing a read (select / wselect). Such a T is not
-  /// a fact (docs/design/FoldTopEqs.md, "Pointer observations"): replacing
-  /// it erases the provenance SeaM's object rules read. A read's value is
-  /// memory contents: a fact on it replaces the read, never its index.
-  bool addressDerived(const expr::Expr &e);
+  /// Does \p e mention an object outside a memory read? True when a
+  /// PTR_SEGMENT is reached from \p e without passing a read or a memory
+  /// (select, wselect, store, wstore), as seam::Rules::mentionsBase reads
+  /// a term. Such a T is not a fact (docs/design/FoldTopEqs.md, "Pointer
+  /// observations"; PtrSegment.md, "What F2 does then"): replacing it would
+  /// remove an object from the terms that contain it, not by same-base
+  /// cancellation. A T that mentions no object is substituted: no term
+  /// loses an object by it. A read's value is memory contents: a fact on
+  /// it replaces the read, never its index.
+  bool mentionsObject(const expr::Expr &e);
   /// \p e with every key of \p m replaced, memoized in \p cache; counts uses
   expr::Expr subst(const expr::Expr &e, const Map &m, Cache &cache, bool count);
   /// \p e with the keys in \p own kept (their operands substituted)
@@ -126,11 +129,12 @@ private:
   Simplify simplify;
   ConcatIte concatIte;
   unsigned maxRounds;
+  bool baseSkip;
   FoldTopEqsStats st;
   /// every key and its value (all rounds)
   Map facts;
-  /// addressDerived per node (the node held)
-  std::unordered_map<expr::ENode *, std::pair<expr::Expr, bool>> addrMemo;
+  /// mentionsObject per node (the node held)
+  std::unordered_map<expr::ENode *, std::pair<expr::Expr, bool>> objMemo;
   /// the map of each round that changed the query, for image()
   std::vector<Map> roundMaps;
   std::vector<Cache> imageCaches;

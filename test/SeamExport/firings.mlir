@@ -14,15 +14,15 @@
 // RUN: not sea-seam-export %s --lane=raw --firings 2>&1 | FileCheck %s --check-prefix=NORULES
 // Without --firings: no firing keys.
 // RUN: sea-seam-export %s --lane=seam | FileCheck %s --check-prefix=OFF
-// INB: header: schema=3 lane={{seam|seam-wide}} sea_vc='sea-vc --seam{{( --seam-wide)?}}' ainb=true
-// NOINB: header: schema=3 lane=seam-wide-inb0 sea_vc='sea-vc --seam --seam-wide --seam-premises=0' ainb=false
+// INB: header: schema=5 lane={{seam|seam-wide}} sea_vc='sea-vc --seam{{( --seam-wide)?}}' ainb=true
+// NOINB: header: schema=5 lane=seam-wide-inb0 sea_vc='sea-vc --seam --seam-wide --seam-premises=0' ainb=false
 // INB: firing 0 rules=row.store-skip,cmp.diff-base premises=A-SEP op=load units=1
-// INB-NEXT: lhs: select(store(store(constMem(0), obj.a, toBits(fromBits(nd.0_0))), index(obj.b, nd.1_0*1, c=0, K=0, plain), 5), obj.a)
-// INB-NEXT: rhs: select(store(constMem(0), obj.a, toBits(fromBits(nd.0_0))), obj.a)
-// INB-NEXT: premise: and(eq(addr(obj.a), 16), eq(addr(obj.b), 32), true, ule(nd.1_0, 3))
+// INB-NEXT: lhs: select(store(store(constMem(0), segment(obj.a, 16), toBits(fromBits(nd.0_0))), index(segment(obj.b, 32), nd.1_0*1, c=0, K=0, plain), 5), segment(obj.a, 16))
+// INB-NEXT: rhs: select(store(constMem(0), segment(obj.a, 16), toBits(fromBits(nd.0_0))), segment(obj.a, 16))
+// INB-NEXT: premise: and(eq(addr(segment(obj.a, 16)), 16), eq(addr(segment(obj.b, 32)), 32), true, ule(nd.1_0, 3))
 // NOINB-NOT: row.store-skip
 // CHECK: rules=row.store-hit,cmp.refl premises=none op=load units=1
-// CHECK-NEXT: lhs: select(store(constMem(0), obj.a, toBits(fromBits(nd.0_0))), obj.a)
+// CHECK-NEXT: lhs: select(store(constMem(0), segment(obj.a, 16), toBits(fromBits(nd.0_0))), segment(obj.a, 16))
 // CHECK-NEXT: rhs: toBits(fromBits(nd.0_0))
 // CHECK-NEXT: premise: true
 // INB: rules=ptr.load-resolve premises=none op=addr
@@ -31,12 +31,12 @@
 // INB-NEXT: premise: true
 // INB: rules=row.store premises=none op=load units=1
 // INB-NEXT: lhs: select(
-// INB-NEXT: rhs: ite(unitOverlap(index(obj.b, nd.1_0*1, c=0, K=0, plain), fromBits(nd.0_0)), 5, select(
+// INB-NEXT: rhs: ite(unitOverlap(index(segment(obj.b, 32), nd.1_0*1, c=0, K=0, plain), fromBits(nd.0_0)), 5, select(
 // Without A-INB the reloaded pointer is an ite over the store to b, which
 // the resolution pulls through.
 // NOINB: rules=ptr.load-resolve-ite premises=none op=addr
-// NOINB-NEXT: lhs: fromBits(ite(unitOverlap(obj.a, index(obj.b, nd.1_0*1, c=0, K=0, plain)), 5, toBits(fromBits(nd.0_0))))
-// NOINB-NEXT: rhs: ite(unitOverlap(obj.a, index(obj.b, nd.1_0*1, c=0, K=0, plain)), fromBits(5), fromBits(nd.0_0))
+// NOINB-NEXT: lhs: fromBits(ite(unitOverlap(segment(obj.a, 16), index(segment(obj.b, 32), nd.1_0*1, c=0, K=0, plain)), 5, toBits(fromBits(nd.0_0))))
+// NOINB-NEXT: rhs: ite(unitOverlap(segment(obj.a, 16), index(segment(obj.b, 32), nd.1_0*1, c=0, K=0, plain)), fromBits(5), fromBits(nd.0_0))
 // CHECK: firings: {{[1-9][0-9]*}} unexpressible=0
 // NORULES: --firings needs a lane with rules (lane raw has none) [validation.export]
 // OFF-NOT: "firings

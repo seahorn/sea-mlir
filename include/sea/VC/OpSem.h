@@ -286,8 +286,17 @@ public:
   expr::Expr accessPremise(const expr::RewriteTrail &trail,
                            const expr::RewriteTrail::Firing &f,
                            std::string &why);
-  /// The layout: obj.k = base for every object (a fact of the VC).
+  /// The layout: ADDR(PTR_SEGMENT(k, a)) = a for every object, before the
+  /// boundary (a tautology there; erased, obj.<k> = a over the twin).
+  void layoutConjuncts(expr::ExprVector &out);
+  /// The layout, erased: obj.<k> = a for every object
+  /// (docs/design/PtrSegment.md, step 1).
   expr::Expr layoutFacts();
+  /// The erased \p query with the erased layout conjuncts first: the
+  /// boundary states the objects' addresses (no side condition states them
+  /// before it, so no rewrite before the boundary can substitute them).
+  /// \p query unchanged without objects; false stays false.
+  expr::Expr withLayoutFacts(const expr::Expr &query);
 
   /// The symbolic register of a value (a bit-vector constant of its width)
   /// or of a block (a Bool constant: the block executes).

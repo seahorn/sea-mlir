@@ -3,11 +3,11 @@
 
 #pragma once
 // The base registry (SeaM, docs/design/SeaM.md "The VC keeps bases
-// symbolic"): the object base constants of a VC (`obj.<name>`), each with
-// what the rewriter may need to know about its object. The VC generator
-// (SeaOpSem, with SeaM on) fills it from the sea.segment ops; the rewriter
-// reads it and never parses names. A term is a pointer into object k when
-// it normalizes to bvadd(obj.k, off) with obj.k registered here.
+// symbolic"): the objects of a VC, each with what the rewriter may need to
+// know about it. The VC generator (SeaOpSem, with SeaM on) fills it from the
+// sea.segment ops, one PTR_SEGMENT term per object
+// (docs/design/PtrSegment.md); the rewriter reads it and never parses names.
+// A term is a pointer into object k when its view has k's term as base.
 #include "sea/Expr/Expr.hh"
 
 #include "llvm/ADT/APInt.h"
@@ -22,8 +22,9 @@ namespace expr {
 
 /// One registered object.
 struct ObjectBase {
-  /// The bit-vector constant standing for the object's base address.
-  Expr constant;
+  /// The term of the object: PTR_SEGMENT(k, a) in a VC; the unit drivers
+  /// register pointer constants (free bases).
+  Expr term;
   /// Position in allocation order (0 = first): the order of the sea.segment
   /// ops, which is the order of the allocation sites in the program text.
   unsigned order;
@@ -38,18 +39,18 @@ struct ObjectBase {
 
 class BaseRegistry {
 public:
-  /// Registers `constant` (idempotent: a second add returns the entry made
+  /// Registers `term` (idempotent: a second add returns the entry made
   /// by the first). The order is the number of objects registered before.
-  const ObjectBase &add(Expr constant, std::string name, std::string kind,
+  const ObjectBase &add(Expr term, std::string name, std::string kind,
                         const llvm::APInt &base, const llvm::APInt &size,
                         uint64_t align) {
-    auto it = m_index.find(constant);
+    auto it = m_index.find(term);
     if (it != m_index.end())
       return m_objects[it->second];
     if (!size.isZero())
       m_ranges.emplace(base.zext(kRangeWidth), m_objects.size());
-    m_index.emplace(constant, m_objects.size());
-    m_objects.push_back({constant, (unsigned)m_objects.size(), std::move(name),
+    m_index.emplace(term, m_objects.size());
+    m_objects.push_back({term, (unsigned)m_objects.size(), std::move(name),
                          std::move(kind), base, size, align});
     return m_objects.back();
   }
@@ -119,16 +120,16 @@ public:
     return true;
   }
 
-  /// \p twin names the object of base constant \p constant too: the
-  /// erased bv(w) constant of a ptr(w) base (PtrSort S2e), so the readers of
-  /// the solver's terms (eq-audit's shapes) know the object.
-  void addAlias(const Expr &twin, const Expr &constant) {
-    auto it = m_index.find(constant);
-    if (it != m_index.end() && twin != constant)
+  /// \p twin names the object of \p term too: the erased bv(w) constant
+  /// of a ptr(w) object (PtrSort S2e, PtrSegment.md step 1), so the readers
+  /// of the solver's terms (eq-audit's shapes) know the object.
+  void addAlias(const Expr &twin, const Expr &term) {
+    auto it = m_index.find(term);
+    if (it != m_index.end() && twin != term)
       m_index.emplace(twin, it->second);
   }
 
-  /// The object whose base constant is `e` (or its erased twin), or null.
+  /// The object whose term is `e` (or its erased twin), or null.
   const ObjectBase *lookup(const Expr &e) const {
     auto it = m_index.find(e);
     return it == m_index.end() ? nullptr : &m_objects[it->second];

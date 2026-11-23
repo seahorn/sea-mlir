@@ -1,14 +1,17 @@
-// The fold of --vc-fold-top-eqs does not substitute the address of a
-// pointer (the layout facts addr(obj.k) = c; docs/design/FoldTopEqs.md,
-// "Pointer observations"). The program is utils/fuzz-seam.py --seed 5
-// --accesses=wide, program 2 (test/VC/seam/fuzz-check.test): a memmove read
-// equation reads at obj.5 + (addr(q) - addr(obj.4)); with the layout facts
-// substituted one leaf became a pointer into obj.5, and cmp.diff-base
-// decided its alias questions in the fold's round, outside any access:
-// four firings (ids 175-181) --seam-check could not state.
+// The fold of --vc-fold-top-eqs and the objects' addresses
+// (docs/design/FoldTopEqs.md, "Pointer observations"; PtrSegment.md). The
+// program is utils/fuzz-seam.py --seed 5 --accesses=wide, program 2
+// (test/VC/seam/fuzz-check.test): a memmove read equation reads at
+// obj.5 + (addr(q) - addr(obj.4)). When the layout facts addr(obj.k) = c
+// were conjuncts before the boundary, substituting them made one leaf a
+// pointer into obj.5, and cmp.diff-base decided its alias questions in the
+// fold's round, outside any access: four firings (ids 175-181)
+// --seam-check could not state. An object is now PTR_SEGMENT(k, a) and the
+// boundary states its address: before it there is no layout fact, so the
+// fold skips nothing here, and no firing is unexpressible.
 // RUN: sea-vc %s --lower --seam --seam-check 2>&1 | FileCheck %s
 // CHECK: vc.fold-top-eqs-status: on
-// CHECK: vc.fold-top-eqs: {{.*}}skipped-ptr={{[1-9][0-9]*}}
+// CHECK: vc.fold-top-eqs: {{.*}}skipped-base=0
 // CHECK: result: sat
 // CHECK: seam-check: {{.*}}unexpressible=0
 sea.program @"main" {

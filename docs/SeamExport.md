@@ -82,38 +82,39 @@ Notes:
   access (its firings would rest on a premise the program may break;
   `sea-vc` reports it and keeps the premises).
 - In `plain` and `simplify`, an object is its placed address
-  (`fromInt(n)`), not a variable `obj.<name>`.
+  (`fromInt(n)`), not a `segment` node.
 
-## Format (schema 3)
+## Format (schema 5)
 
 One JSON object with sorted keys:
 
 | key | value |
 |---|---|
-| `schema` | `3` (2 before the premises were renamed: `premises` values, `sea_vc` flags). Additions (new keys, new term ops) keep the number; an incompatible change bumps it |
+| `schema` | `5`: an object is a `segment` node with its address, and `side` has no layout equations (docs/design/PtrSegment.md). 3 before; 4 is taken by an older envelope of the formal model's importers; 2 before the premises were renamed (`premises` values, `sea_vc` flags). Additions (new keys, new term ops) keep the number; an incompatible change bumps it |
 | `lane`, `sea_vc` | the lane and its `sea-vc` command (see above) |
 | `ptr_mode` | `address` or `opaque` |
 | `address_bits` | N |
 | `ainb` | whether the premises A-SEP, A-NULL, A-NOWRAP were used (the premise lanes; the key keeps its name) |
 | `rewrite` | whether the memory rules ran |
 | `roots` | `[{name, location, operation, term}]`: every `iN`, address and memory result, in program order |
-| `side` | `[term]`: the side conditions, such as the layout `addr(obj.<name>) = base` |
-| `sources` | `[{site, term}]` for `sea.nondet`, `sea.mem.nondet` and `sea.memhavoc` (the havoc array), and `[{fixed, term}]` for `sea.segment` with its placed base |
+| `side` | `[term]`: the side conditions. No layout equation: each `segment` node carries its address, and a reader states `addr(obj.<name>) = addr` itself |
+| `sources` | `[{site, term}]` for `sea.nondet`, `sea.mem.nondet` and `sea.memhavoc` (the havoc array), and `[{fixed, term}]` for `sea.segment` with its placed base (in a SeaM lane `fixed` equals the segment node's `addr`) |
 | `probes` | `[{location, bytes, memory, address}]`: the operands of each load |
 | `erased_roots` | `[{name, location, term}]`: the non-memory roots after `solverTerm` (no pointer sort is left) |
-| `erased_side` | `[term]`: the side conditions after `solverTerm` |
+| `erased_side` | `[term]`: the conditions of the erased query: first the layout `eq(obj.<name>, base)` that `sea-vc`'s boundary adds (`SeaOpSem::withLayoutFacts`; an erased object is the variable `obj.<name>`), then the side conditions after `solverTerm` |
 | `firings` | (`--firings`) see below |
 | `firings_unexpressible` | (`--firings`) how many firings carry `unexpressible` |
 
 Names are the VC's: `nd.<site>_0` for a nondet, `obj.<name>` for an
-object, and the printed MLIR name for a root. A name is used at one sort
+object (the `name` of its `segment` node; the variable of the erased
+object), and the printed MLIR name for a root. A name is used at one sort
 only, and the tool refuses a second sort.
 
 ### Terms
 
 A term is `{sort, [bits], op, args, ...}`. `sort` is `bv` (with `bits`),
 `bool`, `ptr` (with `bits` = N) or `memory` (N-bit addresses, byte cells).
-Numerals (the `bv` value, `smap` offsets, `fixed`) are strings in the form
+Numerals (the `bv` value, `smap` offsets, `fixed`, a segment's `addr`) are strings in the form
 of the Expr printer: decimal below 65535, lowercase hex with a `0x` prefix
 from 65535 up (`0x3ffff80`). A `bv` value is unsigned; a negative one,
 which should not occur, would print as `-5` or `0x-ffff`. The `stride`,
@@ -125,6 +126,7 @@ decimal.
 | `bv` | `value` (unsigned, below 2^bits) |
 | `bool` | `value` (true / false) |
 | `var` | `name` |
+| `segment` | no args; `sort` `ptr`, `bits` = N, `name` (`obj.<name>`), `addr` (the placed base, a numeral): the object `PTR_SEGMENT(<name>, addr)`, printed `segment(obj.<name>, 0x<addr>)` by Expr |
 | `ite`, `eq`, `ult`, `ule`, `not`, `and`, `or` | `args`; `and` and `or` are n-ary |
 | `add`, `sub`, `mul`, `concat` | `args`; `add` and `mul` may be n-ary (left to right); `concat` may be n-ary, first arg most significant |
 | `extract` | one arg; `start`, `length` (bits) |

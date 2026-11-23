@@ -98,19 +98,27 @@ struct Fixture {
   ExprVector layout; // obj.k = base, x y < size (A-INB, as the VC states it)
   ExprVector layoutOnly; // obj.k = base
 
-  Fixture()
+  /// \p segments: the objects are PTR_SEGMENT terms, as OpSem builds them
+  /// (docs/design/PtrSegment.md); else pointer constants (free bases). Both
+  /// erase to a free bit-vector constant: every check below holds at every
+  /// base value unless it states the layout.
+  explicit Fixture(bool segments = false)
       : bvSort(op::bv::bvsort(kWidth, efac)),
         ptrSort(op::ptr::ptrsort(kWidth, efac)),
         memSort(sort::arrayTy(ptrSort, bvSort)), t(mk<TRUE>(efac)),
         f(mk<FALSE>(efac)) {
     auto obj = [&](const char *name, unsigned long base,
                    unsigned long size = kSize) {
-      // a pointer constant, as OpSem's segment (PtrSort S2e), with its
-      // erased twin as an alias
-      Expr e = op::ptr::ptrConst(mkTerm<std::string>(name, efac), kWidth);
+      // a pointer constant or a segment, with its erased twin as an alias
+      Expr e = segments
+                   ? op::ptr::segment(name, num(base))
+                   : op::ptr::ptrConst(mkTerm<std::string>(name, efac), kWidth);
       reg.add(e, name, "heap", llvm::APInt(kWidth, base),
               llvm::APInt(kWidth, size), 4);
-      reg.addAlias(op::bv::bvConst(mkTerm<std::string>(name, efac), kWidth), e);
+      reg.addAlias(
+          segments ? op::ptr::segmentTwin(e)
+                   : op::bv::bvConst(mkTerm<std::string>(name, efac), kWidth),
+          e);
       layout.push_back(mk<EQ>(mk<ADDR>(e), num(base)));
       layoutOnly.push_back(mk<EQ>(mk<ADDR>(e), num(base)));
       return e;
@@ -166,8 +174,9 @@ struct Fixture {
   bool isPtr(Expr e) {
     while (isOpX<ITE>(e))
       e = e->arg(1);
-    return op::ptr::isPtrConst(e) || op::ptr::isPtrIndex(e) ||
-           isOpX<PTR_FROM_BITS>(e) || isOpX<PTR_FROM_INT>(e);
+    return op::ptr::isPtrConst(e) || op::ptr::isSegment(e) ||
+           op::ptr::isPtrIndex(e) || isOpX<PTR_FROM_BITS>(e) ||
+           isOpX<PTR_FROM_INT>(e);
   }
   /// x * 1, y * 1: the summand of an addr.add offset as the rules expand it
   /// without simplify (the lowering's term; --simplify makes it x)
@@ -1490,7 +1499,7 @@ void provenanceAtoms(const Expr &e, std::set<Expr> &out, std::set<Expr> &seen) {
     return;
   if (isOpX<ADDR>(e) || isOpX<PTR_TO_INT>(e))
     return;
-  if (op::ptr::isPtrConst(e)) {
+  if (op::ptr::isPtrConst(e) || op::ptr::isSegment(e)) {
     out.insert(e);
     return;
   }
@@ -1513,7 +1522,8 @@ bool noCastToNode(const Expr &in, const Expr &out) {
       roots(r->arg(2));
     } else if (op::ptr::isPtrIndex(r)) {
       roots(op::ptr::base(r));
-    } else if (op::ptr::isPtrConst(r) && !atoms.count(r)) {
+    } else if ((op::ptr::isPtrConst(r) || op::ptr::isSegment(r)) &&
+               !atoms.count(r)) {
       ok = false;
     }
   };
@@ -1530,8 +1540,78 @@ bool noCastToNode(const Expr &in, const Expr &out) {
   return ok;
 }
 
-void testRandom(unsigned count, bool big = false) {
-  Fixture F;
+/// The registered bases \p e mentions outside reads and memories (as
+/// seam::Rules::mentionsBase reads a term).
+void basesOf(const BaseRegistry &reg, const Expr &e, std::set<Expr> &out) {
+  std::set<Expr> seen;
+  std::function<void(const Expr &)> walk = [&](const Expr &n) {
+    if (!seen.insert(n).second)
+      return;
+    if (reg.isBase(n)) {
+      out.insert(n);
+      return;
+    }
+    if (isOpX<SELECT>(n) || isOpX<STORE>(n))
+      return;
+    for (size_t i = 0; i < n->arity(); ++i)
+      walk(n->arg(i));
+  };
+  walk(e);
+}
+
+/// The access and alias positions of \p e (select / store indices, the
+/// pointers of IS_OVERLAP / PTR_EQ), each by the leaves of its ite spine.
+void addressLeaves(const Expr &e, std::vector<Expr> &out) {
+  std::set<Expr> seen;
+  std::function<void(const Expr &)> leaves = [&](const Expr &a) {
+    if (isOpX<ITE>(a)) {
+      leaves(a->arg(1));
+      leaves(a->arg(2));
+    } else {
+      out.push_back(a);
+    }
+  };
+  std::function<void(const Expr &)> walk = [&](const Expr &n) {
+    if (!seen.insert(n).second)
+      return;
+    if (isOpX<SELECT>(n) || isOpX<STORE>(n))
+      leaves(n->arg(1));
+    if (isOpX<IS_OVERLAP>(n)) {
+      leaves(n->arg(0));
+      leaves(n->arg(2));
+    }
+    if (isOpX<PTR_EQ>(n)) {
+      leaves(n->arg(0));
+      leaves(n->arg(1));
+    }
+    for (size_t i = 0; i < n->arity(); ++i)
+      walk(n->arg(i));
+  };
+  walk(e);
+}
+
+/// No leaf gains a base (docs/design/PtrSegment.md, "The invariant"): every
+/// base an address leaf of \p out mentions is one an address leaf of \p in
+/// mentions.
+bool noLeafGainsBase(const BaseRegistry &reg, const Expr &in, const Expr &out) {
+  std::vector<Expr> li, lo;
+  addressLeaves(in, li);
+  addressLeaves(out, lo);
+  std::set<Expr> had;
+  for (const Expr &l : li)
+    basesOf(reg, l, had);
+  for (const Expr &l : lo) {
+    std::set<Expr> b;
+    basesOf(reg, l, b);
+    for (const Expr &x : b)
+      if (!had.count(x))
+        return false;
+  }
+  return true;
+}
+
+void testRandom(unsigned count, bool big = false, bool segments = false) {
+  Fixture F(segments);
   Gen g(F, big ? 20261101 : 20260501, big);
   unsigned unsound = 0, notNormal = 0, noInbUnsound = 0, resolved = 0;
   uint64_t armSkips = 0;
@@ -1557,6 +1637,11 @@ void testRandom(unsigned count, bool big = false) {
       ++unsound;
       llvm::errs() << "FAIL: random " << i
                    << " cast became a node: " << str(out) << "\n";
+    }
+    if (!noLeafGainsBase(F.reg, in, out)) {
+      ++unsound;
+      llvm::errs() << "FAIL: random " << i
+                   << " a leaf gained a base: " << str(out) << "\n";
     }
     if (getenv("SEAM_TEST_VERBOSE"))
       llvm::errs() << "  checked\n";
@@ -1600,7 +1685,8 @@ void testRandom(unsigned count, bool big = false) {
   CHECK(noInbUnsound == 0, "random: A-INB off: " << noInbUnsound);
   CHECK(notNormal == 0,
         "random: " << notNormal << " results are not normal forms");
-  llvm::outs() << (big ? "random-arm" : "random") << ": terms=" << count
+  llvm::outs() << (big ? "random-arm" : "random")
+               << (segments ? "-segments" : "") << ": terms=" << count
                << " arm-skips=" << armSkips << " resolved-to-value=" << resolved
                << " unsound=" << unsound << " not-normal=" << notNormal << "\n";
 }
@@ -1907,6 +1993,157 @@ void testNodeView() {
   }
 }
 
+/// PTR_SEGMENT (docs/design/PtrSegment.md, steps 1 and 2): the term, its
+/// erasure to the twin, and the invariant. No rule reads an object's numeral
+/// as the value of an observation of it; per leaf, the protected set (the
+/// view base, else the mentioned bases) changes only by a decided arm or by
+/// same-base cancellation; no leaf gains a base.
+void testSegment() {
+  Fixture F(/*segments=*/true);
+  // the term
+  Expr s1 = F.o1, s4 = F.o4, s5 = F.o5;
+  CHECK(op::ptr::isSegment(s1), "segment: the fixture's objects");
+  {
+    TypeChecker tc;
+    CHECK(tc.typeOf(s1) == F.ptrSort, "segment: sort ptr(w)");
+    Expr sym = mk<PTR_SEGMENT>(mkTerm<std::string>("v", F.efac), F.x);
+    CHECK(isOpX<ERROR_TY>(tc.typeOf(sym)), "segment: a symbolic base");
+    Expr unnamed = mk<PTR_SEGMENT>(F.num(1), F.num(0x1000));
+    CHECK(isOpX<ERROR_TY>(tc.typeOf(unnamed)), "segment: no name");
+  }
+  CHECK(str(s1) == "segment(obj.obj1, 0x1000)", "segment: printed " << str(s1));
+  CHECK(op::ptr::segment("obj1", F.num(0x1000)) == s1,
+        "segment: one node per (k, a)");
+  // the boundary: the twin, a free constant (the layout binds it)
+  CHECK(erased(s1) ==
+            op::bv::bvConst(mkTerm<std::string>("obj.obj1", F.efac), kWidth),
+        "segment: erased to its twin " << str(erased(s1)));
+  CHECK(F.reg.lookup(erased(s1)) == F.reg.lookup(s1),
+        "segment: the twin names the object");
+  // the ARM leaf: a base at offset 0, not the absolute point of its numeral
+  {
+    AddrRangeAnalysis an(F.reg);
+    const AddrRangeMap &m = an.alpha(s1);
+    CHECK(!m.isTop() && m.size() == 1 &&
+              m.entries()[0].first == F.reg.lookup(s1)->order,
+          "segment: ARM leaf");
+  }
+
+  // condition 1: the observations of an object keep it, under every
+  // option that reads the numerals (layoutDecide: cmp.layout,
+  // mem.in-layout)
+  SeaMOptions layout;
+  layout.layoutDecide = true;
+  layout.assumePremises = false;
+  auto keeps = [&](const char *name, const Expr &in,
+                   std::initializer_list<Expr> objs) {
+    for (const SeaMOptions &o : {SeaMOptions(), layout}) {
+      RewriteStats st;
+      Expr out = F.rewrite(in, o, st);
+      std::set<Expr> b;
+      basesOf(F.reg, out, b);
+      for (const Expr &x : objs)
+        CHECK(b.count(x),
+              "segment: " << name << " lost " << str(x) << ": " << str(out));
+      CHECK(F.equivalent(in, out, false),
+            "segment: " << name << " not exact: " << str(out));
+    }
+  };
+  keeps("addr", mk<ADDR>(s1), {s1});
+  keeps("to-int", mk<PTR_TO_INT>(s1), {s1});
+  keeps("to-bits", mk<PTR_TO_BITS>(s1), {s1});
+  keeps("addr-sum", mk<ADDR>(F.add({s1, F.x})), {s1});
+  keeps("to-int-sum", mk<BADD>(mk<PTR_TO_INT>(s1), F.num(4)), {s1});
+  keeps("diff", mk<PTR_DIFF>(s1, F.o2), {s1, F.o2});
+  keeps("diff-sums", mk<PTR_DIFF>(F.add({s1, F.x}), F.add({F.o2, F.num(4)})),
+        {s1, F.o2});
+  keeps("sub-casts", mk<BSUB>(mk<PTR_TO_INT>(s1), mk<PTR_TO_INT>(F.o2)),
+        {s1, F.o2});
+  keeps("eq", mk<PTR_EQ>(s1, F.add({F.o2, F.x})), {s1, F.o2});
+  keeps("eq-numeral", mk<EQ>(mk<ADDR>(s1), F.num(0x1000)), {s1});
+
+  // condition 2: a base leaves a term by same-base cancellation only
+  {
+    Expr in = mk<PTR_DIFF>(F.add({s1, F.x}), F.add({s1, F.num(4)}));
+    RewriteStats st;
+    Expr out = F.rewrite(in, SeaMOptions(), st);
+    std::set<Expr> b;
+    basesOf(F.reg, out, b);
+    CHECK(b.empty() && st.get("diff.same-base") >= 1,
+          "segment: same-base cancellation: " << str(out));
+  }
+
+  // per leaf: the shape of the fold case (FoldTopEqs.md, "Pointer
+  // observations"): a read at s5 + (addr(ite(c, s4 + 4, s5)) - addr(s4))
+  // over a store into s3. The leaf is a node over s5: its view is s5
+  // whatever its index mentions (viewNode), so its protected set is {s5}.
+  // Every leaf of the result keeps s5 as its view; one that no longer
+  // mentions s4 is the c arm after the cancellation of s4, s5 + 4; a leaf
+  // that lost its view (a sum form) keeps both bases. The fold bug made
+  // the other arm s5 - 64, which none of these admits.
+  auto foldLeafOk = [&](const seam::Rules &R, const Expr &l) {
+    std::set<Expr> b;
+    basesOf(F.reg, l, b);
+    std::optional<seam::PtrView> v = R.view(l);
+    bool keepsView = v && v->base == s5;
+    bool keepsBoth = b.count(s5) && b.count(s4);
+    bool cancelled = keepsView && b.size() == 1 &&
+                     F.equivalent(l, F.add({s5, F.num(4)}), false);
+    return (keepsView && keepsBoth) || cancelled || (!v && keepsBoth);
+  };
+  {
+    Expr q = mk<ITE>(F.c, F.add({s4, F.num(4)}), s5);
+    Expr idx = F.add({s5, mk<BSUB>(mk<ADDR>(q), mk<ADDR>(s4))});
+    Expr in = F.sel(F.st(F.m, F.add({F.o3, F.y}), F.z), idx);
+    SeaMOptions pull = P1();
+    pull.maxPullLeaves = 8;
+    for (const SeaMOptions &o : {SeaMOptions(), P1(), pull, layout}) {
+      RewriteStats st;
+      Expr out = F.rewrite(in, o, st);
+      CHECK(noLeafGainsBase(F.reg, in, out),
+            "segment: fold shape: a leaf gained a base: " << str(out));
+      std::vector<Expr> lo;
+      addressLeaves(out, lo);
+      SeaMRewriter rw(F.efac, F.reg, o);
+      for (const Expr &l : lo) {
+        std::set<Expr> b;
+        basesOf(F.reg, l, b);
+        if (!b.count(s5) && b.count(F.o3))
+          continue; // the store's address
+        CHECK(foldLeafOk(rw.rules(), l),
+              "segment: fold shape: leaf " << str(l) << " in " << str(out));
+      }
+      CHECK(F.equivalent(in, out, o.assumePremises),
+            "segment: fold shape unsound: " << str(out));
+    }
+    // the fold bug's leaf (the not-c arm with the layout substituted, s5
+    // 64 bytes down) is refused, the cancelled c arm admitted
+    SeaMRewriter rw(F.efac, F.reg, P1());
+    CHECK(!foldLeafOk(rw.rules(), F.add({s5, F.num(0x10000 - 64)})),
+          "segment: the leaf check admits the fold bug's leaf");
+    CHECK(foldLeafOk(rw.rules(), F.add({s5, F.num(4)})),
+          "segment: the leaf check refuses the cancelled arm");
+  }
+
+  // the cast check sees segments: a cast sum never becomes a node
+  {
+    Expr idx = mk<PTR_FROM_INT>(mk<BADD>(mk<PTR_TO_INT>(s1), F.num(4)));
+    Expr mm = F.st(F.m, F.add({F.o2, F.x}), F.z);
+    Expr in = F.sel(mm, idx);
+    CHECK(!noCastToNode(in, F.sel(mm, F.add({s1, F.num(4)}))),
+          "segment: the cast check misses a planted node");
+    RewriteStats st;
+    Expr out = F.rewrite(in, SeaMOptions(), st);
+    CHECK(noCastToNode(in, out), "segment: a cast became a node " << str(out));
+  }
+  // and the leaf check catches a planted gain
+  {
+    Expr in = F.sel(F.m, F.add({F.o2, F.x}));
+    CHECK(!noLeafGainsBase(F.reg, in, F.sel(F.m, F.add({s1, F.x}))),
+          "segment: the leaf check misses a planted base");
+  }
+}
+
 /// A non-unit IS_OVERLAP at the boundary: the circular interval test with
 /// the widths as numerals; a width of 2^w units covers every address
 void testOverlapWidth() {
@@ -1994,7 +2231,8 @@ int main(int argc, char **argv) {
                {"prune-size0", testPruneSize0},
                {"shadow", testShadow},
                {"overlap-width", testOverlapWidth},
-               {"slots", testSlots}};
+               {"slots", testSlots},
+               {"segment", testSegment}};
   for (const Test &t : tests) {
     int before = failures;
     t.fn();
@@ -2009,6 +2247,17 @@ int main(int argc, char **argv) {
   testRandom(randomCount / 2, /*big=*/true);
   llvm::outs() << "test: random-arm " << (failures == before ? "ok" : "FAILED")
                << "\n";
+  // the objects as OpSem builds them (PTR_SEGMENT; erased to free twins as
+  // the pointer constants are, so fewer terms: what differs is the rules'
+  // handling of the term)
+  before = failures;
+  testRandom(randomCount / 2, /*big=*/false, /*segments=*/true);
+  llvm::outs() << "test: random-segments "
+               << (failures == before ? "ok" : "FAILED") << "\n";
+  before = failures;
+  testRandom(randomCount / 4, /*big=*/true, /*segments=*/true);
+  llvm::outs() << "test: random-arm-segments "
+               << (failures == before ? "ok" : "FAILED") << "\n";
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

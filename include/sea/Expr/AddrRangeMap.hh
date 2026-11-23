@@ -583,11 +583,12 @@ private:
   };
 
   static bool isLeaf(const Expr &e) {
-    // numerals and declarations are BIND, constants a FAPP of a declaration
-    // (as rules::isLeaf); a select / store is not looked into
+    // numerals and declarations are BIND, constants a FAPP of a declaration,
+    // an object a PTR_SEGMENT (as rules::isLeaf: its numeral is not an
+    // absolute point of the term); a select / store is not looked into
     return e->arity() == 0 || isOpX<BIND>(e) ||
-           (isOpX<FAPP>(e) && e->arity() == 1) || isOpX<SELECT>(e) ||
-           isOpX<STORE>(e);
+           (isOpX<FAPP>(e) && e->arity() == 1) || isOpX<PTR_SEGMENT>(e) ||
+           isOpX<SELECT>(e) || isOpX<STORE>(e);
   }
 
   Info leaf(const Expr &e) const {
