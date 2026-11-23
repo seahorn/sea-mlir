@@ -9,6 +9,8 @@ config.sea_src_root = "@SEA_SOURCE_DIR@"
 config.z3 = "@SEA_Z3@"
 config.bitwuzla = "@SEA_WITH_BITWUZLA@"
 config.yices = "@SEA_WITH_YICES@"
+config.yices_smt2 = "@SEA_YICES_SMT2@"
+config.bitwuzla_bin = "@SEA_BITWUZLA_BIN@"
 
 import lit.llvm
 lit.llvm.initialize(lit_config, config)

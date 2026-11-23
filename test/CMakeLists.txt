@@ -5,6 +5,15 @@ if(NOT LLVM_EXTERNAL_LIT)
   find_program(LLVM_EXTERNAL_LIT NAMES lit llvm-lit REQUIRED)
 endif()
 find_program(SEA_Z3 z3)
+# The command-line solvers of the optional backends' installs (tests that
+# read a --smt2 query with them: REQUIRES: yices-bin / bitwuzla-bin); the
+# install's own first, as for the libraries
+if(YICES2_ROOT)
+  find_program(SEA_YICES_SMT2 yices-smt2 HINTS ${YICES2_ROOT}/bin NO_DEFAULT_PATH)
+endif()
+if(BITWUZLA_ROOT)
+  find_program(SEA_BITWUZLA_BIN bitwuzla HINTS ${BITWUZLA_ROOT}/bin NO_DEFAULT_PATH)
+endif()
 
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in

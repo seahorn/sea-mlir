@@ -27,6 +27,7 @@ benchmark harness.
 | Which inputs get past an assume, and how far do random runs get? | `sea-run --fuzz` ([Steering the fuzzer](fuzzing.md)) |
 | Is the program well formed? What does a pass do to it? | `sea-opt` (`--sea-vc-lower` is what `sea-vc --lower` runs) |
 | What does the solver see? | `sea-vc --smt2` |
+| The query for Yices or Bitwuzla (or another z3)? | `sea-vc --smt2 --smt2-dialect=portable` (the default is z3's names; the header names what another solver cannot read) |
 | How large is the query, without solving it? | `sea-vc --vcgen-only` |
 | Which rewrites did the work? | `sea-vc --seam-stats` |
 | How do I make a large failing case small? | `sea-reduce-test reduce` ([Minimizing a problem](minimizing.md)) |

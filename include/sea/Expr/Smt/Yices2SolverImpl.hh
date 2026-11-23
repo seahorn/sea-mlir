@@ -122,7 +122,9 @@ public:
   void reset() override;
 
   /** Print asserted formulas to SMT-LIB format **/
-  void to_smt_lib(llvm::raw_ostream &o) override;
+  void to_smt_lib(llvm::raw_ostream &o,
+                  Smt2Dialect dialect = Smt2Dialect::Native,
+                  bool warn = true) override;
 
   ycache_t &get_cache(void);
 
