@@ -7,8 +7,8 @@
 // RUN: split-file %s %t
 // RUN: sea-vc %t/out.mlir --lower --seam --seam-stats 2>&1 | FileCheck %s --check-prefix=OUT
 // OUT-NOT: seam.rule.arm.skip-diff-base
-// OUT: result: sat
 // OUT: replay: assert-failed
+// OUT: result: sat
 // RUN: sea-run %t/out.mlir --input=1=1 | FileCheck %s --check-prefix=INTERP
 // INTERP: status: assert-failed
 // The read at that node of a memset of b2's first cell: row.mset-skip by
@@ -16,8 +16,8 @@
 // RUN: sea-vc %t/mset.mlir --lower --seam --seam-stats 2>&1 | FileCheck %s --check-prefix=MSET
 // MSET-NOT: seam.rule.arm.skip-diff-base
 // MSET: seam.rule.arm.skip-no-inb: {{[1-9]}}
-// MSET: result: sat
 // MSET: replay: assert-failed
+// MSET: result: sat
 // RUN: sea-run %t/mset.mlir --input=1=1 | FileCheck %s --check-prefix=INTERP
 // One provenance of that node is an object of size 0 (heap.0 at 4096), the
 // other b1 (at 4112): ARM drops the size-0 entry (cmp.size0-vacuous) and
@@ -27,8 +27,8 @@
 // RUN: sea-vc %t/zero.mlir --lower --seam --seam-stats 2>&1 | FileCheck %s --check-prefix=ZERO
 // ZERO-NOT: seam.rule.cmp.size0-vacuous
 // ZERO: seam.rule.arm.skip-no-inb: {{[1-9]}}
-// ZERO: result: sat
 // ZERO: replay: assert-failed
+// ZERO: result: sat
 // RUN: sea-run %t/zero.mlir --input=1=1 | FileCheck %s --check-prefix=INTERP
 // The same with from_int(3): every provenance stays in its object (ARM
 // says so), no condition is needed, and arm.skip decides by A-SEP.

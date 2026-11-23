@@ -9,8 +9,8 @@
 // CHECK: vc.narrow-objects: 2
 // CHECK: vc.narrow-pairs: 0
 // CHECK: vc.narrow-mixed: 1
-// CHECK: result: sat
 // CHECK: validate: checked={{[0-9]+}} mismatches=0
+// CHECK: result: sat
 // SMT: (bvadd obj.{{.*}} ((_ zero_extend {{[0-9]+}})
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @two {

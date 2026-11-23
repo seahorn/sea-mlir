@@ -35,17 +35,17 @@
 // RUN: sea-vc %t/marker.mlir --lower --replay-original 2>&1 | FileCheck %s --check-prefix=MARKER
 // MARKER-NOT: fold.assert-false
 // MARKER-NOT: vc.fold:
-// MARKER: result: sat
 // MARKER: replay: assert-failed
 // MARKER: replay.original: status=assert-failed {{.*}}match=yes
+// MARKER: result: sat
 
 // A located check that sccp folded to 0 is reported even as the only
 // assert right before the halt: the marker has no source location.
 // RUN: sea-vc %t/located.mlir --lower --replay-original 2>&1 | FileCheck %s --check-prefix=LOCATED
 // LOCATED: real.c":9:5) [fold.assert-false]
 // LOCATED: vc.fold: assume-false=0 assert-false=1
-// LOCATED: result: sat
 // LOCATED: replay.original: status=assert-failed {{.*}}match=yes
+// LOCATED: result: sat
 
 // assert(false) reachable and not that marker (code follows it): a finding, the same for the VC and the
 // interpreter; the code after it is dead (folded away, the verdict and
@@ -57,9 +57,9 @@
 // SAT: fold.assert-false
 // SAT-NOT: vc.statically-safe
 // SAT: vc.fold: assume-false=0 assert-false=1
-// SAT: result: sat
 // SAT: replay: assert-failed
 // SAT: replay.original: status=assert-failed {{.*}}match=yes
+// SAT: result: sat
 // TRUNC: fold.assert-false
 // TRUNC: sea.assert
 // TRUNC-NEXT: sea.halt

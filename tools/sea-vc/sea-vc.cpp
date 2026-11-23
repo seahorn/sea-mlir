@@ -892,6 +892,12 @@ static cl::opt<bool> foldNoBaseSkip(
              "docs/design/PtrSegment.md, \"What F2 does then\")"),
     cl::init(false));
 
+static cl::opt<bool> memLimitPlantReplay(
+    "x-mem-limit-plant-replay", cl::Hidden,
+    cl::desc("Test only: under --mem-limit, the replay of a sat hits the "
+             "memory limit as it starts (as an allocation that fails there)"),
+    cl::init(false));
+
 static cl::opt<bool> modelTrailPlantSkip(
     "x-model-trail-plant-skip", cl::Hidden,
     cl::desc("Test only: with --vc-fold-top-eqs, the model is not extended "
@@ -1297,6 +1303,19 @@ static cl::opt<sea::out::Format>
 
 /// stdout: every line goes through it (sea/Support/Output.h); set in main
 static sea::out::Emitter *gOut = nullptr;
+
+/// Whether the run's `result:` line is out: one per run (the settled
+/// answer); the limit handlers print `result: unknown` only before it
+static volatile bool gResultPrinted = false;
+
+/// The run's `result:` record (text `result: <v>`; jsonl kind result)
+static void emitResultRecord(StringRef v) {
+  sea::out::Record rec("result");
+  rec.str("value", v);
+  rec.text = ("result: " + v).str();
+  gOut->emit(rec);
+  gResultPrinted = true;
+}
 /// text lines of stdout (stat records under --format=jsonl)
 static raw_ostream &vout() { return gOut->lines(); }
 
@@ -1938,12 +1957,23 @@ static uint64_t countOps(Operation *op) {
 /// llvm::report_bad_alloc_error: memLimitHitLlvm). Writes without allocating.
 [[noreturn]] static void memLimitHit() {
   outs().flush();
-  static const char msg[] = "result: unknown\nmem-limit: hit\n";
+  // the run's one `result:` line, unless its answer was settled before
+  static const char res[] = "result: unknown\n";
+  static const char jres[] = "{\"kind\":\"result\",\"value\":\"unknown\","
+                             "\"text\":\"result: unknown\"}\n";
+  static const char msg[] = "mem-limit: hit\n";
   static const char jmsg[] =
-      "{\"kind\":\"result\",\"value\":\"unknown\",\"text\":\"result: "
-      "unknown\"}\n{\"kind\":\"stat\",\"key\":\"mem-limit\",\"value\":"
+      "{\"kind\":\"stat\",\"key\":\"mem-limit\",\"value\":"
       "\"hit\",\"text\":\"mem-limit: hit\"}\n";
-  if (outFormat == sea::out::Format::Jsonl)
+  const bool jsonl = outFormat == sea::out::Format::Jsonl;
+  if (!gResultPrinted) {
+    gResultPrinted = true;
+    if (jsonl)
+      (void)!::write(1, jres, sizeof(jres) - 1);
+    else
+      (void)!::write(1, res, sizeof(res) - 1);
+  }
+  if (jsonl)
     (void)!::write(1, jmsg, sizeof(jmsg) - 1);
   else
     (void)!::write(1, msg, sizeof(msg) - 1);
@@ -1968,10 +1998,13 @@ static uint64_t countOps(Operation *op) {
   static const char msg[] = "result: unknown\n";
   static const char jmsg[] = "{\"kind\":\"result\",\"value\":\"unknown\","
                              "\"text\":\"result: unknown\"}\n";
-  if (outFormat == sea::out::Format::Jsonl)
-    (void)!::write(1, jmsg, sizeof(jmsg) - 1);
-  else
-    (void)!::write(1, msg, sizeof(msg) - 1);
+  if (!gResultPrinted) {
+    gResultPrinted = true;
+    if (outFormat == sea::out::Format::Jsonl)
+      (void)!::write(1, jmsg, sizeof(jmsg) - 1);
+    else
+      (void)!::write(1, msg, sizeof(msg) - 1);
+  }
   static const char err[] =
       "Warning: the solver returned unknown (memout) [vc.unknown]\n";
   (void)!::write(2, err, sizeof(err) - 1);
@@ -1997,10 +2030,8 @@ static uint64_t countOps(Operation *op) {
   const bool nodes = b == sea::MemWatch::Budget::Nodes;
   const bool test = b == sea::MemWatch::Budget::Test;
   const char *resource = nodes ? "nodes" : test ? "test" : "rss";
-  sea::out::Record res("result");
-  res.str("value", "unknown");
-  res.text = "result: unknown";
-  gOut->emit(res);
+  if (!gResultPrinted)
+    emitResultRecord("unknown");
   raw_ostream &os = smt2 && !gOut->jsonl() ? errs() : vout();
   printStats(os, [&](sea::stats::Report &r) {
     sea::stats::Line &l = r.line("budget")
@@ -3745,7 +3776,17 @@ OUTPUT (stdout, `key: value` lines):
                   under=<name>,... | none   (the premises an unsat
                                   discharges; under= the assumptions the
                                   result rests on; docs/design/CheckInb.md)
-  result: sat|unsat|unknown|none  (none: --vcgen-only, --split-candidates)
+  solver-answer: sat|unsat|unknown  (the solver's answer, after its check;
+                                  not the verdict)
+  result: sat|unsat|unknown|none  (the verdict, one line per run, last
+                                  of the answer's lines: unsat / unknown
+                                  as the solver says; sat only after the
+                                  replay confirms it (status 0); a sat
+                                  whose replay does not (status 1 replay
+                                  impossible, 2, 4, 6, a --mem-limit hit
+                                  in the replay) is unknown, the status
+                                  and its error say why; none:
+                                  --vcgen-only, --split-candidates)
   hint: split: open-aliases=<n>[ ackermann-constraints=<m>]; rerun with
                                   --split-candidates ...
                                   (unknown, --seam, not a split, n > 0 open
@@ -8977,10 +9018,7 @@ int main(int argc, char **argv) {
         });
         return;
       }
-      sea::out::Record rec("result");
-      rec.str("value", v);
-      rec.text = ("result: " + v).str();
-      gOut->emit(rec);
+      emitResultRecord(v);
     };
     {
       sea::out::Record rec("program");
@@ -9432,6 +9470,12 @@ int main(int argc, char **argv) {
         for (const std::string &kv : yicesParams)
           r.line("solver.yices-param").value(kv);
       }
+      // the solver's answer; the run's `result:` is the settled one (a sat
+      // only once its replay confirms it)
+      r.line("solver-answer")
+          .value(res == sea::solver::SolverResult::SAT     ? "sat"
+                 : res == sea::solver::SolverResult::UNSAT ? "unsat"
+                                                           : "unknown");
       r.print(vout(), brunchStats);
     }
     if (res == sea::solver::SolverResult::UNSAT) {
@@ -9551,14 +9595,22 @@ int main(int argc, char **argv) {
                       "again with --ptr-companion=exact");
       return kRetryExactCompanion;
     }
-    emitResult("sat");
-    {
-      sea::stats::Report r;
-      resultLine(r, "sat");
-      if (sem.ptrIntChecking() && sem.companionChecked())
+    if (sem.ptrIntChecking() && sem.companionChecked())
+      printStats([](sea::stats::Report &r) {
         r.line("seam.ptrint").value("not discharged");
-      r.printEach(vout(), brunchStats);
-    }
+      });
+    // the answer settles with the replay: `result: sat` when the run
+    // confirms it (status 0), `result: unknown` on every other exit (the
+    // status and its error say why: 1 replay-impossible or an error, 2 a
+    // mismatch, 4 a premise, 6 the lowering); a --mem-limit hit in the
+    // replay prints its own `result: unknown`
+    auto settleSat = [&](int rc) -> int {
+      StringRef v = rc == 0 ? "sat" : "unknown";
+      emitResult(v);
+      printStats([&](sea::stats::Report &r) { resultLine(r, v); });
+      gOut->flush();
+      return rc;
+    };
 
     auto solverModel = solver->get_model();
     // --vc-fold-top-eqs: the model extended by the trail (a model of the
@@ -9584,6 +9636,8 @@ int main(int argc, char **argv) {
         wordsModel ? static_cast<sea::solver::Model &>(*wordsModel)
                    : solvedModel;
     Phase replayPhase("replay");
+    if (memLimitPlantReplay && memLimit)
+      memLimitHit();
     sea::ReplayResult replay =
         sea::replayAndValidate(program, replayModel, sem, ctx, addr0IsNull,
                                memhavocNull == MemhavocNull::Noop);
@@ -9909,7 +9963,7 @@ int main(int argc, char **argv) {
                 "that keeps the promises, remove the promise of that GEP from "
                 "the input, or strip all GEP promises, and check again",
             gep->getLoc());
-        return 4;
+        return settleSat(4);
       }
       // no GEP promise broken in the run: a premise of the rule's K or
       // size-0 firings (A-INB, checked below), else the replay errors below
@@ -9958,7 +10012,7 @@ int main(int argc, char **argv) {
                 "breaks; inconclusive (a memory-safety check of the program "
                 "discharges A-INB; without --narrow-offsets the VC does not "
                 "use it)");
-        return 4;
+        return settleSat(4);
       }
     }
     if (replayFailed && inb && abstractModule) {
@@ -10005,7 +10059,7 @@ int main(int argc, char **argv) {
             "VC only, not from the lowering's dropped memhavocs, "
             "assume.a-sep)",
             abs.at ? std::optional<Location>(abs.at->getLoc()) : std::nullopt);
-        return 4;
+        return settleSat(4);
       }
       vout() << "seam.inb-violation: undetermined ("
              << sea::stringifyRunStatus(abs.status)
@@ -10021,7 +10075,7 @@ int main(int argc, char **argv) {
                        replay.run.at
                            ? std::optional<Location>(replay.run.at->getLoc())
                            : std::nullopt);
-      return 1;
+      return settleSat(1);
     }
     // with initial words, a trusted `align` that does not hold makes the
     // annotated fast path read a word the bytes do not form: the word query
@@ -10063,7 +10117,7 @@ int main(int argc, char **argv) {
                              "of an earlier memory version whose cell was "
                              "clobbered" +
                              strideNote);
-      return 2;
+      return settleSat(2);
     }
     if (ptrIntCheck && !claimSeen) {
       sea::diag::error("vc.replay-no-failure",
@@ -10072,7 +10126,7 @@ int main(int argc, char **argv) {
                        "(status: " +
                            sea::stringifyRunStatus(replay.run.status) +
                            "): a VC or interpreter bug" + strideNote);
-      return 2;
+      return settleSat(2);
     }
     if (!ptrIntCheck && replay.run.status != sea::RunStatus::AssertFailed) {
       sea::diag::error("vc.replay-no-failure",
@@ -10080,10 +10134,10 @@ int main(int argc, char **argv) {
                        "assertion (status: " +
                            sea::stringifyRunStatus(replay.run.status) +
                            "): a VC or interpreter bug" + strideNote);
-      return 2;
+      return settleSat(2);
     }
     if (ackModel && ackModel->inconsistent() && !ownExcused)
-      return 2;
+      return settleSat(2);
     // a premise assert failed (kPremiseAttr; --symbolic-size=assert): the run
     // breaks a premise the answer would otherwise rest on, not the
     // property; inconclusive, as a sat that breaks a premise (status 4)
@@ -10091,11 +10145,12 @@ int main(int argc, char **argv) {
       if (auto premise = pa->getAttrOfType<StringAttr>(sea::kPremiseAttr)) {
         reportPremiseFailed(premise.getValue(), *pa, replay.run, replayModel,
                             sem, ctx);
-        return 4;
+        return settleSat(4);
       }
     if (originalModule)
-      return replayOnOriginal(replayModel, sem, ctx, replay.run, ptrIntCheck);
-    return 0;
+      return settleSat(
+          replayOnOriginal(replayModel, sem, ctx, replay.run, ptrIntCheck));
+    return settleSat(0);
   };
   // one VC and solver run with its fallbacks (a part of a split, or the
   // whole query)
@@ -10300,10 +10355,7 @@ int main(int argc, char **argv) {
                    " loc=" + (c.loc.empty() ? "-" : c.loc);
         gOut->emit(rec);
       }
-      sea::out::Record rec("result");
-      rec.str("value", "none");
-      rec.text = "result: none";
-      gOut->emit(rec);
+      emitResultRecord("none");
       printStats([](sea::stats::Report &r) { resultLine(r, "none"); });
       gOut->flush();
       return 0;
@@ -10507,10 +10559,7 @@ int main(int argc, char **argv) {
             r.line("split.unknown-part").value(u);
         });
       }
-      sea::out::Record rec("result");
-      rec.str("value", verdict);
-      rec.text = std::string("result: ") + verdict;
-      gOut->emit(rec);
+      emitResultRecord(verdict);
       gOut->flush();
       return nSat || nUnknown == 0 ? 0 : 3;
     }();

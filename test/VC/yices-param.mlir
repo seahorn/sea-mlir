@@ -8,12 +8,12 @@
 // RUN: not sea-vc %s --program=bug --solver=yices --yices-param=random-seed 2>&1 | FileCheck %s --check-prefix=NOVALUE
 
 // SEED: solver.yices-param: random-seed=7
-// SEED: result: sat
 // SEED: validate: checked={{[0-9]+}} mismatches=0
+// SEED: result: sat
 // LOGIC: solver.yices-logic: QF_BV
 // LOGIC: solver.yices-config: mode=one-shot
-// LOGIC: result: sat
 // LOGIC: validate: checked={{[0-9]+}} mismatches=0
+// LOGIC: result: sat
 // SAFE: solver.yices-param: random-seed=3
 // SAFE: solver.yices-param: randomness=0.5
 // SAFE: result: unsat

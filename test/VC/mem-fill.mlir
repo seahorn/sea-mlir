@@ -30,9 +30,9 @@
 // WIDE: vc.widen-memory: {{.*}} widened-8=1
 // UNSAT: result: unsat
 // IDENT: result: identical
-// SAT: result: sat
 // SAT: replay: assert-failed
 // SAT: validate: {{.*}} mismatches=0
+// SAT: result: sat
 // ORIG: replay.original: status=assert-failed {{.*}}match=yes
 // INB: check-inb.parts: total=1 unsat=1 sat=0
 // the first access, the fill, fails

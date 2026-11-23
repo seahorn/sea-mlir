@@ -11,13 +11,13 @@
 // and names the load whose claim fails (exit 2 stays: the counterexample
 // does not replay). @unclobbered: the store writes another cell, the claim
 // holds, the replay is clean.
-// CHECK: result: sat
 // CHECK: mismatch:
 // CHECK: replay: no-clobber-violated: {{.*}}no-clobber-violated.mlir:29:8 (a load of an earlier memory version read a cell overwritten since; the program's Mem-SSA no-clobber claim fails here)
 // CHECK: the cause is the program's Mem-SSA no-clobber claim, not the VC{{.*}}[vc.replay-mismatch]
+// CHECK: result: unknown
 // JSONL: {"kind":"no-clobber-violated","loc":"{{.*}}no-clobber-violated.mlir:29:8","text":"replay: no-clobber-violated:
-// OK: result: sat
 // OK: validate: checked={{[0-9]+}} mismatches=0
+// OK: result: sat
 // OK-NOT: no-clobber-violated
 !m = !sea.mem<!sea.addr<8>, i8>
 sea.program @direct {

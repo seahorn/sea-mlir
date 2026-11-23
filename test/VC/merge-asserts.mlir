@@ -5,8 +5,8 @@
 // RUN: sea-vc %s --program=two --lower | FileCheck %s --check-prefix=SAT
 // RUN: sea-vc %s --program=hold --lower | FileCheck %s --check-prefix=UNSAT
 // RUN: sea-opt %s --pass-pipeline='builtin.module(sea.program(sea-merge-asserts))' | FileCheck %s --check-prefix=IR
-// SAT: result: sat
 // SAT: replay: assert-failed
+// SAT: result: sat
 // UNSAT: result: unsat
 // IR-LABEL: sea.program @two
 // IR-COUNT-1: sea.assert

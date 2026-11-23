@@ -27,8 +27,8 @@
 // join can fail on the other (sat, replayed). A fold by the sibling's fact
 // would make it unsat.
 // SIBLING: icmp=0
-// SIBLING: result: sat
 // SIBLING: replay: assert-failed
+// SIBLING: result: sat
 // @wrap: nsw / nuw are binding semantics. x + 250 nuw with x in [0, 10]
 // cannot wrap by the flag, so y >= 250 and the fold makes it unsat: the
 // intended answer. The VC encoding ignores the flag (wraps for x >= 6, an

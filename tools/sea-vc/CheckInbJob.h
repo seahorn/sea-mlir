@@ -929,7 +929,11 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     const bool premiseFailed = r.status == 4 && !r.premiseText.empty();
     if (premiseFailed)
       r.result = "premise-failed";
-    else if (r.status != 0 && r.status != 3 && r.result != "unknown")
+    else if (r.status != 0 && r.status != 3 &&
+             (r.result != "unknown" || r.status == 1 || r.status == 2 ||
+              r.status == 4 || r.status == 6))
+      // a sat the replay does not confirm prints `result: unknown` (sea-vc
+      // settles the answer); its status says why
       r.result = r.status == 4 ? "inconclusive" : "error";
     worst = worseStatus(worst, r.status);
     out::Record rec("check-inb.part");
@@ -1036,10 +1040,10 @@ inline int runJob(mlir::ModuleOp module, ProgramOp program, const JobOptions &o,
     out.emit(rec);
   }
   // the verdict: sat if a part's failure replayed, a bounds violation or a
-  // failed premise (premise.failed, exit 4: the premise class, as sea-vc
-  // reports it); unsat iff every part is unsat (a trivial part is); else
-  // unknown. A sat part and a failed part: sat, with the failed part's
-  // status (a premise part's 4).
+  // failed premise (premise.failed, exit 4: the premise class; the part's
+  // own sea-vc prints `result: unknown` with it); unsat iff every part is unsat
+  // (a trivial part is); else unknown. A sat part and a failed part: sat, with
+  // the failed part's status (a premise part's 4).
   std::string verdict = sat || premise                      ? "sat"
                         : unsat == specs.size() && !skipped ? "unsat"
                                                             : "unknown";

@@ -12,8 +12,8 @@
 // RUN: sea-vc %s --lower --program=prog --seam --seam-stats 2>&1 | FileCheck %s --check-prefix=PROG
 // LOADED: seam.alias.open.all: 1
 // LOADED: seam.alias.open.one-unknown: 1
-// LOADED: result: sat
 // LOADED: validate: checked={{[0-9]+}} mismatches=0
+// LOADED: result: sat
 // SMT-NOT: overlap
 // SMT: (check-sat)
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0

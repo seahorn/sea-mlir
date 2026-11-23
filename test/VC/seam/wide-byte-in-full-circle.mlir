@@ -9,8 +9,8 @@
 // RUN: sea-vc %s --program=fc --lower 2>&1 | FileCheck %s --check-prefix=FC-PLAIN
 // RUN: sea-vc %s --program=all --seam --seam-wide --seam-check --seam-stats 2>&1 | FileCheck %s --check-prefix=ALL
 // FC: seam.rule.wide.byte-in: 1
-// FC: result: sat
 // FC: replay: assert-failed
+// FC: result: sat
 // FC: seam-check: {{.*}} invalid=0
 // FC-PLAIN: result: sat
 // ALL: seam.rule.wide.byte-in: 1

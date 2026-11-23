@@ -30,13 +30,13 @@ sea.program @defaults {
   sea.assert %ok
   sea.halt
 }
-// CHECK: result: sat
 // CHECK: print: buf +00: 07 .. .. .. .. .. .. .. |........|
 // CHECK: print: other +00: .. .. .. .. .. .. .. .. |........|
 // CHECK-NEXT: print: x0 = 7 : ui8{{$}}
 // CHECK-NEXT: print: w = {{[0-9]+}} : ui32 (default)
 // CHECK-NEXT: print: v = {{[0-9]+}} : ui16 (default)
 // CHECK-NEXT: validate: checked={{[0-9]+}} mismatches=0
+// CHECK: result: sat
 
 // JSON: {"kind":"print.mem","path":"buf",{{.*}}"unknown":[],"default":{{\[\[}}1,8]]
 // JSON: {"kind":"print.mem","path":"other",{{.*}}"unknown":[],"default":{{\[\[}}0,8]]

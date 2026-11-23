@@ -22,9 +22,9 @@
 // A region (a memory variable) gives the verdicts of the same program
 // written with explicit memory SSA (docs/design/SeaImp.md).
 // UNSAT: result: unsat
-// SAT: result: sat
 // SAT: replay: assert-failed
 // SAT: mismatches=0
+// SAT: result: sat
 // ORIG: replay.original: status=assert-failed {{.*}}match=yes
 
 !m = !sea.mem<!sea.ptr<64>, i8>

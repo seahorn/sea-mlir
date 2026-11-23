@@ -6,9 +6,9 @@
 // input 0x050005 makes both i8 views 5.
 // STATUS: nondet: site=0 callee=undef width=25 value=327685
 // STATUS: status: assert-failed
-// VC: result: sat
 // VC: nondet: site=0 callee=undef width=25
 // VC: replay: assert-failed
+// VC: result: sat
 sea.program @main {
   %s = sea.struct.nondet "undef" [0] : !sea.struct<i16, !sea.ptr<32>, !sea.struct<i8, i1>>
   %x = sea.struct.extract %s[0] : !sea.struct<i16, !sea.ptr<32>, !sea.struct<i8, i1>> -> i16

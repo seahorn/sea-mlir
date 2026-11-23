@@ -12,8 +12,8 @@
 // SET4: status: assert-failed
 // BOUND: status: assume-blocked
 // WARN: memset.symbolic-bound
-// VC: result: sat
 // VC: replay: assert-failed
+// VC: result: sat
 sea.program @main {
   %m0 = sea.mem.nondet "r" [0] : !sea.mem<!sea.addr<8>, i8>
   %n = sea.nondet "nondet_u8" [1] : i8

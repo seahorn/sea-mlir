@@ -6,8 +6,8 @@
 // RUN: %if yices %{ sea-vc %s --timeout=600 --mem-limit=64 --solver=yices | FileCheck %s %}
 // CHECK-NOT: solve-timeout
 // CHECK-NOT: mem-limit
-// CHECK: result: sat
 // CHECK: replay: assert-failed
+// CHECK: result: sat
 sea.program @p {
   %x = sea.nondet "nondet_u8" [0] : i8
   %c100 = sea.const 100 : i8

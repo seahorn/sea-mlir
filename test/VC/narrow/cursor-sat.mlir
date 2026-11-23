@@ -19,13 +19,13 @@
 // CHECK: vc.narrow-pairs: 15
 // CHECK: vc.narrow-mixed: 0
 // CHECK: assume.a-inb: narrow-reads=6 narrow-pairs=15
-// CHECK: result: sat
 // CHECK: replay: assert-failed
 // CHECK: validate: checked={{[0-9]+}} mismatches=0
+// CHECK: result: sat
 // The difference decider drops the 15 narrowed read pairs; same verdict.
 // DEC: vc.ackermann-decider-pairs: 15
-// DEC: result: sat
 // DEC: validate: checked={{[0-9]+}} mismatches=0
+// DEC: result: sat
 // The query compares 12-bit offsets; no read index is a 64-bit sum. With
 // --vc-defs=hidden the shared prefixes are 12-bit names.
 // RUN: sea-vc %s --lower --seam --ack-decider=false --narrow-offsets --smt2 2>/dev/null | FileCheck %s --check-prefix=SMT

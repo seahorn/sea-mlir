@@ -34,24 +34,24 @@ MERGE-NEXT: cases.reorder-merge-negations: 2 scalar=1 memory=1 companion=0
 MERGE-NEXT: cases.reorder-dropped-default: 0
 MERGE-NEXT: cases.reorder-drop-negations: 0
 MERGE-NEXT: cases.reorder-pairs: 6 scalar=4 memory=2 companion=0
-MERGE: result: sat
 MERGE: validate: {{.*}} mismatches=0
+MERGE: result: sat
 
 DROP: cases.reorder-joins: 1 scalar=1 memory=0 companion=0
 DROP-NEXT: cases.reorder-merged-pairs: 0
 DROP: cases.reorder-dropped-default: 1 scalar=1 memory=0 companion=0
 DROP-NEXT: cases.reorder-drop-negations: 2 scalar=2 memory=0 companion=0
 DROP-NEXT: cases.reorder-pairs: 8 scalar=5 memory=3 companion=0
-DROP: result: sat
 DROP: validate: {{.*}} mismatches=0
+DROP: result: sat
 
 BOTH: cases.reorder-joins: 3 scalar=2 memory=1 companion=0
 BOTH-NEXT: cases.reorder-merged-pairs: 3 scalar=2 memory=1 companion=0
 BOTH: cases.reorder-dropped-default: 1 scalar=1 memory=0 companion=0
 BOTH-NEXT: cases.reorder-drop-negations: 2 scalar=2 memory=0 companion=0
 BOTH-NEXT: cases.reorder-pairs: 5 scalar=3 memory=2 companion=0
-BOTH: result: sat
 BOTH: validate: {{.*}} mismatches=0
+BOTH: result: sat
 
 NONE: cases.joins: 3
 NONE-NOT: cases.reorder

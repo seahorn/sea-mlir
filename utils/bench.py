@@ -70,10 +70,11 @@ OUTPUT of run: stats.csv (job config rep wall cpu status verdict + every BRUNCH_
   --narrow-check left a narrowed read index unproven).
   budget: --max-nodes / --max-rss exceeded (`result: unknown`, `budget: hit`); gated like unknown / memout:
   a failure of a sat / unsat job (unsolved), allowed on unknown-ok.
-  Classified by what sea-vc printed: the verdict is the last `result:` line of stdout (text or --format=jsonl;
-  a split's parts and BRUNCH_STAT result do not count; column `result`): rc 0/3 give it (rc 3 with
-  `result: unknown` after a mem-limit hit is unknown, also after an earlier sat; no `result:` line: error).
-  rc 1 after `result: sat` with error vc.replay-impossible (the in-place
+  Classified by what sea-vc printed: the verdict is its one `result:` line of stdout, the settled answer (text
+  or --format=jsonl; a sat only after its replay confirms it, `solver-answer:` is the solver's; a split's parts
+  and BRUNCH_STAT result do not count; column `result`; the last such line if an older sea-vc printed two):
+  rc 0/3 give it (rc 3: `result: unknown`, e.g. after a mem-limit hit in the replay; no `result:` line: error).
+  rc 1 after `solver-answer: sat` with error vc.replay-impossible (the in-place
   interpreter cannot run the model: a memory update without `inplace`) is verdict sat, column replay=impossible;
   any other rc 1 after a verdict is error; memout needs bad_alloc / out of memory, or rc 16 / abort / segv
   with no verdict printed. A timeout is a timeout even after a printed verdict (stats `result` keeps it).
@@ -378,11 +379,19 @@ def as_text(out):
 
 
 def final_result(out):
-    """The verdict sea-vc printed last: its final `result:` line. Not the BRUNCH_STAT result, which a split
-    prints per part (the split's own `result:` has none), and which a mem-limit hit after the verdict
-    (`result: unknown`, rc 3) does not follow. None if the run printed no verdict."""
+    """The verdict sea-vc printed: its `result:` line, one per run, the settled answer (the last one, for an
+    older sea-vc that printed `result: sat` before its replay). Not the BRUNCH_STAT result, which a split
+    prints per part (the split's own `result:` has none). None if the run printed no verdict."""
     m = re.findall(r"^result: (\S+)", out, re.M)
     return m[-1] if m else None
+
+
+def solver_answer(out):
+    """The solver's answer (`solver-answer:`, before the replay settles a sat); None if not printed."""
+    m = re.findall(
+        r'^solver-answer: (\S+)|"key":"solver-answer","value":"(\w+)"', out, re.M
+    )
+    return (m[-1][0] or m[-1][1]) if m else None
 
 
 def parse_stats(text, stats):
@@ -496,7 +505,11 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
         # --narrow-check: a narrowed read index whose premise bound is not
         # proven (the narrowing is not discharged)
         verdict = "check-unproven"
-    elif rc == 1 and printed == "sat" and "vc.replay-impossible" in err + out:
+    elif (
+        rc == 1
+        and (printed == "sat" or solver_answer(out) == "sat")
+        and "vc.replay-impossible" in err + out
+    ):
         # sat with an exact VC whose model the in-place interpreter cannot run
         # (a memory update without `inplace`, docs/design/Memory.md): the
         # verdict stands, the replay is impossible (manifest `replay: impossible`)

@@ -8,12 +8,12 @@
 // RUN: sea-vc %s --lower --solver=z3 --seam --seam-premises=0 | FileCheck %s --check-prefix=NOINB
 // RUN: sea-vc %s --lower --solver=z3 --seam 2>&1 | FileCheck %s --check-prefix=SEAM
 // RUN: %if yices %{ sea-vc %s --lower --solver=yices --seam 2>&1 | FileCheck %s --check-prefix=SEAM %}
-// PLAIN: result: sat
 // PLAIN: replay: assert-failed
+// PLAIN: result: sat
 // NOINB: seam.premises: off
-// NOINB: result: sat
 // NOINB: replay: assert-failed
 // NOINB: validate: checked={{[0-9]+}} mismatches=0
+// NOINB: result: sat
 // SEAM-NOT: seam.out-of-object
 // SEAM: seam.premises: assumed accesses={{[0-9]+}} conditions={{[1-9][0-9]*}}
 // SEAM: result: unsat

@@ -6,10 +6,10 @@
 // The VC/diamond.mlir programs with Bitwuzla: y = x < 10 ? x + x : 1;
 // assert y < 18 fails only for x = 9 (sat: the model is replayed and every
 // value validated).
-// BUG: result: sat
 // BUG: nondet: site=0 callee=nondet_u8 width=8 value=9
 // BUG: replay: assert-failed
 // BUG: validate: checked={{[0-9]+}} mismatches=0
+// BUG: result: sat
 // SAFE: result: unsat
 // SMT2: (set-logic QF_BV)
 // SMT2: (check-sat)

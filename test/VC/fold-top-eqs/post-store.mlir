@@ -35,15 +35,16 @@
 // another value, the assume blocks the run, and sea-vc reports the
 // disagreement (status 2).
 // TRAIL: vc.model-trail: cells=1
-// TRAIL: result: sat
 // TRAIL: vc.ackermann-model: defaulted={{[0-9]+}} inconsistent=0
 // TRAIL: replay: assert-failed
 // TRAIL: validate: checked={{[0-9]+}} mismatches=0
-// SKIP: result: sat
+// TRAIL: result: sat
+// SKIP: solver-answer: sat
 // SKIP-NOT: replay: assert-failed
-// HEAD: result: sat
+// SKIP: result: unknown
 // HEAD: replay: assert-failed
 // HEAD: validate: checked={{[0-9]+}} mismatches=0
+// HEAD: result: sat
 // NOSIMP: --vc-fold-top-eqs needs --simplify
 !pm = !sea.mem<!sea.ptr<64>, i8>
 sea.program @fold {

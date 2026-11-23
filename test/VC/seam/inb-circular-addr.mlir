@@ -16,12 +16,12 @@
 // FOLD: vc.assume-fold: {{.*}}int-uses=1
 // FOLD: seam.out-of-object: accesses=1 {{.*}}gap=1
 // FOLD: result: unsat
-// PLAIN: result: sat
 // PLAIN: replay: assert-failed
+// PLAIN: result: sat
 // NOINB: seam.premises: off
-// NOINB: result: sat
 // NOINB: replay: assert-failed
 // NOINB: validate: checked={{[0-9]+}} mismatches=0
+// NOINB: result: sat
 // SEAM-NOT: seam.out-of-object
 // SEAM: seam.premises: assumed accesses={{[0-9]+}} conditions={{[1-9][0-9]*}}
 // SEAM: result: unsat

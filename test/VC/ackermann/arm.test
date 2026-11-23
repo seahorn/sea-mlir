@@ -15,10 +15,10 @@
 // THREE: vc.ackermann-arm-cross-base-pairs: 1
 // THREE: vc.ackermann-constraints: 1
 // THREE: vc.ack-arm: on
-// THREE: result: sat
 // THREE: vc.ackermann-model: {{.*}} own-broken=0
 // THREE: replay: assert-failed
 // THREE: validate: checked={{[0-9]+}} mismatches=0
+// THREE: result: sat
 // Without the switch the three pairs keep their constraints.
 // RUN: sea-vc %t/three.mlir --lower --seam --ack-decider=false 2>&1 | FileCheck %s --check-prefix=OFF
 // OFF-NOT: vc.ackermann-arm
@@ -30,8 +30,8 @@
 // NOPREM: vc.ackermann-arm-cross-base-pairs: 0
 // NOPREM: vc.ackermann-constraints: 2
 // NOPREM: vc.ack-arm: exact-only
-// NOPREM: result: sat
 // NOPREM: validate: checked={{[0-9]+}} mismatches=0
+// NOPREM: result: sat
 // With the ownership drop on, it takes the cross-base pair first.
 // RUN: sea-vc %t/three.mlir --lower --seam --ack-decider=false --ack-arm --ack-own 2>&1 | FileCheck %s --check-prefix=OWN
 // OWN: vc.ackermann-own-pairs: 1
@@ -43,8 +43,8 @@
 // NARROW: vc.ackermann-arm-interval-pairs: 0
 // NARROW: vc.ackermann-arm-cross-base-pairs: 1
 // NARROW: vc.ackermann-constraints: 2
-// NARROW: result: sat
 // NARROW: validate: checked={{[0-9]+}} mismatches=0
+// NARROW: result: sat
 //
 // guard: the load of a + i runs only for i < 16 and ARM drops its pair with
 // c + j (j < 16). The model puts both reads at one index (i >= 16, the load
@@ -70,8 +70,8 @@
 // SIZE0: vc.ackermann-arm-interval-pairs: 0
 // SIZE0: vc.ackermann-arm-size0-pairs: 1
 // SIZE0: vc.ackermann-constraints: 0
-// SIZE0: result: sat
 // SIZE0: validate: checked={{[0-9]+}} mismatches=0
+// SIZE0: result: sat
 //
 // broken: a + i and b + j, unbounded, read one cell through two objects (a
 // memory-safety error): unsat with the constraint. ARM drops it across the

@@ -38,9 +38,9 @@
 // OPEN: seam.rule.shadow.access: {{[1-9]}}
 // FAIL: status: assert-failed
 // OK: status: halted
-// SAT: result: sat
 // SAT: replay: assert-failed
 // SAT: validate: checked={{[0-9]+}} mismatches=0
+// SAT: result: sat
 // UNSAT: result: unsat
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
 // LOW: sea.mem.const %{{.*}} shadow : !sea.mem<!sea.ptr<64>, i8>

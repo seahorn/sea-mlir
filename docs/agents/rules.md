@@ -53,7 +53,8 @@ Analysis, Conditional Soundness, and Proving the Absence of Errors*, SAS
 ## Counterexamples are runs
 
 - A `sat` counts only when it replays: `replay: assert-failed` and
-  `validate: ... mismatches=0`.
+  `validate: ... mismatches=0`. sea-vc prints `result: sat` only then;
+  `solver-answer: sat` is the solver's answer before the replay.
 - Exit status 2 (the replay disagrees with the model) and 5 (an invalid
   rewrite) are bugs in sea-mlir. So is a crash, or a
   `<pass>.postcondition` error. Reduce and report them; do not interpret

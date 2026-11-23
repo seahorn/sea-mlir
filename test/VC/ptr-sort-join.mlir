@@ -5,9 +5,9 @@
 // RUN: sea-vc %s --vc-join=eq | FileCheck %s
 // RUN: sea-vc %s | FileCheck %s
 // RUN: sea-vc %s --vc-join=eq --smt2 2>/dev/null | FileCheck %s --check-prefix=SMT
-// CHECK: result: sat
 // CHECK: replay: assert-failed
 // CHECK: validate: checked={{[0-9]+}} mismatches=0
+// CHECK: result: sat
 // SMT: (declare-fun {{.*}} () (_ BitVec 64))
 // SMT-NOT: ptr
 sea.program @p {

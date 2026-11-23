@@ -39,8 +39,8 @@
 // OFF: seam.alias.open.all: {{[1-9]}}
 // OFF-NOT: seam.rule.row.leaf-split
 // OFF: result: unsat
-// SAT: result: sat
 // SAT: validate: {{.*}}mismatches=0
+// SAT: result: sat
 // CHK: seam-check: {{.*}} invalid=0 unknown=0 unexpressible=0
 // CHKZ: seam-check: {{.*}} valid={{[1-9][0-9]*}} invalid=0 unknown={{[0-9]+}} unexpressible=0
 // REF-NOT: seam.rule.row.leaf-split:

@@ -10,8 +10,8 @@
 // SAFE: merge-asserts.no-assertions
 // SAFE: result: unsat
 // SMT: unsat
-// SAT: result: sat
 // SAT: replay: assert-failed
+// SAT: result: sat
 // LOOP: the program has a loop
 // REQUIRES: z3
 

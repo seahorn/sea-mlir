@@ -36,9 +36,9 @@ sea.program @max {
 // Without the first set, x starts at its nondet initial value (site 1):
 // the assertion fails when a >= b and x < a; the replay reads x's initial
 // value from the model by its site and agrees with the VC.
-// SAT: result: sat
 // SAT: replay: assert-failed
 // SAT: mismatches=0
+// SAT: result: sat
 // --replay-original replays the program before the rest of the lowering
 // (seaimp lowered first: it has no runtime semantics).
 // ORIG: replay.original: status=assert-failed {{.*}}match=yes

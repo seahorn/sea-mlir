@@ -31,7 +31,8 @@ The main lines of `sea-vc`:
 | `place.objects: <n>`, `place.slot-bits-max: <s>`, `place.span-up: <bytes>`, `place.span-stack: <bytes>`, `place.over-aligned: <n>` | the placed objects except null; the largest slot exponent, s = bitwidth(max(room, 1)); the bytes from the lowest base to the highest end (base + max(room, 1)) of the objects other than stack ones (the upward window) and of the stack objects (the stack window; 0: none); the objects whose base is a multiple of a power of two larger than their align, read from the bases. `place.over-aligned` is not 0 under `--place-slots=none` either (0x08048000 is a multiple of 2^15): compare two runs, not the number alone (where to look when a verdict differs between placements, [Placement files](#placement-files)). These numeric lines are BRUNCH_STAT `place.<key>`; `place.slots` is not |
 | `solve-time: <s>` | the solver's check |
 | `solver.z3-tactic: <t>`, `solver.z3-logic: <logic>` | z3 only: `--z3-tactic` when not the default, `--z3-logic` when given |
-| `result: sat|unsat|unknown|none` | the verdict (`none`: `--vcgen-only`, `--split-candidates`) |
+| `solver-answer: sat\|unsat\|unknown` | the solver's answer, right after its check; not the verdict (a `sat` is settled by the replay) |
+| `result: sat|unsat|unknown|none` | the verdict, one line per run, after everything that settles it: `unsat` / `unknown` as the solver answers; `sat` only when the replay confirms it (status 0); a `sat` whose replay does not (status 1 replay impossible, 2, 4, 6, or a `--mem-limit` hit in the replay) is `unknown`, and the status and its error say why (`none`: `--vcgen-only`, `--split-candidates`) |
 | `solve-timeout: true`, `mem-limit: hit` | why the result is `unknown` |
 | `mem-limit-phase: <phase> [run=<n>]` | after `mem-limit: hit`: the phase that was running (the last `vc.phase` start; `none`: before the first phase, while reading the input; `solve` for the solver's own limit) |
 | `mem-limit-progress: time= blocks= blocks-total= ops= ops-total= nodes-made= [rss-mb= vm-mb=] peak-rss-mb= [slowest-op= slowest-op-time= slowest-op-at=] [biggest-op= biggest-op-nodes= biggest-op-at=]` | after a hit in `encode`: the counters of its last progress tick (the fields of the `vc.phase progress` event, [Logging](logging.md); every `--progress-interval` seconds, so up to that old); absent before the first tick |
@@ -374,7 +375,8 @@ assumptions the result rests on, sorted, or `none`: the parts'
 `memhavoc-null-noop` when a check passed for the null pointer itself or
 the lowering guarded or dropped a memhavoc for it. `result` is the part's
 `result:` (`error` or `inconclusive` for a part that ended with status 1,
-2, 5, 6 or 4); `other` counts those. A part whose run failed a premise
+2, 5, 6 or 4, whose own `result:` is `unknown` after a solver `sat`);
+`other` counts those. A part whose run failed a premise
 assert (`--symbolic-size=assert`, status 4 with a `premise.failed:` line)
 is `premise-failed`, counted as `premise`, and its `premise.failed:` line
 follows, with `part=<i>`: the job prints `result: sat` and exits 4 (the

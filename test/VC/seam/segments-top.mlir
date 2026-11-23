@@ -2,8 +2,8 @@
 // does not wrap: accepted (segments-wrap.mlir: base + size > 2^w is not).
 // RUN: sea-vc %s --seam 2>&1 | FileCheck %s
 // RUN: sea-vc %s 2>&1 | FileCheck %s
-// CHECK: result: sat
 // CHECK: replay: assert-failed
+// CHECK: result: sat
 !am = !sea.mem<!sea.addr<8>, i8>
 sea.program @top {
   %a = sea.segment "heap.1" base 246 : i8 size 10 : i8 align 1 kind "heap" : !sea.addr<8>

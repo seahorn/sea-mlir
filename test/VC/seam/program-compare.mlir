@@ -8,8 +8,8 @@
 // RUN: sea-vc %s --lower --place-slots=none | FileCheck %s
 // RUN: sea-vc %s --lower --place-slots=none --seam | FileCheck %s
 // RUN: sea-vc %s --lower --place-slots=none --seam --seam-premises=0 | FileCheck %s
-// CHECK: result: sat
 // CHECK: replay: assert-failed
+// CHECK: result: sat
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @ope {
   %z = sea.const 0 : i8

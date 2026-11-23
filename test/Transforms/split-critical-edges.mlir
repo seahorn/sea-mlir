@@ -29,8 +29,8 @@ sea.program @critical {
 // CHECK-NEXT: sea.br
 // CHECK: ^[[B]]:
 // CHECK-NEXT: sea.br
-// VC: result: sat
 // VC: replay: assert-failed
+// VC: result: sat
 sea.program @same_target {
   %b = sea.nondet "nondet_bool" [0] : i1
   sea.cond_br %b, ^exit, ^exit

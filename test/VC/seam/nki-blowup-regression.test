@@ -20,7 +20,8 @@ LAYOUT: seam.rule.mem.in-layout: {{[1-9]}}
 DIFF: seam.rule.{{.*}}cmp.diff-base{{.*}}: {{[1-9]}}
 UNSAT: result: unsat
 SAT: vc.seam-out-of-object
-SAT: result: sat
+SAT: solver-answer: sat
+SAT: result: unknown
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -5,9 +5,9 @@
 # RUN: sea-vc %S/post-store.mlir --program=trail --lower --seam 2>&1 | FileCheck %s --check-prefix=ON
 # ON: vc.fold-top-eqs-status: on
 # ON: vc.model-trail: cells=1
-# ON: result: sat
 # ON: replay: assert-failed
 # ON: validate: checked={{[0-9]+}} mismatches=0
+# ON: result: sat
 # RUN: sea-vc %S/post-store.mlir --program=trail --lower --seam --vc-fold-top-eqs=false 2>&1 | FileCheck %s --check-prefix=FLAG
 # FLAG: vc.fold-top-eqs-status: off-flag
 # FLAG-NOT: vc.model-trail:

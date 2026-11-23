@@ -30,9 +30,9 @@
 // SYM: result: unsat
 // SYM: seam-check: firings={{[0-9]+}} checked={{[0-9]+}} valid={{[0-9]+}} invalid=0 unknown=0 unexpressible=0 covered=0 failed=0
 // SYMBUG-DAG: seam.rule.row.mfill-expand: 1
-// SYMBUG: result: sat
 // SYMBUG: replay: assert-failed
 // SYMBUG: validate: {{.*}} mismatches=0
+// SYMBUG: result: sat
 // SPLAT-DAG: seam.rule.mem.fill-replicate: 1
 // SPLAT-DAG: seam.rule.row.mset: 1
 // SPLAT: result: unsat

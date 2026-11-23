@@ -10,8 +10,8 @@
 // RUN: %if yices %{ sea-vc %s --lower --place-slots=none --solver=yices | FileCheck %s --check-prefix=PLAIN %}
 // RUN: sea-vc %s --lower --place-slots=none --solver=z3 --seam 2>&1 | FileCheck %s --check-prefix=SEAM
 // RUN: %if yices %{ sea-vc %s --lower --place-slots=none --solver=yices --seam 2>&1 | FileCheck %s --check-prefix=SEAM %}
-// PLAIN: result: sat
 // PLAIN: replay: assert-failed
+// PLAIN: result: sat
 // SEAM: Warning: {{.*}}[vc.seam-out-of-object]
 // SEAM: seam.out-of-object-at: {{.*}} store: numeral offset outside: offset 48 {{.*}} lands=object
 // SEAM: seam.premises: assumed

@@ -9,9 +9,9 @@
 // RUN: sea-vc %s --lower --place-slots=none 2>&1 | FileCheck %s --check-prefix=NONE
 // NONE: result: unsat
 // RUN: sea-vc %s --lower --place-slots=aligned 2>&1 | FileCheck %s --check-prefix=ALIGNED
-// ALIGNED: result: sat
 // ALIGNED: replay: assert-failed
 // ALIGNED: validate: checked={{[0-9]+}} mismatches=0
+// ALIGNED: result: sat
 // RUN: not sea-vc %s --lower --seam --place-slots=none 2>&1 | FileCheck %s --check-prefix=SEAM
 // SEAM: [vc.seam-out-of-object]
 // SEAM: [vc.seam-inb-spurious]

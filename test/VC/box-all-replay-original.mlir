@@ -3,10 +3,10 @@
 // indices): the lowered program's sat replays (one index); the original's
 // run ends at the step limit, which is undetermined, not a mismatch
 // (docs/design/BoxAll.md).
-// CHECK: result: sat
 // CHECK: replay: assert-failed
 // CHECK: replay.original: status=step-limit {{.*}}match=undetermined
 // CHECK: [vc.replay-original-undetermined]
+// CHECK: result: sat
 sea.program @p {
   %m = sea.nondet "m" [0] : i64
   %x = sea.nondet "x" [1] : i64

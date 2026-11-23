@@ -21,10 +21,10 @@
 // NOINB: seam.premises: off
 // NOINB: result: unsat
 // SEAM: seam.premises: assumed accesses={{[0-9]+}} conditions={{[1-9][0-9]*}}
-// SEAM: result: sat
 // SEAM: replay: assume-blocked
 // SEAM: seam.inb-violation: memory access out of bounds: offset 16 in heap.1 of size 16
 // SEAM: [vc.seam-inb-spurious]
+// SEAM: result: unknown
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @after {
   %z = sea.const 0 : i8

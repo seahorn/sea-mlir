@@ -34,10 +34,10 @@
 // RUN: %if yices %{ sea-vc %t/sat.mlir --lower --seam --ack-relax=all --solver=yices 2>&1 | FileCheck %s --check-prefix=SAT %}
 // RUN: %if bitwuzla %{ sea-vc %t/sat.mlir --lower --seam --ackermannize=on --ack-relax=all --solver=bitwuzla 2>&1 | FileCheck %s --check-prefix=SAT %}
 // SAT: vc.ack-relax-stop: consistent
-// SAT: result: sat
 // SAT: vc.ackermann-model: defaulted={{[0-9]+}} inconsistent=0
 // SAT: replay: assert-failed
 // SAT: validate: checked={{[0-9]+}} mismatches=0
+// SAT: result: sat
 //
 // The bound: after --ack-relax-rounds relaxed solves without an answer the
 // whole query is solved (a warning, stop: rounds, a fallback round line).
@@ -113,10 +113,10 @@
 // INCSMT: vc.ack-relax-round: 2 {{.*}} engine=smt
 // INCQFBV: vc.ack-relax-round: 2 {{.*}} engine=sat
 // INCS: vc.ack-relax-time:
-// INCS: result: sat
 // INCS: vc.ackermann-model: defaulted={{[0-9]+}} inconsistent=0
 // INCS: replay: assert-failed
 // INCS: validate: checked={{[0-9]+}} mismatches=0
+// INCS: result: sat
 // The bound in incremental mode: the candidates left join the rounds'
 // solver (0 rounds: the run's solver, one check).
 // RUN: sea-vc %t/unsat.mlir --lower --seam --ack-relax=all --ack-relax-mode=incremental --ack-relax-rounds=1 --ack-relax-smt2=%t/qi.smt2 2>&1 | FileCheck %s --check-prefixes=INCFB,INCFB1

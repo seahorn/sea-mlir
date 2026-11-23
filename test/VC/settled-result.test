@@ -1,0 +1,88 @@
+// One settled `result:` line per run, the last of the answer's lines: the
+// solver's answer is `solver-answer:` (right after its check); a sat is
+// `result: sat` only once the replay confirms it, and `result: unknown`
+// when it does not (a replay mismatch, status 2; a --mem-limit hit in the
+// replay, status 3).
+// RUN: split-file %s %t
+//
+// sat: solver-answer, the replay, then result: sat
+// RUN: sea-vc %t/sat.mlir > %t.sat
+// RUN: FileCheck %s --check-prefix=SAT < %t.sat
+// RUN: grep -c '^result:' %t.sat | FileCheck %s --check-prefix=ONE
+// SAT: solver-answer: sat
+// SAT-NOT: {{^}}result:
+// SAT: replay: assert-failed
+// SAT: validate: {{.*}}mismatches=0
+// SAT-NEXT: {{^}}result: sat
+// ONE: {{^}}1{{$}}
+//
+// the same in jsonl: the solver's answer a stat, the result record last
+// RUN: sea-vc %t/sat.mlir --format=jsonl > %t.sat.jsonl
+// RUN: FileCheck %s --check-prefix=JSAT < %t.sat.jsonl
+// RUN: grep -c '"kind":"result"' %t.sat.jsonl | FileCheck %s --check-prefix=ONE
+// JSAT: {"kind":"stat","key":"solver-answer","value":"sat"
+// JSAT-NOT: "kind":"result"
+// JSAT: {"kind":"validate"
+// JSAT-NEXT: {"kind":"result","value":"sat"
+//
+// unsat: settled at the check
+// RUN: sea-vc %t/unsat.mlir > %t.unsat
+// RUN: FileCheck %s --check-prefix=UNSAT < %t.unsat
+// RUN: grep -c '^result:' %t.unsat | FileCheck %s --check-prefix=ONE
+// UNSAT: solver-answer: unsat
+// UNSAT: {{^}}result: unsat
+//
+// a memory limit hit in the replay: result: unknown, once, and why
+// RUN: bash -c 'sea-vc %t/sat.mlir --mem-limit=4 --x-mem-limit-plant-replay > %t.mem; test $? -eq 3'
+// RUN: FileCheck %s --check-prefix=MEM < %t.mem
+// RUN: grep -c '^result:' %t.mem | FileCheck %s --check-prefix=ONE
+// MEM: solver-answer: sat
+// MEM-NOT: result: sat
+// MEM: {{^}}result: unknown
+// MEM-NEXT: mem-limit: hit
+// MEM-NEXT: mem-limit-phase: replay
+// RUN: bash -c 'sea-vc %t/sat.mlir --mem-limit=4 --x-mem-limit-plant-replay --format=jsonl > %t.mem.jsonl; test $? -eq 3'
+// RUN: grep -c '"kind":"result"' %t.mem.jsonl | FileCheck %s --check-prefix=ONE
+// RUN: FileCheck %s --check-prefix=JMEM < %t.mem.jsonl
+// JMEM: {"kind":"result","value":"unknown"
+//
+// a replay that disagrees with the model (status 2): result: unknown
+// RUN: bash -c 'sea-vc %t/stale.mlir > %t.stale 2>&1; test $? -eq 2'
+// RUN: FileCheck %s --check-prefix=STALE < %t.stale
+// RUN: grep -c '^result:' %t.stale | FileCheck %s --check-prefix=ONE
+// STALE: solver-answer: sat
+// STALE: mismatch:
+// STALE: [vc.replay-mismatch]
+// STALE: {{^}}result: unknown
+
+//--- sat.mlir
+sea.program @sat {
+  %x = sea.nondet "x" [1] : i8
+  %c = sea.const 5 : i8
+  %ok = sea.icmp ne, %x, %c : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- unsat.mlir
+sea.program @unsat {
+  %x = sea.nondet "x" [1] : i8
+  %ok = sea.icmp eq, %x, %x : i8
+  sea.assert %ok
+  sea.halt
+}
+//--- stale.mlir
+!m8 = !sea.mem<!sea.addr<8>, i8>
+sea.program @clobbered {
+  %m0 = sea.mem.nondet "m" [0] : !m8
+  %z = sea.const 0 : i8
+  %a = sea.addr.from_int %z : i8 to !sea.addr<8>
+  %v = sea.const 7 : i8
+  %m1 = sea.store %m0[%a], %v inplace : !m8, i8
+  %old = sea.load %m0[%a] : !m8 -> i8
+  %ok = sea.icmp eq, %old, %v : i8
+  sea.assert %ok
+  sea.halt
+}
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -14,10 +14,10 @@
 // ORIG: replay.original: status=assert-failed {{.*}} match=yes
 // CHECK: vc.ackermann: on
 // CHECK: vc.ackermann-constraints: {{[1-9][0-9]*}}
-// CHECK: result: sat
 // CHECK: vc.ackermann-model: defaulted={{[0-9]+}} inconsistent=0
 // CHECK: replay: assert-failed
 // CHECK: validate: checked={{[0-9]+}} mismatches=0
+// CHECK: result: sat
 // OFF: vc.ackermann: off
 // OFF: replay: assert-failed
 // OFF: mismatches=0

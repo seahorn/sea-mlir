@@ -46,9 +46,9 @@
 // OUT: result: unsat
 // UND-DAG: seam.rule.row.mfill-expand: 1
 // UND: result: unsat
-// BUG: result: sat
 // BUG: replay: assert-failed
 // BUG: validate: {{.*}} mismatches=0
+// BUG: result: sat
 // SPLAT-DAG: seam.rule.mem.fill-replicate: 1
 // SPLAT-DAG: seam.rule.row.mset: 1
 // SPLAT-NOT: row.mfill-expand

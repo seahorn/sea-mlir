@@ -42,7 +42,6 @@ sea.program @main {
   sea.assert %ok
   sea.halt
 }
-// CHECK: result: sat
 // CHECK: replay: assert-failed
 // CHECK: print: a.val = [[V:[0-9]+]] : si64
 // CHECK: print.object: heap.3 kind=heap size=16 label=node b
@@ -59,6 +58,7 @@ sea.program @main {
 // CHECK-NEXT: print: dump +00: {{([0-9a-f][0-9a-f] )+}}10 80 04 08 00 00 00 00 |
 // CHECK-NEXT: print: dump +10: .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. .. |................|
 // CHECK-NEXT: validate: checked={{[0-9]+}} mismatches=0
+// CHECK: result: sat
 
 // OFF: replay: assert-failed
 // OFF-NOT: print:

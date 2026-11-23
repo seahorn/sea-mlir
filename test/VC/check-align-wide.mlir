@@ -2,8 +2,8 @@
 // at address 0, so --check-align asserts (addr & 255) == 0. The segment is at
 // 128: the promise is broken (sat). Debug builds used to abort on the mask.
 // RUN: sea-vc %s --lower --check-align | FileCheck %s
-// CHECK: result: sat
 // CHECK: replay: assert-failed
+// CHECK: result: sat
 !am = !sea.mem<!sea.addr<8>, i8>
 sea.program @alignbig {
   %a = sea.segment "heap.1" base 128 : i8 size 16 : i8 align 1 kind "heap" : !sea.addr<8>

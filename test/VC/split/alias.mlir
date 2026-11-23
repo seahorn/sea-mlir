@@ -46,9 +46,9 @@
 // --split-stop-on-sat the second part is not run.
 // RUN: sea-vc %s --lower --program=sat --seam --split=nd.5 | FileCheck %s --check-prefix=SAT
 // RUN: sea-vc %s --lower --program=sat --seam --split=nd.5 --split-stop-on-sat | FileCheck %s --check-prefix=STOP
-// SAT: split.part-result: sat
 // SAT: replay: assert-failed
 // SAT: validate: checked={{[0-9]+}} mismatches=0
+// SAT: split.part-result: sat
 // SAT: split.part: 0 choice=nd.5=1#0/2 result=sat
 // SAT: split.part: 1 choice=nd.5=0#1/2 result=sat
 // SAT: split.verdict: sat parts=2

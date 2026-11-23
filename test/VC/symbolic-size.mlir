@@ -30,12 +30,12 @@
 // RUN: FileCheck %s --check-prefix=FREE < %t.free
 // RUN: FileCheck %s --check-prefix=FREE-ERR < %t.free.err
 // FREE-NOT: assume.symbolic-size-bound
-// FREE: result: sat
 // FREE: nondet: site=1 callee=k width=64 value=[[K:[0-9]+]]
 // FREE: replay: assert-failed
 // FREE: replay: assert-op: a.c:3:7
 // FREE: validate: checked={{[0-9]+}} mismatches=0
 // FREE: premise.failed: symbolic-size-bound size=[[K]] room=4096 at=a.c:3:7
+// FREE: result: unknown
 // FREE: BRUNCH_STAT status 4
 // FREE-ERR: Error: sat, but the counterexample fails a premise assert (symbolic-size-bound), not the property{{.*}}[vc.premise-failed]
 //

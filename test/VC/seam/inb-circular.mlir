@@ -22,12 +22,12 @@
 // JOB: check-inb.part: {{.*}}inb-circular.mlir:45:{{[0-9]+}} result=sat status=0
 // JOB: check-inb.discharges: none
 // JOB: result: sat
-// PLAIN: result: sat
 // PLAIN: replay: assert-failed
+// PLAIN: result: sat
 // NOINB: seam.premises: off
-// NOINB: result: sat
 // NOINB: replay: assert-failed
 // NOINB: validate: checked={{[0-9]+}} mismatches=0
+// NOINB: result: sat
 // SEAM-NOT: seam.out-of-object
 // SEAM: seam.premises: assumed accesses={{[0-9]+}} conditions={{[1-9][0-9]*}}
 // SEAM: result: unsat

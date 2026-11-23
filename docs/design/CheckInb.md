@@ -85,8 +85,9 @@ result: sat
   run ends with `premise.failed` (status 4) is `result=premise-failed`,
   counted as `premise=` (not `other`), and its `premise.failed:` line
   follows the part's line, with `part=<i>`, naming the allocation, its
-  size and its room. The job then prints `result: sat` and exits 4, the
-  premise class of a single run; with a sat part as well, the same (the
+  size and its room. The job then prints `result: sat` and exits 4 (a
+  single sea-vc run with a failed premise prints `result: unknown` and
+  exits 4); with a sat part as well, the same (the
   rule above: sat, the failed part's status). Nothing is discharged
   (`check-inb.discharges: none`).
 - `check-inb.discharges: a-inb a-sep a-null a-nowrap` comes with

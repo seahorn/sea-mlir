@@ -9,8 +9,8 @@
 // RUN: sea-vc %s --program=bad --lower --check-align | FileCheck %s --check-prefix=BAD
 // RUN: sea-vc %s --program=good --lower | FileCheck %s --check-prefix=FUNC
 // GOOD: result: unsat
-// BAD: result: sat
 // BAD: replay: assert-failed
+// BAD: result: sat
 // FUNC: result: sat
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @good {

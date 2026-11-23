@@ -4,9 +4,9 @@
 // sea-run, which does not validate, still warns.
 // RUN: sea-vc %s 2>&1 | FileCheck %s
 // RUN: sea-run %s --missing=zero 2>&1 | FileCheck %s --check-prefix=INTERP
-// CHECK: result: sat
 // CHECK: validate: checked={{[0-9]+}} mismatches=0
 // CHECK: interp.earlier-version-loads: 1
+// CHECK: result: sat
 // CHECK-NOT: interp.load-earlier-version
 // INTERP: interp.load-earlier-version
 !m = !sea.mem<!sea.addr<8>, i8>

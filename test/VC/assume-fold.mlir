@@ -27,14 +27,14 @@
 // branch it leaves (vc.assumed-branches).
 // ON: vc.assume-fold: uses=1 by-assume=1 by-assert=0 by-edge=0 values=1 branches=1 selects=0 asserts-held=0 asserts-failed=0 blocks=1
 // ON-NOT: vc.assumed-branches
-// ON: result: sat
 // ON: replay: assert-failed
 // ON: validate: checked={{[0-9]+}} mismatches=0
+// ON: result: sat
 // OFF-NOT: vc.assume-fold
 // OFF: vc.assumed-branches: branches=1 selects=0 values=1
-// OFF: result: sat
 // OFF: replay: assert-failed
 // OFF: validate: checked={{[0-9]+}} mismatches=0
+// OFF: result: sat
 // RUN-FAIL: status: assert-failed
 // RUN-BLOCKED: status: assume-blocked
 // RUN-HALT: status: halted
@@ -43,8 +43,8 @@
 // listed as a split candidate.
 // SIBLING-NOT: vc.assume-fold
 // SIBLING: vc.assumed-branches: branches=0 selects=1 values=1
-// SIBLING: result: sat
 // SIBLING: replay: assert-failed
+// SIBLING: result: sat
 // CAND: split.assumed-candidate: name=nd.0 assumed=1 branches=0 selects=1
 // @held_negated: `assume c; assert c; assert !c`: the fold makes the first
 // assert 1 (dropped) and the second 0 (a direct failure); the replay names
@@ -105,8 +105,8 @@ sea.program @held_negated {
 // @asserts_sib: an assert in one arm is no fact at the join: the second
 // assert still fails (sat) and the replay names it.
 // ASIB-NOT: vc.assume-fold
-// ASIB: result: sat
 // ASIB: replay.original: {{.*}}match=yes
+// ASIB: result: sat
 // @two_asserts: nothing to fold; the assumes sea-merge-asserts inserts are
 // not reported as assumed branches.
 // TWO-NOT: vc.assumed-branches
@@ -157,8 +157,8 @@ sea.program @held_false {
 // block goes (the branch's false arm). sat either way, the replay matches
 // the original program.
 // EDGE: vc.assume-fold: uses=2 by-assume=0 by-assert=0 by-edge=2 values=1 branches=1 selects=1 asserts-held=0 asserts-failed=0 blocks=1
-// EDGE: result: sat
 // EDGE: replay.original: {{.*}}match=yes
+// EDGE: result: sat
 // EDGE-OFF-NOT: vc.assume-fold
 // EDGE-OFF: result: sat
 sea.program @edge {
@@ -187,8 +187,8 @@ sea.program @edge {
 // is not fixed in ^j: the assert of %c stays and fails (sat; folding it by
 // the true edge alone would make the job unsat).
 // EJOIN-NOT: vc.assume-fold
-// EJOIN: result: sat
 // EJOIN: replay.original: {{.*}}match=yes
+// EJOIN: result: sat
 sea.program @edge_join {
   %c = sea.nondet "c" [0] : i1
   %p = sea.nondet "p" [1] : i1
@@ -266,8 +266,8 @@ sea.program @int_eq {
 // @int_eq_sat: on the true edge of `cond_br (x == 7)` x is 7; the assert
 // there fails, and the model of x replays on the original program.
 // INTSAT: vc.assume-fold: {{.*}}int-uses=1 int-values=1
-// INTSAT: result: sat
 // INTSAT: replay.original: {{.*}}match=yes
+// INTSAT: result: sat
 sea.program @int_eq_sat {
   %c1 = sea.const 1 : i8
   %c7 = sea.const 7 : i8
@@ -289,8 +289,8 @@ sea.program @int_eq_sat {
 // the true edge (a second round); the assert there fails (sat) and the
 // model replays on the original program.
 // CHAIN: vc.assume-fold: {{.*}}int-uses=2 int-values=2 rounds=2
-// CHAIN: result: sat
 // CHAIN: replay.original: {{.*}}match=yes
+// CHAIN: result: sat
 sea.program @int_eq_chain_edge {
   %c1 = sea.const 1 : i64
   %c5 = sea.const 5 : i64

@@ -19,9 +19,9 @@
 // NOOPT-LABEL: sea.program @main
 // NOOPT-COUNT-4: sea.load
 // NOOPT: sea.const 99
-// VC: result: sat
 // VC: replay: assert-failed
 // VC: validate: checked={{[0-9]+}} mismatches=0
+// VC: result: sat
 !m = !sea.mem<!sea.addr<8>, i8>
 sea.program @main {
   %z = sea.const 0 : i8

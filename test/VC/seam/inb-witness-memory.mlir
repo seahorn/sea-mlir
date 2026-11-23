@@ -8,11 +8,11 @@
 // RUN: not sea-vc %s --lower --lower-opt=false --solver=z3 --seam 2>&1 | FileCheck %s
 // RUN: %if yices %{ not sea-vc %s --lower --lower-opt=false --solver=yices --seam 2>&1 | FileCheck %s %}
 // RUN: bash -c 'sea-vc %s --lower --lower-opt=false --solver=z3 --seam > /dev/null 2>&1; test $? -eq 2'
-// CHECK: result: sat
 // CHECK: replay: no-clobber-violated: {{.*}}inb-witness-memory.mlir:30:10
 // CHECK: seam.inb-violation: undetermined
 // CHECK-NOT: vc.seam-inb-spurious
 // CHECK: [vc.replay-mismatch]
+// CHECK: result: unknown
 !m = !sea.mem<!sea.ptr<64>, i8>
 sea.program @zero_memory_diagnostic {
   %m0 = sea.mem.nondet "r" [0] : !m
