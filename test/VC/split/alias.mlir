@@ -62,10 +62,10 @@
 // value): exit 5.
 // RUN: not sea-vc %s --lower --program=alias --seam --split-leaves=%%q --x-split-plant=drop-case 2>&1 | FileCheck %s --check-prefix=DROP
 // RUN: not sea-vc %s --lower --program=alias --seam --split-leaves=%%q --x-split-plant=wrong-value 2>&1 | FileCheck %s --check-prefix=WRONG
-// DROP: [vc.split-check-failed]
 // DROP: exhaustive=failed
-// WRONG: [vc.split-check-failed]
+// DROP: [vc.split-check-failed]
 // WRONG: exact=failed
+// WRONG: [vc.split-check-failed]
 
 // A nested split: a Boolean parent, then the leaves of %q. The ite tree of
 // %q is not simplified under the parent's case, so (c = 1, %q = p) is a

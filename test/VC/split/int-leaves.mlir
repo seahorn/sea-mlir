@@ -22,10 +22,10 @@
 // The checks catch a broken integer construction (planted): exit 5.
 // RUN: not sea-vc %s --lower --split-leaves=@k.cc:9 --x-split-plant=drop-case 2>&1 | FileCheck %s --check-prefix=DROP
 // RUN: not sea-vc %s --lower --split-leaves=@k.cc:9 --x-split-plant=wrong-value 2>&1 | FileCheck %s --check-prefix=WRONG
-// DROP: [vc.split-check-failed]
 // DROP: exhaustive=failed
-// WRONG: [vc.split-check-failed]
+// DROP: [vc.split-check-failed]
 // WRONG: exact=failed
+// WRONG: [vc.split-check-failed]
 
 // An i1 value is a --split target, not a --split-leaves one.
 // RUN: not sea-vc %s --lower --split-leaves=nd.3 2>&1 | FileCheck %s --check-prefix=KIND

@@ -158,8 +158,8 @@
 // PNR: reach: chain.mlir:9:3 reachable op=sea.assert replay=not-reached
 // PNR: BRUNCH_STAT status 2
 // RUN: not sea-vc %t/ids.mlir --reach --reach-model-runs=false --x-reach-plant=block-last --brunch-stats 2>&1 | FileCheck %s --check-prefix=PINC
-// PINC: vc.reach-inconsistent
 // PINC: reach: unlocated#1 unreachable op=sea.assert
+// PINC: vc.reach-inconsistent
 // PINC: BRUNCH_STAT status 2
 // RUN: not sea-vc %t/chain.mlir --reach --reach-model-runs=false --x-reach-plant=mismatch --brunch-stats 2>&1 | FileCheck %s --check-prefix=PMM
 // PMM: vc.reach-replay-mismatch
