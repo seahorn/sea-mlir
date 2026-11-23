@@ -8,10 +8,10 @@
 // fold's round, outside any access: four firings (ids 175-181)
 // --seam-check could not state. An object is now PTR_SEGMENT(k, a) and the
 // boundary states its address: before it there is no layout fact, so the
-// fold skips nothing here.
+// fold skips nothing here, and no firing is unexpressible.
 // RUN: sea-vc %s --lower --seam --seam-check 2>&1 | FileCheck %s
 // CHECK: vc.fold-top-eqs-status: on
-// CHECK: vc.fold-top-eqs: {{.*}}skipped-ptr=0
+// CHECK: vc.fold-top-eqs: {{.*}}skipped-base=0
 // CHECK: result: sat
 // CHECK: seam-check: {{.*}}unexpressible=0
 sea.program @"main" {

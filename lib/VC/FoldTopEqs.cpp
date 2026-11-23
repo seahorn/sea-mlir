@@ -332,33 +332,36 @@ Expr TopConstEliminator::image(const Expr &e) {
   return defs.empty() ? e : substMap(e, defs, cache, nullptr);
 }
 
-bool TopEqFolder::addressDerived(const Expr &e) {
-  // post-order over the DAG, reads not entered; memoized across facts and
-  // rounds (the key held: a freed node's address can come back)
+bool TopEqFolder::mentionsObject(const Expr &e) {
+  if (!baseSkip)
+    return false;
+  // post-order over the DAG, reads and memories not entered; memoized
+  // across facts and rounds (the key held: a freed node's address can come
+  // back)
   std::vector<std::pair<ENode *, bool>> stack{{e.get(), false}};
   while (!stack.empty()) {
     auto [n, expanded] = stack.back();
     stack.pop_back();
-    if (addrMemo.count(n))
+    if (objMemo.count(n))
       continue;
-    if (isOp<op::PtrOp>(n) || isOpX<SELECT>(n) || isOpX<W_SELECT>(n) ||
-        n->arity() == 0) {
-      addrMemo.emplace(n, std::make_pair(Expr(n), isOp<op::PtrOp>(n)));
+    if (op::ptr::isSegment(n) || isOpX<SELECT>(n) || isOpX<W_SELECT>(n) ||
+        isOpX<STORE>(n) || isOpX<W_STORE>(n) || n->arity() == 0) {
+      objMemo.emplace(n, std::make_pair(Expr(n), op::ptr::isSegment(n)));
       continue;
     }
     if (!expanded) {
       stack.push_back({n, true});
       for (size_t i = 0; i < n->arity(); ++i)
-        if (!addrMemo.count(n->arg(i)))
+        if (!objMemo.count(n->arg(i)))
           stack.push_back({n->arg(i), false});
       continue;
     }
     bool d = false;
     for (size_t i = 0; i < n->arity() && !d; ++i)
-      d = addrMemo.at(n->arg(i)).second;
-    addrMemo.emplace(n, std::make_pair(Expr(n), d));
+      d = objMemo.at(n->arg(i)).second;
+    objMemo.emplace(n, std::make_pair(Expr(n), d));
   }
-  return addrMemo.at(e.get()).second;
+  return objMemo.at(e.get()).second;
 }
 
 void TopEqFolder::splitConcat(const Expr &t, const Expr &c,
@@ -384,8 +387,8 @@ void TopEqFolder::splitConcat(const Expr &t, const Expr &c,
     if (isNumeral(a))
       continue;
     Expr pc = op::bv::bvnum(part, w, t->efac());
-    if (addressDerived(a))
-      ++st.skippedPtr;
+    if (mentionsObject(a))
+      ++st.skippedBase;
     else
       out.emplace_back(a, pc, Kind::Split);
     if (isOpX<BCONCAT>(a))
@@ -407,12 +410,11 @@ void TopEqFolder::factsOf(const Expr &c,
         ++st.skippedMasked;
         return;
       }
-      // a term whose value derives from a pointer's address (the layout
-      // facts addr(obj.k) = c, an extract or a sum of one, a pointer
-      // difference): not substituted (addressDerived); a concat of one
-      // still gives its other parts
-      if (addressDerived(t))
-        ++st.skippedPtr;
+      // a term that mentions an object (an address in it, an extract or a
+      // sum of one, a pointer difference with it): not substituted
+      // (mentionsObject); a concat of one still gives its other parts
+      if (mentionsObject(t))
+        ++st.skippedBase;
       else
         out.emplace_back(t, v, Kind::Term);
       if (isOpX<BCONCAT>(t))

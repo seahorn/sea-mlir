@@ -1,10 +1,10 @@
 # Object identity as a pointer constructor: `PTR_SEGMENT(k, a)`
 
-Status: step 1 of the migration is implemented: the term, erased to its
-twin `obj.<k>`, with `obj.<k> = a` stated at the boundary
-(`SeaOpSem::withLayoutFacts`). Step 3 is deferred. Open question 1 is
-settled (the per-leaf invariant below). Line numbers below are of the
-commit this note was written on.
+Status: steps 1 and 2 of the migration are implemented: the term, erased
+to its twin `obj.<k>`, with `obj.<k> = a` stated at the boundary
+(`SeaOpSem::withLayoutFacts`), and the fold's narrowed rule. Step 3 is
+deferred. Open question 1 is settled (the per-leaf invariant below). Line
+numbers below are of the commit this note was written on.
 
 ## The problem
 

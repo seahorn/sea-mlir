@@ -49,9 +49,8 @@ other than the entry is `guard -> c`). The facts:
   (b := false): the guard of the exit block, Boolean nondets.
 
 Skipped and counted: `bvand(x, m) = c` with a numeral mask (`skipped-masked`):
-it fixes the bits of x under m only; T, or a concat part, whose value
-derives from a pointer's address (`skipped-ptr`, section Pointer
-observations).
+it fixes the bits of x under m only; T, or a concat part, that mentions
+an object (`skipped-base`, section Pointer observations).
 
 Every occurrence of a fact's T in the other conjuncts becomes c. The
 defining conjunct stays, rebuilt with its own T kept (`T = c` never
@@ -116,44 +115,61 @@ values is not removed (substituted, it is false).
 
 ### Pointer observations
 
-The rule: a substitution T -> c must not replace a term whose value
-derives from a pointer's address; replacing it erases provenance that
-SeaM's premise rules read. Structurally (`TopEqFolder::addressDerived`):
-T is skipped when a pointer operator (`op::ptr::PtrOp`: `addr`, `to_int`,
-`to_bits`, `ptr-diff`, `ptr-eq`, `overlap`, a node) is reachable from T
-without passing a memory read (`select`, `wselect`). A read's value is
-memory contents, not an address: a fact on a read at a pointer index
+The rule: a substitution T -> c must not remove an object from the terms
+that contain T; SeaM's premise rules read the objects of a pointer term
+(its view, else the bases it mentions), and a base may leave a term only
+by same-base cancellation or with an arm a decided condition drops
+(PtrSegment.md, "The invariant"). Structurally
+(`TopEqFolder::mentionsObject`): T is skipped when an object, a
+`PTR_SEGMENT` term, is reachable from T without passing a memory read or
+a memory (`select`, `wselect`, `store`, `wstore`), as
+`seam::Rules::mentionsBase` reads a term. A read's value is memory
+contents, not an address: a fact on a read at a pointer index
 (`select(m, p) = c`, the facts of the step jobs) replaces the read, and
 its index stays. The same test applies to each part of a concat fact; a
 concat with such a part is not a fact itself, its other parts are. Skips
-are counted `skipped-ptr` (terms and parts, summed over the rounds).
-Covered: an address, an extract of one, a sum with one, a pointer
-difference, a concat part that is one (`sea-fold-top-eqs-test`,
-ptr-facts). `op::ptr::isObservation` is not the test: it names the
-one-pointer markers that `stripObservation` removes, and leaves out
-`ptr-diff` (two pointers) on purpose.
+are counted `skipped-base` (terms and parts, summed over the rounds).
+A T that mentions no object is substituted, pointer observations
+included: the address of a pointer register (`addr(p) = c`, p a block
+argument or a nondet pointer), `to_int` of one, a difference of two. No
+term loses an object by it: `mentionsBase` does not look into reads, so
+an offset that contains a substituted read mentions no object before or
+after. Covered (`sea-fold-top-eqs-test`, ptr-facts): skipped, an
+object's address, an extract or a sum of one, a difference with one, the
+address of a node over one, a concat part that is one; substituted, the
+same over a register, a read at an object's address. The testing switch
+`--x-fold-top-eqs-no-base-skip` turns the skip off (warning
+`vc.fold-top-eqs-no-base-skip`).
 
-The facts this skips are mostly the placement's layout facts
-`addr(obj.k) = c`, conjuncts of every placed query. Substituted, they
-change what SeaM's object rules read: an address that mentions two
-objects becomes a pointer into one, with a base no access gave it. The
+Without `--seam` there is no `PTR_SEGMENT`, so nothing is skipped for
+mentioning an object: under `--simplify --vc-fold-top-eqs` the facts over
+`PTR_FROM_INT` terms and pointer registers that the first version of the
+rule skipped are substituted (exact; the fold is opt-in there).
+
+The facts the first version of this rule skipped (every term that reached
+a pointer operator) were mostly the placement's layout facts
+`addr(obj.k) = c`, conjuncts of every placed query then. Substituted,
+they changed what SeaM's object rules read: an address that mentions two
+objects became a pointer into one, with a base no access gave it. The
 case that showed it (`test/VC/fold-top-eqs/layout-facts.mlir`, from the
 wide fuzz programs, `utils/fuzz-seam.py --seed 5 --accesses=wide`,
 program 2): a memmove read equation reads its source at
 `obj.5 + (addr(q) - addr(obj.4))`, q = `ite(c, obj.4 + 4, obj.5)`. SeaM
 has no view of that term (two bases) and leaves its alias questions with
 the store-map's bytes in `obj.3` open. With the layout facts substituted
-and the ite pushed, one leaf is `obj.5 + 0xffffffc0`, a pointer into
+and the ite pushed, one leaf was `obj.5 + 0xffffffc0`, a pointer into
 `obj.5` 64 bytes before it, and `cmp.diff-base` decided its alias
 question under A-SEP in the fold's round, outside any access: a premise
 `--seam-check` cannot state (unexpressible, 12 firings in
 `test/VC/seam/fuzz-check.test`), about a term that is no access and whose
-A-INB is false wherever its leaf is selected: the decision rests on a
-base the program does not give the term. Without the substitution the layout facts stay conjuncts; the
-boundary erases them to `obj.k = c`, and step 2 eliminates the bases after
-the Ackermann lowering, as before. On the step jobs below the Ackermann
-constraints are unchanged (436 / 436 / 161 / 146, `--vcgen-only`); there
-the layout facts had no other use in the query.
+A-INB is false wherever its leaf is selected: the decision rested on a
+base the program does not give the term. An object is now the term
+`PTR_SEGMENT(k, a)` (PtrSegment.md): no layout fact exists before the
+boundary, which states `obj.k = c` over the erased objects, and step 2
+eliminates the bases after the Ackermann lowering, as before. On the step
+jobs below the Ackermann constraints were unchanged by the first rule
+(436 / 436 / 161 / 146, `--vcgen-only`); there the layout facts had no
+other use in the query.
 
 ## Exact
 
@@ -289,7 +305,7 @@ options passed on: the parts get the default.
 ## Counters
 
 `vc.fold-top-eqs: facts= term= split= bool= uses= rounds= concat-ite=
-concat-ite-refused= skipped-masked= skipped-untyped= skipped-ptr=` and `vc.model-trail: cells= defs= rounds=`
+concat-ite-refused= skipped-masked= skipped-untyped= skipped-base=` and `vc.model-trail: cells= defs= rounds=`
 (stdout, stderr with `--smt2`):
 
 - `facts`: distinct keys registered (facts found) (term + split + bool);
