@@ -196,6 +196,16 @@ nodes of the query as n-ary terms: `bvadd`, `bvmul`, `bvand`, `bvor` and
   left-associated chain in argument order, `((a + b) + c) + d`, which is
   what the n-ary SMT-LIB form means. The switch changes nothing there.
 
+Which solvers get the setting (`SolverConfig::naryBv`): those sea-vc builds
+from its run configuration, the solver of the verdict, the printer of
+`--smt2` and `--split-smt2`, and the solvers of `--seam-check`,
+`--narrow-check` and `--reach`. These keep the right-nested chain: the
+words check of `--widen-memory`, `--split-check`, the `--eq-audit`, the
+printer of a failed `--seam-check`'s query, and the z3 simplify contexts
+(the final `z3_simplify` of `--mem=lambda`, the lambda simplifier, the
+printer of the model trail). This split is the current state; whether the
+auxiliary checks should follow the setting is an open choice.
+
 What the switch does not cover:
 
 - A nested node of the query itself, `(bvadd (bvadd a b) c)` (two Expr

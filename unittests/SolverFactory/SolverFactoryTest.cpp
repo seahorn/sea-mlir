@@ -34,7 +34,7 @@
 //              solver and <prefix>z3-logic
 //  nary        SolverConfig::naryBv (sea-vc --solver-nary-sums): z3 gets an
 //              n-ary bvadd / bvmul / bvand / bvor / bvxor as one app of
-//              all arguments in order (8 and 16 bits), and the query it
+//              all arguments in order (1, 8 and 16 bits), and the query it
 //              prints reads back (Z3_parse_smtlib2_string, same context) as
 //              the very term it was given; off: the right-nested binary
 //              chain. Every built backend decides an n-ary sum with it
@@ -449,7 +449,7 @@ void testNaryBvShape(Terms &T, bool nary, unsigned w) {
 }
 
 void testNaryBv(Terms &T) {
-  for (unsigned w : {8u, 16u}) {
+  for (unsigned w : {1u, 8u, 16u}) {
     testNaryBvShape(T, /*nary=*/false, w);
     testNaryBvShape(T, /*nary=*/true, w);
   }

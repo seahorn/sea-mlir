@@ -952,7 +952,9 @@ static cl::opt<bool> solverNarySums(
              "parser builds from --smt2; Yices: one yices_bvsum, the same "
              "term) instead of a right-nested chain of binary ones; Bitwuzla "
              "always gets the left-associated chain. Every solver of the "
-             "run's configuration (verdict, --smt2, --split-smt2, checks). "
+             "run's configuration (verdict, --smt2, --split-smt2, "
+             "--seam-check, --narrow-check, --reach; not the words, split or "
+             "eq-audit checks). "
              "Off by default (not tuned)"),
     cl::init(false));
 
@@ -3085,7 +3087,8 @@ TYPICAL:
                                  #   Bitwuzla: the left-associated chain
                                  #   either way. Every solver made with the
                                  #   run's configuration (verdict, --smt2,
-                                 #   --split-smt2, --seam-check, --reach)
+                                 #   --split-smt2, --seam-check,
+                                 #   --narrow-check, --reach)
   sea-vc p.mlir --seam --narrow-offsets  # (off by default; rests on
                                  #   A-INB) a program load's read at its own
                                  #   address in an object of size N (also an
