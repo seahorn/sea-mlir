@@ -178,8 +178,36 @@ the solver sees; both are older than this step:
   `(bvadd p1 p2 (bvnot N) c)`. This holds for every nested sum of the
   query, with or without this step.
 
-Whether the marshallers should build n-ary nodes (z3 accepts them) and the
-dump print the nesting is a separate decision: it changes the default query.
+`sea-vc --solver-nary-sums` (off by default, not tuned) builds the n-ary
+nodes of the query as n-ary terms: `bvadd`, `bvmul`, `bvand`, `bvor` and
+`bvxor` with more than two arguments.
+
+- z3: one n-ary application of the operator's declaration (these operators
+  are flat-associative in z3), the term its parser builds from
+  `(bvadd a b c)`. An n-ary node of the query is then the same term
+  in-process and in the dump read back
+  (`unittests/SolverFactory`: the printed query, parsed in the solver's
+  context, is the term the solver was given).
+- Yices: one `yices_bvsum` for a sum. Yices normalizes a sum into one
+  polynomial, so the nested chain gives the same term; the switch only
+  saves the partial sums. `bvmul`, `bvand`, `bvor` and `bvxor` are one
+  n-ary call either way.
+- Bitwuzla: its operators are binary; the marshaller always builds the
+  left-associated chain in argument order, `((a + b) + c) + d`, which is
+  what the n-ary SMT-LIB form means. The switch changes nothing there.
+
+What the switch does not cover:
+
+- A nested node of the query itself, `(bvadd (bvadd a b) c)` (two Expr
+  nodes, as OpSem builds them without `--simplify`), stays nested
+  in-process; the printer still writes it flat when the inner node is not
+  shared, and the parser makes one node of it.
+- z3 orders the arguments of a sum by term id, and ids follow creation
+  order: the marshaller's traversal in-process, the text order in the
+  parser. The first n-ary node of an operator and width also makes one
+  binary term, to name the declaration (z3's API has no other way to get
+  it); unless the query has that term, z3 frees it after the n-ary node
+  is made and gives its id to a later term.
 
 ## Counters
 

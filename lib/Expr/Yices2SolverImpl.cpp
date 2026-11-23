@@ -176,7 +176,7 @@ bool yices_solver_impl::add(expr::Expr exp) {
           .kv("const-arrays", matches.size())
           .kv("assertion", *exp);
   }
-  term_t yt = marshal_yices::encode_term(exp, get_cache());
+  term_t yt = marshal_yices::encode_term(exp, get_cache(), d_nary_bv);
   if (yt == NULL_TERM) {
     std::string str;
     raw_string_ostream str_os(str);
@@ -277,7 +277,8 @@ yices_solver_impl::check_with_assumptions(const expr_const_it_range &lits) {
   for (auto lit : lits) {
     ExprMap rw_cache;
     term_t y_lit = marshal_yices::encode_term(
-        rewriteConstArraySelects(d_defs.apply(lit), rw_cache), get_cache());
+        rewriteConstArraySelects(d_defs.apply(lit), rw_cache), get_cache(),
+        d_nary_bv);
     d_last_assumptions.insert({y_lit, lit});
     if (y_lit == NULL_TERM) {
       std::string str;

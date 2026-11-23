@@ -1,13 +1,16 @@
 // The solver factory (sea/Expr/Smt/SolverFactory.h): limits each backend
 // honours, the warning for one it cannot, the error (and null solver) for a
 // backend this build lacks or a configuration Yices rejects; the z3 logic
-// guard: a term outside the logic of a z3 solver is refused.
+// guard: a term outside the logic of a z3 solver is refused; n-ary
+// bit-vector terms (--solver-nary-sums): one z3 app, and the printed query
+// reads back as the same term.
 RUN: sea-solver-factory-test 2>&1 | FileCheck %s
 CHECK: z3: ok
 CHECK: z3 logic: ok
 CHECK: yices: ok
 CHECK: bitwuzla: ok
 CHECK: bitwuzla cores: ok
+CHECK: nary: ok
 CHECK: failures: 0
 
 // Bitwuzla builds no unsat cores unless asked (they slow every check):

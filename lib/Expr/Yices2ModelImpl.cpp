@@ -25,7 +25,8 @@ yices_model_impl::~yices_model_impl() { yices_free_model(d_model); }
 
 expr::Expr yices_model_impl::eval(expr::Expr exp, bool complete) {
   return marshal_yices::eval(d_solver.inline_defs(exp), d_efac,
-                             d_solver.get_cache(), complete, d_model);
+                             d_solver.get_cache(), complete, d_model,
+                             d_solver.nary_bv());
 }
 
 void yices_model_impl::print(llvm::raw_ostream &o) const {

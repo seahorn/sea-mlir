@@ -157,6 +157,7 @@ std::unique_ptr<Solver> makeSolver(expr::ExprFactory &efac, Backend backend,
     }
     auto z = std::make_unique<z3_solver_impl>(
         efac, config.z3Logic.empty() ? nullptr : config.z3Logic.c_str());
+    z->get_context().setNaryBv(config.naryBv);
     if (logic && config.z3LogicGuard)
       z->setLogicGuard(std::move(*logic),
                        config.kindPrefix + "z3-logic-mismatch");
@@ -232,6 +233,7 @@ std::unique_ptr<Solver> makeSolver(expr::ExprFactory &efac, Backend backend,
         return nullptr;
       }
     }
+    y->set_nary_bv(config.naryBv);
     yicesLimits(*y, limits, config);
     return y;
 #else

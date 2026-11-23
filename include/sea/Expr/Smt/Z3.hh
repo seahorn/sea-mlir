@@ -229,6 +229,8 @@ private:
   ExprFactory &efac;
   z3::config m_c; // default config
   z3::context ctx;
+  /// after ctx: holds z3 declarations of it
+  typename M::Options m_opts;
 
   cache_type cache;
 
@@ -244,7 +246,7 @@ protected:
 
   template <typename ExprToAstMap>
   z3::ast toAst(Expr e, ExprToAstMap &seen) {
-    return M::marshal(e, get_ctx(), cache.left, seen);
+    return M::marshal(e, get_ctx(), cache.left, seen, m_opts);
   }
   z3::ast toAst(Expr e) {
     expr_ast_map seen;
@@ -328,6 +330,18 @@ public:
 
   /// The C API context
   Z3_context raw_context() { return ctx; }
+
+  /// n-ary bit-vector add, mul, and, or and xor as one z3 app
+  /// (ExprToZ::Options::naryBv); set before the first term
+  void setNaryBv(bool on) {
+    assert(cache.empty() && "set before the first term");
+    m_opts.naryBv = on;
+  }
+  bool naryBv() const { return m_opts.naryBv; }
+
+  /// The z3 term of \p e as this context builds it (a solver, a printed
+  /// query): for tests of the marshaller
+  z3::ast toZ3(Expr e) { return toAst(e); }
 
   template <typename V>
   void set(char const *p, V v) {

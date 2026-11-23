@@ -945,6 +945,17 @@ static cl::opt<bool> vcCanonicalSums(
              "Off by default (not tuned); not with --vc-defs"),
     cl::init(false));
 
+static cl::opt<bool> solverNarySums(
+    "solver-nary-sums",
+    cl::desc("Give the solvers an n-ary bit-vector add, mul, and, or and xor "
+             "of the query as one n-ary term (z3: one app, what z3's SMT-LIB "
+             "parser builds from --smt2; Yices: one yices_bvsum, the same "
+             "term) instead of a right-nested chain of binary ones; Bitwuzla "
+             "always gets the left-associated chain. Every solver of the "
+             "run's configuration (verdict, --smt2, --split-smt2, checks). "
+             "Off by default (not tuned)"),
+    cl::init(false));
+
 static cl::opt<bool> dagStats(
     "dag-stats",
     cl::desc("Print the size of the query as a DAG (vc.dag-size) and the "
@@ -3064,6 +3075,17 @@ TYPICAL:
                                  #   alone. Exact; the in-process query and
                                  #   --smt2 alike. Not with --vc-defs.
                                  #   docs/design/CanonicalSums.md
+  sea-vc p.mlir --solver-nary-sums  # (off by default, not tuned) an
+                                 #   n-ary bvadd / bvmul / bvand / bvor /
+                                 #   bvxor of the query reaches z3 as one
+                                 #   n-ary app (the term z3 parses from the
+                                 #   flat (bvadd a b c) of --smt2), not a
+                                 #   right-nested chain of binary apps;
+                                 #   Yices: one yices_bvsum (the same term);
+                                 #   Bitwuzla: the left-associated chain
+                                 #   either way. Every solver made with the
+                                 #   run's configuration (verdict, --smt2,
+                                 #   --split-smt2, --seam-check, --reach)
   sea-vc p.mlir --seam --narrow-offsets  # (off by default; rests on
                                  #   A-INB) a program load's read at its own
                                  #   address in an object of size N (also an
@@ -3671,6 +3693,8 @@ OUTPUT (stdout, `key: value` lines):
                                   definition atoms
                                   asserted, bvadd nodes replaced; with
                                   vc-time, stderr with --smt2)
+  vc.solver-nary-sums: on         (--solver-nary-sums; with vc-time,
+                                  stderr with --smt2)
   vc.canonical-sums: on            (--vc-canonical-sums; then
                                   vc.canonical-sums-sums / -changed /
                                   -leaves / -eqs / -eqs-changed: maximal
@@ -8142,6 +8166,7 @@ int main(int argc, char **argv) {
     solverConfig.yicesConfig = yicesConfig;
     solverConfig.yicesParams = yicesParams;
     solverConfig.z3PlantError = z3PlantError;
+    solverConfig.naryBv = solverNarySums;
     // Backend::Bitwuzla without the library is an error (null solver)
     // \p limits: --timeout / --mem-limit (the solver of the verdict only)
     // \p timeoutMs: instead of --timeout (--ack-relax: what is left of it)
@@ -8488,6 +8513,8 @@ int main(int argc, char **argv) {
         r.line("vc.defs-atoms").value(defStats->atoms);
         r.line("vc.defs-rewritten").value(defStats->rewritten);
       }
+      if (solverNarySums)
+        r.line("vc.solver-nary-sums").value("on");
       if (canonStats) {
         r.line("vc.canonical-sums").value("on");
         r.line("vc.canonical-sums-sums").value(canonStats->sums);
