@@ -39,7 +39,9 @@ apt.llvm.org `llvm-18-dev` static libraries).
 SeaHorn dev18 configures with any z3 >= 4.8.9 (`cmake/FindZ3.cmake`); its
 CI uses 4.8.9 and local builds 4.12.0. Built against the sea-mlir pin (z3
 `bbd46c9`, Yices 2.8.0; clam on), SeaHorn compiles, and its lit suite gave
-406 passed, 11 expected failures, 1 unsupported and 1 failure out of 419:
+lit: 406 passed, 11 expected failures, 1 unsupported, 1 failure
+(`add_by_one.c`) out of 419; the unit test `units_z3` also fails
+(`expr.neg`):
 
 - `test/tutorial/add_by_one.c` (`sea pf`, Spacer): the `-O0` run did not
   finish in 120 s; with z3 4.12.0 it takes 0.5 s. A Spacer regression in
@@ -51,17 +53,17 @@ CI uses 4.8.9 and local builds 4.12.0. Built against the sea-mlir pin (z3
 
 So the release ships two z3 libraries side by side. Their sonames differ
 (`libz3.so.4.12`, `libz3.so.5.4`), each tool has its own RUNPATH to `lib/`,
-and no process loads both: `seahorn` / `seapp` / `seaopt` load 4.12, `sea-vc`
-loads 5.4. Only one `z3` executable is installed, the sea-mlir pin
-(`bin/z3`); SeaHorn's driver does not run a z3 binary. One z3 for both is
+and no process loads both: `seahorn` / `seapp` load 4.12 (seaopt links no z3), `sea-vc`
+loads 5.4. No `z3` executable is installed in the bundle
+(`build-seahorn-release.sh` removes SeaHorn's); SeaHorn's driver does not
+run one. One z3 for both is
 possible when SeaHorn's Spacer works with the sea-mlir pin; the test above
 is the check.
 
 ### Yices in SeaHorn
 
 SeaHorn dev18 does not compile against Yices >= 2.7 (renamed status
-constants). The fix is on the SeaHorn branch `feat/binary-release`
-(`fix(smt): build the Yices backend with Yices >= 2.7`). Until it is in
+constants). The fix is a SeaHorn change (Yices >= 2.7 status names; PR pending). Until it is in
 dev18, the bundle builds SeaHorn without Yices, as before. Afterwards
 SeaHorn can link the same `libyices.so.2.8` as sea-vc (one library, no
 second Yices).
@@ -129,11 +131,29 @@ hundred MB), and it would still need the system's C headers
 (`libc6-dev`), which apt's `clang-18` pulls in. The cost is one apt line
 and that the C compiler is Ubuntu's 18.1.3, not 18.1.8.
 
-### Build time
+### Build time and size
 
-See "Timings" in the report of the build; the LLVM stage is the long one
-(about an hour at 8 jobs) and is cached by Docker until `LLVM_REVISION`
-moves.
+Measured on a shared 48-core Linux host, every `docker build` pinned to 8
+CPUs (`--cpuset`), 8 compile jobs:
+
+| stage | wall time |
+|---|---|
+| `llvm` (LLVM + MLIR at the pin, from source) | 54 min (its last 23 min shared the 8 CPUs with the `seahorn` stage) |
+| `seahorn` (z3 4.12.0, SeaHorn with clam, unit tests) | 23 min (shared, as above) |
+| `solvers` (z3, Bitwuzla, Yices) | 12 min |
+| `sea-mlir` (build, `check-sea`: 669 tests pass, install) | 9 min |
+| `package`, `bundle-package`, both runtimes, both smokes | 3 min |
+
+With the `llvm` and `seahorn` images cached, `just binary-release OUT
+--bundle --llvm-image IMAGE` took 24 minutes. Docker keeps the `llvm`
+layer until `LLVM_REVISION` moves. Artifacts: the standalone tarball is
+35 MB, the bundle 120 MB (gzip).
+
+Checked in a fresh `ubuntu:24.04` with the bundle and `clang-18 python3`
+from apt: `-m64` export and `sea-vc` give sat (replayed) and unsat; the
+default `-m32` fails without `libc6-dev-i386` (`bits/libc-header-start.h`
+not found) and works with it; two C inputs fail with `llvm-link not
+found` until `llvm-18` is installed.
 
 ## 3. (b) Homebrew
 
@@ -166,8 +186,9 @@ the binary releases.
   version string carries the pin; `sea-mlir` declares
   `depends_on "seahorn/tap/sea-mlir-llvm" => :build` and checks
   `LLVM_REVISION` against it.
-- **SeaHorn's LLVM 18** is Homebrew's `llvm@18`: on macOS SeaHorn links
-  its `libLLVM.dylib`, so it is a runtime dependency, and `sea` needs its
+- **SeaHorn's LLVM 18** is Homebrew's `llvm@18`: on macOS SeaHorn is expected to link
+  its `libLLVM.dylib` (a hypothesis that the `build-macos.sh report` stage
+  checks), so it would be a runtime dependency, and `sea` needs its
   `clang`. The formula installs `sea` through `write_env_script` with
   `PATH` = `llvm@18`'s `bin` first. Risk: Homebrew deprecates old versioned
   LLVMs; if `llvm@18` is disabled, the tap needs its own `llvm@18`
@@ -225,7 +246,7 @@ Left for the macOS build to settle (in [BuildMacOS.md](../BuildMacOS.md),
 "What to check"):
 - `-DLLVM_ENABLE_LLD=ON` (sea-mlir docs) and `SEA_ENABLE_LLD=ON` (SeaHorn)
   are Linux settings; on macOS they would select `ld64.lld`. The script
-  leaves both off; the docs should say so per platform.
+  leaves both off.
 - Solver install names: z3, Bitwuzla (Meson) and Yices (autoconf) produce
   dylibs whose install names and sibling references the script rewrites
   to `@rpath`, then re-signs. A formula gets this from Homebrew.
@@ -279,6 +300,12 @@ Left for the macOS build to settle (in [BuildMacOS.md](../BuildMacOS.md),
   a SeaHorn tag made for the release.
 - **Yices in SeaHorn**: after the SeaHorn fix merges, enable it (shared
   `libyices.so.2.8`) or keep SeaHorn without Yices.
+- **LLD per platform**: the docs should say per platform which linker
+  settings apply (`-DLLVM_ENABLE_LLD=ON` is Linux-only).
+- **License entry for libz3.so.4.12**: the bundle manifest has none
+  (`z3-seahorn.txt` exists).
+- **SeaHorn headers in the bundle**: the bundle ships the SeaHorn, clam and
+  crab headers (about 4.7 MB); keep or drop.
 - **Two z3s**: accept, or chase the Spacer regression in z3 master so
   one z3 serves both.
 - **macOS tarball**: only Homebrew bottles are planned; a standalone
