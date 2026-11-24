@@ -120,8 +120,17 @@ from that view) [hypothesis, to be measured]. Of the two spellings of the
 same subtraction, `(bvsub (bvadd P c) N)` and `(bvadd P (bvmul -1 N))`,
 `bvsub` is the plainer one: one operator, no multiplication node and no
 `2^w - 1` numeral. Equalities are not affected (a balanced equality has no
-negation). The stat line names the choice: `vc.canonical-sums: on
-neg=bvnot|sub`.
+negation).
+
+- `auto`: by the solver the query goes to (`--solver`): `sub` for Yices,
+  `bvnot` for z3 and Bitwuzla. The `--smt2` dump is the query of that
+  solver, so it follows `--solver` too. A part of `--check-inb` is a
+  sea-vc process with the job's options and its own solver (Yices by
+  default), so it resolves `auto` itself.
+
+The stat line names the form used and how it was chosen:
+`vc.canonical-sums: on neg=bvnot|sub neg-choice=flag|auto`. The default
+stays `bvnot` (not tuned).
 
 Item 6 of the original list, no z3-only operator in the `--smt2` dump, is
 the portable dialect of `--smt2` (`--smt2-dialect=portable`), a separate
@@ -275,12 +284,12 @@ What the switch does not cover:
 ## Counters
 
 With the flag (with `vc-time`; stderr with `--smt2`): `vc.canonical-sums:
-on neg=bvnot|sub eq=balance|unshared|keep`, `vc.canonical-sums-sums`
-(maximal sums emitted, not counting numerals and single leaves),
-`-changed` (of them, a different node than the input), `-leaves` (leaves
-of the emitted chains, equalities included), `-eqs-balanced`,
-`-eqs-changed`, `-eqs-kept-shared`, `-eqs-kept` (above). A `bvsub` or
-`bvneg` of another arity is a leaf, with the warning
+on neg=bvnot|sub neg-choice=flag|auto eq=balance|unshared|keep`,
+`vc.canonical-sums-sums` (maximal sums emitted, not counting numerals and
+single leaves), `-changed` (of them, a different node than the input),
+`-leaves` (leaves of the emitted chains, equalities included),
+`-eqs-balanced`, `-eqs-changed`, `-eqs-kept-shared`, `-eqs-kept` (above).
+A `bvsub` or `bvneg` of another arity is a leaf, with the warning
 `vc.canonical-sums-opaque`.
 
 ## Cost and limits

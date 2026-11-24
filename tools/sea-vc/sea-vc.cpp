@@ -958,17 +958,36 @@ static cl::opt<bool> solverNarySums(
              "Off by default (not tuned)"),
     cl::init(false));
 
-static cl::opt<expr::CanonicalSums::NegForm> vcCanonicalSumsNeg(
+enum class CanonNeg { Bvnot, Sub, Auto };
+static cl::opt<CanonNeg> vcCanonicalSumsNeg(
     "vc-canonical-sums-neg",
     cl::desc("With --vc-canonical-sums: how a sum's negative leaves N are "
              "written (docs/design/CanonicalSums.md, \"The negation\")"),
-    cl::values(clEnumValN(expr::CanonicalSums::NegForm::Bvnot, "bvnot",
+    cl::values(clEnumValN(CanonNeg::Bvnot, "bvnot",
                           "(P + ~N) + (c+1): one adder chain (default; not "
                           "tuned)"),
-               clEnumValN(expr::CanonicalSums::NegForm::Sub, "sub",
+               clEnumValN(CanonNeg::Sub, "sub",
                           "(P + c) - N: the subtraction kept, for a "
-                          "solver's polynomial view of sums")),
-    cl::init(expr::CanonicalSums::NegForm::Bvnot));
+                          "solver's polynomial view of sums"),
+               clEnumValN(CanonNeg::Auto, "auto",
+                          "by the solver the query goes to (--solver; also "
+                          "for --smt2): sub for Yices, bvnot for z3 and "
+                          "Bitwuzla")),
+    cl::init(CanonNeg::Bvnot));
+
+/// --vc-canonical-sums-neg, auto resolved by the solver of the query
+static expr::CanonicalSums::NegForm canonNegForm() {
+  using NF = expr::CanonicalSums::NegForm;
+  switch (vcCanonicalSumsNeg) {
+  case CanonNeg::Sub:
+    return NF::Sub;
+  case CanonNeg::Auto:
+    return backend == Backend::Yices ? NF::Sub : NF::Bvnot;
+  case CanonNeg::Bvnot:
+    break;
+  }
+  return NF::Bvnot;
+}
 
 static cl::opt<expr::CanonicalSums::EqForm> vcCanonicalSumsEq(
     "vc-canonical-sums-eq",
@@ -3119,7 +3138,9 @@ TYPICAL:
   sea-vc p.mlir --vc-canonical-sums --vc-canonical-sums-neg=sub
                                  #   the negative leaves as (P + c) - N
                                  #   instead of (P + ~N) + c+1 (bvnot, the
-                                 #   default, not tuned)
+                                 #   default, not tuned); auto: sub for
+                                 #   --solver=yices, bvnot for z3 and
+                                 #   Bitwuzla (also for --smt2)
   sea-vc p.mlir --vc-canonical-sums --vc-canonical-sums-eq=unshared
                                  #   balance an equality only when a side
                                  #   is a sum with no other use (keep: none;
@@ -3733,7 +3754,8 @@ OUTPUT (stdout, `key: value` lines):
                                   vc-time, stderr with --smt2)
   vc.solver-nary-sums: on         (--solver-nary-sums; with vc-time,
                                   stderr with --smt2)
-  vc.canonical-sums: on neg=bvnot|sub eq=balance|unshared|keep
+  vc.canonical-sums: on neg=bvnot|sub neg-choice=flag|auto
+                     eq=balance|unshared|keep
                                   (--vc-canonical-sums; then
                                   vc.canonical-sums-sums / -changed /
                                   -leaves / -eqs-balanced / -eqs-changed /
@@ -8144,7 +8166,7 @@ int main(int argc, char **argv) {
         return fail("--vc-canonical-sums is not combined with --vc-defs: "
                     "the canonical form flattens the nested and named sums "
                     "(docs/design/CanonicalSums.md)");
-      expr::CanonicalSums canon(vcCanonicalSumsNeg, vcCanonicalSumsEq);
+      expr::CanonicalSums canon(canonNegForm(), vcCanonicalSumsEq);
       const expr::Expr before = query;
       query = canon.rewrite(query);
       canonStats = canon.stats();
@@ -8564,9 +8586,11 @@ int main(int argc, char **argv) {
       if (canonStats) {
         r.line("vc.canonical-sums")
             .value("on")
-            .kv("neg", vcCanonicalSumsNeg == expr::CanonicalSums::NegForm::Sub
+            .kv("neg", canonNegForm() == expr::CanonicalSums::NegForm::Sub
                            ? "sub"
                            : "bvnot")
+            .kv("neg-choice",
+                vcCanonicalSumsNeg == CanonNeg::Auto ? "auto" : "flag")
             .kv("eq",
                 vcCanonicalSumsEq == expr::CanonicalSums::EqForm::Keep ? "keep"
                 : vcCanonicalSumsEq == expr::CanonicalSums::EqForm::Unshared

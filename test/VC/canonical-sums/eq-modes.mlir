@@ -13,7 +13,7 @@
 // balance: both balanced.
 // BAL-DAG: (= (bvadd nd.1_0 nd.2_0) nd.0_0)
 // BAL-DAG: (= (bvadd nd.4_0 nd.5_0) nd.3_0)
-// BAL-STAT: vc.canonical-sums: on neg=bvnot eq=balance
+// BAL-STAT: vc.canonical-sums: on neg=bvnot neg-choice=flag eq=balance
 // BAL-STAT: vc.canonical-sums-eqs-balanced: 2
 // BAL-STAT: vc.canonical-sums-eqs-kept-shared: 0
 // BAL-STAT: vc.canonical-sums-eqs-kept: 0
@@ -21,14 +21,14 @@
 // canonical side; a - b is used once: balanced.
 // UNS-DAG: (= (bvadd nd.0_0 (bvnot nd.1_0) #x01) nd.2_0)
 // UNS-DAG: (= (bvadd nd.4_0 nd.5_0) nd.3_0)
-// UNS-STAT: vc.canonical-sums: on neg=bvnot eq=unshared
+// UNS-STAT: vc.canonical-sums: on neg=bvnot neg-choice=flag eq=unshared
 // UNS-STAT: vc.canonical-sums-eqs-balanced: 1
 // UNS-STAT: vc.canonical-sums-eqs-kept-shared: 1
 // UNS-STAT: vc.canonical-sums-eqs-kept: 0
 // keep: no equality balanced.
 // KEEP-DAG: (= (bvadd nd.0_0 (bvnot nd.1_0) #x01) nd.2_0)
 // KEEP-DAG: (= (bvadd nd.3_0 (bvnot nd.4_0) #x01) nd.5_0)
-// KEEP-STAT: vc.canonical-sums: on neg=bvnot eq=keep
+// KEEP-STAT: vc.canonical-sums: on neg=bvnot neg-choice=flag eq=keep
 // KEEP-STAT: vc.canonical-sums-eqs-balanced: 0
 // KEEP-STAT: vc.canonical-sums-eqs-kept-shared: 0
 // KEEP-STAT: vc.canonical-sums-eqs-kept: 2
