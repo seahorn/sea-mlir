@@ -12,14 +12,17 @@ CHECK: test: bitwise ok
 CHECK: test: image ok
 CHECK: test: sub ok
 CHECK: test: eq-modes ok
-CHECK: random: neg=bvnot eq=balance terms=200 {{.*}} unknown={{[0-9]$}}
+CHECK: test: inner ok
+CHECK: random: neg=bvnot eq=balance inner=flatten terms=200 {{.*}} unknown={{[0-9]$}}
 CHECK: test: random ok
-CHECK: random: neg=sub eq=balance terms=100 {{.*}} unknown={{[0-9]$}}
+CHECK: random: neg=sub eq=balance inner=flatten terms=100 {{.*}} unknown={{[0-9]$}}
 CHECK: test: random-sub ok
-CHECK: random: neg=bvnot eq=unshared terms=50 {{.*}} unknown={{[0-9]$}}
+CHECK: random: neg=bvnot eq=unshared inner=flatten terms=50 {{.*}} unknown={{[0-9]$}}
 CHECK: test: random-unshared ok
-CHECK: random: neg=bvnot eq=keep terms=50 {{.*}} unknown={{[0-9]$}}
+CHECK: random: neg=bvnot eq=keep inner=flatten terms=50 {{.*}} unknown={{[0-9]$}}
 CHECK: test: random-keep ok
+CHECK: random: neg=bvnot eq=balance inner=shared-leaf terms=50 {{.*}} unknown={{[0-9]$}}
+CHECK: test: random-shared-leaf ok
 CHECK: failures: 0
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors

@@ -102,6 +102,34 @@ side whose sides are not used once), `-eqs-kept` (`keep`: equalities
 with a sum side). The stat line names the mode,
 `eq=balance|unshared|keep`.
 
+## Shared inner sums (`--vc-canonical-sums-inner`)
+
+A maximal linear term is one flat form: every sum inside it is merged
+into it. When an inner sum is used by several maximal sums (a difference
+`d = x - y` read by several compares, each `d + t_k`), each of them
+re-derives `d` from its leaves, and the one adder for `d` the query had is
+no longer shared. Which inner sums are merged is a choice:
+
+- `flatten` (default, not tuned): every inner sum is merged, as above.
+- `shared-leaf`: a sum (a linear node with a proper form) used more than
+  once in the step's input is canonical on its own, one node, and a leaf
+  of each of its parents. Uses are counted as for `eq=unshared` (an
+  argument slot of a distinct node of the input DAG). A sum used once is
+  merged into its parent as with `flatten`.
+
+The two options are the same rule at two levels: keep a shared sum as one
+term rather than rebuild it in each use. They combine. An equality is a
+parent too: under `shared-leaf`, a side of an equality that is a shared
+sum enters the balanced form as one leaf, so balancing cancels nothing
+inside it and builds no chain of its summands. With `eq=balance`, an
+equality between two shared sums `S = T` becomes `(= S' T')` (oriented as
+any balanced equality, `S'` and `T'` canonical), which is what
+`eq=unshared` keeps; the difference is in sides used once, which `eq=balance`
+expands. Exact: a node is replaced by an equal term.
+
+Counter: `vc.canonical-sums-inner-shared` (shared sums kept as leaves);
+the stat line names the mode, `inner=flatten|shared-leaf`.
+
 ## The negation (`--vc-canonical-sums-neg`)
 
 How the negative chain `N` is written is a choice per solver, not a
@@ -233,9 +261,9 @@ the solver sees; both are older than this step:
   chain of binary adds, `a + (b + (c + d))` (`ExprToZ.def`,
   `MarshalYices.cpp`). Two chains then share their common suffixes, not
   their prefixes.
-- z3's SMT-LIB printer writes nested associative applications flat
-  (`pp.flat_assoc`), and its parser makes one n-ary node of the flat
-  text. So the `--smt2` dump of a nested sum, read back, is not the term
+- z3's SMT-LIB printer writes an associative application nested in the
+  first argument of the same operator flat (`pp.flat_assoc`), and its
+  parser makes one n-ary node of the flat text. So the `--smt2` dump of a nested sum, read back, is not the term
   the in-process solver gets: `(bvadd (bvadd P (bvnot N)) c)` is printed
   `(bvadd p1 p2 (bvnot N) c)`. This holds for every nested sum of the
   query, with or without this step.
@@ -284,13 +312,13 @@ What the switch does not cover:
 ## Counters
 
 With the flag (with `vc-time`; stderr with `--smt2`): `vc.canonical-sums:
-on neg=bvnot|sub neg-choice=flag|auto eq=balance|unshared|keep`,
-`vc.canonical-sums-sums` (maximal sums emitted, not counting numerals and
-single leaves), `-changed` (of them, a different node than the input),
-`-leaves` (leaves of the emitted chains, equalities included),
-`-eqs-balanced`, `-eqs-changed`, `-eqs-kept-shared`, `-eqs-kept` (above).
-A `bvsub` or `bvneg` of another arity is a leaf, with the warning
-`vc.canonical-sums-opaque`.
+on neg=bvnot|sub neg-choice=flag|auto eq=balance|unshared|keep
+inner=flatten|shared-leaf`, `vc.canonical-sums-sums` (maximal sums
+emitted, not counting numerals and single leaves), `-changed` (of them, a
+different node than the input), `-leaves` (leaves of the emitted chains,
+equalities included), `-eqs-balanced`, `-eqs-changed`, `-eqs-kept-shared`,
+`-eqs-kept`, `-inner-shared` (above). A `bvsub` or `bvneg` of another
+arity is a leaf, with the warning `vc.canonical-sums-opaque`.
 
 ## Cost and limits
 

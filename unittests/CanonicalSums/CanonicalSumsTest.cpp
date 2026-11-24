@@ -161,10 +161,12 @@ struct Fixture {
     return true;
   }
 
-  Expr canon(const Expr &e, CanonicalSums::Stats *st = nullptr,
-             CanonicalSums::NegForm neg = CanonicalSums::NegForm::Bvnot,
-             CanonicalSums::EqForm eq = CanonicalSums::EqForm::Balance) {
-    CanonicalSums c(neg, eq);
+  Expr
+  canon(const Expr &e, CanonicalSums::Stats *st = nullptr,
+        CanonicalSums::NegForm neg = CanonicalSums::NegForm::Bvnot,
+        CanonicalSums::EqForm eq = CanonicalSums::EqForm::Balance,
+        CanonicalSums::InnerForm inner = CanonicalSums::InnerForm::Flatten) {
+    CanonicalSums c(neg, eq, inner);
     Expr r = c.rewrite(e);
     if (st)
       *st = c.stats();
@@ -287,6 +289,52 @@ void testEqModes() {
           c.name << ": counters balanced=" << st.eqs << " kept-shared="
                  << st.eqsKeptShared << " kept=" << st.eqsKept);
     CHECK(F.equivalent(in, out), c.name << ": not equivalent");
+  }
+}
+
+/// InnerForm: S = x - y used by two sums. flatten merges S into each;
+/// shared-leaf keeps S as one canonical node, a leaf of both.
+void testInner() {
+  Fixture F;
+  using EF = CanonicalSums::EqForm;
+  using NF = CanonicalSums::NegForm;
+  using IF = CanonicalSums::InnerForm;
+  Expr x = F.var("x", 8), y = F.var("y", 8), z = F.var("z", 8),
+       w = F.var("w", 8);
+  Expr S = mk<BSUB>(x, y);
+  Expr in = mk<AND>(ctx(mk<BADD>(S, z)), ctx(mk<BADD>(S, w)));
+  Expr cS = mk<BADD>(mk<BADD>(x, mk<BNOT>(y)), F.num(1, 8));
+  // flatten: x + z - y and x + w - y, no node for S
+  {
+    CanonicalSums::Stats st;
+    Expr out = F.canon(in, &st, NF::Bvnot, EF::Balance, IF::Flatten);
+    Expr a = mk<BADD>(mk<BADD>(F.add({x, z}), mk<BNOT>(y)), F.num(1, 8));
+    Expr b = mk<BADD>(mk<BADD>(F.add({x, w}), mk<BNOT>(y)), F.num(1, 8));
+    CHECK(out == mk<AND>(ctx(a), ctx(b)), "inner.flatten: got " << str(out));
+    CHECK(st.innerShared == 0,
+          "inner.flatten: inner-shared " << st.innerShared);
+    CHECK(F.equivalent(in, out), "inner.flatten: not equivalent");
+  }
+  // shared-leaf: S is one canonical node, a leaf of both sums (it is made
+  // during the step, so its id orders it after z and w)
+  {
+    CanonicalSums::Stats st;
+    Expr out = F.canon(in, &st, NF::Bvnot, EF::Balance, IF::SharedLeaf);
+    CHECK(out == mk<AND>(ctx(F.add({z, cS})), ctx(F.add({w, cS}))),
+          "inner.shared-leaf: got " << str(out));
+    CHECK(st.innerShared == 1,
+          "inner.shared-leaf: inner-shared " << st.innerShared);
+    CHECK(F.equivalent(in, out), "inner.shared-leaf: not equivalent");
+  }
+  // a balanced equality whose side is a shared sum: the side is one leaf
+  {
+    Expr q = mk<AND>(mk<EQ>(S, z), ctx(mk<BADD>(S, w)));
+    CanonicalSums::Stats st;
+    Expr out = F.canon(q, &st, NF::Bvnot, EF::Balance, IF::SharedLeaf);
+    Expr e = out->arg(0);
+    CHECK(isOpX<EQ>(e) && (e->arg(0) == cS || e->arg(1) == cS),
+          "inner.shared-eq: got " << str(e));
+    CHECK(F.equivalent(q, out), "inner.shared-eq: not equivalent");
   }
 }
 
@@ -504,8 +552,11 @@ bool hasSubOrNeg(const Expr &e, bool sub = true) {
   return false;
 }
 
-void testRandom(unsigned count, CanonicalSums::NegForm neg,
-                CanonicalSums::EqForm eqf = CanonicalSums::EqForm::Balance) {
+void testRandom(
+    unsigned count, CanonicalSums::NegForm neg,
+    CanonicalSums::EqForm eqf = CanonicalSums::EqForm::Balance,
+    CanonicalSums::InnerForm inner = CanonicalSums::InnerForm::Flatten) {
+  const bool shared = inner == CanonicalSums::InnerForm::SharedLeaf;
   const bool subForm = neg == CanonicalSums::NegForm::Sub;
   const char *eqName = eqf == CanonicalSums::EqForm::Keep       ? "keep"
                        : eqf == CanonicalSums::EqForm::Unshared ? "unshared"
@@ -522,7 +573,7 @@ void testRandom(unsigned count, CanonicalSums::NegForm neg,
       CanonicalSums::Stats st;
       if (getenv("CANON_TEST_TRACE"))
         llvm::errs() << "random " << i << ": " << str(q) << "\n";
-      Expr out = F.canon(q, &st, neg, eqf);
+      Expr out = F.canon(q, &st, neg, eqf, inner);
       text[run] = str(out);
       if (getenv("CANON_TEST_TRACE"))
         llvm::errs() << "  -> " << text[run] << "\n";
@@ -546,9 +597,10 @@ void testRandom(unsigned count, CanonicalSums::NegForm neg,
     CHECK(text[0] == text[1], "random " << i << ": not deterministic");
   }
   llvm::outs() << "random: neg=" << (subForm ? "sub" : "bvnot")
-               << " eq=" << eqName << " terms=" << count << " sums=" << sums
-               << " eqs=" << eqs << " miter=" << backend
-               << " unknown=" << unknown << "\n";
+               << " eq=" << eqName
+               << " inner=" << (shared ? "shared-leaf" : "flatten")
+               << " terms=" << count << " sums=" << sums << " eqs=" << eqs
+               << " miter=" << backend << " unknown=" << unknown << "\n";
 }
 
 } // namespace
@@ -563,7 +615,8 @@ int main(int argc, char **argv) {
   } tests[] = {{"shape", testShape},     {"order", testOrder},
                {"eq", testEq},           {"extract", testExtract},
                {"bitwise", testBitwise}, {"image", testImage},
-               {"sub", testSub},         {"eq-modes", testEqModes}};
+               {"sub", testSub},         {"eq-modes", testEqModes},
+               {"inner", testInner}};
   for (const Test &t : tests) {
     int before = failures;
     t.fn();
@@ -588,6 +641,12 @@ int main(int argc, char **argv) {
              CanonicalSums::EqForm::Keep);
   llvm::outs() << "test: random-keep " << (failures == before ? "ok" : "FAILED")
                << "\n";
+  before = failures;
+  testRandom(randomCount / 4, CanonicalSums::NegForm::Bvnot,
+             CanonicalSums::EqForm::Balance,
+             CanonicalSums::InnerForm::SharedLeaf);
+  llvm::outs() << "test: random-shared-leaf "
+               << (failures == before ? "ok" : "FAILED") << "\n";
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

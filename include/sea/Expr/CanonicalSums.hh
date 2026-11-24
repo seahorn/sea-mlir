@@ -84,9 +84,17 @@ public:
   /// sides; Keep, none: each side is canonical on its own.
   enum class EqForm { Balance, Unshared, Keep };
 
+  /// What a linear node inside a sum is (sea-vc --vc-canonical-sums-inner):
+  /// Flatten, its form is merged into its parent's (one flat form per
+  /// maximal linear term); SharedLeaf, a proper sum used more than once in
+  /// the input (the uses of EqForm::Unshared) is canonical on its own, one
+  /// node, and a leaf of each parent, equalities included.
+  enum class InnerForm { Flatten, SharedLeaf };
+
   explicit CanonicalSums(NegForm neg = NegForm::Bvnot,
-                         EqForm eq = EqForm::Balance)
-      : m_neg(neg), m_eq(eq) {}
+                         EqForm eq = EqForm::Balance,
+                         InnerForm inner = InnerForm::Flatten)
+      : m_neg(neg), m_eq(eq), m_inner(inner) {}
 
   struct Stats {
     uint64_t sums = 0;          ///< maximal linear terms emitted (not a leaf)
@@ -96,6 +104,7 @@ public:
     uint64_t eqsChanged = 0;    ///< of them, a different node than the input
     uint64_t eqsKeptShared = 0; ///< Unshared: not balanced, both sides shared
     uint64_t eqsKept = 0;       ///< Keep: not balanced
+    uint64_t innerShared = 0;   ///< SharedLeaf: shared sums kept as leaves
     uint64_t opaque = 0;        ///< bvsub / bvneg of another arity: leaves
   };
 
@@ -103,7 +112,7 @@ public:
   /// linear side in the canonical form.
   Expr rewrite(const Expr &query) {
     m_efac = &query->efac();
-    if (m_eq == EqForm::Unshared)
+    if (m_eq == EqForm::Unshared || m_inner == InnerForm::SharedLeaf)
       countUses(query);
     walk(query);
     return imageOf(query.get());
@@ -234,6 +243,19 @@ private:
     rebuild(n);
   }
 
+  /// SharedLeaf: \p k is a proper sum with more than one use, a leaf of
+  /// its parents (counted once)
+  bool sharedLeaf(ENode *k) {
+    if (m_inner != InnerForm::SharedLeaf || !isSum(k))
+      return false;
+    auto it = m_uses.find(k);
+    if (it == m_uses.end() || it->second < 2)
+      return false;
+    if (m_sharedSeen.insert(k).second)
+      ++m_stats.innerShared;
+    return true;
+  }
+
   /// a sum whose only use in the input is one argument slot (Unshared)
   bool soleUse(ENode *side) const {
     if (!isSum(side))
@@ -315,7 +337,7 @@ private:
   /// numeral), or one leaf
   Form formOf(ENode *k, unsigned w) {
     auto it = m_form.find(k);
-    if (it != m_form.end())
+    if (it != m_form.end() && !sharedLeaf(k))
       return it->second;
     Form f;
     f.w = w;
@@ -515,6 +537,8 @@ private:
 
   NegForm m_neg;
   EqForm m_eq;
+  InnerForm m_inner;
+  std::unordered_set<ENode *> m_sharedSeen;
   std::unordered_map<ENode *, unsigned> m_uses;
   ExprFactory *m_efac = nullptr;
   TypeChecker m_tc;
