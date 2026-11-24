@@ -19,7 +19,7 @@ cmake -S "$source_dir" -B "$build_dir" -GNinja \
   -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm \
   -DZ3_ROOT=/opt/seahorn-z3 \
   -DCMAKE_DISABLE_FIND_PACKAGE_Yices2=TRUE \
-  -DWITH_CLAM=OFF -DSEA_ENABLE_LLD=ON \
+  -DWITH_CLAM=ON -DSEA_ENABLE_LLD=ON \
   -DCMAKE_INSTALL_PREFIX="$prefix" -DCPACK_GENERATOR=TGZ \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build "$build_dir" --parallel "$JOBS" --target install \
@@ -34,9 +34,28 @@ rm -f "$prefix/bin/z3"
 mkdir -p "$prefix/lib" "$prefix/share/release-licenses" "$prefix/share/seahorn"
 cp -L /opt/seahorn-z3/lib/libz3.so.4.12 "$prefix/lib/libz3.so.4.12"
 cp /opt/seahorn-z3/share/release-licenses/z3-seahorn.txt "$prefix/share/release-licenses/"
-cp "$source_dir/license.txt" "$prefix/share/release-licenses/seahorn.txt"
-cp "$source_dir/sea-dsa/license.txt" "$prefix/share/release-licenses/sea-dsa.txt"
-cp "$source_dir/llvm-seahorn/LICENSE.TXT" "$prefix/share/release-licenses/llvm-seahorn.txt"
+# Each repository's license files as they are at the pin (seahorn, sea-dsa
+# and llvm-seahorn: Apache-2.0 WITH LLVM-exception from their 2026
+# relicensing, with the earlier license and the notices kept; clam and crab:
+# Apache-2.0, crab also the IKOS license of the code it derives from IKOS)
+copy_legal() { # copy_legal DIR NAME
+  local file
+  for file in LICENSE LICENSE.TXT license.txt NOTICE THIRD-PARTY-NOTICES IKOS_LICENSE.pdf; do
+    if [[ -f "$1/$file" ]]; then
+      cp "$1/$file" "$prefix/share/release-licenses/$2-$file"
+    fi
+  done
+  if [[ -d "$1/LICENSES" ]]; then
+    cp -R "$1/LICENSES" "$prefix/share/release-licenses/$2-LICENSES"
+  fi
+  [[ -n "$(find "$prefix/share/release-licenses" -name "$2-*" -print -quit)" ]] ||
+    { echo "no license file in $1" >&2; exit 1; }
+}
+copy_legal "$source_dir" seahorn
+copy_legal "$source_dir/sea-dsa" sea-dsa
+copy_legal "$source_dir/llvm-seahorn" llvm-seahorn
+copy_legal "$source_dir/clam" clam
+copy_legal "$source_dir/clam/crab" crab
 cp /usr/share/doc/llvm-18/copyright "$prefix/share/release-licenses/llvm-18.txt"
 cp /usr/share/doc/libboost1.83-dev/copyright "$prefix/share/release-licenses/boost.txt"
 cp /usr/share/doc/libgmp10/copyright "$prefix/share/release-licenses/gmp.txt"
@@ -47,17 +66,21 @@ cp -R /usr/lib/python3/dist-packages/yaml "$prefix/lib/seapy/yaml"
 find "$prefix/lib/seapy/yaml" -type f \( -name '*.so' -o -name '*.pyc' \) -delete
 find "$prefix/lib/seapy/yaml" -type d -name __pycache__ -empty -delete
 cat > "$prefix/share/seahorn/RELEASE-HOLD.txt" <<'NOTICE'
-This bundle is built for local validation only. SeaHorn's current license
-is included. Distribution is held until the maintainer relicenses SeaHorn.
-Clam/Crab and Yices support are disabled. A system clang-18 and Python 3
-are required for C/C++ export. The bundle does not include a compiler.
+This bundle is built for local validation only. The licenses of SeaHorn,
+sea-dsa, llvm-seahorn, clam and crab at the pinned commits are included.
+Distribution is held until the maintainer approves it (open: the IKOS
+license terms of crab). Clam/Crab is enabled; Yices support is disabled.
+A system clang-18 and Python 3 are required for C/C++ export. The bundle
+does not include a compiler.
 NOTICE
 {
   printf 'seahorn: %s\n' "$(git -C "$source_dir" rev-parse HEAD)"
   printf 'sea-dsa: %s\n' "$(git -C "$source_dir/sea-dsa" rev-parse HEAD)"
   printf 'llvm-seahorn: %s\n' "$(git -C "$source_dir/llvm-seahorn" rev-parse HEAD)"
+  printf 'clam: %s\n' "$(git -C "$source_dir/clam" rev-parse HEAD)"
+  printf 'crab: %s\n' "$(git -C "$source_dir/clam/crab" rev-parse HEAD)"
   printf 'z3: %s\n' "$(cat /opt/seahorn-z3/source-revision)"
-  printf 'yices: disabled\nclam: disabled\n'
+  printf 'yices: disabled\n'
   llvm-config-18 --version
 } > "$prefix/share/seahorn/build-pins.txt"
 

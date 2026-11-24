@@ -20,9 +20,12 @@ from zoneinfo import ZoneInfo
 
 AGENT = """release: build local sea-mlir tarballs and images; never publish.
 USAGE: python3 docker/release.py OUTPUT [--bundle] [--llvm-image IMAGE]
-  --bundle also builds SeaHorn and a combined artifact, held for relicensing.
+  --bundle also builds SeaHorn and a combined artifact, held for approval.
   --llvm-image reuses an installed LLVM image after checking LLVM_REVISION,
     Release mode, assertions, MLIR and lit. Without it LLVM builds from source.
+  --image-prefix NAME tags the images NAME:<stage> (default sea-mlir-release).
+  --cpuset CPUS pins every docker build to those CPUs (docker --cpuset-cpus,
+    e.g. 40-47), a hard cap next to the eight compile jobs.
   --version defaults to the project version in CMakeLists.txt (artifact name,
     not a claim of release approval).
   --until HH:MM stops the run at the next such local time (default: no limit).
@@ -33,7 +36,7 @@ USAGE: python3 docker/release.py OUTPUT [--bundle] [--llvm-image IMAGE]
 LIMITS: eight compile jobs, four lit workers, sequential build stages.
   With --until the active command is interrupted at that time. A failed or
   interrupted run can be rerun; Docker layers are cached. Images use
-  sea-mlir-release:*; no prune.
+  <image-prefix>:* (default sea-mlir-release:*); no prune.
 OUTPUT: OUTPUT/artifacts, per-run logs, and release-run.json with timings,
   source revision, image IDs, hashes and completion status. OUTPUT must be
   outside the source tree. Only temporary extraction/smoke containers are removed.
@@ -71,7 +74,11 @@ def cutoff(now, until, not_before=None):
 
 
 class ReleaseJob:
-    def __init__(self, source, output, deadline):
+    def __init__(
+        self, source, output, deadline, prefix="sea-mlir-release", cpuset=None
+    ):
+        self.prefix = prefix
+        self.cpuset = cpuset
         self.source = source
         self.output = output
         self.deadline = deadline
@@ -103,7 +110,7 @@ class ReleaseJob:
             "status": "running",
             "stages": [],
             "images": {},
-            "distribution": "local only; SeaHorn bundle held pending relicensing",
+            "distribution": "local only; SeaHorn bundle held pending maintainer approval",
         }
         self.save()
 
@@ -184,8 +191,10 @@ class ReleaseJob:
             raise RuntimeError(f"{name} failed (exit {code}); see {path}")
 
     def build(self, name, dockerfile, target, arguments=()):
-        image = "sea-mlir-release:" + name
+        image = self.prefix + ":" + name
         command = ["docker", "build", "--force-rm", "--build-arg", "JOBS=8"]
+        if self.cpuset:
+            command += ["--cpuset-cpus", self.cpuset]
         for argument in arguments:
             command.extend(["--build-arg", argument])
         command.extend(["-f", dockerfile, "--target", target, "-t", image, "."])
@@ -245,6 +254,8 @@ def main():
     parser.add_argument("--bundle", action="store_true")
     parser.add_argument("--llvm-image")
     parser.add_argument("--version")
+    parser.add_argument("--image-prefix", default="sea-mlir-release")
+    parser.add_argument("--cpuset")
     parser.add_argument("--until", type=hhmm)
     parser.add_argument("--not-before", type=hhmm)
     parser.add_argument("--timezone")
@@ -269,6 +280,10 @@ def main():
     output = args.output.resolve()
     if output.is_relative_to(source):
         parser.error("OUTPUT must be outside the source tree")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._/-]*", args.image_prefix):
+        parser.error("--image-prefix must be a docker repository name")
+    if args.cpuset and not re.fullmatch(r"[0-9]+([-,][0-9]+)*", args.cpuset):
+        parser.error("--cpuset: a docker cpuset such as 40-47")
     if args.plan:
         print(
             "stages: llvm solvers sea-mlir package runtime standalone-smoke"
@@ -292,7 +307,7 @@ def main():
             )
         except ValueError as error:
             parser.error(str(error))
-    job = ReleaseJob(source, output, end)
+    job = ReleaseJob(source, output, end, args.image_prefix, args.cpuset)
     common = ["YICES=1"]
     if args.llvm_image:
         common += ["LLVM_BASE=" + args.llvm_image, "REUSE_LLVM=1"]
@@ -305,6 +320,8 @@ def main():
         "SOURCE_REVISION=" + job.record["source"],
         "SOURCE_DATE_EPOCH=" + job.record["source_epoch"],
         *pins(source),
+        f"SEA_MLIR_IMAGE={args.image_prefix}:sea-mlir",
+        f"SEAHORN_IMAGE={args.image_prefix}:seahorn",
     ]
     try:
         for stage in ("llvm", "solvers", "sea-mlir"):

@@ -48,10 +48,13 @@ this table in sync.
 | Yices | tag `yices-2.8.0` (`YICES_TAG`), without MCSAT; left out with `YICES=0` | BSD 3-Clause (GPLv3 before 2.8.0) |
 | CaDiCaL | tag from Bitwuzla's `subprojects/cadical.wrap` (currently `rel-2.1.2`); not set by hand | MIT |
 | SymFPU | revision from Bitwuzla's `subprojects/symfpu.wrap` (currently `40bdec0`); not set by hand | BSD 3-Clause |
-| SeaHorn | `SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` (`4f7fdaf`) | held pending relicensing |
-| sea-dsa | `SEADSA_REVISION`, `docker/SeaHorn.Dockerfile` (`3134604`) | held with SeaHorn |
-| llvm-seahorn | `LLVM_SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` (`6cfacb8`) | held with SeaHorn |
-| SeaHorn's z3 | `SEAHORN_Z3_REVISION`, `docker/SeaHorn.Dockerfile`: z3 4.12.0 (`feda706`), the version this SeaHorn checkout is built with locally | MIT |
+| SeaHorn | `SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` (dev18 `67474bf`) | Apache-2.0 WITH LLVM-exception; bundle held for approval |
+| sea-dsa | `SEADSA_REVISION` (dev18 `1e33f16`) | Apache-2.0 WITH LLVM-exception |
+| llvm-seahorn | `LLVM_SEAHORN_REVISION` (dev18 `9225814`) | Apache-2.0 WITH LLVM-exception |
+| clam | `CLAM_REVISION` (crab-llvm dev18 `3eaf016`) | Apache-2.0 |
+| crab | `CRAB_REVISION` (dev `49773d0`) | Apache-2.0; also the IKOS license (`IKOS_LICENSE.pdf`) |
+| LLVM 18 for SeaHorn | `LLVM18_VERSION`: apt.llvm.org `llvm-toolchain-noble-18` 18.1.8, key checked by fingerprint | Apache-2.0 WITH LLVM-exception |
+| SeaHorn's z3 | `SEAHORN_Z3_REVISION`: z3 4.12.0 (`feda706`); SeaHorn does not work with the sea-mlir pin (`docs/design/BinaryRelease.md`) | MIT |
 
 The release packaging takes the solver pins from the `Z3_REVISION`,
 `BITWUZLA_TAG` and `YICES_TAG` arguments (`docker/release.py` reads them
@@ -113,7 +116,9 @@ workers. At the `--until` time the driver interrupts the active command and
 stops its own remaining build or smoke containers (exit 124). Rerun the
 command later to reuse Docker's cached layers. The driver works with Docker's
 legacy builder; BuildKit cancellation has not been separately validated.
-It creates only `sea-mlir-release:*` images and does not prune the cache.
+It creates only `sea-mlir-release:*` images (`--image-prefix NAME` for
+`NAME:*`) and does not prune the cache. `--cpuset 40-47` pins every
+`docker build` to those CPUs.
 The release build includes Yices (`YICES=1`).
 
 To reuse an existing LLVM image, pass `--llvm-image IMAGE`. The image must
@@ -136,8 +141,9 @@ into a fresh container.
 
 ### SeaHorn bundle
 
-`--bundle` builds SeaHorn separately against Ubuntu's LLVM 18, with the
-source and dependency pins in `docker/SeaHorn.Dockerfile`. SeaHorn uses
+`--bundle` builds SeaHorn dev18 with clam/crab separately against LLVM
+18.1.8 from apt.llvm.org, with the source and dependency pins in
+`docker/SeaHorn.Dockerfile`. SeaHorn uses
 Z3 4.12; sea-mlir uses a z3 master commit (5.4.2). The bundle preserves their distinct shared
 library names. The builders exchange programs through the exported MLIR
 text format and do not share an LLVM installation.
@@ -159,7 +165,7 @@ The smoke fixtures retain symbolic inputs through export, so both verdicts
 exercise the backend.
 
 The bundle is `artifacts/held/sea-mlir-bundle-VERSION-linux-x86_64-held.tar.gz`
-(with its `.sha256` and manifest). The SeaHorn artifact and bundle are **held pending SeaHorn relicensing**.
+(with its `.sha256` and manifest). The SeaHorn artifact and bundle are **held until the maintainer approves their distribution** (SeaHorn, sea-dsa and llvm-seahorn are relicensed; crab's IKOS terms are open).
 Their notices and marker files record that restriction. A successful build
 or smoke test does not authorize distribution. The standalone sea-mlir
 artifact can proceed to release review independently.

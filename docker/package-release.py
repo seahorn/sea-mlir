@@ -456,14 +456,17 @@ Python utilities require Python 3. The SeaHorn frontend also needs clang-18.
 """
     if args.seahorn:
         text += """
-SEAHORN BUNDLE: NOT FOR DISTRIBUTION; SEAHORN IS TO BE RELICENSED.
-SeaHorn's current license and dependency licenses are retained under
-share/release-licenses/ (seahorn.txt, sea-dsa.txt, llvm-seahorn.txt, ...).
-This local bundle is for build and interoperability testing only until the
-maintainer relicenses it.
+SEAHORN BUNDLE: NOT FOR DISTRIBUTION UNTIL THE MAINTAINER APPROVES IT.
+SeaHorn, sea-dsa, llvm-seahorn, clam and crab: their license and notice
+files at the pinned commits are under share/release-licenses/
+(<repository>-LICENSE, ...; crab also carries the IKOS license). SeaHorn,
+sea-dsa and llvm-seahorn are Apache-2.0 WITH LLVM-exception; clam and crab
+are Apache-2.0. SeaHorn links z3 4.12.0 (MIT, lib/libz3.so.4.12), a second
+z3 next to the one sea-mlir uses. LLVM 18 is linked statically into the
+SeaHorn tools.
 """
         (prefix / "NOT-FOR-DISTRIBUTION").write_text(
-            "SeaHorn is to be relicensed before this bundle can ship.\n"
+            "The SeaHorn bundle ships only after the maintainer approves it.\n"
         )
     (prefix / "THIRD-PARTY-NOTICES").write_text(text)
     (prefix / "NOTICE").write_text(
