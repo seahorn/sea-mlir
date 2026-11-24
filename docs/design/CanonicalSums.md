@@ -130,6 +130,13 @@ expands. Exact: a node is replaced by an equal term.
 Counter: `vc.canonical-sums-inner-shared` (shared sums kept as leaves);
 the stat line names the mode, `inner=flatten|shared-leaf`.
 
+Measured on the firedancer and vcc gate jobs (one seed): `shared-leaf`
+does not pay off for z3, whose preamble simplifier flattens the shared
+sums again (`flat`, `som`); it is neutral for Yices; it removes the
+Bitwuzla slowdown of the h2fc settings proof, where `flatten` turns one
+shared difference read by several signed compares into a chain per
+compare. `flatten` stays the default.
+
 ## The negation (`--vc-canonical-sums-neg`)
 
 How the negative chain `N` is written is a choice per solver, not a
@@ -257,16 +264,19 @@ rewritten query.
 The step emits an n-ary `bvadd` per chain. Two backend facts decide what
 the solver sees; both are older than this step:
 
-- The z3 and Yices marshallers build an n-ary `bvadd` as a right-nested
+- Without `--solver-nary-sums` (below), the z3 and Yices marshallers
+  build an n-ary `bvadd` as a right-nested
   chain of binary adds, `a + (b + (c + d))` (`ExprToZ.def`,
   `MarshalYices.cpp`). Two chains then share their common suffixes, not
   their prefixes.
 - z3's SMT-LIB printer writes an associative application nested in the
   first argument of the same operator flat (`pp.flat_assoc`), and its
-  parser makes one n-ary node of the flat text. So the `--smt2` dump of a nested sum, read back, is not the term
-  the in-process solver gets: `(bvadd (bvadd P (bvnot N)) c)` is printed
-  `(bvadd p1 p2 (bvnot N) c)`. This holds for every nested sum of the
-  query, with or without this step.
+  parser makes one n-ary node of the flat text. So the `--smt2` dump of
+  such a nested sum, read back, is not the term the in-process solver
+  gets: `(bvadd (bvadd P (bvnot N)) c)` is printed
+  `(bvadd p1 p2 (bvnot N) c)`. This holds for every such nested sum of
+  the query, with or without this step, and with or without
+  `--solver-nary-sums` (see "What the switch does not cover").
 
 `sea-vc --solver-nary-sums` (off by default, not tuned) builds the n-ary
 nodes of the query as n-ary terms: `bvadd`, `bvmul`, `bvand`, `bvor` and
