@@ -170,7 +170,9 @@ class Run:
             time.sleep(0.02)
         p.returncode = 0  # reaped by wait4
         self.seconds = time.monotonic() - start
-        self.max_rss_gb = ru.ru_maxrss / (1 << 20)  # KB -> GB
+        # ru_maxrss: KiB on Linux, bytes on macOS
+        scale = 1 << (30 if sys.platform == "darwin" else 20)
+        self.max_rss_gb = ru.ru_maxrss / scale
         self.signal = os.WTERMSIG(status) if os.WIFSIGNALED(status) else None
         self.status = os.WEXITSTATUS(status) if os.WIFEXITED(status) else None
         out.seek(0)
