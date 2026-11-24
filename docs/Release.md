@@ -4,7 +4,9 @@ This release freezes the functionality of sea-mlir so that applications can
 build on a fixed version instead of the development branch. It is a
 research prototype. Expect bugs. There is no promise that the text format of
 the dialect or the options stay compatible across releases. Linux (x86-64)
-is the only platform built and tested.
+is the only platform built and tested. A first macOS build is described in
+[BuildMacOS.md](BuildMacOS.md); the plan for binary releases is
+[design/BinaryRelease.md](design/BinaryRelease.md).
 
 Every tool prints its version with `--version`. `sea-vc` also prints it as
 the first line of every run (`tool.version:`), so every bug report should
@@ -110,6 +112,9 @@ ninja -C build-release            # build
 ninja -C build-release check-sea  # lit: every test must pass
 ninja -C build-release install
 ```
+
+`-DLLVM_ENABLE_LLD=ON` is for Linux. On macOS leave it off: `ld64.lld` is
+untested there ([BuildMacOS.md](BuildMacOS.md)).
 
 `just release-check` (`utils/release-check.sh`) runs the release gate:
 - a Release build in `build-rc`, which takes its settings from
