@@ -11,11 +11,14 @@
 //   (interp.load-earlier-version), so only the verdict is pinned here.
 // - scatter with --seam-wide: a wide read (wselect) is data, like a select.
 //   mentionsBase must accept its use as an index so cmp.diff-base can fire.
-RUN: timeout 120 sea-vc %S/Inputs/nki-dyn-add-M4H4-good.mlir --lower --seam --seam-premises=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=LAYOUT,UNSAT
-RUN: timeout 120 sea-vc %S/Inputs/nki-dyn-add-M4H4-good.mlir --lower --seam | FileCheck %s --check-prefix=UNSAT
-RUN: not timeout 120 sea-vc %S/Inputs/nki-dyn-add-M4H4-nopre.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=SAT
-RUN: timeout 120 sea-vc %S/Inputs/nki-scatter-K4-int8.mlir --lower --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=DIFF,UNSAT
-RUN: timeout 120 sea-vc %S/Inputs/nki-scatter-K4-int8.mlir --lower --seam | FileCheck %s --check-prefix=UNSAT
+// The bound needs coreutils timeout (gtimeout from Homebrew coreutils on
+// macOS): unsupported without it.
+REQUIRES: timeout
+RUN: %timeout 120 sea-vc %S/Inputs/nki-dyn-add-M4H4-good.mlir --lower --seam --seam-premises=0 --seam-stats 2>&1 | FileCheck %s --check-prefixes=LAYOUT,UNSAT
+RUN: %timeout 120 sea-vc %S/Inputs/nki-dyn-add-M4H4-good.mlir --lower --seam | FileCheck %s --check-prefix=UNSAT
+RUN: not %timeout 120 sea-vc %S/Inputs/nki-dyn-add-M4H4-nopre.mlir --lower --seam 2>&1 | FileCheck %s --check-prefix=SAT
+RUN: %timeout 120 sea-vc %S/Inputs/nki-scatter-K4-int8.mlir --lower --seam --seam-wide --seam-stats 2>&1 | FileCheck %s --check-prefixes=DIFF,UNSAT
+RUN: %timeout 120 sea-vc %S/Inputs/nki-scatter-K4-int8.mlir --lower --seam | FileCheck %s --check-prefix=UNSAT
 LAYOUT: seam.rule.mem.in-layout: {{[1-9]}}
 DIFF: seam.rule.{{.*}}cmp.diff-base{{.*}}: {{[1-9]}}
 UNSAT: result: unsat

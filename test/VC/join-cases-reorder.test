@@ -10,7 +10,7 @@
 //   %m  [m0, m2, m0, m1]   m0 again after m2: merged with !(cond of m2)
 REQUIRES: z3
 RUN: split-file %s %t
-RUN: sed -i 's|SEA_VC|%sea_vc|' %t/reorder.sh %t/drop.sh %t/both.sh
+RUN: sed -i.orig 's|SEA_VC|%sea_vc|' %t/reorder.sh %t/drop.sh %t/both.sh
 RUN: chmod +x %t/reorder.sh %t/drop.sh %t/both.sh
 RUN: sea-vc %t/vals.mlir --vc-join-cases --vc-cases-reorder | FileCheck %s --check-prefix=MERGE
 RUN: sea-vc %t/vals.mlir --vc-join-cases --vc-cases-drop-default | FileCheck %s --check-prefix=DROP

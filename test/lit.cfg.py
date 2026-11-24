@@ -67,6 +67,12 @@ llvm_config.add_tool_substitutions(
 
 config.substitutions.append(("%sea_src_root", config.sea_src_root))
 config.substitutions.append(("%python", "python3"))
+# %timeout <s> <cmd>: a wall-clock bound, coreutils timeout (gtimeout from
+# Homebrew coreutils on macOS); tests that use it REQUIRES: timeout
+_timeout = shutil.which("timeout") or shutil.which("gtimeout")
+if _timeout:
+    config.available_features.add("timeout")
+    config.substitutions.append(("%timeout", _timeout))
 config.substitutions.append(("%sea_vc", os.path.join(sea_tools_dir, "sea-vc")))
 config.substitutions.append(("%sea_bin", sea_tools_dir))
 

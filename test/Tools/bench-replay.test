@@ -19,7 +19,7 @@
 // STRICT: counter-failures: 1
 // STRICT: gate: fail
 // The job allows it, the form bound is dropped where the lowering differs: pass.
-// RUN: sed -i -e 's/ri: {expected: sat,/ri: {expected: sat, replay: impossible,/' -e 's/--box-all-expand=0]}/--box-all-expand=0], counters: {vc.box-all.expanded: null, vc.box-all.lowered: {exact: 1}}}/' %t/s1/fam/manifest.yaml
+// RUN: sed -i.orig -e 's/ri: {expected: sat,/ri: {expected: sat, replay: impossible,/' -e 's/--box-all-expand=0]}/--box-all-expand=0], counters: {vc.box-all.expanded: null, vc.box-all.lowered: {exact: 1}}}/' %t/s1/fam/manifest.yaml
 // RUN: env SEA_BENCH_SUITES=%t/s1 SEA_BENCH_HOME=%t/home python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %sea_vc --min-free-gb 0 --no-record -v | FileCheck %s --check-prefix=PASS
 // PASS: run: default s1.fam.ri sat replay=impossible
 // PASS: replay-impossible: 1 allowed=1
@@ -27,7 +27,7 @@
 // PASS: counter-bounds: 3
 // PASS: gate: pass
 // Any other value of `replay` is an error, not a default.
-// RUN: sed -i 's/replay: impossible/replay: maybe/' %t/s1/fam/manifest.yaml
+// RUN: sed -i.orig 's/replay: impossible/replay: maybe/' %t/s1/fam/manifest.yaml
 // RUN: env SEA_BENCH_SUITES=%t/s1 SEA_BENCH_HOME=%t/home not python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %sea_vc --min-free-gb 0 --no-record 2>&1 | FileCheck %s --check-prefix=BAD
 // BAD: bench: manifest field `replay` must be `impossible`: s1/fam/ri: replay: 'maybe'
 
