@@ -23,7 +23,12 @@ RUN python3 /release-tools/package-release.py \
       --source-revision "$SOURCE_REVISION" --epoch "$SOURCE_DATE_EPOCH"
 
 FROM ${UBUNTU} AS runtime
+ARG DEBIAN_FRONTEND=noninteractive
 ARG VERSION
+# GMP, GMPXX, MPFR (LGPL) are Ubuntu's, not the release's (libgmp10 is in
+# the base image)
+RUN apt-get update && apt-get install -y --no-install-recommends libgmpxx4ldbl libmpfr6 \
+  && rm -rf /var/lib/apt/lists/*
 COPY --from=package /release/sea-mlir-${VERSION}-linux-x86_64 /opt/sea-mlir
 ENV PATH=/opt/sea-mlir/bin:$PATH
 WORKDIR /work
@@ -40,7 +45,6 @@ ARG YICES_TAG
 COPY --from=seahorn-install /opt/seahorn /opt/seahorn
 RUN python3 /release-tools/package-release.py \
       --name "sea-mlir-bundle-${VERSION}-linux-x86_64" --seahorn /opt/seahorn \
-      --output /artifacts/held \
       --z3-revision "$Z3_REVISION" --bitwuzla-tag "$BITWUZLA_TAG" \
       --yices-tag "$YICES_TAG" \
       --source-revision "$SOURCE_REVISION" --epoch "$SOURCE_DATE_EPOCH"
@@ -48,7 +52,8 @@ RUN python3 /release-tools/package-release.py \
 FROM ${UBUNTU} AS bundle-runtime
 ARG DEBIAN_FRONTEND=noninteractive
 ARG VERSION
-RUN apt-get update && apt-get install -y --no-install-recommends clang-18 python3 \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libgmpxx4ldbl libmpfr6 clang-18 python3 \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=bundle-package /release/sea-mlir-bundle-${VERSION}-linux-x86_64 /opt/sea-mlir
 ENV PATH=/opt/sea-mlir/bin:$PATH

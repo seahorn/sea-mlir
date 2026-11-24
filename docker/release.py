@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 AGENT = """release: build local sea-mlir tarballs and images; never publish.
 USAGE: python3 docker/release.py OUTPUT [--bundle] [--llvm-image IMAGE]
-  --bundle also builds SeaHorn and a combined artifact, held for approval.
+  --bundle also builds SeaHorn (with Yices, without clam) and the bundle.
   --llvm-image reuses an installed LLVM image after checking LLVM_REVISION,
     Release mode, assertions, MLIR and lit. Without it LLVM builds from source.
   --image-prefix NAME tags the images NAME:<stage> (default sea-mlir-release).
@@ -110,7 +110,7 @@ class ReleaseJob:
             "status": "running",
             "stages": [],
             "images": {},
-            "distribution": "local only; SeaHorn bundle held pending maintainer approval",
+            "distribution": "local only; publishing is a separate, manual step",
         }
         self.save()
 
@@ -336,7 +336,16 @@ def main():
             ["bash", "docker/smoke/run.sh", str(output / "artifacts"), args.version],
         )
         if args.bundle:
-            job.build("seahorn", "docker/SeaHorn.Dockerfile", "seahorn")
+            # SeaHorn links the solvers stage's Yices (YICES_TAG)
+            job.build(
+                "seahorn",
+                "docker/SeaHorn.Dockerfile",
+                "seahorn",
+                [
+                    f"SOLVERS_IMAGE={args.image_prefix}:solvers",
+                    *(pin for pin in pins(source) if pin.startswith("YICES_TAG=")),
+                ],
+            )
             image = job.build(
                 "bundle-package",
                 "docker/Release.Dockerfile",

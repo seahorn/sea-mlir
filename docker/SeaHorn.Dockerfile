@@ -1,10 +1,14 @@
 # SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-# Separate LLVM 18 frontend builder: SeaHorn dev18 with clam/crab, z3 4.12.0.
-# No Yices: SeaHorn dev18 does not build with Yices >= 2.7 yet.
+# Separate LLVM 18 frontend builder: SeaHorn dev18 without clam/crab
+# (WITH_CLAM=OFF), z3 4.12.0, and the Yices 2.8.0 of the sea-mlir solvers stage.
 # Build from the sea-mlir source root; docker/release.py orchestrates the stages.
 ARG UBUNTU=ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+# the solvers stage of docker/Dockerfile (Yices at YICES_TAG); release.py
+# passes <image-prefix>:solvers
+ARG SOLVERS_IMAGE=sea-mlir-release:solvers
+FROM ${SOLVERS_IMAGE} AS solvers
 FROM ${UBUNTU} AS seahorn-base
 ARG DEBIAN_FRONTEND=noninteractive
 # LLVM 18 from apt.llvm.org (llvm-toolchain-noble-18, 18.1.8), as SeaHorn's
@@ -63,13 +67,13 @@ RUN set -eux; \
 
 FROM seahorn-z3 AS seahorn
 ARG JOBS=8
-# dev18 of seahorn, sea-dsa and llvm-seahorn; dev18 of clam (crab-llvm) and
-# dev of crab, the branches SeaHorn's `extra` target clones
+# dev18 of seahorn, sea-dsa and llvm-seahorn. Clam and crab are not built
+# (WITH_CLAM=OFF), so they have no pins (docs/design/BinaryRelease.md).
 ARG SEAHORN_REVISION=67474bf6d58fe923f5cbb5947def9e794ce613fe
 ARG SEADSA_REVISION=1e33f160e8c0b3f395176af019efd7f67f82a79b
 ARG LLVM_SEAHORN_REVISION=92258148416984b19111a44b9a2f660f7c4132a6
-ARG CLAM_REVISION=3eaf0164d6542962f603d156fd7fcc87c7165129
-ARG CRAB_REVISION=49773d0a5740c1fdb37afb15f6f9cc6cfba7b5ae
+# the version of YICES_TAG in docker/Dockerfile; the build refuses another
+ARG YICES_TAG=yices-2.8.0
 RUN set -eux; \
     mkdir -p /src/seahorn && cd /src/seahorn; \
     git init -q; \
@@ -88,20 +92,19 @@ RUN set -eux; \
     git remote add origin https://github.com/seahorn/llvm-seahorn.git; \
     git fetch -q --depth 1 origin "$LLVM_SEAHORN_REVISION"; \
     git checkout -q FETCH_HEAD; \
-    test "$(git rev-parse HEAD)" = "$LLVM_SEAHORN_REVISION"; \
-    cd ..; mkdir clam && cd clam; \
-    git init -q; \
-    git remote add origin https://github.com/seahorn/crab-llvm.git; \
-    git fetch -q --depth 1 origin "$CLAM_REVISION"; \
-    git checkout -q FETCH_HEAD; \
-    test "$(git rev-parse HEAD)" = "$CLAM_REVISION"; \
-    mkdir crab && cd crab; \
-    git init -q; \
-    git remote add origin https://github.com/seahorn/crab.git; \
-    git fetch -q --depth 1 origin "$CRAB_REVISION"; \
-    git checkout -q FETCH_HEAD; \
-    test "$(git rev-parse HEAD)" = "$CRAB_REVISION"
+    test "$(git rev-parse HEAD)" = "$LLVM_SEAHORN_REVISION"
+# SeaHorn's Yices >= 2.7 fix, not yet in dev18 (the patch's header)
+COPY docker/seahorn-yices.patch /src/seahorn-yices.patch
+RUN cd /src/seahorn && git apply /src/seahorn-yices.patch
+# the solvers stage's Yices: the same libyices.so.2.8 as sea-vc
+COPY --from=solvers /opt/solvers/include/yices.h /opt/solvers/include/yices_exit_codes.h \
+     /opt/solvers/include/yices_limits.h /opt/solvers/include/yices_types.h /opt/yices/include/
+COPY --from=solvers /opt/solvers/lib/libyices.so.2.8.0 /opt/yices/lib/
+# SeaHorn's FindYices2 also wants the executable (the bundle does not ship it)
+COPY --from=solvers /opt/solvers/bin/yices-smt2 /opt/yices/bin/
+RUN ln -s libyices.so.2.8.0 /opt/yices/lib/libyices.so.2.8 \
+ && ln -s libyices.so.2.8 /opt/yices/lib/libyices.so
 COPY docker/build-seahorn-release.sh /usr/local/bin/build-seahorn-release
-RUN JOBS="$JOBS" bash /usr/local/bin/build-seahorn-release
+RUN JOBS="$JOBS" YICES_TAG="$YICES_TAG" bash /usr/local/bin/build-seahorn-release
 ENV PATH=/opt/seahorn/bin:$PATH
 WORKDIR /work

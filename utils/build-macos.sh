@@ -33,8 +33,9 @@ usage: utils/build-macos.sh [options] [stage ...]
                    SeaHorn's z3: the sea-mlir pin (shared) or z3 4.12.0
                    (separate, as the Linux bundle; default)
     --seahorn-yices
-                   build SeaHorn with the Yices pin (needs a SeaHorn
-                   revision that builds with Yices >= 2.7)
+                   build SeaHorn with the Yices pin, as the Linux bundle
+                   (applies docker/seahorn-yices.patch, SeaHorn's
+                   Yices >= 2.7 fix, until the pin includes it)
   Every stage logs to $ROOT/logs/<stage>.log and appends its wall time to
   $ROOT/logs/timings.txt. A finished stage is redone when named again.
 EOF
@@ -108,11 +109,8 @@ SEAHORN_Z3_REVISION=$(arg "$SH" SEAHORN_Z3_REVISION)
 SEAHORN_REVISION=$(arg "$SH" SEAHORN_REVISION)
 SEADSA_REVISION=$(arg "$SH" SEADSA_REVISION)
 LLVM_SEAHORN_REVISION=$(arg "$SH" LLVM_SEAHORN_REVISION)
-CLAM_REVISION=$(arg "$SH" CLAM_REVISION)
-CRAB_REVISION=$(arg "$SH" CRAB_REVISION)
 for v in LLVM_COMMIT Z3_REVISION BITWUZLA_TAG YICES_TAG SEAHORN_Z3_REVISION \
-  SEAHORN_REVISION SEADSA_REVISION LLVM_SEAHORN_REVISION CLAM_REVISION \
-  CRAB_REVISION; do
+  SEAHORN_REVISION SEADSA_REVISION LLVM_SEAHORN_REVISION; do
   [ -n "${!v}" ] || die "pin $v not found (docker/Dockerfile, docker/SeaHorn.Dockerfile, LLVM_REVISION)"
 done
 
@@ -189,7 +187,7 @@ stage_check() {
   note "llvm@18: $("$BREW" list --versions llvm@18)"
   note "pins: llvm $LLVM_COMMIT z3 $Z3_REVISION bitwuzla $BITWUZLA_TAG yices $YICES_TAG"
   note "seahorn $SEAHORN_REVISION sea-dsa $SEADSA_REVISION llvm-seahorn $LLVM_SEAHORN_REVISION"
-  note "clam $CLAM_REVISION crab $CRAB_REVISION seahorn-z3 $SEAHORN_Z3_REVISION ($SEAHORN_Z3)"
+  note "seahorn-z3 $SEAHORN_Z3_REVISION ($SEAHORN_Z3), seahorn yices $SEAHORN_YICES, clam off"
 }
 
 stage_llvm() {
@@ -309,22 +307,24 @@ stage_seahorn() {
   fetch "$src" https://github.com/seahorn/seahorn.git "$SEAHORN_REVISION"
   fetch "$src/sea-dsa" https://github.com/seahorn/sea-dsa.git "$SEADSA_REVISION"
   fetch "$src/llvm-seahorn" https://github.com/seahorn/llvm-seahorn.git "$LLVM_SEAHORN_REVISION"
-  fetch "$src/clam" https://github.com/seahorn/crab-llvm.git "$CLAM_REVISION"
-  fetch "$src/clam/crab" https://github.com/seahorn/crab.git "$CRAB_REVISION"
   z3root=$SOLVERS
   [ "$SEAHORN_Z3" = shared ] || z3root=$SEAHORN_Z3_PREFIX
   if [ "$SEAHORN_YICES" = 1 ]; then
+    # fetch leaves an applied patch in place (same HEAD): apply it once
+    if ! git -C "$src" apply --reverse --check "$SRC/docker/seahorn-yices.patch" 2> /dev/null; then
+      git -C "$src" apply "$SRC/docker/seahorn-yices.patch"
+    fi
     yices=(-DYICES2_HOME="$SOLVERS" -DYICES2_INCLUDE_DIR="$SOLVERS/include"
       -DYICES2_LIBRARY="$SOLVERS/lib/libyices.dylib")
   fi
   # SeaHorn against Homebrew's llvm@18 (the apt.llvm.org 18.1.8 of the
   # Linux build); compiled by Apple clang; Apple ld (SEA_ENABLE_LLD off);
-  # clam/crab on (SeaHorn's default)
+  # clam/crab off, as the Linux bundle
   cmake -S "$src" -B "$build" -GNinja -DCMAKE_BUILD_TYPE=Release \
     -DLLVM_DIR="$llvm18/lib/cmake/llvm" \
     -DCMAKE_PREFIX_PATH="$(brew_prefix boost);$(brew_prefix gmp);$(brew_prefix mpfr)" \
     -DZ3_ROOT="$z3root" "${yices[@]}" \
-    -DWITH_CLAM=ON -DSEA_ENABLE_LLD=OFF \
+    -DWITH_CLAM=OFF -DSEA_ENABLE_LLD=OFF \
     -DCMAKE_INSTALL_PREFIX="$SEAHORN"
   ninja -C "$build" -j"$JOBS"
   rm -rf "$SEAHORN"

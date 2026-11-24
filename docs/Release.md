@@ -175,9 +175,10 @@ solver) link the solvers as shared libraries:
 
 Release binaries include z3, Bitwuzla and Yices. z3 and Bitwuzla are
 MIT-licensed. Yices is BSD-3-Clause from 2.8.0 (earlier releases are
-GPLv3). GMP is LGPL: the release links it dynamically, as a replaceable
-shared library, so a user can substitute a modified build. The release's Yices is built without
-MCSAT and links GMP only. A build from source without Yices
+GPLv3). GMP and MPFR are LGPL: the binary release tarballs do not include
+them (they ship no GPL-family code); Ubuntu supplies them (`libgmp10` is in
+the base image; `apt-get install libgmpxx4ldbl libmpfr6`). The release's
+Yices is built without MCSAT and links GMP only. A build from source without Yices
 (`-DSEA_ENABLE_YICES=OFF`, or Yices not found) rejects `--solver=yices` and
 the `--yices-*` options, and `sea-vc --version` prints `yices: not built`.
 

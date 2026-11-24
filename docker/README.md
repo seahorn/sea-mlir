@@ -47,12 +47,11 @@ this table in sync.
 | Bitwuzla | tag `0.9.1` (`BITWUZLA_TAG`) | MIT |
 | Yices | tag `yices-2.8.0` (`YICES_TAG`), without MCSAT; left out with `YICES=0` | BSD 3-Clause (GPLv3 before 2.8.0) |
 | CaDiCaL | tag from Bitwuzla's `subprojects/cadical.wrap` (currently `rel-2.1.2`); not set by hand | MIT |
-| SymFPU | revision from Bitwuzla's `subprojects/symfpu.wrap` (currently `40bdec0`); not set by hand | BSD 3-Clause |
-| SeaHorn | `SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` (dev18 `67474bf`) | Apache-2.0 WITH LLVM-exception; bundle held for approval |
+| SymFPU | revision from Bitwuzla's `subprojects/symfpu.wrap` (currently `40bdec0`); not set by hand | GPL-3.0 or BSD 3-Clause, at the user's choice; the release uses BSD 3-Clause |
+| SeaHorn | `SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` (dev18 `67474bf`), plus `docker/seahorn-yices.patch` (the Yices >= 2.7 fix, until it is in dev18) | Apache-2.0 WITH LLVM-exception |
 | sea-dsa | `SEADSA_REVISION` (dev18 `1e33f16`) | Apache-2.0 WITH LLVM-exception |
 | llvm-seahorn | `LLVM_SEAHORN_REVISION` (dev18 `9225814`) | Apache-2.0 WITH LLVM-exception |
-| clam | `CLAM_REVISION` (crab-llvm dev18 `3eaf016`) | Apache-2.0 |
-| crab | `CRAB_REVISION` (dev `49773d0`) | Apache-2.0; also the IKOS license (`IKOS_LICENSE.pdf`) |
+| clam, crab | not built (`WITH_CLAM=OFF`) | |
 | LLVM 18 for SeaHorn | `LLVM18_VERSION`: apt.llvm.org `llvm-toolchain-noble-18` 18.1.8, key checked by fingerprint | Apache-2.0 WITH LLVM-exception |
 | SeaHorn's z3 | `SEAHORN_Z3_REVISION`: z3 4.12.0 (`feda706`); SeaHorn does not work with the sea-mlir pin (`docs/design/BinaryRelease.md`) | MIT |
 
@@ -75,8 +74,9 @@ current at build time on top of the pinned base image.
 
 The runtime image and the release binaries include Yices. Yices is
 BSD-3-Clause from 2.8.0 (earlier releases are GPLv3). It is built without
-MCSAT, so it links GMP (LGPL, dynamically linked) and not LibPoly
-(docs/Release.md, "Runtime requirements"). `--build-arg YICES=0` builds
+MCSAT, so it links GMP and not LibPoly (docs/Release.md, "Runtime
+requirements"). The SeaHorn bundle's SeaHorn links the same
+`libyices.so.2.8`. `--build-arg YICES=0` builds
 the solvers and sea-mlir without it:
 
 ```bash
@@ -98,16 +98,14 @@ zone). Without `--until` there is no time limit:
 just binary-release ../release-output --plan
 just binary-release ../release-output
 just binary-release ../release-output --not-before 22:00 --until 07:00
-# Build the standalone artifact first, then the held SeaHorn bundle:
+# Build the standalone artifact first, then the SeaHorn bundle:
 just binary-release ../release-output --bundle
 ```
 
 The output directory must be outside the source tree. Each run records its
 source revision, whether the checkout was dirty, image IDs, stage times,
 logs and artifact hashes in `release-run.json`. Tarballs, SHA-256 files and
-package manifests go in `artifacts/`; the held SeaHorn bundle goes in
-`artifacts/held/` and its files end in `-held`, so `artifacts/*.tar.gz` holds
-only files that can go to release review. A dirty checkout is marked
+package manifests go in `artifacts/`. A dirty checkout is marked
 `-dirty` in the version string of the built tools. Use a clean, committed checkout for
 artifacts intended for review. The job never publishes them.
 
@@ -135,15 +133,32 @@ The manifest records the packaged files and resolved ELF dependencies.
 Packaging fails when a copied shared library has neither an owning Ubuntu
 package (whose copyright file is included) nor a known upstream license, or
 when a dependency would resolve outside the package.
+
+No GPL-family code (GPL, LGPL, AGPL) is shipped. GMP, GMPXX and MPFR (LGPL)
+stay Ubuntu packages: `libgmp10` is in the base image, and the runtime
+needs `apt-get install libgmpxx4ldbl libmpfr6`. The license gate of
+`docker/package-release.py` fails the build unless every shipped file
+matches a rule of `FILE_RULES` whose component license (`COMPONENTS`) has an
+alternative made only of `ALLOWED_LICENSES`. The licenses of sea-mlir,
+SeaHorn, sea-dsa and llvm-seahorn are their REUSE `LICENSES/` directories,
+so a GPL file added to one of them fails the gate. The manifest's
+`license_audit` lists each component, its license and its file count;
+`docker/test_package_release.py` tests the gate.
+
 The smoke test checks the version (with Yices), SAT with counterexample
 replay (with z3 and with Yices), and UNSAT after relocating the tarball
 into a fresh container.
 
 ### SeaHorn bundle
 
-`--bundle` builds SeaHorn dev18 with clam/crab separately against LLVM
-18.1.8 from apt.llvm.org, with the source and dependency pins in
-`docker/SeaHorn.Dockerfile`. SeaHorn uses
+`--bundle` builds SeaHorn dev18 without clam/crab (`WITH_CLAM=OFF`) and
+with Yices separately against LLVM 18.1.8 from apt.llvm.org, with the
+source and dependency pins in `docker/SeaHorn.Dockerfile`. It takes the
+Yices headers and `libyices.so.2.8` from the `solvers` image
+(`SOLVERS_IMAGE`), so SeaHorn and sea-vc share one Yices 2.8.0 library;
+the build refuses a Yices other than `YICES_TAG` or older than 2.8.0.
+SeaHorn's test corpus (`share/seahorn/test`) is left out: it contains
+inputs derived from Linux kernel sources (GPL-2.0). SeaHorn uses
 Z3 4.12; sea-mlir uses a z3 master commit (5.4.2). The bundle preserves their distinct shared
 library names. The builders exchange programs through the exported MLIR
 text format and do not share an LLVM installation.
@@ -151,7 +166,9 @@ text format and do not share an LLVM installation.
 The bundle adds the `sea` Python driver and SeaHorn executables, but no C
 compiler. Its Ubuntu runtime installs `clang-18` and Python 3. The clean
 container smoke compiles C fixtures with `sea yama -y sea-mlir-export`,
-then checks both SAT/replay and UNSAT with `sea-vc`. For a C input, use
+then checks both SAT/replay and UNSAT with `sea-vc`, and runs SeaHorn's
+BMC with its Yices backend (`sea bpf -m64 --bmc=mono
+--horn-bmc-solver=smt-y2`) on both. For a C input, use
 SeaHorn's assertion header and the profile's export option:
 
 ```bash
@@ -164,8 +181,7 @@ that include system headers need an additional multilib toolchain.
 The smoke fixtures retain symbolic inputs through export, so both verdicts
 exercise the backend.
 
-The bundle is `artifacts/held/sea-mlir-bundle-VERSION-linux-x86_64-held.tar.gz`
-(with its `.sha256` and manifest). The SeaHorn artifact and bundle are **held until the maintainer approves their distribution** (SeaHorn, sea-dsa and llvm-seahorn are relicensed; crab's IKOS terms are open).
-Their notices and marker files record that restriction. A successful build
-or smoke test does not authorize distribution. The standalone sea-mlir
-artifact can proceed to release review independently.
+The bundle is `artifacts/sea-mlir-bundle-VERSION-linux-x86_64.tar.gz`
+(with its `.sha256` and manifest). VERSION is the sea-mlir version: the
+bundle is a sea-mlir release with SeaHorn as a dependency, and the SeaHorn
+commits are in the manifest (`"seahorn"`).

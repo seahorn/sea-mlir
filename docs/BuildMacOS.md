@@ -16,7 +16,7 @@ What gets built, each at the pin the Linux release uses:
 | Yices | `YICES_TAG` in `docker/Dockerfile` | `$ROOT/install/solvers` |
 | sea-mlir | this checkout | `$ROOT/install/sea-mlir` |
 | z3 for SeaHorn | `SEAHORN_Z3_REVISION` in `docker/SeaHorn.Dockerfile` (4.12.0) | `$ROOT/install/seahorn-z3` |
-| SeaHorn, sea-dsa, llvm-seahorn, clam, crab | the `*_REVISION` arguments of `docker/SeaHorn.Dockerfile` | `$ROOT/install/seahorn` |
+| SeaHorn, sea-dsa, llvm-seahorn (without clam/crab) | the `*_REVISION` arguments of `docker/SeaHorn.Dockerfile` | `$ROOT/install/seahorn` |
 | LLVM 18 for SeaHorn | Homebrew `llvm@18` (not built) | |
 
 `$ROOT` is `~/sea-macos` unless `--root` or `SEA_MACOS_ROOT` says
@@ -71,7 +71,8 @@ default `-m32`. A full run without `--keep-going` therefore stops at the
 Options: `--jobs N` (default: all cores), `--seahorn-z3 shared` (SeaHorn
 against the sea-mlir z3 instead of 4.12.0; on Linux this breaks Spacer,
 see [design/BinaryRelease.md](design/BinaryRelease.md)), `--seahorn-yices`
-(needs a SeaHorn revision that builds with Yices 2.8).
+(SeaHorn with the Yices pin, as the Linux bundle; the script applies
+`docker/seahorn-yices.patch` until the SeaHorn pin contains the fix).
 
 ## 3. What the script does differently from Linux
 
