@@ -57,10 +57,11 @@ if(SEA_WITH_YICES)
 endif()
 
 if(SEA_WITH_BITWUZLA)
-  # tools run without LD_LIBRARY_PATH
-  get_filename_component(BITWUZLA_LIBRARY_DIR ${BITWUZLA_LIBRARY} DIRECTORY)
+  # Linked by full path: CMake puts its directory in the build RPATH and,
+  # with CMAKE_INSTALL_RPATH_USE_LINK_PATH (the default, top-level
+  # CMakeLists.txt), in the install RPATH. No explicit -rpath: it would stay
+  # in an install configured to be relocatable (USE_LINK_PATH=OFF).
   target_link_libraries(SeaExpr PUBLIC ${BITWUZLA_LIBRARY})
-  target_link_options(SeaExpr PUBLIC "LINKER:-rpath,${BITWUZLA_LIBRARY_DIR}")
   foreach(t SeaExpr obj.SeaExpr)
     target_include_directories(${t} SYSTEM PUBLIC ${BITWUZLA_INCLUDE_DIR})
     target_compile_definitions(${t} PUBLIC WITH_BITWUZLA)
