@@ -119,20 +119,16 @@ namespace {
 struct CV {
   Expr e;
   bool found;
-  ExprSet seen;
 
-  CV(const CV &o) : e(o.e), found(o.found), seen(o.seen) {
-    llvm_unreachable(nullptr);
-  }
+  CV(const CV &o) : e(o.e), found(o.found) { llvm_unreachable(nullptr); }
 
   CV(Expr exp) : e(exp), found(false) {}
 
   VisitAction operator()(Expr exp) {
-    if (found || seen.count(exp) > 0 || e == exp) {
+    if (found || e == exp) {
       found = true;
       return VisitAction::skipKids();
     }
-    seen.insert(e);
     return VisitAction::doKids();
   }
 };
