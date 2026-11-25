@@ -158,8 +158,17 @@ and that the C compiler is Ubuntu's 18.1.3, not 18.1.8.
 
 ### License audit
 
-Rule: a release distributes no GPL-family code (GPL, LGPL, AGPL). The
-license gate in `docker/package-release.py` enforces it at packaging time:
+Rule: a release distributes no GPL-family code (GPL, LGPL, AGPL).
+
+Decision (LGPL): LGPL libraries are runtime dependencies of the package,
+not part of it: `apt-get` packages for the tarball, `depends_on` for
+Homebrew (Homebrew's own practice for `gmp` and `mpfr`). Every binary links
+them dynamically (checked: no GMP or MPFR symbols are defined in a shipped
+file). Bundling them later is allowed, as unmodified shared libraries with
+the LGPL-3.0 and GPL-3.0 texts and the URLs of their source tarballs, under
+a gate rule naming those files only; LGPL stays refused everywhere else.
+
+The license gate in `docker/package-release.py` enforces it at packaging time:
 every shipped file must match a rule of `FILE_RULES`, which names its
 component; the component's license (`COMPONENTS`) must have an SPDX
 alternative made only of `ALLOWED_LICENSES` (0BSD, Apache-2.0,
@@ -284,6 +293,44 @@ the binary releases.
 - **Linux bottles** use Homebrew's own glibc and GCC runtime, independent
   of the Ubuntu tarball.
 
+### Installed paths
+
+Homebrew installs each formula into its own keg and links `bin/` and
+`share/` into the prefix (`/opt/homebrew` on macOS arm64,
+the `linuxbrew` user's home on Linux); `libexec/` is never linked.
+
+| what | tarball (`<root>` = unpacked directory) | Homebrew (`$(brew --prefix)`, keg `$(brew --prefix sea-mlir)`) |
+|---|---|---|
+| tools | `<root>/bin/sea-vc` ... | `$(brew --prefix)/bin/sea-vc` ... (links into the keg) |
+| SeaHorn | `<root>/bin/sea` | `$(brew --prefix)/bin/sea` (env script: `llvm@18`'s `bin` first on `PATH`) |
+| solvers | `<root>/lib/libz3.so.*`, `libyices`, `libbitwuzla*` | `$(brew --prefix sea-mlir)/libexec/lib`; SeaHorn's z3 4.12 in `$(brew --prefix seahorn)/libexec/lib` |
+| profiles | `<root>/share/sea-mlir/profiles` | `$(brew --prefix)/share/sea-mlir/profiles` |
+| docs | `<root>/share/doc/sea-mlir/docs` | `$(brew --prefix)/share/doc/sea-mlir/docs` |
+| SeaHorn data | `<root>/share/seahorn`, `<root>/lib/seapy` | in the `seahorn` keg (`share/seahorn`, `libexec`) |
+| pins, hashes | `<root>/RELEASE-MANIFEST.json` | `$(brew --prefix sea-mlir)/RELEASE-MANIFEST.json` |
+
+In both, the tools find their libraries relative to the binary
+(`$ORIGIN/../lib`, `@loader_path`), so neither needs `LD_LIBRARY_PATH`;
+the tarball user adds `<root>/bin` to `PATH`.
+
+### Docs for agents
+
+Each tool's `--agent` is the first stop; it cites the long pages as
+`docs/agents/slow-vc.md`, `docs/design/Ackermann.md` and so on, relative to
+the docs root. Both packages install that root, at the version of the
+binary, but nothing yet tells an agent where it is. Proposal:
+
+- every `--agent` guide starts with a `DOCS:` line computed at run time:
+  `<exe>/../share/doc/sea-mlir/docs` when it exists (an install), else the
+  source tree's `docs/` (a build directory), and the web site
+  (https://seahorn.github.io/sea-mlir/, which follows `main`, not the
+  release); a test checks that every `docs/...` path a guide cites
+  exists;
+- the tarball's top-level `README.md` is a sea-mlir release README (today
+  the bundle's is SeaHorn's): the paths of this table, the apt line, and
+  `share/doc/sea-mlir/docs/agents/index.md` as the agents' entry page;
+- the formula's `caveats` print the docs path.
+
 ### Bottles
 
 The tap gets the workflows `brew tap-new` generates: `tests.yml` runs
@@ -392,6 +439,8 @@ Homebrew bottles only.
 - **Clam / crab**: off (section 1); revisit with pins and crab's IKOS
   terms.
 - **macOS tarball**: bottles only (section 4); a tarball only on request.
+- **Docs for agents**: the `DOCS:` line, the release README and the
+  caveats (section 3, "Docs for agents").
 
 ## 7. Release-day checklist
 
