@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+# Runner labels newer than the pinned actionlint knows (the GitHub-hosted
+# ubuntu-26.04 runner of release-test.yml); drop an entry once actionlint
+# lists the label.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
