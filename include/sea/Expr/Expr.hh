@@ -57,7 +57,9 @@
 
 namespace expr {
 namespace op {}
-/** Size of an expression as a DAG */
+/** Size of an expression as a DAG: its distinct nodes (the roots' nodes
+    once, nulls skipped; nodes of one factory: a scoped mark set,
+    ScopedMarks.hh) */
 size_t dagSize(Expr e);
 size_t dagSize(const ExprVector &vec);
 /** A term as a log value: printed when its DAG has at most 64 nodes, else

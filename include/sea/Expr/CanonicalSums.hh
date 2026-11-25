@@ -54,6 +54,7 @@
 // corner values, when the miter is unknown).
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/ExprOpBv.hh"
+#include "sea/Expr/ScopedMarks.hh"
 #include "sea/Expr/SmallArith.hh"
 #include "sea/Expr/TypeChecker.hh"
 
@@ -109,8 +110,10 @@ public:
   };
 
   /// \p query with every maximal linear term and every equality with a
-  /// linear side in the canonical form.
+  /// linear side in the canonical form. Once per object (image() answers
+  /// for that query).
   Expr rewrite(const Expr &query) {
+    assert(!m_efac && "one rewrite per CanonicalSums");
     m_efac = &query->efac();
     if (m_eq == EqForm::Unshared || m_inner == InnerForm::SharedLeaf)
       countUses(query);
@@ -190,22 +193,24 @@ private:
   /// post-order over the input: the form of each linear node, the rebuilt
   /// term of every other node
   void walk(const Expr &root) {
+    // the visited nodes (m_pin keeps them, and the leaves, after the walk)
+    ScopedExprSet visited(efac(), "canonical-sums");
     std::vector<std::pair<ENode *, bool>> stack{{root.get(), false}};
     while (!stack.empty()) {
       auto [n, done] = stack.back();
-      if (m_visited.count(n)) {
+      if (visited.contains(n)) {
         stack.pop_back();
         continue;
       }
       if (!done) {
         stack.back().second = true;
         for (size_t i = n->arity(); i-- > 0;)
-          if (!m_visited.count(n->arg(i)))
+          if (!visited.contains(n->arg(i)))
             stack.push_back({n->arg(i), false});
         continue;
       }
       stack.pop_back();
-      m_visited.insert(n);
+      visited.insert(n);
       m_pin.push_back(Expr(n));
       visit(n);
     }
@@ -547,7 +552,6 @@ private:
   std::unordered_map<ENode *, Key> m_base;
   std::map<std::tuple<ENode *, unsigned, unsigned>, Expr> m_spelling;
   std::unordered_set<ENode *> m_linear;
-  std::unordered_set<ENode *> m_visited;
   std::vector<Expr> m_pin;
   Stats m_stats;
 };

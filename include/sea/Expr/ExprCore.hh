@@ -43,6 +43,16 @@ class ENode;
 class ExprFactory;
 class ExprFactoryAllocator;
 class TypeChecker;
+struct ExprMarkAccess;
+
+/// Mark invariants of the Expr core (ScopedMarks.hh; always checked):
+/// expr.marks-exhausted (no free mark bit for a new scope: \p factory's live
+/// leases are listed), expr.marks-factory (a node of factory \p other given
+/// to a scope of \p factory). Prints the kind and the leases to stderr and
+/// aborts; out of line (ExprCore.cpp).
+[[noreturn]] void fatalMarks(const char *kind, const ExprFactory *factory,
+                             const ExprFactory *other,
+                             const char *owner = nullptr, unsigned want = 0);
 
 using Expr = boost::intrusive_ptr<ENode>;
 using ExprSet = std::set<Expr>;
@@ -152,6 +162,13 @@ protected:
   /// \brief Operator labeling the node
   std::unique_ptr<Operator, EFADeleter> m_oper;
 
+  /// Mark bits of the live scopes (ScopedMarks.hh), one bit per lease of
+  /// the factory (ExprFactory::leaseMarks). Not part of the term: no hash,
+  /// equality, id or printing reads it. 0 when the node is made, recycled
+  /// and freed. Last member: the node is 64 bytes, the small pool's chunk
+  /// (static_assert after ExprFactoryAllocator).
+  uint64_t marks = 0;
+
   /// Release one reference. Releasing a node whose count is 0 is a bug
   /// (expr.refcount-underflow): a published node in its adoption interval
   /// (count 0 until the first Expr wraps it) has no reference to release.
@@ -238,6 +255,7 @@ public:
   friend class ExprFactory;
   friend struct std::less<expr::ENode *>;
   friend struct ExprCoreTestAccess;
+  friend struct ExprMarkAccess;
 };
 
 inline std::ostream &operator<<(std::ostream &OS, const ENode &V) {
@@ -338,6 +356,10 @@ struct CacheStubImpl : CacheStub {
 };
 
 class ExprFactoryAllocator {
+public:
+  /// the object sizes of the two pools
+  static constexpr size_t kTinyChunk = 8, kSmallChunk = 64;
+
 private:
   /** pool for tiny objects */
   boost::pool<> tiny;
@@ -345,7 +367,7 @@ private:
   boost::pool<> small;
 
 public:
-  ExprFactoryAllocator() : tiny(8, 65536), small(64, 65536) {}
+  ExprFactoryAllocator() : tiny(kTinyChunk, 65536), small(kSmallChunk, 65536) {}
   ExprFactoryAllocator(const ExprFactoryAllocator &) = delete;
 
   void *allocate(size_t n);
@@ -353,6 +375,11 @@ public:
 
   EFADeleter get_deleter();
 };
+
+// A node is one chunk of the small pool. A member that grows ENode past it
+// moves every node to operator new: decide that, do not let it happen.
+static_assert(sizeof(ENode) <= ExprFactoryAllocator::kSmallChunk,
+              "ENode outgrew the small pool chunk of ExprFactoryAllocator");
 
 class ExprFactory : boost::noncopyable {
 protected:
@@ -516,6 +543,46 @@ private:
   void freeNode(ENode *n);
   ENode *allocNode(const Operator &op);
 
+  /// The mark bits leased to live scopes (ScopedMarks.hh), and the owner
+  /// named by each lease (for expr.marks-exhausted). Single-threaded, like
+  /// the whole factory.
+  uint64_t markLeases = 0;
+  const char *markOwners[64] = {};
+
+public:
+  /// Leases \p n (1 or 2) free mark bits to the scope \p owner (a string
+  /// with static lifetime): their mask, the lowest free bits. No free bits:
+  /// expr.marks-exhausted, a hard failure (a leaked or runaway nested
+  /// scope; there is no fallback).
+  uint64_t leaseMarks(unsigned n, const char *owner) {
+    uint64_t got = 0;
+    uint64_t free = ~markLeases;
+    for (unsigned i = 0; i < n; ++i) {
+      if (LLVM_UNLIKELY(!free))
+        fatalMarks("expr.marks-exhausted", this, nullptr, owner, n);
+      uint64_t bit = free & -free;
+      free &= ~bit;
+      got |= bit;
+    }
+    markLeases |= got;
+    for (uint64_t b = got; b; b &= b - 1)
+      markOwners[__builtin_ctzll(b)] = owner;
+    return got;
+  }
+  /// Returns the bits \p mask of a lease; every node's bits of it are
+  /// clear (the scope cleared its log).
+  void releaseMarks(uint64_t mask) {
+    assert((markLeases & mask) == mask && "releasing a mark bit not leased");
+    markLeases &= ~mask;
+    for (uint64_t b = mask; b; b &= b - 1)
+      markOwners[__builtin_ctzll(b)] = nullptr;
+  }
+  /// The leased mark bits (tests, expr.marks-exhausted).
+  uint64_t marksLeased() const { return markLeases; }
+  /// The owner of leased bit \p i, or null.
+  const char *markOwner(unsigned i) const { return markOwners[i]; }
+
+private:
 public:
   ExprFactory() : idCount(0) {}
   /// The nodes made so far, freed ones included (the ids handed out): a
@@ -648,6 +715,9 @@ namespace expr {
 /// destroys the node and frees it.
 inline void ExprFactory::freeNode(ENode *n) {
   assert(n->count == 0);
+  // a scope holds a reference to every node it marked: a marked node
+  // reaching count 0 is a scope that did not clear its bits
+  assert(n->marks == 0 && "a node freed with a mark bit set");
   for (ENode *a : n->args)
     Deref(a);
   n->args.clear();
@@ -662,6 +732,7 @@ inline void ExprFactory::freeNode(ENode *n) {
 }
 
 inline ExprFactory::~ExprFactory() {
+  assert(markLeases == 0 && "a mark scope outlives its factory");
   for (ENode *n : freeList) {
     n->~ENode();
     operator delete(static_cast<void *>(n), allocator);
@@ -677,6 +748,8 @@ inline ENode *ExprFactory::allocNode(const Operator &op) {
   res->m_oper = std::unique_ptr<Operator, EFADeleter>(op.clone(allocator),
                                                       allocator.get_deleter());
   assert(res->count == 0);
+  assert(res->marks == 0 && "a recycled node with a mark bit set");
+  res->marks = 0; // recycled storage: no constructor ran
   return res;
 }
 

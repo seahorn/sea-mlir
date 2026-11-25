@@ -23,6 +23,7 @@
 #include "sea/Expr/ExprMlir.hh"
 #include "sea/Expr/InitialWords.hh"
 #include "sea/Expr/ReadCells.hh"
+#include "sea/Expr/ScopedMarks.hh"
 #include "sea/Expr/SeaMRules.hh"
 #include "sea/Expr/Smt/Yices2SolverImpl.hh"
 #include "sea/Expr/SumNames.hh"
@@ -8235,11 +8236,11 @@ int main(int argc, char **argv) {
       raw_ostream &os = statOut();
       os << "vc.dag-size: " << expr::dagSize(query) << "\n";
       std::map<std::string, size_t> perOp;
-      llvm::DenseSet<const expr::ENode *> seen;
-      llvm::SmallVector<const expr::ENode *> stack{query.get()};
+      expr::ScopedExprSet seen(query->efac(), "dag-stats");
+      llvm::SmallVector<expr::ENode *> stack{query.get()};
       while (!stack.empty()) {
-        const expr::ENode *n = stack.pop_back_val();
-        if (!seen.insert(n).second)
+        expr::ENode *n = stack.pop_back_val();
+        if (!seen.insert(n))
           continue;
         ++perOp[n->op().name()];
         for (auto it = n->args_begin(), end = n->args_end(); it != end; ++it)

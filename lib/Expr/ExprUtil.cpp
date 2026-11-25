@@ -6,6 +6,9 @@
 #include "sea/Expr/ExprNumericUtils.hh"
 #include "sea/Expr/ExprSimplifier.hh"
 #include "sea/Expr/ExprVisitor.hh"
+#include "sea/Expr/ScopedMarks.hh"
+
+#include <algorithm>
 /// yet to be refactored
 
 namespace expr {
@@ -63,14 +66,31 @@ struct SIZE {
     return VisitAction::doKids();
   }
 };
+
+/// the distinct nodes reachable from the roots [b, e) (nulls skipped): a
+/// read-only walk with a scoped mark set
+template <typename It>
+size_t dagSizeOf(It b, It e) {
+  It first = std::find_if(b, e, [](const Expr &r) { return bool(r); });
+  if (first == e)
+    return 0;
+  ScopedExprSet seen((*first)->efac(), "dagSize");
+  llvm::SmallVector<ENode *, 64> stack;
+  for (; b != e; ++b)
+    if (*b)
+      stack.push_back(b->get());
+  while (!stack.empty()) {
+    ENode *n = stack.pop_back_val();
+    if (!seen.insert(n))
+      continue;
+    stack.append(n->args_begin(), n->args_end());
+  }
+  return seen.size();
+}
 } // namespace
 
 /** Size of an expression as a DAG */
-size_t dagSize(Expr e) {
-  SIZE sz;
-  dagVisit(sz, e);
-  return sz.count;
-}
+size_t dagSize(Expr e) { return dagSizeOf(&e, &e + 1); }
 
 std::string termForLog(Expr e) {
   constexpr size_t kLimit = 64;
@@ -85,9 +105,7 @@ std::string termForLog(Expr e) {
 }
 
 size_t dagSize(const ExprVector &vec) {
-  SIZE sz;
-  dagVisit(sz, vec);
-  return sz.count;
+  return dagSizeOf(vec.begin(), vec.end());
 }
 
 /** Size of an expression as a tree */

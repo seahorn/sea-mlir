@@ -54,6 +54,18 @@ sea-mlir uses Expr for SMT terms only. Changes from SeaHorn:
   `FUNCTIONAL_TY`). A bit-vector sort of width 0 and a narrowing
   `zext` / `sext` are ill-sorted.
 
+`ScopedMarks.hh` (new in sea-mlir): transient node sets without a hash
+table. `ENode` has 64 mark bits (the node stays 64 bytes, one chunk of the
+factory's small pool; a static_assert keeps it there); `ScopedExprSet`
+leases one bit from the factory and `ScopedUseCount` two (0, 1 or more
+than one use) for their lifetime, so nested scopes are independent. A
+scope holds a reference to every node it marked and clears its bits on
+them before it releases them. 64 live leases on one factory is
+`expr.marks-exhausted`, a hard failure that lists the live leases (no
+fallback: it would hide a leaked scope). Single-threaded, like the factory.
+Users: `dagSize`, `sea-vc --dag-stats`, `CanonicalSums`' walk
+(`unittests/ExprCore`, `test/Expr/expr-core.test`).
+
 `ExprRewriter.hh` / `ExprRewriteRules.hh` (new in sea-mlir, not part of the
 SeaHorn dev18 port): the multi-step rewriter of SeaHorn's branch seam-dev14
 and a minimal rule set; see the comments at the top of `ExprRewriter.hh`
