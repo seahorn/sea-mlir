@@ -270,10 +270,6 @@ class PinTests(PrefixCase):
             pr.source_pins(self.root / "none")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SpdxTests(unittest.TestCase):
     def test_permissive_expressions_allowed(self):
         for expression in (
@@ -506,6 +502,42 @@ class BottleAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no license rule.*ldv_bounce"):
             pr.audit_bottle(self.bottle("seahorn", files))
 
+    def test_llvm_bottle_rules_are_explicit(self):
+        files = (
+            "bin/FileCheck",
+            "include/mlir/IR/Builders.h",
+            "lib/libMLIRIR.a",
+            "share/lit/lit.py",
+            "LLVM_REVISION",
+            "LICENSE.TXT",
+        )
+        report = pr.audit_bottle(self.bottle("sea-mlir-llvm", files))
+        self.assertEqual(report["components"]["llvm"]["files"], 4 + 1)
+        for extra in ("libexec/lib/libgmp.so.10", "COPYING", "share/gcc/x"):
+            with (
+                self.subTest(extra=extra),
+                self.assertRaisesRegex(RuntimeError, "no license rule"),
+            ):
+                pr.audit_bottle(self.bottle("sea-mlir-llvm", (*files, extra)))
+
+    def test_seahorn_doc_rules_are_explicit(self):
+        files = (
+            "bin/sea",
+            "share/doc/seahorn/third-party/seahorn-LICENSES/Apache-2.0.txt",
+            "share/doc/seahorn/third-party/sea-dsa-LICENSES/Apache-2.0.txt",
+            "share/doc/seahorn/third-party/llvm-seahorn-LICENSES/NCSA.txt",
+            "share/doc/seahorn/seahorn_license.txt",
+        )
+        pr.audit_bottle(self.bottle("seahorn", files))
+        with self.assertRaisesRegex(RuntimeError, "no license rule"):
+            pr.audit_bottle(
+                self.bottle("seahorn", (*files, "share/doc/seahorn/test/x.c"))
+            )
+
     def test_unknown_formula_refused(self):
         with self.assertRaisesRegex(RuntimeError, "no license rules for formula"):
             pr.audit_bottle(self.bottle("gmp", ("lib/libgmp.so.10",)))
+
+
+if __name__ == "__main__":
+    unittest.main()

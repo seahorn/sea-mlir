@@ -373,7 +373,17 @@ BOTTLE_RULES = {
         *BOTTLE_COMMON_RULES,
         ("LICENSE.TXT", "notices"),
         ("share/doc/sea-mlir-llvm/LICENSE.TXT", "notices"),
-        ("*", "llvm"),
+        # the install tree of LLVM + MLIR (measured), lit from llvm/utils
+        ("bin/*", "llvm"),
+        ("include/llvm/*", "llvm"),
+        ("include/llvm-c/*", "llvm"),
+        ("include/mlir/*", "llvm"),
+        ("include/mlir-c/*", "llvm"),
+        ("lib/*", "llvm"),
+        ("share/lit/*", "llvm"),
+        ("share/opt-viewer/*", "llvm"),
+        ("LLVM_REVISION", "llvm"),
+        ("README.md", "llvm"),
     ),
     "sea-mlir": (
         *BOTTLE_COMMON_RULES,
@@ -399,7 +409,12 @@ BOTTLE_RULES = {
     ),
     "seahorn": (
         *BOTTLE_COMMON_RULES,
-        ("share/doc/seahorn/*", "notices"),
+        ("share/doc/seahorn/third-party/*", "notices"),
+        ("share/doc/seahorn/LICENSE", "notices"),
+        ("share/doc/seahorn/LICENSES/*", "notices"),
+        ("share/doc/seahorn/NOTICE", "notices"),
+        ("share/doc/seahorn/THIRD-PARTY-NOTICES", "notices"),
+        ("share/doc/seahorn/seahorn_license.txt", "notices"),
         # Homebrew copies these from the source root into the keg
         ("LICENSE", "notices"),
         ("NOTICE", "notices"),
