@@ -25,12 +25,26 @@ xfailed=''
 
 is_elf() { [ "$(od -An -tx1 -N4 "$1" | tr -d ' \n')" = 7f454c46 ]; }
 
-# every ELF file resolves its libraries, each inside the prefix or in the
-# system's library directories (nothing of the build machine)
+# every ELF file (by its magic bytes; `file` may be absent) under bin/,
+# lib/ and libexec/ resolves its libraries, each inside the prefix or in
+# the system's library directories (nothing of the build machine)
 check_libs() {
-  for binary in "$prefix"/bin/* "$prefix"/lib/*.so*; do
-    if [ ! -f "$binary" ] || ! is_elf "$binary"; then continue; fi
-    dependencies=$(ldd "$binary")
+  for dir in bin lib libexec; do
+    if [ -d "$prefix/$dir" ]; then find "$prefix/$dir" -type f; fi
+  done > elf-candidates.txt
+  while IFS= read -r binary; do
+    is_elf "$binary" || continue
+    if ! dependencies=$(ldd "$binary" 2>&1); then
+      case "$dependencies" in
+        *'not a dynamic executable'*|*'statically linked'*)
+          printf 'ldd: %s: static\n' "$binary"; continue ;;
+      esac
+      printf 'ldd: %s\n%s\n' "$binary" "$dependencies"
+      return 1
+    fi
+    case "$dependencies" in
+      *'statically linked'*) printf 'ldd: %s: static\n' "$binary"; continue ;;
+    esac
     printf 'ldd: %s\n%s\n' "$binary" "$dependencies"
     if printf '%s\n' "$dependencies" | grep 'not found'; then
       return 1
@@ -43,7 +57,7 @@ check_libs() {
           *) echo "outside the prefix and the system: $path"; exit 1;;
         esac
       done
-  done
+  done < elf-candidates.txt
 }
 
 # every tool runs; one sea-mlir version; the release solvers are linked
@@ -118,7 +132,9 @@ check_sat_bitwuzla() {
 }
 
 # no source path of the release build (docker/Dockerfile builds in
-# /src/sea-mlir): Tools/no-source-paths.test on the shipped binaries
+# /src/sea-mlir): Tools/no-source-paths.test on the shipped binaries. The
+# build directory's path (/build) is checked by that lit test only: too
+# generic a string to scan for here.
 check_build_paths() {
   found=0
   for tool in $tools; do

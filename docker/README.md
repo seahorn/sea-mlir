@@ -148,10 +148,12 @@ so a GPL file added to one of them fails the gate. The manifest's
 The smoke test (`docker/smoke/test-tarball.sh`, then `check.sh`) runs in a
 fresh container on the extracted tarball: every tool's version (with Yices
 and Bitwuzla), the `--agent` `DOCS:` line, SAT with counterexample replay
-(z3, Yices, Bitwuzla), UNSAT through the installed profile, library
-resolution inside the tree, and no build source path. Each check prints
-`check: <name> pass|FAIL`; `SMOKE_XFAIL` names checks an older tarball is
-known to fail. `.github/workflows/release-test.yml` runs the same script
+(z3, Yices, Bitwuzla), UNSAT through the installed profile, every library
+resolving inside the tree or the system's library directories, and no
+build source path. Each check prints `check: <name> pass|FAIL`;
+`SMOKE_XFAIL` names checks an older tarball is known to fail
+(release-test.yml and direct runs only; run.sh does not pass it into the
+container). `.github/workflows/release-test.yml` runs the same script
 on GitHub's runners against a published release.
 
 ### SeaHorn bundle

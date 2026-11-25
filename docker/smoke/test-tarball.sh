@@ -7,7 +7,8 @@
 # ASSETS holds the release's files (the tarball, its .sha256 and its .json
 # manifest; other files are ignored). Checks the SHA-256 file, extracts the
 # tarball into a new directory whose path has a space, and runs check.sh
-# from an empty working directory. VERSION, when given, must be the
+# from an empty working directory; the directory is removed at exit
+# (SMOKE_KEEP=1 keeps it). VERSION, when given, must be the
 # version in the file names. Used by .github/workflows/release-test.yml
 # and, inside a clean container, by run.sh.
 set -eu
@@ -36,11 +37,23 @@ if [ -n "$want" ] && [ "$want" != "$version" ]; then
 fi
 [ -f "$assets/$archive.sha256" ] || { echo "missing $archive.sha256" >&2; exit 1; }
 [ -f "$assets/$package.json" ] || { echo "missing $package.json" >&2; exit 1; }
-grep -q "\"name\": \"$package\"" "$assets/$package.json" ||
+grep -qF "\"name\": \"$package\"" "$assets/$package.json" ||
   { echo "$package.json names another package" >&2; exit 1; }
 (cd "$assets" && sha256sum -c "$archive.sha256")
 # outside any checkout, under a name with a space: the tarball is relocatable
 root=$(mktemp -d "${TMPDIR:-/tmp}/sea-mlir-test.XXXXXX")
+# removed at exit (check.sh prints its logs); SMOKE_KEEP=1 keeps it
+cleanup() {
+  cd /
+  if [ "${SMOKE_KEEP:-0}" = 1 ]; then
+    echo "kept: $root"
+  else
+    chmod -R u+w "$root" && rm -rf "$root"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 mkdir "$root/install dir" "$root/work"
 tar -xzf "$assets/$archive" -C "$root/install dir"
 [ -d "$root/install dir/$package/bin" ] || { echo "no $package/bin in $archive" >&2; exit 1; }
