@@ -246,7 +246,7 @@ log: <tag> [<msg>] k=v k=v ... [at <loc>]
   bytes as `\xNN`). A number that is not finite is `nan`, `inf` or `-inf`
   (a JSON string in jsonl).
 - Terms are printed when they have at most 64 nodes, otherwise as
-  `#<id> (<n> nodes)`.
+  `#<id> (> 64 nodes)` (the size is not counted: at most 65 nodes are walked).
 - `<loc>` is the MLIR location of the operation, when there is one.
 - Lines carry no timestamps, so test output stays deterministic. A
   duration is a field, `time=<seconds>`.

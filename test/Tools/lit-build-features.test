@@ -1,0 +1,10 @@
+# Every build- or host-dependent lit feature goes through build_feature()
+# in test/lit.cfg.py, so a test that needs a feature this build lacks is
+# left out of collection instead of showing as UNSUPPORTED. A direct
+# config.available_features.add() of a new feature would bring the
+# UNSUPPORTED line back; the only direct calls allowed are the helper's
+# own and disabled-test (which shows as UNSUPPORTED on purpose).
+RUN: grep 'available_features\.add(' %S/../lit.cfg.py | not grep -v -e '^#' -e 'add(name)$' -e 'add("disabled-test")$'
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

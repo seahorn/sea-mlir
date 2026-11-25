@@ -56,7 +56,9 @@ as `vc.config`; include other files with `@file` instead.
 examples of the format, not recommended defaults:
 
 - `seam.cfg`: `--lower --seam`;
-- `seam-wide.cfg`: `@seam.cfg` and `--seam-wide`.
+- `seam-wide.cfg`: `@seam.cfg` and `--seam-wide`;
+- `canonical.cfg`: the canonical linear forms and a z3 tactic, opt-in
+  (`--config=seam --config=canonical`; docs/Profiles.md).
 
 ```text
 # seam-wide.cfg - an EXAMPLE sea-vc profile (sea-vc --config=seam-wide), not

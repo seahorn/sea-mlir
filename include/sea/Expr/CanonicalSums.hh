@@ -21,7 +21,9 @@
 // as
 //     P,   (bvadd P c),   (bvadd (bvadd P (bvnot N)) c+1),
 //     (bvnot N),   (bvadd (bvnot N) c+1),   or the numeral c
-// (c+1 folded modulo 2^w; a zero numeral is not written), where
+// (c+1 folded modulo 2^w; a zero numeral is not written; NegForm::Sub
+// writes a negative chain as a subtraction instead: (bvsub P N),
+// (bvsub (bvadd P c) N), (bvsub c N) with c also 0), where
 //  - P is the n-ary bvadd of the positive leaves (one leaf: the leaf), N the
 //    n-ary bvadd of the negative ones; a coefficient k > 2^(w-1) goes into
 //    N as 2^w - k, every other coefficient k != 1 is (bvmul k leaf);
@@ -36,25 +38,30 @@
 //    canonical) sum: extracts are never pushed into a sum;
 //  - bvnot, and every bitwise operator, is a leaf: ~x stays ~x.
 // An equality with a linear side (a sum, not a single leaf or a numeral) is
-// balanced: the form D = a - b (or -D, the one with fewer negative leaves;
-// ties by the leaf keys, then by the constant) becomes (= P -c), (= (bvadd P c)
-// N) or (= P N), never one isolated term; an empty form is true or false.
+// balanced (EqForm: Balance; Unshared only when a side is a sum used once;
+// Keep never, each side then canonical on its own): the form D = a - b (or -D,
+// the one with fewer negative leaves; ties by the leaf keys, then by the
+// constant) becomes (= P -c), (= (bvadd P c) N) or (= P N), never one isolated
+// term; an empty form is true or false.
 //
 // Every step is an identity of SMT-LIB bit-vector arithmetic (no
 // assumption): the forms are equal to their terms modulo 2^w; P - N + c =
-// P + ~N + (c + 1); a = b iff a - b = 0 iff P + c = N; zext / concat 0 / low
-// extract of a leaf name its low bits. The unit test (sea-canonical-sums-
-// test) checks each case with a z3 miter, and random linear terms at several
-// widths with a miter (Yices, else Bitwuzla, else z3, with a limit) plus
-// random ground points checked in z3 (more, and corner values, when the
-// miter is unknown).
+// P + ~N + (c + 1) = (P + c) - N (Sub), -N + c = c - N; a = b iff a - b = 0 iff
+// P + c = N; zext / concat 0 / low extract of a leaf name its low bits. The
+// unit test (sea-canonical-sums-test) checks each case with a z3 miter, and
+// random linear terms at several widths with a miter (Yices, else Bitwuzla,
+// else z3, with a limit) plus random ground points checked in z3 (more, and
+// corner values, when the miter is unknown).
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/ExprOpBv.hh"
+#include "sea/Expr/ScopedMarks.hh"
 #include "sea/Expr/SmallArith.hh"
 #include "sea/Expr/TypeChecker.hh"
+#include "sea/Support/Diag.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <optional>
 #include <tuple>
@@ -67,21 +74,73 @@ namespace expr {
 
 class CanonicalSums {
 public:
+  /// How the negative chain N is written (sea-vc --vc-canonical-sums-neg):
+  /// Bvnot, P + ~N + (c+1): one adder chain, the negation as inverted bits;
+  /// Sub, (P + c) - N: the subtraction kept as such, for a solver that
+  /// reads sums as polynomials and ~N as a bit-array term.
+  enum class NegForm { Bvnot, Sub };
+
+  /// Which equalities with a sum side are balanced (sea-vc
+  /// --vc-canonical-sums-eq): Balance, every one; Unshared, one with a
+  /// side that is a sum used once in the input (that equality is its only
+  /// use), so an equality between shared sums keeps its two (canonical)
+  /// sides; Keep, none: each side is canonical on its own.
+  enum class EqForm { Balance, Unshared, Keep };
+
+  /// What a linear node inside a sum is (sea-vc --vc-canonical-sums-inner):
+  /// Flatten, its form is merged into its parent's (one flat form per
+  /// maximal linear term); SharedLeaf, a proper sum used more than once in
+  /// the input (the uses of EqForm::Unshared) is canonical on its own, one
+  /// node, and a leaf of each parent, equalities included.
+  enum class InnerForm { Flatten, SharedLeaf };
+
+  explicit CanonicalSums(NegForm neg = NegForm::Bvnot,
+                         EqForm eq = EqForm::Balance,
+                         InnerForm inner = InnerForm::Flatten)
+      : m_neg(neg), m_eq(eq), m_inner(inner) {}
+
   struct Stats {
-    uint64_t sums = 0;        ///< maximal linear terms emitted (not a leaf)
-    uint64_t sumsChanged = 0; ///< of them, a different node than the input
-    uint64_t leaves = 0;      ///< leaves of the emitted sums (P and N)
-    uint64_t eqs = 0;         ///< balanced equalities
-    uint64_t eqsChanged = 0;  ///< of them, a different node than the input
-    uint64_t opaque = 0;      ///< bvsub / bvneg of another arity: leaves
+    uint64_t sums = 0;          ///< maximal linear terms emitted (not a leaf)
+    uint64_t sumsChanged = 0;   ///< of them, a different node than the input
+    uint64_t leaves = 0;        ///< leaves of the emitted sums (P and N)
+    uint64_t eqs = 0;           ///< balanced equalities
+    uint64_t eqsChanged = 0;    ///< of them, a different node than the input
+    uint64_t eqsKeptShared = 0; ///< Unshared: not balanced, both sides shared
+    uint64_t eqsKept = 0;       ///< Keep: not balanced
+    uint64_t innerShared = 0;   ///< SharedLeaf: shared sums kept as leaves
+    uint64_t opaque = 0;        ///< bvsub / bvneg of another arity: leaves
   };
 
   /// \p query with every maximal linear term and every equality with a
-  /// linear side in the canonical form.
+  /// linear side in the canonical form. Once per object (image() answers
+  /// for that query; the walk's visited set is a scope of that call): a
+  /// second call is expr.canonical-sums-reused, a fatal error.
   Expr rewrite(const Expr &query) {
+    if (LLVM_UNLIKELY(m_efac != nullptr)) {
+      sea::diag::error("expr.canonical-sums-reused",
+                       "CanonicalSums::rewrite called twice on one object "
+                       "(one rewrite per object; a bug in the caller)");
+      std::abort();
+    }
     m_efac = &query->efac();
+    // the use counts and the shared sums met: scopes of this call (mark
+    // bits, ScopedMarks.hh); every query of them is made before it returns
+    std::optional<ScopedUseCount> uses;
+    std::optional<ScopedExprSet> sharedSeen;
+    if (m_eq == EqForm::Unshared || m_inner == InnerForm::SharedLeaf) {
+      uses.emplace(efac(), "canonical-sums.uses");
+      m_uses = &*uses;
+      countUses(query);
+    }
+    if (m_inner == InnerForm::SharedLeaf) {
+      sharedSeen.emplace(efac(), "canonical-sums.shared");
+      m_sharedSeen = &*sharedSeen;
+    }
     walk(query);
-    return imageOf(query.get());
+    Expr res = imageOf(query.get());
+    m_uses = nullptr;
+    m_sharedSeen = nullptr;
+    return res;
   }
 
   const Stats &stats() const { return m_stats; }
@@ -156,22 +215,24 @@ private:
   /// post-order over the input: the form of each linear node, the rebuilt
   /// term of every other node
   void walk(const Expr &root) {
+    // the visited nodes (m_pin keeps them, and the leaves, after the walk)
+    ScopedExprSet visited(efac(), "canonical-sums");
     std::vector<std::pair<ENode *, bool>> stack{{root.get(), false}};
     while (!stack.empty()) {
       auto [n, done] = stack.back();
-      if (m_visited.count(n)) {
+      if (visited.contains(n)) {
         stack.pop_back();
         continue;
       }
       if (!done) {
         stack.back().second = true;
         for (size_t i = n->arity(); i-- > 0;)
-          if (!m_visited.count(n->arg(i)))
+          if (!visited.contains(n->arg(i)))
             stack.push_back({n->arg(i), false});
         continue;
       }
       stack.pop_back();
-      m_visited.insert(n);
+      visited.insert(n);
       m_pin.push_back(Expr(n));
       visit(n);
     }
@@ -196,10 +257,54 @@ private:
     }
     if (isOpX<EQ>(n) && n->arity() == 2 &&
         (isSum(n->arg(0)) || isSum(n->arg(1)))) {
-      m_new.emplace(n, balance(n));
-      return;
+      if (m_eq == EqForm::Keep) {
+        ++m_stats.eqsKept;
+      } else if (m_eq == EqForm::Unshared && !soleUse(n->arg(0)) &&
+                 !soleUse(n->arg(1))) {
+        ++m_stats.eqsKeptShared;
+      } else {
+        m_new.emplace(n, balance(n));
+        return;
+      }
     }
     rebuild(n);
+  }
+
+  /// SharedLeaf: \p k is a proper sum with more than one use, a leaf of
+  /// its parents (counted once)
+  bool sharedLeaf(ENode *k) {
+    if (m_inner != InnerForm::SharedLeaf || !isSum(k))
+      return false;
+    if (!m_uses || !m_uses->shared(k))
+      return false;
+    if (m_sharedSeen->insert(k))
+      ++m_stats.innerShared;
+    return true;
+  }
+
+  /// a sum whose only use in the input is one argument slot (Unshared)
+  bool soleUse(ENode *side) const {
+    if (!isSum(side))
+      return false;
+    return m_uses && m_uses->count(side) == 1;
+  }
+
+  /// the uses of every node of the input, up to two: argument slots of its
+  /// distinct parents (a parent with the node in two slots counts two).
+  /// Callers ask 1 (soleUse) or more than 1 (sharedLeaf) only.
+  void countUses(const Expr &root) {
+    ScopedExprSet seen(efac(), "canonical-sums.count-uses");
+    std::vector<ENode *> stack{root.get()};
+    while (!stack.empty()) {
+      ENode *n = stack.back();
+      stack.pop_back();
+      if (!seen.insert(n))
+        continue;
+      for (size_t i = 0; i < n->arity(); ++i) {
+        m_uses->add(n->arg(i));
+        stack.push_back(n->arg(i));
+      }
+    }
   }
 
   /// a linear node with a proper form
@@ -258,7 +363,7 @@ private:
   /// numeral), or one leaf
   Form formOf(ENode *k, unsigned w) {
     auto it = m_form.find(k);
-    if (it != m_form.end())
+    if (it != m_form.end() && !sharedLeaf(k))
       return it->second;
     Form f;
     f.w = w;
@@ -357,6 +462,15 @@ private:
     split(f, pos, neg);
     Expr acc = chain(pos, f.w);
     mpz_class c = f.c;
+    if (!neg.empty() && m_neg == NegForm::Sub) {
+      // P - N + c = (P + c) - N; -N + c = c - N
+      Expr l = acc;
+      if (!l)
+        l = num(c, f.w);
+      else if (c != 0)
+        l = mk<BADD>(l, num(c, f.w));
+      return mk<BSUB>(l, chain(neg, f.w));
+    }
     if (!neg.empty()) {
       Expr n = mk<BNOT>(chain(neg, f.w));
       acc = acc ? Expr(mk<BADD>(acc, n)) : n;
@@ -447,6 +561,13 @@ private:
     return r;
   }
 
+  NegForm m_neg;
+  EqForm m_eq;
+  InnerForm m_inner;
+  /// during rewrite(): its use counts (Unshared, SharedLeaf) and the
+  /// shared sums counted in innerShared (SharedLeaf); null otherwise
+  ScopedUseCount *m_uses = nullptr;
+  ScopedExprSet *m_sharedSeen = nullptr;
   ExprFactory *m_efac = nullptr;
   TypeChecker m_tc;
   std::unordered_map<ENode *, Form> m_form;
@@ -454,7 +575,6 @@ private:
   std::unordered_map<ENode *, Key> m_base;
   std::map<std::tuple<ENode *, unsigned, unsigned>, Expr> m_spelling;
   std::unordered_set<ENode *> m_linear;
-  std::unordered_set<ENode *> m_visited;
   std::vector<Expr> m_pin;
   Stats m_stats;
 };

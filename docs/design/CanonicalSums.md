@@ -71,6 +71,102 @@ are the other bit-vector nodes, with their own kids rewritten first. A
 5. **Bitwise terms.** `bvnot`, `bvxor`, `bvand`, ... are leaves: `~x = y`
    stays as it is, and `~x + 1` stays the sum of the leaf `~x` and `1`.
 
+## Balancing equalities (`--vc-canonical-sums-eq`)
+
+Balancing an equality (item 3) cancels the terms its two sides share and
+builds a new chain for the rest. When both sides are sums that the query
+uses elsewhere too (an Ackermann pair of two address sums), the solver
+already has an adder for each side; the balanced equality adds another
+one, per equality, instead of comparing the two existing ones. Which
+equalities are balanced is a choice:
+
+- `balance` (default, not tuned): every equality with a sum side, as
+  above.
+- `unshared`: an equality is balanced only when one of its sides is a sum
+  that is used once. Otherwise it keeps its two sides, each the canonical
+  form of its own sum.
+- `keep`: no equality is balanced; each side's sum is canonical on its
+  own.
+
+*Used once* is exact: the uses of a node are counted in the step's input,
+the final query DAG before the step. A use is an argument slot of a
+distinct node of that DAG: a node appearing in two slots of one parent
+has two uses, and a node that is an inner part of another sum (a linear
+node under a linear node) is used there too. A side used once has the
+equality as its only use. Kept equalities are exact trivially: each side
+is replaced by an equal term.
+
+Counters: `vc.canonical-sums-eqs-balanced`, `-eqs-changed` (of the
+balanced ones), `-eqs-kept-shared` (`unshared`: equalities with a sum
+side whose sides are not used once), `-eqs-kept` (`keep`: equalities
+with a sum side). The stat line names the mode,
+`eq=balance|unshared|keep`.
+
+## Shared inner sums (`--vc-canonical-sums-inner`)
+
+A maximal linear term is one flat form: every sum inside it is merged
+into it. When an inner sum is used by several maximal sums (a difference
+`d = x - y` read by several compares, each `d + t_k`), each of them
+re-derives `d` from its leaves, and the one adder for `d` the query had is
+no longer shared. Which inner sums are merged is a choice:
+
+- `flatten` (default, not tuned): every inner sum is merged, as above.
+- `shared-leaf`: a sum (a linear node with a proper form) used more than
+  once in the step's input is canonical on its own, one node, and a leaf
+  of each of its parents. Uses are counted as for `eq=unshared` (an
+  argument slot of a distinct node of the input DAG). A sum used once is
+  merged into its parent as with `flatten`.
+
+The two options are the same rule at two levels: keep a shared sum as one
+term rather than rebuild it in each use. They combine. An equality is a
+parent too: under `shared-leaf`, a side of an equality that is a shared
+sum enters the balanced form as one leaf, so balancing cancels nothing
+inside it and builds no chain of its summands. With `eq=balance`, an
+equality between two shared sums `S = T` becomes `(= S' T')` (oriented as
+any balanced equality, `S'` and `T'` canonical), which is what
+`eq=unshared` keeps; the difference is in sides used once, which `eq=balance`
+expands. Exact: a node is replaced by an equal term.
+
+Counter: `vc.canonical-sums-inner-shared` (shared sums kept as leaves);
+the stat line names the mode, `inner=flatten|shared-leaf`.
+
+Measured on the firedancer and vcc gate jobs (one seed): `shared-leaf`
+does not pay off for z3, whose preamble simplifier flattens the shared
+sums again (`flat`, `som`); it is neutral for Yices; it removes the
+Bitwuzla slowdown of the h2fc settings proof, where `flatten` turns one
+shared difference read by several signed compares into a chain per
+compare. `flatten` stays the default.
+
+## The negation (`--vc-canonical-sums-neg`)
+
+How the negative chain `N` is written is a choice per solver, not a
+property of the form:
+
+- `bvnot` (default, not tuned): `(bvadd (bvadd P (bvnot N)) c+1)`, as
+  above. One adder chain; the negation is inverted bits and a carry-in.
+- `sub`: `(bvsub P N)`, `(bvsub (bvadd P c) N)`, or `(bvsub c N)` when `P`
+  is empty (also with `c = 0`). Exact: `P - N + c = (P + c) - N` and
+  `-N + c = c - N`, checked with z3 at widths 1 to 64.
+
+`sub` keeps the subtraction as an arithmetic operator for a solver that
+reads sums as polynomials (Yices builds `bvsub` as a polynomial
+difference; `bvnot` of a sum is a bit-array term to it, which hides `N`
+from that view) [hypothesis, to be measured]. Of the two spellings of the
+same subtraction, `(bvsub (bvadd P c) N)` and `(bvadd P (bvmul -1 N))`,
+`bvsub` is the plainer one: one operator, no multiplication node and no
+`2^w - 1` numeral. Equalities are not affected (a balanced equality has no
+negation).
+
+- `auto`: by the solver the query goes to (`--solver`): `sub` for Yices,
+  `bvnot` for z3 and Bitwuzla. The `--smt2` dump is the query of that
+  solver, so it follows `--solver` too. A part of `--check-inb` is a
+  sea-vc process with the job's options and its own solver (Yices by
+  default), so it resolves `auto` itself.
+
+The stat line names the form used and how it was chosen:
+`vc.canonical-sums: on neg=bvnot|sub neg-choice=flag|auto`. The default
+stays `bvnot` (not tuned).
+
 Item 6 of the original list, no z3-only operator in the `--smt2` dump, is
 the portable dialect of `--smt2` (`--smt2-dialect=portable`), a separate
 change. The two are independent: this step makes no operator that is not
@@ -157,7 +253,8 @@ points (z3; always decided), and that two fresh factories give the same
 text. When the miter is unknown, the ground check takes 64 points and
 the corner values `0`, `1`, `2^(w-1)`, `2^w - 1` of each constant; the
 number of unknowns is bounded in the lit test. z3 does not decide some
-16-bit miters of rearranged adders within minutes; Yices and Bitwuzla decide them in milliseconds, which is the
+16-bit miters of rearranged adders within minutes; Yices and Bitwuzla
+decide them in milliseconds, which is the
 problem this step addresses. The lit tests (`test/VC/canonical-sums/`)
 check items 1 to 5 on `--smt2` and the replay of a model of the
 rewritten query.
@@ -167,27 +264,70 @@ rewritten query.
 The step emits an n-ary `bvadd` per chain. Two backend facts decide what
 the solver sees; both are older than this step:
 
-- The z3 and Yices marshallers build an n-ary `bvadd` as a right-nested
+- Without `--solver-nary-sums` (below), the z3 and Yices marshallers
+  build an n-ary `bvadd` as a right-nested
   chain of binary adds, `a + (b + (c + d))` (`ExprToZ.def`,
   `MarshalYices.cpp`). Two chains then share their common suffixes, not
   their prefixes.
-- z3's SMT-LIB printer writes nested associative applications flat
-  (`pp.flat_assoc`), and its parser makes one n-ary node of the flat
-  text. So the `--smt2` dump of a nested sum, read back, is not the term
-  the in-process solver gets: `(bvadd (bvadd P (bvnot N)) c)` is printed
-  `(bvadd p1 p2 (bvnot N) c)`. This holds for every nested sum of the
-  query, with or without this step.
+- z3's SMT-LIB printer writes an associative application nested in the
+  first argument of the same operator flat (`pp.flat_assoc`), and its
+  parser makes one n-ary node of the flat text. So the `--smt2` dump of
+  such a nested sum, read back, is not the term the in-process solver
+  gets: `(bvadd (bvadd P (bvnot N)) c)` is printed
+  `(bvadd p1 p2 (bvnot N) c)`. This holds for every such nested sum of
+  the query, with or without this step, and with or without
+  `--solver-nary-sums` (see "What the switch does not cover").
 
-Whether the marshallers should build n-ary nodes (z3 accepts them) and the
-dump print the nesting is a separate decision: it changes the default query.
+`sea-vc --solver-nary-sums` (off by default, not tuned) builds the n-ary
+nodes of the query as n-ary terms: `bvadd`, `bvmul`, `bvand`, `bvor` and
+`bvxor` with more than two arguments.
+
+- z3: one n-ary application of the operator's declaration (these operators
+  are flat-associative in z3), the term its parser builds from
+  `(bvadd a b c)`. An n-ary node of the query is then the same term
+  in-process and in the dump read back
+  (`unittests/SolverFactory`: the printed query, parsed in the solver's
+  context, is the term the solver was given).
+- Yices: one `yices_bvsum` for a sum. Yices normalizes a sum into one
+  polynomial, so the nested chain gives the same term; the switch only
+  saves the partial sums. `bvmul`, `bvand`, `bvor` and `bvxor` are one
+  n-ary call either way.
+- Bitwuzla: its operators are binary; the marshaller always builds the
+  left-associated chain in argument order, `((a + b) + c) + d`, which is
+  what the n-ary SMT-LIB form means. The switch changes nothing there.
+
+Which solvers get the setting (`SolverConfig::naryBv`): those sea-vc builds
+from its run configuration, the solver of the verdict, the printer of
+`--smt2` and `--split-smt2`, and the solvers of `--seam-check`,
+`--narrow-check` and `--reach`. These keep the right-nested chain: the
+words check of `--widen-memory`, `--split-check`, the `--eq-audit`, the
+printer of a failed `--seam-check`'s query, and the z3 simplify contexts
+(the final `z3_simplify` of `--mem=lambda`, the lambda simplifier, the
+printer of the model trail). This split is the current state; whether the
+auxiliary checks should follow the setting is an open choice.
+
+What the switch does not cover:
+
+- A nested node of the query itself, `(bvadd (bvadd a b) c)` (two Expr
+  nodes, as OpSem builds them without `--simplify`), stays nested
+  in-process; the printer still writes it flat when the inner node is not
+  shared, and the parser makes one node of it.
+- z3 orders the arguments of a sum by term id, and ids follow creation
+  order: the marshaller's traversal in-process, the text order in the
+  parser. The first n-ary node of an operator and width also makes one
+  binary term, to name the declaration (z3's API has no other way to get
+  it); unless the query has that term, z3 frees it after the n-ary node
+  is made and gives its id to a later term.
 
 ## Counters
 
 With the flag (with `vc-time`; stderr with `--smt2`): `vc.canonical-sums:
-on`, `vc.canonical-sums-sums` (maximal sums emitted, not counting numerals
-and single leaves), `-changed` (of them, a different node than the input),
-`-leaves` (leaves of the emitted chains, equalities included), `-eqs`
-(balanced equalities), `-eqs-changed`. A `bvsub` or `bvneg` of another
+on neg=bvnot|sub neg-choice=flag|auto eq=balance|unshared|keep
+inner=flatten|shared-leaf`, `vc.canonical-sums-sums` (maximal sums
+emitted, not counting numerals and single leaves), `-changed` (of them, a
+different node than the input), `-leaves` (leaves of the emitted chains,
+equalities included), `-eqs-balanced`, `-eqs-changed`, `-eqs-kept-shared`,
+`-eqs-kept`, `-inner-shared` (above). A `bvsub` or `bvneg` of another
 arity is a leaf, with the warning `vc.canonical-sums-opaque`.
 
 ## Cost and limits
@@ -200,6 +340,19 @@ arity is a leaf, with the warning `vc.canonical-sums-opaque`.
 - The leaf order is the creation order of the bases: deterministic for one
   input and one run, as `BvRules.hh`'s order; not a property of the
   formula alone.
+
+## Measured configuration
+
+The profile `canonical` (`sea-vc --config=seam --config=canonical`,
+`profiles/canonical.cfg`, opt-in) sets `--solver-nary-sums`, this step with
+`neg=auto`, `eq=unshared`, `inner=flatten`, and for z3 the tactic `S2`.
+Measured on the Firedancer and `vcc` jobs that take more than 5 s, z3 with
+3 seeds: 132 of 132 runs solved, against 130 of 132 with the defaults, and
+the total time 40% lower. Two jobs are slower: `h2fc-settings-proof`
+(225 s to 625 s) and `step-reach-sz` (11 s to 45 s). Yices and Bitwuzla
+were also faster or equal. `S2` assumes a pure bit-vector goal (no
+`ackermannize_bv`, no SMT-core fallback), so it is meant for the default
+`--ackermannize`; see docs/Profiles.md.
 
 ## Open
 

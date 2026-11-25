@@ -23,6 +23,7 @@
 #include "sea/Expr/ExprMlir.hh"
 #include "sea/Expr/InitialWords.hh"
 #include "sea/Expr/ReadCells.hh"
+#include "sea/Expr/ScopedMarks.hh"
 #include "sea/Expr/SeaMRules.hh"
 #include "sea/Expr/Smt/Yices2SolverImpl.hh"
 #include "sea/Expr/SumNames.hh"
@@ -946,6 +947,79 @@ static cl::opt<bool> vcCanonicalSums(
              "equalities with a sum side balanced; exact, no assumption. "
              "Off by default (not tuned); not with --vc-defs"),
     cl::init(false));
+
+static cl::opt<bool> solverNarySums(
+    "solver-nary-sums",
+    cl::desc("Give the solvers an n-ary bit-vector add, mul, and, or and xor "
+             "of the query as one n-ary term (z3: one app, what z3's SMT-LIB "
+             "parser builds from --smt2; Yices: one yices_bvsum, the same "
+             "term) instead of a right-nested chain of binary ones; Bitwuzla "
+             "always gets the left-associated chain. Every solver of the "
+             "run's configuration (verdict, --smt2, --split-smt2, "
+             "--seam-check, --narrow-check, --reach; not the words, split or "
+             "eq-audit checks). "
+             "Off by default (not tuned)"),
+    cl::init(false));
+
+enum class CanonNeg { Bvnot, Sub, Auto };
+static cl::opt<CanonNeg> vcCanonicalSumsNeg(
+    "vc-canonical-sums-neg",
+    cl::desc("With --vc-canonical-sums: how a sum's negative leaves N are "
+             "written (docs/design/CanonicalSums.md, \"The negation\")"),
+    cl::values(clEnumValN(CanonNeg::Bvnot, "bvnot",
+                          "(P + ~N) + (c+1): one adder chain (default; not "
+                          "tuned)"),
+               clEnumValN(CanonNeg::Sub, "sub",
+                          "(P + c) - N: the subtraction kept, for a "
+                          "solver's polynomial view of sums"),
+               clEnumValN(CanonNeg::Auto, "auto",
+                          "by the solver the query goes to (--solver; also "
+                          "for --smt2): sub for Yices, bvnot for z3 and "
+                          "Bitwuzla")),
+    cl::init(CanonNeg::Bvnot));
+
+/// --vc-canonical-sums-neg, auto resolved by the solver of the query
+static expr::CanonicalSums::NegForm canonNegForm() {
+  using NF = expr::CanonicalSums::NegForm;
+  switch (vcCanonicalSumsNeg) {
+  case CanonNeg::Sub:
+    return NF::Sub;
+  case CanonNeg::Auto:
+    return backend == Backend::Yices ? NF::Sub : NF::Bvnot;
+  case CanonNeg::Bvnot:
+    break;
+  }
+  return NF::Bvnot;
+}
+
+static cl::opt<expr::CanonicalSums::EqForm> vcCanonicalSumsEq(
+    "vc-canonical-sums-eq",
+    cl::desc("With --vc-canonical-sums: which equalities with a sum side "
+             "are balanced (docs/design/CanonicalSums.md, \"Balancing "
+             "equalities\")"),
+    cl::values(clEnumValN(expr::CanonicalSums::EqForm::Balance, "balance",
+                          "every one (default; not tuned)"),
+               clEnumValN(expr::CanonicalSums::EqForm::Unshared, "unshared",
+                          "only one with a side that is a sum used once in "
+                          "the query (no other use): an equality of shared "
+                          "sums keeps its canonical sides"),
+               clEnumValN(expr::CanonicalSums::EqForm::Keep, "keep",
+                          "none: each side's sum canonical on its own")),
+    cl::init(expr::CanonicalSums::EqForm::Balance));
+
+static cl::opt<expr::CanonicalSums::InnerForm> vcCanonicalSumsInner(
+    "vc-canonical-sums-inner",
+    cl::desc("With --vc-canonical-sums: what a sum inside a sum is "
+             "(docs/design/CanonicalSums.md, \"Shared inner sums\")"),
+    cl::values(clEnumValN(expr::CanonicalSums::InnerForm::Flatten, "flatten",
+                          "merged into its parent's form: one flat form per "
+                          "maximal sum (default; not tuned)"),
+               clEnumValN(expr::CanonicalSums::InnerForm::SharedLeaf,
+                          "shared-leaf",
+                          "a sum used more than once in the query is "
+                          "canonical on its own, one node, and a leaf of "
+                          "its parents")),
+    cl::init(expr::CanonicalSums::InnerForm::Flatten));
 
 static cl::opt<bool> dagStats(
     "dag-stats",
@@ -3068,6 +3142,33 @@ TYPICAL:
                                  #   alone. Exact; the in-process query and
                                  #   --smt2 alike. Not with --vc-defs.
                                  #   docs/design/CanonicalSums.md
+  sea-vc p.mlir --solver-nary-sums  # (off by default, not tuned) an
+                                 #   n-ary bvadd / bvmul / bvand / bvor /
+                                 #   bvxor of the query reaches z3 as one
+                                 #   n-ary app (the term z3 parses from the
+                                 #   flat (bvadd a b c) of --smt2), not a
+                                 #   right-nested chain of binary apps;
+                                 #   Yices: one yices_bvsum (the same term);
+                                 #   Bitwuzla: the left-associated chain
+                                 #   either way. Every solver made with the
+                                 #   run's configuration (verdict, --smt2,
+                                 #   --split-smt2, --seam-check,
+                                 #   --narrow-check, --reach)
+  sea-vc p.mlir --vc-canonical-sums --vc-canonical-sums-neg=sub
+                                 #   the negative leaves as (P + c) - N
+                                 #   instead of (P + ~N) + c+1 (bvnot, the
+                                 #   default, not tuned); auto: sub for
+                                 #   --solver=yices, bvnot for z3 and
+                                 #   Bitwuzla (also for --smt2)
+  sea-vc p.mlir --vc-canonical-sums --vc-canonical-sums-inner=shared-leaf
+                                 #   a sum used more than once stays one
+                                 #   canonical node, a leaf of its parents
+                                 #   (flatten: merged, the default, not
+                                 #   tuned)
+  sea-vc p.mlir --vc-canonical-sums --vc-canonical-sums-eq=unshared
+                                 #   balance an equality only when a side
+                                 #   is a sum with no other use (keep: none;
+                                 #   balance: all, the default, not tuned)
   sea-vc p.mlir --seam --narrow-offsets  # (off by default; rests on
                                  #   A-INB) a program load's read at its own
                                  #   address in an object of size N (also an
@@ -3675,12 +3776,21 @@ OUTPUT (stdout, `key: value` lines):
                                   definition atoms
                                   asserted, bvadd nodes replaced; with
                                   vc-time, stderr with --smt2)
-  vc.canonical-sums: on            (--vc-canonical-sums; then
+  vc.solver-nary-sums: on         (--solver-nary-sums; with vc-time,
+                                  stderr with --smt2)
+  vc.canonical-sums: on neg=bvnot|sub neg-choice=flag|auto
+                     eq=balance|unshared|keep inner=flatten|shared-leaf
+                                  (--vc-canonical-sums; then
                                   vc.canonical-sums-sums / -changed /
-                                  -leaves / -eqs / -eqs-changed: maximal
+                                  -leaves / -eqs-balanced / -eqs-changed /
+                                  -eqs-kept-shared / -eqs-kept /
+                                  -inner-shared: maximal
                                   sums emitted, of them changed, their
                                   leaves, balanced equalities, of them
-                                  changed; with vc-time, stderr with --smt2)
+                                  changed, equalities with a sum side not
+                                  balanced (unshared: both sides shared;
+                                  keep), shared inner sums kept as leaves;
+                                  with vc-time, stderr with --smt2)
   vc.ackermann-stride-broken: <n>  (sat, --ack-stride with stride pairs:
   vc.ackermann-stride-idle: <n>    pairs the rule dropped that the model
                                   puts at one index with different cells;
@@ -4350,7 +4460,8 @@ unreadable / a bad include: error vc.config-read; status 1. Inside a config,
 include another with @file (a --config there is LLVM's own: a path or a
 file name in the same directories, not printed). Shipped examples (not
 recommended defaults): seam (--lower --seam), seam-wide (@seam.cfg
---seam-wide).
+--seam-wide), canonical (canonical sums + a z3 tactic for pure bit-vector
+queries; no --lower: --config=seam --config=canonical).
 
 PRINTS (docs/design/Print.md): sea.print / sea.print.mem /
 sea.print.scope / sea.print.end show values in the counterexample; the VC
@@ -5505,6 +5616,12 @@ int main(int argc, char **argv) {
   if (vcFoldTopEqs && reach)
     return fail("--vc-fold-top-eqs: not with --reach (its targets are "
                 "block guards the trail may eliminate)");
+  if (vcCanonicalSumsNeg.getNumOccurrences() && !vcCanonicalSums)
+    return fail("--vc-canonical-sums-neg needs --vc-canonical-sums");
+  if (vcCanonicalSumsEq.getNumOccurrences() && !vcCanonicalSums)
+    return fail("--vc-canonical-sums-eq needs --vc-canonical-sums");
+  if (vcCanonicalSumsInner.getNumOccurrences() && !vcCanonicalSums)
+    return fail("--vc-canonical-sums-inner needs --vc-canonical-sums");
   if (reach && sinkAssumes)
     return fail("--reach: --sink-assumes moves every assume before the "
                 "assertion, which changes what reaches a target");
@@ -8087,7 +8204,8 @@ int main(int argc, char **argv) {
         return fail("--vc-canonical-sums is not combined with --vc-defs: "
                     "the canonical form flattens the nested and named sums "
                     "(docs/design/CanonicalSums.md)");
-      expr::CanonicalSums canon;
+      expr::CanonicalSums canon(canonNegForm(), vcCanonicalSumsEq,
+                                vcCanonicalSumsInner);
       const expr::Expr before = query;
       query = canon.rewrite(query);
       canonStats = canon.stats();
@@ -8118,11 +8236,11 @@ int main(int argc, char **argv) {
       raw_ostream &os = statOut();
       os << "vc.dag-size: " << expr::dagSize(query) << "\n";
       std::map<std::string, size_t> perOp;
-      llvm::DenseSet<const expr::ENode *> seen;
-      llvm::SmallVector<const expr::ENode *> stack{query.get()};
+      expr::ScopedExprSet seen(query->efac(), "dag-stats");
+      llvm::SmallVector<expr::ENode *> stack{query.get()};
       while (!stack.empty()) {
-        const expr::ENode *n = stack.pop_back_val();
-        if (!seen.insert(n).second)
+        expr::ENode *n = stack.pop_back_val();
+        if (!seen.insert(n))
           continue;
         ++perOp[n->op().name()];
         for (auto it = n->args_begin(), end = n->args_end(); it != end; ++it)
@@ -8155,6 +8273,7 @@ int main(int argc, char **argv) {
     solverConfig.yicesConfig = yicesConfig;
     solverConfig.yicesParams = yicesParams;
     solverConfig.z3PlantError = z3PlantError;
+    solverConfig.naryBv = solverNarySums;
     // Backend::Bitwuzla without the library is an error (null solver)
     // \p limits: --timeout / --mem-limit (the solver of the verdict only)
     // \p timeoutMs: instead of --timeout (--ack-relax: what is left of it)
@@ -8501,13 +8620,34 @@ int main(int argc, char **argv) {
         r.line("vc.defs-atoms").value(defStats->atoms);
         r.line("vc.defs-rewritten").value(defStats->rewritten);
       }
+      if (solverNarySums)
+        r.line("vc.solver-nary-sums").value("on");
       if (canonStats) {
-        r.line("vc.canonical-sums").value("on");
+        r.line("vc.canonical-sums")
+            .value("on")
+            .kv("neg", canonNegForm() == expr::CanonicalSums::NegForm::Sub
+                           ? "sub"
+                           : "bvnot")
+            .kv("neg-choice",
+                vcCanonicalSumsNeg == CanonNeg::Auto ? "auto" : "flag")
+            .kv("eq",
+                vcCanonicalSumsEq == expr::CanonicalSums::EqForm::Keep ? "keep"
+                : vcCanonicalSumsEq == expr::CanonicalSums::EqForm::Unshared
+                    ? "unshared"
+                    : "balance")
+            .kv("inner", vcCanonicalSumsInner ==
+                                 expr::CanonicalSums::InnerForm::SharedLeaf
+                             ? "shared-leaf"
+                             : "flatten");
         r.line("vc.canonical-sums-sums").value(canonStats->sums);
         r.line("vc.canonical-sums-changed").value(canonStats->sumsChanged);
         r.line("vc.canonical-sums-leaves").value(canonStats->leaves);
-        r.line("vc.canonical-sums-eqs").value(canonStats->eqs);
+        r.line("vc.canonical-sums-eqs-balanced").value(canonStats->eqs);
         r.line("vc.canonical-sums-eqs-changed").value(canonStats->eqsChanged);
+        r.line("vc.canonical-sums-eqs-kept-shared")
+            .value(canonStats->eqsKeptShared);
+        r.line("vc.canonical-sums-eqs-kept").value(canonStats->eqsKept);
+        r.line("vc.canonical-sums-inner-shared").value(canonStats->innerShared);
       }
       // the named assumptions of the VC (BRUNCH_STAT <key>-<field>)
       sea::assume::Ledger vcAssumes;

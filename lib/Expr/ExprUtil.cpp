@@ -6,6 +6,10 @@
 #include "sea/Expr/ExprNumericUtils.hh"
 #include "sea/Expr/ExprSimplifier.hh"
 #include "sea/Expr/ExprVisitor.hh"
+#include "sea/Expr/ScopedMarks.hh"
+
+#include <algorithm>
+#include <limits>
 /// yet to be refactored
 
 namespace expr {
@@ -63,31 +67,49 @@ struct SIZE {
     return VisitAction::doKids();
   }
 };
+
+/// the distinct nodes reachable from the roots [b, e) (nulls skipped): a
+/// read-only walk with a scoped mark set
+template <typename It>
+size_t dagSizeOf(It b, It e,
+                 size_t limit = std::numeric_limits<size_t>::max()) {
+  It first = std::find_if(b, e, [](const Expr &r) { return bool(r); });
+  if (first == e)
+    return 0;
+  ScopedExprSet seen((*first)->efac(), "dagSize");
+  llvm::SmallVector<ENode *, 64> stack;
+  for (; b != e; ++b)
+    if (*b)
+      stack.push_back(b->get());
+  while (!stack.empty() && seen.size() < limit) {
+    ENode *n = stack.pop_back_val();
+    if (!seen.insert(n))
+      continue;
+    stack.append(n->args_begin(), n->args_end());
+  }
+  return seen.size();
+}
 } // namespace
 
 /** Size of an expression as a DAG */
-size_t dagSize(Expr e) {
-  SIZE sz;
-  dagVisit(sz, e);
-  return sz.count;
-}
+size_t dagSize(Expr e) { return dagSizeOf(&e, &e + 1); }
 
 std::string termForLog(Expr e) {
   constexpr size_t kLimit = 64;
   std::string s;
   llvm::raw_string_ostream os(s);
-  size_t n = dagSize(e);
-  if (n <= kLimit)
+  // at most kLimit + 1 nodes walked: a large term is not counted
+  if (!e)
+    os << "null";
+  else if (dagSizeOf(&e, &e + 1, kLimit + 1) <= kLimit)
     os << *e;
   else
-    os << "#" << e->getId() << " (" << n << " nodes)";
+    os << "#" << e->getId() << " (> " << kLimit << " nodes)";
   return s;
 }
 
 size_t dagSize(const ExprVector &vec) {
-  SIZE sz;
-  dagVisit(sz, vec);
-  return sz.count;
+  return dagSizeOf(vec.begin(), vec.end());
 }
 
 /** Size of an expression as a tree */
@@ -101,20 +123,16 @@ namespace {
 struct CV {
   Expr e;
   bool found;
-  ExprSet seen;
 
-  CV(const CV &o) : e(o.e), found(o.found), seen(o.seen) {
-    llvm_unreachable(nullptr);
-  }
+  CV(const CV &o) : e(o.e), found(o.found) { llvm_unreachable(nullptr); }
 
   CV(Expr exp) : e(exp), found(false) {}
 
   VisitAction operator()(Expr exp) {
-    if (found || seen.count(exp) > 0 || e == exp) {
+    if (found || e == exp) {
       found = true;
       return VisitAction::skipKids();
     }
-    seen.insert(e);
     return VisitAction::doKids();
   }
 };

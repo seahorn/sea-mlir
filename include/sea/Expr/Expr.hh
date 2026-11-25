@@ -57,11 +57,13 @@
 
 namespace expr {
 namespace op {}
-/** Size of an expression as a DAG */
+/** Size of an expression as a DAG: its distinct nodes (the roots' nodes
+    once, nulls skipped; nodes of one factory: a scoped mark set,
+    ScopedMarks.hh) */
 size_t dagSize(Expr e);
 size_t dagSize(const ExprVector &vec);
 /** A term as a log value: printed when its DAG has at most 64 nodes, else
-    `#<id> (<n> nodes)` (sea/Support/Log.h) */
+    `#<id> (> 64 nodes)` (a walk of at most 65 nodes; sea/Support/Log.h) */
 std::string termForLog(Expr e);
 /** Size of an expression as a tree */
 size_t treeSize(Expr e);
