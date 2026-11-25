@@ -41,6 +41,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <utility>
 
 using namespace expr;
 using llvm::APInt;
@@ -585,7 +586,10 @@ struct Sem {
     return F.num(vals[rng.next(sizeof vals / sizeof *vals)]);
   }
   /// an integer term (PtrSort S2e: integers and pointers apart; an address
-  /// in an integer is an observation)
+  /// in an integer is an observation). term() and ptr() draw from rng in a
+  /// fixed order: one call per statement where a term has several random
+  /// parts (the order of function arguments is unspecified; GCC and clang
+  /// differ, and the terms would too).
   Expr term(unsigned depth) {
     unsigned k = rng.next(depth ? 11 : 4);
     switch (k) {
@@ -604,17 +608,26 @@ struct Sem {
         args.push_back(term(depth - 1));
       return mknary<BADD>(args.begin(), args.end());
     }
-    case 6:
-      return mk<BSUB>(term(depth - 1), term(depth - 1));
+    case 6: {
+      Expr l = term(depth - 1);
+      Expr r = term(depth - 1);
+      return mk<BSUB>(l, r);
+    }
     case 7:
       return mk<PTR_TO_INT>(ptr(depth - 1));
     case 8:
       return mk<ADDR>(ptr(depth - 1));
-    case 9:
-      return mk<PTR_DIFF>(ptr(depth - 1), ptr(depth - 1));
-    default:
-      return mk<ITE>(conds[rng.next(conds.size())], term(depth - 1),
-                     term(depth - 1));
+    case 9: {
+      Expr l = ptr(depth - 1);
+      Expr r = ptr(depth - 1);
+      return mk<PTR_DIFF>(l, r);
+    }
+    default: {
+      Expr c = conds[rng.next(conds.size())];
+      Expr t = term(depth - 1);
+      Expr e = term(depth - 1);
+      return mk<ITE>(c, t, e);
+    }
     }
   }
 
@@ -635,9 +648,12 @@ struct Sem {
     case 5:
       return rng.next(2) ? mk<PTR_FROM_INT>(term(depth - 1))
                          : mk<PTR_FROM_BITS>(rng.next(2) ? s1 : s2);
-    default:
-      return mk<ITE>(conds[rng.next(conds.size())], ptr(depth - 1),
-                     ptr(depth - 1));
+    default: {
+      Expr c = conds[rng.next(conds.size())];
+      Expr t = ptr(depth - 1);
+      Expr e = ptr(depth - 1);
+      return mk<ITE>(c, t, e);
+    }
     }
   }
   Expr any(unsigned depth) { return rng.next(2) ? ptr(depth) : term(depth); }
@@ -669,16 +685,27 @@ struct Sem {
     }
     if (isOpX<BSUB>(e) || isOpX<PTR_DIFF>(e))
       return {(eval(e->arg(0)).v - eval(e->arg(1)).v) & 0xff, -1};
-    // a node: its base's provenance, its address the sum (mod 2^8)
+    // a node: its address the sum (mod 2^8); its provenance as ARM's (the
+    // sum it erases to): the one pointer among the base and the stride-1
+    // indices, so a node over an absolute base whose stride-1 index holds
+    // b is a pointer into b (AddrRangeMap.hh; SeaMRules.hh armInbGap)
     if (op::ptr::isPtrIndex(e)) {
       Val b = eval(op::ptr::base(e));
       mpz_class off = op::ptr::constant(e) + op::ptr::byteOffset(e);
-      for (size_t i = 0; i < op::ptr::numIndices(e); ++i)
-        off = off +
-              mpz_class(eval(op::ptr::index(e, i)).v) * op::ptr::stride(e, i);
+      int prov = b.prov, ptrs = b.prov >= 0;
+      for (size_t i = 0; i < op::ptr::numIndices(e); ++i) {
+        Val xi = eval(op::ptr::index(e, i));
+        mpz_class s = op::ptr::stride(e, i), sr;
+        mpz_fdiv_r_ui(sr.get_mpz_t(), s.get_mpz_t(), 256);
+        off = off + mpz_class(xi.v) * s;
+        if (xi.prov >= 0 && sr == 1) {
+          prov = xi.prov;
+          ++ptrs;
+        }
+      }
       mpz_class v = mpz_class(b.v) + off, r;
       mpz_fdiv_r_ui(r.get_mpz_t(), v.get_mpz_t(), 256);
-      return {(unsigned)r.get_ui(), b.prov};
+      return {(unsigned)r.get_ui(), ptrs == 1 ? prov : -1};
     }
     // observations keep the provenance of their pointer (ARM reads an
     // address through the marker); constructors from integers have none
@@ -727,12 +754,16 @@ struct Sem {
   }
 };
 
-void testSemantics(unsigned count) {
-  Sem S(20260501);
-  Rng ar(7);
+/// The claims of ARM on one pair, checked on the assignments \p assign
+/// makes (it returns false when done): every value in gamma(alpha), a pair
+/// disjoint without A-INB never equal, a pair disjoint with A-INB never
+/// equal where the accessed leaves are in their objects.
+struct PairCheck {
+  Sem &S;
   unsigned unsound = 0, bad = 0, claims = 0, claimsInb = 0;
-  for (unsigned i = 0; i < count; ++i) {
-    Expr p = S.any(3), q = S.any(3);
+
+  template <class Assign>
+  void check(const Expr &p, const Expr &q, Assign assign) {
     if (!Fixture::wellTyped(p) || !Fixture::wellTyped(q)) {
       ++bad;
       llvm::errs() << "FAIL: ill-typed generated term\n";
@@ -745,8 +776,7 @@ void testSemantics(unsigned count) {
       ++bad;
       llvm::errs() << "FAIL: disjoint without A-INB but not with\n";
     }
-    for (unsigned k = 0; k < 40; ++k) {
-      S.assign(ar);
+    while (assign()) {
       Val vp = S.eval(p), vq = S.eval(q);
       if (!S.inGamma(mp, vp.v) || !S.inGamma(mq, vq.v)) {
         ++unsound;
@@ -772,14 +802,64 @@ void testSemantics(unsigned count) {
       }
     }
   }
-  CHECK(unsound == 0, "semantics: " << unsound << " wrong claims");
-  CHECK(bad == 0, "semantics: monotone in A-INB");
+};
+
+/// A pinned pair (found by the GCC 13 build, which drew other random
+/// terms): ptr.index(from_int(y), [to_int(z) + x]) is a pointer into the
+/// size-0 object z by ARM (its stride-1 index holds z), so under A-INB it is
+/// vacuous and disjoint from a loaded pointer. The oracle must count the
+/// pair's accessed leaf as z's (not in bounds), not as the absolute base's.
+void testSemanticsPinned() {
+  Sem S(1);
+  PairCheck C{S};
+  Expr z = S.bases[3];
+  Expr idx = mk<BADD>(mk<PTR_TO_INT>(z), S.x);
+  Expr p = op::ptr::addressPlus(mk<PTR_FROM_INT>(S.y), idx);
+  Expr q = mk<PTR_FROM_BITS>(S.s2);
+  CHECK(op::ptr::isPtrIndex(p) &&
+            S.an.alpha(p) ==
+                AddrRangeMap::of(S.F.reg.lookup(z)->order, AddrRange::top()),
+        "pinned: alpha of the node is z's: " << str(S.an.alpha(p)));
+  bool once = true;
+  C.check(p, q, [&] {
+    // y + z + x = 0x40 = the loaded pointer
+    S.env[S.x] = 0;
+    S.env[S.y] = 0;
+    S.env[S.s1] = 0;
+    S.env[S.s2] = 0x40;
+    return std::exchange(once, false);
+  });
+  CHECK(C.claimsInb == 1 && C.claims == 0,
+        "pinned: disjoint with A-INB only (size 0, vacuous)");
+  CHECK(C.unsound == 0, "pinned: " << C.unsound << " wrong claims");
+  CHECK(C.bad == 0, "pinned: monotone in A-INB");
+}
+
+void testSemantics(unsigned count) {
+  testSemanticsPinned();
+  Sem S(20260501);
+  Rng ar(7);
+  PairCheck C{S};
+  for (unsigned i = 0; i < count; ++i) {
+    Expr p = S.any(3);
+    Expr q = S.any(3);
+    unsigned k = 0;
+    C.check(p, q, [&] {
+      if (k++ == 40)
+        return false;
+      S.assign(ar);
+      return true;
+    });
+  }
+  CHECK(C.unsound == 0, "semantics: " << C.unsound << " wrong claims");
+  CHECK(C.bad == 0, "semantics: monotone in A-INB");
   // the test must exercise the claims (a mutant that never claims is useless)
-  CHECK(claims >= count / 100 && claimsInb >= count / 10,
-        "semantics: too few disjoint pairs: " << claims << " / " << claimsInb);
-  llvm::outs() << "semantics: pairs=" << count << " disjoint=" << claims
-               << " disjoint-with-A-INB=" << claimsInb << " wrong=" << unsound
-               << "\n";
+  CHECK(C.claims >= count / 100 && C.claimsInb >= count / 10,
+        "semantics: too few disjoint pairs: " << C.claims << " / "
+                                              << C.claimsInb);
+  llvm::outs() << "semantics: pairs=" << count << " disjoint=" << C.claims
+               << " disjoint-with-A-INB=" << C.claimsInb
+               << " wrong=" << C.unsound << "\n";
 }
 
 } // namespace
