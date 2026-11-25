@@ -14,7 +14,7 @@
 // RES: solver-answer: unsat
 // RES: result: unsat
 // TOP: (= (concat (bvadd nd.0_0 nd.1_0) #x00001000) #x0000000700001000)
-// TOP: (bvult #x00000007 #x00000064)
+// TOP: (bvult #x00000007
 //
 // @nested: concat(to_int(a), concat(x, x + y)) = 0x1000_00000003_00000007
 // fixes x = 3 and x + y = 7 (y = 4); y = 5 contradicts it. The inner

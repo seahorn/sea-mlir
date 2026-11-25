@@ -9,6 +9,7 @@ fake sea-vc binaries).
 usage: seavc-flags.py <utils dir>
 """
 
+import atexit
 import os
 import shutil
 import stat
@@ -21,6 +22,7 @@ sys.path.insert(0, utils)
 import seavc_flags as sf  # noqa: E402
 
 d = tempfile.mkdtemp()
+atexit.register(shutil.rmtree, d, True)
 
 
 def fake(name, body):
@@ -71,5 +73,4 @@ for tool, args, code in tools:
     assert "error: seavc_flags: cannot probe" in p.stderr, (tool, p.stderr)
     assert fail in p.stderr, (tool, p.stderr)
     print(f"tool: {tool} exit={p.returncode}")
-shutil.rmtree(d)
 print("seavc-flags: ok")

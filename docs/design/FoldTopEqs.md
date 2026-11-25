@@ -59,7 +59,7 @@ rebuilt path from the equation to its keys includes a concat skipped for
 an object (section Pointer observations): substituted as a term, it would
 replace its parts inside their own fact, `concat(p, a) = c` would become
 `concat(hi(c), a) = c`, and `p = hi(c)` would leave the query while p is
-replaced everywhere else (the query was no longer equisatisfiable). Then the
+replaced everywhere else. Then the
 whole query is simplified again (the same rewriter, so ites, read guards
 and comparisons fold), concats whose parts are numerals and ites on one
 condition become ites of concats (`concat-ite`, below), and the round
@@ -133,8 +133,8 @@ contents, not an address: a fact on a read at a pointer index
 (`select(m, p) = c`, the facts of the step jobs) replaces the read, and
 its index stays. The same test applies to each part of a concat fact; a
 concat with such a part is not a fact itself, its other parts are, and
-its conjunct keeps them (`concat(p, a) = c` stays as is, p is replaced in
-the other conjuncts; nested concats the same;
+its conjunct keeps them (`concat(p, a) = c` keeps p, other facts are still substituted inside
+it, p is replaced in the other conjuncts; nested concats the same;
 `test/VC/fold-top-eqs/concat-object-part.mlir`). Skips
 are counted `skipped-base` (terms and parts, summed over the rounds).
 A T that mentions no object is substituted, pointer observations
