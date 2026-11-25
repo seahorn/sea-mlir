@@ -266,7 +266,7 @@ A tap is a GitHub repository named `homebrew-<name>`. The tap is
 |---|---|---|
 | `sea-mlir-llvm` | LLVM + MLIR at the pin, keg-only, versioned by the pin (`24.0.0-git.302c842d6601`); Release with assertions, `FileCheck` and lit, no optional system libraries | build-only for `sea-mlir`; build: `cmake`, `ninja`, `python@3.15`, Linux: `llvm@18` |
 | `sea-mlir` | sea-vc, sea-run, sea-opt, sea-reduce, sea-seam-export, sea-reduce-test, profiles, docs; the pinned z3, Bitwuzla (CaDiCaL, SymFPU) and Yices as resources built into `libexec`; `check-sea` runs in the build | `gmp`, `mpfr`; build: `cmake`, `ninja`, `meson`, `pkgconf`, `gperf`, `boost`, `python@3.15`, `sea-mlir-llvm`, Linux: `autoconf`, `llvm@18` |
-| `seahorn` | `sea`, seahorn, seapp, seaopt, seainspect, seadsa (without clam), SeaHorn's own layout in `libexec`; z3 4.12.0 as a resource in `libexec/z3`; Yices from `sea-mlir`'s `libexec`; PyYAML (pure Python) | `llvm@18`, `gmp`, `zstd`, `python@3.15`, `sea-mlir` (Yices and the export flow); build: `cmake`, `ninja`, `boost` |
+| `seahorn` | `sea`, seahorn, seapp, seaopt, seainspect, seadsa (without clam), SeaHorn's own layout in `libexec`; z3 4.12.0 as a resource in `libexec/z3`; Yices from `sea-mlir`'s `libexec`; PyYAML (pure Python) | `llvm@18`, `gmp`, `zstd`, `python@3.15`, `sea-mlir` (Yices and the export flow), Linux: `ncurses`; build: `cmake`, `ninja`, `boost` |
 
 The formulae are in `packaging/homebrew/Formula` (the tap repository is
 created from that directory); `packaging/homebrew/README.md` describes
@@ -307,8 +307,8 @@ the binary releases.
   one-line fix (`expr::sort` is ambiguous for GCC in
   `tools/sea-vc/sea-vc.cpp`), but three `check-sea` tests fail:
   `Expr/addr-range.test` (its semantics check reports a wrong claim),
-  `SeamExport/mul-overflow-nodes.mlir` and `VC/seam/k-cancel.mlir`; not
-  investigated, so GCC is not a supported compiler of sea-mlir until they
+  `SeamExport/mul-overflow-nodes.mlir` and `VC/seam/k-cancel.mlir`; under
+  investigation (`fix/gcc-portability`), so GCC is not a supported compiler of sea-mlir until they
   are understood. GNU ld 2.42 links SeaHorn against `llvm@18`'s static
   (PIC) libraries wrongly: it relaxes an `R_X86_64_GOTPCRELX` relocation on
   a `push` into `addr32 call`, and `seaopt` jumps into
@@ -320,7 +320,8 @@ the binary releases.
   `ncurses` through LLVM 18's terminfo).
 - **Linux bottles** link the host's glibc and libstdc++ of the build image
   (Ubuntu 24.04 in `ghcr.io/homebrew/brew`), independent of the Ubuntu
-  tarball; a machine with an older glibc cannot pour them.
+  tarball; a machine with an older glibc pours them but cannot run them
+  (`GLIBC_2.38` not found).
 
 ### Installed paths
 
@@ -371,7 +372,10 @@ job limit) are an optional later step for the tap's pull requests.
 - **Linux, in Docker.** `just binary-release OUT --homebrew --cpuset
   <8 cpus>` (`docker/release.py`, `docker/Homebrew.Dockerfile`) runs
   `ghcr.io/homebrew/brew` pinned by digest (Ubuntu 24.04, Homebrew
-  7.0.16), taps the formulae of `packaging/homebrew/Formula`, and for
+  7.0.16; the image pins Homebrew, but the homebrew-core dependencies,
+  llvm@18, boost, python@3.15, gmp, mpfr and the rest, come from
+  Homebrew's live API at build time, so a later build may use newer
+  ones), taps the formulae of `packaging/homebrew/Formula`, and for
   `sea-mlir-llvm`, `sea-mlir`, `seahorn` in that order runs
   `brew install --build-bottle`, `brew linkage --test --strict`, `brew
   test` and `brew bottle --json
@@ -390,15 +394,28 @@ job limit) are an optional later step for the tap's pull requests.
 - **Root URL.** Each bottle's `root_url` is the release
   `<formula>-<version>` of the tap repository
   (`https://github.com/seahorn/homebrew-seahorn/releases/download/<formula>-<version>`),
-  where `brew pr-upload` would put it. Publishing = uploading the
-  bottles (already under their release file names) to those releases and
-  committing the formulae with their `bottle do` blocks.
+  the layout `brew pr-upload` uses. `brew pr-upload` cannot consume this
+  directory (it wants the local `--` file names and a tap checkout):
+  publishing = `gh release upload <formula>-<version>` of each bottle
+  under its `filename` (the names in `bottles/`) to the tap repository,
+  and committing the formulae with their `bottle do` blocks. Bottling is
+  run with `--no-rebuild`, so a bottle block never carries `rebuild`;
+  re-bottling a published version therefore bumps the formula's
+  `revision` (version `<v>_1`, a new release tag) rather than adding
+  `rebuild 1`.
+- **Publishable formulae.** Only `--brew-source formula` (the committed
+  tag `url` and `sha256`, with the bottle blocks merged in) writes
+  `artifacts/homebrew/Formula/`, the formulae for the tap. Any other
+  source writes `Formula-local/` instead, each file headed
+  `# NOT FOR PUBLISHING` (its url is a `file://` tarball of the build).
 - **The sea-mlir source.** Until the release tag exists, the sea-mlir
   bottle is built from a `git archive` of a local commit
   (`--brew-source REF`, default `HEAD`), served to brew as a `file://`
   URL; its version is `<project version>-local.<commit>`, so `--version`
   and `DOCS-WEB` do not claim a tag. On release day, `--brew-source
-  v<version>` (or `formula`, the tag's GitHub tarball).
+  formula`: the tag's GitHub tarball as the formula names it. The smoke
+  checks the `DOCS:` line of `feat/agent-docs-line`, which lands before
+  this branch (it is merged into it).
 - **macOS, on the laptop.** The same commands per formula (`brew install
   --build-bottle`, `brew test`, `brew bottle --json --root-url=...`), then
   `brew bottle --merge --write` adds the `arm64_*` lines to the same
@@ -413,7 +430,11 @@ job limit) are an optional later step for the tap's pull requests.
   SeaHorn's `LICENSES/`. No GMP, GMPXX or MPFR file can
   match (they are `depends_on`), nor SeaHorn's test corpus or a solver
   executable other than `yices-smt2`. The report is
-  `artifacts/homebrew/license-audit.json`.
+  `artifacts/homebrew/license-audit.json`. The gate checks files only:
+  that no GPL-family code is linked dynamically rests on `brew linkage
+  --test --strict` (every linked library is a declared dependency) and on
+  the declared dependencies themselves (`gmp`, `mpfr` are the LGPL ones,
+  outside the bottles).
 - **`brew test` blocks**: `sea-vc --version` names the pinned solvers; sat
   (with replay, with z3, Yices and Bitwuzla) and unsat on the smoke
   programs; the `DOCS:` line; for `seahorn`, `sea yama -y sea-mlir-export
@@ -431,7 +452,7 @@ Measured on the shared 48-core Linux host, the build pinned to 8 CPUs
 
 `brew linkage` and `brew test` take seconds. With the LLVM layer cached,
 `--homebrew` takes about 35 minutes; the license gate 19 s and the smoke
-4 min (3.7 min of it pouring 22 bottles, homebrew-core's included, from
+4 min (3.6 min of it pouring 21 bottles, homebrew-core's included, from
 their servers). The `sea-mlir-llvm` bottle is large because it holds LLVM
 and MLIR with assertions as static libraries; users who pour `sea-mlir`
 never download it.
@@ -524,11 +545,12 @@ Homebrew bottles only.
    release.
 4. Tap: bump `sea-mlir` (`url`/`sha256` of the tag), and `seahorn` and
    `sea-mlir-llvm` when their pins moved; `just binary-release OUT
-   --homebrew --brew-source v<version> --cpuset <8 cpus>` builds the Linux
+   --homebrew --brew-source formula --cpuset <8 cpus>` builds the Linux
    bottles; the macOS bottles are built on the Mac and merged into the same
-   `bottle do` blocks. Upload each bottle to the release
-   `<formula>-<version>` of `seahorn/homebrew-seahorn` and commit the
-   formulae (on the maintainer's word).
+   `bottle do` blocks. Upload each bottle (`gh release upload`) to the
+   release `<formula>-<version>` of `seahorn/homebrew-seahorn` and commit
+   the formulae of `artifacts/homebrew/Formula/` (on the maintainer's
+   word).
 
 ## 6. Open decisions
 
@@ -545,8 +567,8 @@ Homebrew bottles only.
   caveats (section 3, "Docs for agents"). The bottle smoke checks the
   `DOCS:` line, so the bottles need that change in the source they build.
 - **GCC**: sea-mlir built with GCC 13 fails three `check-sea` tests
-  (section 3, "Compiler"); the formulae use clang 18 on Linux. Find out
-  whether the addr-range failure is a bug that clang hides.
+  (section 3, "Toolchain"); the formulae use clang 18 on Linux. Under
+  investigation on `fix/gcc-portability`.
 - **PyYAML in the formulae**: pure Python resources (as in the bundle);
   `brew style` asks for a `libyaml` dependency they do not use (one
   offense per formula). Keep, or depend on `libyaml` to satisfy the cop.
@@ -575,13 +597,15 @@ Homebrew bottles only.
       maintainer's word).
 - [ ] Tap: `sea-mlir` (tag `url`, `sha256`), `seahorn` and
       `sea-mlir-llvm` formulae match the pins (`docker/test_release.py`).
-- [ ] `just binary-release OUT --homebrew --brew-source v<version>`:
+- [ ] `just binary-release OUT --homebrew --brew-source formula`:
       `release-run.json` status `complete`; license gate passed for every
-      bottle (`license-audit.json`); the smoke installed from bottles only.
+      bottle (`license-audit.json`); the smoke installed from bottles only;
+      the formulae are in `artifacts/homebrew/Formula/` (a
+      `Formula-local/` output is never published).
 - [ ] macOS arm64 bottles built on the Mac and merged (`brew bottle
       --merge --write`); `brew test` passed there.
-- [ ] Bottles uploaded to the tap's releases `<formula>-<version>`, the
-      formulae with their `bottle do` blocks committed (on the
-      maintainer's word).
+- [ ] Bottles uploaded with `gh release upload` to the tap's releases
+      `<formula>-<version>` under their `filename` names, the formulae of
+      `Formula/` committed (on the maintainer's word).
 - [ ] `brew install seahorn/seahorn/seahorn` on a clean macOS and Linux
       machine (`INSTALL-TEST.md`, part B); the export smoke runs.
