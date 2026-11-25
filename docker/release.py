@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -20,7 +21,18 @@ from zoneinfo import ZoneInfo
 
 AGENT = """release: build local sea-mlir tarballs and images; never publish.
 USAGE: python3 docker/release.py OUTPUT [--bundle] [--llvm-image IMAGE]
+       python3 docker/release.py OUTPUT --homebrew [--brew-source REF]
   --bundle also builds SeaHorn (with Yices, without clam) and the bundle.
+  --homebrew builds the Homebrew bottles instead of the tarballs: the tap's
+    formulae (packaging/homebrew/Formula) in ghcr.io/homebrew/brew, built from
+    source, tested and bottled in dependency order (docker/Homebrew.Dockerfile),
+    the license gate over every bottle's files, and a smoke in a fresh brew
+    container that installs from the bottles only. Output: OUTPUT/artifacts/
+    homebrew (bottles, JSON, formulae with bottle blocks, INSTALL-TEST.md).
+  --brew-source REF: the sea-mlir commit of the sea-mlir bottle, as a local
+    `git archive` tarball (default HEAD); version <project version>-local.<sha>
+    unless REF is the tag v<project version>. `formula` keeps the formula's
+    own url (the release tag's tarball).
   --llvm-image reuses an installed LLVM image after checking LLVM_REVISION,
     Release mode, assertions, MLIR and lit. Without it LLVM builds from source.
   --image-prefix NAME tags the images NAME:<stage> (default sea-mlir-release).
@@ -190,14 +202,14 @@ class ReleaseJob:
         if code:
             raise RuntimeError(f"{name} failed (exit {code}); see {path}")
 
-    def build(self, name, dockerfile, target, arguments=()):
+    def build(self, name, dockerfile, target, arguments=(), context="."):
         image = self.prefix + ":" + name
         command = ["docker", "build", "--force-rm", "--build-arg", "JOBS=8"]
         if self.cpuset:
             command += ["--cpuset-cpus", self.cpuset]
         for argument in arguments:
             command.extend(["--build-arg", argument])
-        command.extend(["-f", dockerfile, "--target", target, "-t", image, "."])
+        command.extend(["-f", dockerfile, "--target", target, "-t", image, context])
         self.run(name, command)
         self.record["images"][image] = subprocess.check_output(
             ["docker", "image", "inspect", "--format", "{{.Id}}", image], text=True
@@ -242,6 +254,109 @@ def pins(source):
     return result
 
 
+HOMEBREW_FORMULAE = ("sea-mlir-llvm", "sea-mlir", "seahorn")  # dependency order
+
+
+def brew_source(source, ref):
+    """(version, commit, is_tag) of `ref` for the local sea-mlir tarball."""
+    commit = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "--verify", ref + "^{commit}"],
+        text=True,
+    ).strip()
+    text = subprocess.check_output(
+        ["git", "-C", str(source), "show", f"{commit}:CMakeLists.txt"], text=True
+    )
+    found = re.search(r"project\(\s*sea-mlir\s+VERSION\s+([0-9.]+)", text)
+    if not found:
+        raise SystemExit(f"error: no project version at {ref}")
+    version = found.group(1)
+    tag = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "rev-parse",
+            "--verify",
+            "-q",
+            f"v{version}^{{commit}}",
+        ],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if tag == commit:
+        return version, commit, True
+    return f"{version}-local.{commit[:12]}", commit, False
+
+
+def set_formula_source(text, url, sha256, version):
+    """The formula with its top-level url / sha256 replaced and a version."""
+    lines = text.splitlines(keepends=True)
+    out = []
+    done = set()
+    for line in lines:
+        key = re.match(r"  (url|sha256) ", line)
+        if key and key.group(1) not in done:
+            done.add(key.group(1))
+            if key.group(1) == "url":
+                out.append(f'  url "{url}"\n')
+                out.append(f'  version "{version}"\n')
+            else:
+                out.append(f'  sha256 "{sha256}"\n')
+            continue
+        out.append(line)
+    if done != {"url", "sha256"}:
+        raise RuntimeError("formula has no top-level url and sha256")
+    return "".join(out)
+
+
+def homebrew_context(source, output, ref):
+    """OUTPUT/homebrew-context: the tap's formulae, the build script and,
+    unless ref is `formula`, a `git archive` of ref that sea-mlir.rb builds.
+    Returns a record of the source."""
+    context = output / "homebrew-context"
+    if context.exists():
+        shutil.rmtree(context)
+    (context / "tap" / "Formula").mkdir(parents=True)
+    (context / "src").mkdir()
+    (context / "docker").mkdir()
+    shutil.copy2(source / "docker" / "homebrew-bottle.sh", context / "docker")
+    for name in HOMEBREW_FORMULAE:
+        shutil.copy2(
+            source / "packaging" / "homebrew" / "Formula" / f"{name}.rb",
+            context / "tap" / "Formula",
+        )
+    if ref == "formula":
+        return {"ref": "formula", "url": "as in sea-mlir.rb"}
+    version, commit, tagged = brew_source(source, ref)
+    archive = context / "src" / f"sea-mlir-{version}.tar.gz"
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "archive",
+            "--format=tar.gz",
+            f"--prefix=sea-mlir-{version}/",
+            "-o",
+            str(archive),
+            commit,
+        ],
+        check=True,
+    )
+    digest = file_hash(archive)
+    url = f"file:///home/linuxbrew/src/{archive.name}"
+    formula = context / "tap" / "Formula" / "sea-mlir.rb"
+    formula.write_text(set_formula_source(formula.read_text(), url, digest, version))
+    return {
+        "ref": ref,
+        "commit": commit,
+        "tag": tagged,
+        "version": version,
+        "url": url,
+        "sha256": digest,
+    }
+
+
 def file_hash(path):
     with path.open("rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
@@ -260,6 +375,8 @@ def main():
     parser.add_argument("--not-before", type=hhmm)
     parser.add_argument("--timezone")
     parser.add_argument("--plan", action="store_true")
+    parser.add_argument("--homebrew", action="store_true")
+    parser.add_argument("--brew-source", default="HEAD")
     args = parser.parse_args()
     if args.agent:
         print(AGENT)
@@ -284,6 +401,12 @@ def main():
         parser.error("--image-prefix must be a docker repository name")
     if args.cpuset and not re.fullmatch(r"[0-9]+([-,][0-9]+)*", args.cpuset):
         parser.error("--cpuset: a docker cpuset such as 40-47")
+    if args.homebrew and (args.bundle or args.llvm_image):
+        parser.error("--homebrew builds the bottles only (no --bundle, --llvm-image)")
+    if args.plan and args.homebrew:
+        print("stages: homebrew-bottle homebrew-license-gate homebrew-smoke")
+        print("formulae: " + " ".join(HOMEBREW_FORMULAE))
+        return 0
     if args.plan:
         print(
             "stages: llvm solvers sea-mlir package runtime standalone-smoke"
@@ -308,6 +431,8 @@ def main():
         except ValueError as error:
             parser.error(str(error))
     job = ReleaseJob(source, output, end, args.image_prefix, args.cpuset)
+    if args.homebrew:
+        return homebrew(job, source, output, args)
     common = ["YICES=1"]
     if args.llvm_image:
         common += ["LLVM_BASE=" + args.llvm_image, "REUSE_LLVM=1"]
@@ -379,6 +504,67 @@ def main():
         }
         job.record["status"] = "complete"
         print("release: complete; artifacts remain local")
+        return 0
+    except TimeoutError as error:
+        job.record["status"] = "deadline-expired"
+        print(f"error: {error}", file=sys.stderr)
+        return 124
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        job.record["status"] = "failed"
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    finally:
+        job.save()
+
+
+def homebrew(job, source, output, args):
+    """The --homebrew stages; the record's status as in main()."""
+    artifacts = output / "artifacts" / "homebrew"
+    try:
+        job.record["homebrew_source"] = homebrew_context(
+            source, output, args.brew_source
+        )
+        job.save()
+        image = job.build(
+            "homebrew-bottle",
+            "docker/Homebrew.Dockerfile",
+            "homebrew-bottle",
+            context=str(output / "homebrew-context"),
+        )
+        if artifacts.exists():
+            shutil.rmtree(artifacts)
+        job.extract(image)
+        job.run(
+            "homebrew-license-gate",
+            [
+                sys.executable,
+                str(source / "docker" / "package-release.py"),
+                "--audit-bottles",
+                str(artifacts / "bottles"),
+                "--output",
+                str(artifacts / "license-audit.json"),
+            ],
+        )
+        smoke = ["bash", "docker/homebrew-smoke.sh", str(artifacts)]
+        if args.cpuset:
+            smoke.append(args.cpuset)
+        job.run("homebrew-smoke", smoke)
+        (artifacts / "INSTALL-TEST.md").write_text(
+            (source / "packaging" / "homebrew" / "INSTALL-TEST.md").read_text()
+        )
+        (artifacts / "install-local.sh").write_text(
+            (source / "packaging" / "homebrew" / "install-local.sh").read_text()
+        )
+        job.record["artifacts"] = {
+            str(p.relative_to(output / "artifacts")): {
+                "bytes": p.stat().st_size,
+                "sha256": file_hash(p),
+            }
+            for p in sorted(artifacts.rglob("*"))
+            if p.is_file() and "logs" not in p.relative_to(artifacts).parts
+        }
+        job.record["status"] = "complete"
+        print("release: homebrew bottles complete; artifacts remain local")
         return 0
     except TimeoutError as error:
         job.record["status"] = "deadline-expired"

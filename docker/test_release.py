@@ -4,6 +4,7 @@
 """Release scheduling and cancellation tests; no Docker daemon is required."""
 
 import importlib.util
+import re
 import signal
 import subprocess
 import tempfile
@@ -219,3 +220,90 @@ class PinTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+ROOT = Path(__file__).resolve().parent.parent
+FORMULA = ROOT / "packaging" / "homebrew" / "Formula"
+
+
+def docker_arg(path, name):
+    found = re.search(rf"^ARG {name}=(\S+)$", path.read_text(), re.MULTILINE)
+    assert found, f"no ARG {name} in {path}"
+    return found.group(1)
+
+
+class HomebrewFormulaTests(unittest.TestCase):
+    """The tap's formulae build the pins of the Docker release."""
+
+    def test_sea_mlir_pins(self):
+        text = (FORMULA / "sea-mlir.rb").read_text()
+        dockerfile = ROOT / "docker" / "Dockerfile"
+        z3 = docker_arg(dockerfile, "Z3_REVISION")
+        self.assertIn(f"github.com/Z3Prover/z3/archive/{z3}.tar.gz", text)
+        bitwuzla = docker_arg(dockerfile, "BITWUZLA_TAG")
+        self.assertIn(f"bitwuzla/archive/refs/tags/{bitwuzla}.tar.gz", text)
+        yices = docker_arg(dockerfile, "YICES_TAG")
+        self.assertIn(f"yices2/archive/refs/tags/{yices}.tar.gz", text)
+
+    def test_llvm_pin(self):
+        text = (FORMULA / "sea-mlir-llvm.rb").read_text()
+        commit = (ROOT / "LLVM_REVISION").read_text().split("commit:")[1].split()[0]
+        self.assertIn(f"llvm-project/archive/{commit}.tar.gz", text)
+        self.assertIn(f'version "24.0.0-git.{commit[:12]}"', text)
+
+    def test_seahorn_pins(self):
+        text = (FORMULA / "seahorn.rb").read_text()
+        dockerfile = ROOT / "docker" / "SeaHorn.Dockerfile"
+        for arg, repository in (
+            ("SEAHORN_REVISION", "seahorn"),
+            ("SEADSA_REVISION", "sea-dsa"),
+            ("LLVM_SEAHORN_REVISION", "llvm-seahorn"),
+        ):
+            with self.subTest(arg=arg):
+                commit = docker_arg(dockerfile, arg)
+                self.assertIn(f"seahorn/{repository}/archive/{commit}.tar.gz", text)
+        # the tag z3-4.12.0 is SEAHORN_Z3_REVISION (git ls-remote)
+        self.assertEqual(
+            docker_arg(dockerfile, "SEAHORN_Z3_REVISION"),
+            "feda706d0dda2539176246dd221328122c66f77d",
+        )
+        self.assertIn("z3/archive/refs/tags/z3-4.12.0.tar.gz", text)
+
+    def test_seahorn_patch_is_the_docker_patch(self):
+        text = (FORMULA / "seahorn.rb").read_text()
+        embedded = text.split("\n__END__\n", 1)[1]
+        patch_text = (ROOT / "docker" / "seahorn-yices.patch").read_text()
+        self.assertEqual(embedded, patch_text)
+
+    def test_set_formula_source_replaces_top_level_only(self):
+        text = (FORMULA / "sea-mlir.rb").read_text()
+        local = release.set_formula_source(
+            text,
+            "file:///src/sea-mlir-0.5.0-local.abc.tar.gz",
+            "f" * 64,
+            "0.5.0-local.abc",
+        )
+        self.assertIn('  url "file:///src/sea-mlir-0.5.0-local.abc.tar.gz"\n', local)
+        self.assertIn('  version "0.5.0-local.abc"\n', local)
+        self.assertIn(f'  sha256 "{"f" * 64}"\n', local)
+        self.assertNotIn("refs/tags/v", local)
+        # the resources keep their url and sha256
+        self.assertEqual(local.count("    url "), text.count("    url "))
+        self.assertEqual(local.count("    sha256 "), text.count("    sha256 "))
+
+    def test_brew_source_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            git = ["git", "-C", directory, "-c", "user.name=t", "-c", "user.email=t@t"]
+            subprocess.run(["git", "init", "-q", directory], check=True)
+            Path(directory, "CMakeLists.txt").write_text(
+                "project(sea-mlir VERSION 1.2.3 LANGUAGES CXX)\n"
+            )
+            subprocess.run([*git, "add", "."], check=True)
+            subprocess.run([*git, "commit", "-q", "-m", "a"], check=True)
+            version, commit, tagged = release.brew_source(Path(directory), "HEAD")
+            self.assertEqual(version, f"1.2.3-local.{commit[:12]}")
+            self.assertFalse(tagged)
+            subprocess.run([*git, "tag", "v1.2.3"], check=True)
+            self.assertEqual(
+                release.brew_source(Path(directory), "HEAD"), ("1.2.3", commit, True)
+            )

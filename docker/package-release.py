@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import urllib.request
 from pathlib import Path
@@ -349,6 +350,166 @@ PACKAGE_LICENSES = {
 }
 
 
+# Homebrew bottles (packaging/homebrew/Formula): the same gate over each
+# bottle's files, relative to its keg (`<name>/<version>/` stripped), with
+# rules per formula. Homebrew's metadata (receipt, SBOM) is not code; the
+# formula a bottle carries in .brew/ is this repository's
+# (packaging/homebrew/Formula, its SPDX header).
+COMPONENTS.update(
+    {
+        "homebrew-metadata": None,
+        "homebrew-formula": "Apache-2.0 WITH LLVM-exception",
+        # LLVM + MLIR at LLVM_REVISION, as linked into sea-mlir-tools
+        "llvm": "Apache-2.0 WITH LLVM-exception",
+    }
+)
+BOTTLE_COMMON_RULES = (
+    ("INSTALL_RECEIPT.json", "homebrew-metadata"),
+    ("sbom.spdx.json", "homebrew-metadata"),
+    (".brew/*.rb", "homebrew-formula"),
+)
+BOTTLE_RULES = {
+    "sea-mlir-llvm": (
+        *BOTTLE_COMMON_RULES,
+        ("LICENSE.TXT", "notices"),
+        ("share/doc/sea-mlir-llvm/LICENSE.TXT", "notices"),
+        ("*", "llvm"),
+    ),
+    "sea-mlir": (
+        *BOTTLE_COMMON_RULES,
+        ("LICENSE", "notices"),
+        ("share/doc/sea-mlir/LICENSE", "notices"),
+        ("share/doc/sea-mlir/LICENSES/*", "notices"),
+        ("share/doc/sea-mlir/third-party/*", "notices"),
+        ("README.md", "sea-mlir"),
+        ("CHANGELOG.md", "sea-mlir"),
+        ("AUTHORS", "notices"),
+        ("LLVM_REVISION", "sea-mlir"),
+        ("bin/sea-reduce-test", "sea-mlir"),
+        ("bin/sea-*", "sea-mlir-tools"),
+        ("share/sea-mlir/*", "sea-mlir"),
+        ("share/doc/sea-mlir/*", "sea-mlir"),
+        ("libexec/lib/libz3.so*", "z3"),
+        ("libexec/include/z3*.h", "z3"),
+        ("libexec/lib/libbitwuzla*.so*", "bitwuzla"),
+        ("libexec/include/bitwuzla/*", "bitwuzla"),
+        ("libexec/lib/libyices.so*", "yices"),
+        ("libexec/include/yices*.h", "yices"),
+        ("libexec/bin/yices-smt2", "yices"),
+    ),
+    "seahorn": (
+        *BOTTLE_COMMON_RULES,
+        ("share/doc/seahorn/*", "notices"),
+        # Homebrew copies these from the source root into the keg
+        ("LICENSE", "notices"),
+        ("NOTICE", "notices"),
+        ("license.txt", "notices"),
+        ("README.md", "seahorn"),
+        ("bin/sea", "seahorn"),
+        ("bin/seahorn", "seahorn-tools"),
+        ("bin/seapp", "seahorn-tools"),
+        ("bin/seaopt", "seahorn-tools"),
+        ("bin/seainspect", "seahorn-tools"),
+        ("bin/seadsa", "seahorn-tools"),
+        ("libexec/bin/sea", "seahorn"),
+        ("libexec/bin/stats.py", "seahorn"),
+        ("libexec/bin/seahorn", "seahorn-tools"),
+        ("libexec/bin/seapp", "seahorn-tools"),
+        ("libexec/bin/seaopt", "seahorn-tools"),
+        ("libexec/bin/seainspect", "seahorn-tools"),
+        ("libexec/bin/seadsa", "seahorn-tools"),
+        ("libexec/lib/seapy/yaml/*", "pyyaml"),
+        ("libexec/lib/seapy/*", "seahorn"),
+        ("libexec/lib/libc-64.spec.bc", "sea-dsa"),
+        ("libexec/lib/sea_dsa.ll", "sea-dsa"),
+        ("libexec/include/seahorn/*", "seahorn"),
+        ("libexec/include/seadsa/*", "sea-dsa"),
+        ("libexec/share/seahorn/profiles/*", "seahorn"),
+        ("libexec/share/seahorn/build-pins.txt", "seahorn"),
+        ("libexec/share/seahorn.h", "seahorn"),
+        ("libexec/share/seahorn.c", "seahorn"),
+        ("libexec/README.md", "seahorn"),
+        ("libexec/z3/lib/libz3.so*", "z3"),
+    ),
+}
+# where each bottle keeps the REUSE LICENSES/ of the repositories it ships
+BOTTLE_REPOS = {
+    "sea-mlir-llvm": {},
+    "sea-mlir": {"sea-mlir": "share/doc/sea-mlir/LICENSES"},
+    "seahorn": {
+        name: f"share/doc/seahorn/third-party/{name}-LICENSES"
+        for name in ("seahorn", "sea-dsa", "llvm-seahorn")
+    },
+}
+
+
+def bottle_paths(bottle):
+    """(formula, version, keg-relative paths of the files) of a bottle."""
+    paths = []
+    keg = None
+    with tarfile.open(bottle) as archive:
+        for member in archive:
+            if member.isdir():
+                continue
+            parts = member.name.split("/", 2)
+            if len(parts) != 3 or not parts[2]:
+                raise RuntimeError(f"{bottle.name}: {member.name} is not in a keg")
+            if keg is None:
+                keg = parts[:2]
+            elif parts[:2] != keg:
+                raise RuntimeError(f"{bottle.name}: two kegs, {keg} and {parts[:2]}")
+            paths.append(parts[2])
+    if keg is None:
+        raise RuntimeError(f"{bottle.name}: empty bottle")
+    return keg[0], keg[1], sorted(paths)
+
+
+def audit_bottle(bottle):
+    """The license gate over one bottle; returns its audit record."""
+    name, version, paths = bottle_paths(bottle)
+    if name not in BOTTLE_RULES:
+        raise RuntimeError(f"{bottle.name}: no license rules for formula {name}")
+    expressions = {}
+    for repo, directory in BOTTLE_REPOS[name].items():
+        found = sorted(
+            Path(path).stem
+            for path in paths
+            if path.startswith(directory + "/")
+            and path.count("/") == directory.count("/") + 1
+        )
+        found = [
+            identifier
+            for identifier in found
+            if identifier not in ALLOWED_EXCEPTIONS
+            and (repo, identifier) not in REPO_LICENSE_EXCEPTIONS
+        ]
+        if not found:
+            raise RuntimeError(f"{bottle.name}: no licenses in {directory}")
+        expressions[repo] = " AND ".join(found)
+    return {
+        "formula": name,
+        "version": version,
+        "files": len(paths),
+        "sha256": digest(bottle),
+        "components": audit_paths(paths, expressions, BOTTLE_RULES[name]),
+    }
+
+
+def audit_bottles(directory, output):
+    bottles = sorted(directory.glob("*.bottle.tar.gz"))
+    if not bottles:
+        raise RuntimeError(f"no bottles in {directory}")
+    report = {bottle.name: audit_bottle(bottle) for bottle in bottles}
+    output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    for name, entry in report.items():
+        print(f"license-gate: {name} files={entry['files']} pass")
+        for component, record in sorted(entry["components"].items()):
+            print(
+                f"  {component}: files={record['files']} "
+                f"license={record['license']} allowed={record['allowed']}"
+            )
+
+
 def spdx_alternatives(expression):
     """The OR alternatives of an SPDX expression in disjunctive normal form:
     a list of sets of license ids (`X WITH E` as X, E checked separately)."""
@@ -443,8 +604,8 @@ def resolve_component(component, repos):
     return " AND ".join(dict.fromkeys(parts))  # in order, without repeats
 
 
-def file_component(relative):
-    for pattern, component in FILE_RULES:
+def file_component(relative, rules=FILE_RULES):
+    for pattern, component in rules:
         if fnmatch.fnmatchcase(relative, pattern):
             return component
     return None
@@ -455,12 +616,22 @@ def license_audit(prefix, repos, libraries):
     license; return {component: {license, allowed, files}} for the manifest.
     `repos` maps a repository name to its LICENSES/ directory."""
     expressions = {name: repo_licenses(name, path) for name, path in repos.items()}
+    paths = [
+        path.relative_to(prefix).as_posix()
+        for path in sorted(prefix.rglob("*"))
+        if not path.is_dir() or path.is_symlink()
+    ]
+    audit = audit_paths(paths, expressions, FILE_RULES)
+    check_copied_packages(libraries)
+    return audit
+
+
+def audit_paths(paths, expressions, rules):
+    """The gate over shipped relative paths; `expressions` maps a repository
+    to its license expression."""
     audit = {}
-    for path in sorted(prefix.rglob("*")):
-        if path.is_dir() and not path.is_symlink():
-            continue
-        relative = path.relative_to(prefix).as_posix()
-        component = file_component(relative)
+    for relative in paths:
+        component = file_component(relative, rules)
         if component is None:
             raise RuntimeError(f"no license rule for shipped file {relative}")
         for part in (COMPONENTS[component] or "").split(" AND "):
@@ -482,6 +653,10 @@ def license_audit(prefix, repos, libraries):
                 "is not built from the allowed licenses (no GPL-family code)"
             )
         entry["allowed"] = allowed
+    return audit
+
+
+def check_copied_packages(libraries):
     for name, entry in sorted(libraries.items()):
         package = entry.get("package")
         if entry.get("system") or not package:
@@ -493,7 +668,6 @@ def license_audit(prefix, repos, libraries):
                 f"copied library {name} comes from Ubuntu package {package}, "
                 "which has no allowed license entry"
             )
-    return audit
 
 
 def z3_version(text, revision):
@@ -574,6 +748,13 @@ def check_relocatable(prefix, visited, env):
 
 
 def main():
+    if "--audit-bottles" in sys.argv[1:]:
+        bottles = argparse.ArgumentParser(description="license gate over bottles")
+        bottles.add_argument("--audit-bottles", type=Path, required=True)
+        bottles.add_argument("--output", type=Path, required=True)
+        args = bottles.parse_args()
+        audit_bottles(args.audit_bottles, args.output)
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--name", required=True)
     parser.add_argument("--source-revision", default="unknown")

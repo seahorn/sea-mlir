@@ -5,6 +5,7 @@
 
 import importlib.util
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -427,3 +428,84 @@ class LicenseGateTests(unittest.TestCase):
     def test_apt_runtime_library_not_audited(self):
         libraries = {"libgmp.so.10": {"system": True, "apt": "libgmp10"}}
         self.audit(libraries)
+
+
+class BottleAuditTests(unittest.TestCase):
+    """The license gate over Homebrew bottles (--audit-bottles)."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def bottle(self, name, files, version="1.0"):
+        stage = Path(tempfile.mkdtemp(dir=self.root))
+        keg = stage / name / version
+        for relative in files:
+            path = keg / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(ELF)
+        bottle = stage / f"{name}-{version}.x86_64_linux.bottle.tar.gz"
+        with tarfile.open(bottle, "w:gz") as archive:
+            archive.add(stage / name, arcname=name)
+        return bottle
+
+    SEA_MLIR = (
+        "INSTALL_RECEIPT.json",
+        ".brew/sea-mlir.rb",
+        "LICENSE",
+        "bin/sea-vc",
+        "share/doc/sea-mlir/LICENSES/Apache-2.0.txt",
+        "share/doc/sea-mlir/LICENSES/LLVM-exception.txt",
+        "share/doc/sea-mlir/LICENSES/MIT.txt",
+        "share/doc/sea-mlir/third-party/Z3-LICENSE.txt",
+        "share/doc/sea-mlir/docs/index.md",
+        "libexec/lib/libz3.so.5.4",
+        "libexec/lib/libbitwuzla.so.0",
+        "libexec/lib/libyices.so.2.8",
+        "libexec/include/yices.h",
+        "libexec/bin/yices-smt2",
+    )
+
+    def test_sea_mlir_bottle_passes(self):
+        report = pr.audit_bottle(self.bottle("sea-mlir", self.SEA_MLIR))
+        self.assertEqual(report["formula"], "sea-mlir")
+        self.assertEqual(
+            report["components"]["sea-mlir-tools"]["allowed"],
+            "Apache-2.0 AND BSL-1.0 AND MIT",
+        )
+
+    def test_lgpl_library_in_bottle_refused(self):
+        for extra in ("libexec/lib/libgmp.so.10", "libexec/lib/libmpfr.so.6"):
+            with (
+                self.subTest(extra=extra),
+                self.assertRaisesRegex(RuntimeError, "no license rule"),
+            ):
+                pr.audit_bottle(self.bottle("sea-mlir", (*self.SEA_MLIR, extra)))
+
+    def test_unknown_file_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "no license rule.*libexec/bin/z3"):
+            pr.audit_bottle(self.bottle("sea-mlir", (*self.SEA_MLIR, "libexec/bin/z3")))
+
+    def test_gpl_repository_license_refused(self):
+        files = (*self.SEA_MLIR, "share/doc/sea-mlir/LICENSES/GPL-3.0-only.txt")
+        with self.assertRaisesRegex(RuntimeError, "not built from the allowed"):
+            pr.audit_bottle(self.bottle("sea-mlir", files))
+
+    def test_seahorn_test_corpus_refused(self):
+        files = (
+            "bin/sea",
+            "share/doc/seahorn/third-party/seahorn-LICENSES/Apache-2.0.txt",
+            "share/doc/seahorn/third-party/sea-dsa-LICENSES/Apache-2.0.txt",
+            "share/doc/seahorn/third-party/llvm-seahorn-LICENSES/NCSA.txt",
+            "libexec/share/seahorn/test/simple/ldv_bounce_sat.c",
+        )
+        report = pr.audit_bottle(self.bottle("seahorn", files[:4]))
+        self.assertIn("seahorn", report["components"])
+        # SeaHorn's test corpus has inputs derived from Linux (GPL-2.0)
+        with self.assertRaisesRegex(RuntimeError, "no license rule.*ldv_bounce"):
+            pr.audit_bottle(self.bottle("seahorn", files))
+
+    def test_unknown_formula_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "no license rules for formula"):
+            pr.audit_bottle(self.bottle("gmp", ("lib/libgmp.so.10",)))

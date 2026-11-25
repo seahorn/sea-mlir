@@ -185,3 +185,35 @@ The bundle is `artifacts/sea-mlir-bundle-VERSION-linux-x86_64.tar.gz`
 (with its `.sha256` and manifest). VERSION is the sea-mlir version: the
 bundle is a sea-mlir release with SeaHorn as a dependency, and the SeaHorn
 commits are in the manifest (`"seahorn"`).
+
+### Homebrew bottles
+
+`--homebrew` builds the Homebrew bottles of the tap's formulae
+(`packaging/homebrew/Formula`, `packaging/homebrew/README.md`) instead of
+the tarballs, in `ghcr.io/homebrew/brew` pinned by digest
+(`docker/Homebrew.Dockerfile`), one layer per formula in dependency order:
+`sea-mlir-llvm`, `sea-mlir`, `seahorn`. Each is built from source
+(`brew install --build-bottle`), checked (`brew linkage --test --strict`),
+tested (`brew test`) and bottled
+(`brew bottle --json`); the `bottle do` blocks are merged into copies of
+the formulae. The driver then runs the license gate over every bottle's
+files (`docker/package-release.py --audit-bottles`: the rules of
+`BOTTLE_RULES`, the components and allowed licenses of the tarball gate)
+and `docker/homebrew-smoke.sh`, which installs the bottles in a fresh brew
+container with `packaging/homebrew/install-local.sh` (no source build:
+every installed formula must be poured from a bottle), runs `brew test`,
+the export flow on `docker/smoke/{sat,unsat}.c` and checks the `DOCS:`
+line of `sea-vc --agent`.
+
+```bash
+just binary-release ../brew-output --homebrew --cpuset 40-47
+just binary-release ../brew-output --homebrew --brew-source v0.6.0
+```
+
+The sea-mlir source is a `git archive` of `--brew-source REF` (default
+`HEAD`), version `<project version>-local.<commit>` unless REF is the tag
+`v<project version>`; `--brew-source formula` builds the formula's own
+`url`, the release tag's tarball. Output in `artifacts/homebrew`:
+`bottles/` (tarballs under their release names, JSON), `Formula/`,
+`license-audit.json`, `timings.tsv`, build logs, `INSTALL-TEST.md` and
+`install-local.sh` for a test on another machine.
