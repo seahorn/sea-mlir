@@ -8,7 +8,9 @@
 # Each check prints `check: <name> pass|FAIL`; every check runs. Names in
 # $SMOKE_XFAIL (space- or comma-separated) are expected to fail: they
 # print XFAIL, or XPASS (an error) when they pass. Exit 0 and
-# `smoke: pass` when no check failed unexpectedly.
+# `smoke: pass` when no check failed unexpectedly. A check that does not
+# apply prints `skipped` (version-tag without SMOKE_TAG, the tag the
+# tarball must report).
 set -eu
 [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { echo 'usage: check.sh PREFIX [standalone|bundle]' >&2; exit 2; }
 # the real path: the tools find their data from their own real path
@@ -76,6 +78,26 @@ check_version() {
   # release binaries link Yices (BSD-3-Clause from 2.8.0) and Bitwuzla
   grep -Eq '^ *yices [0-9]' sea-vc.version
   grep -Eq '^ *bitwuzla [0-9]' sea-vc.version
+}
+
+# a tagged release names its tag: --version says (v<version>), and the
+# DOCS-WEB link of --agent points at that tag, not at main. Needs
+# SMOKE_TAG (the tag the tarball was built from); without it: skipped.
+check_version_tag() {
+  if [ -z "${SMOKE_TAG:-}" ]; then
+    echo "version-tag: no SMOKE_TAG (not a tagged build): skipped"
+    return 77
+  fi
+  for tool in $tools; do
+    "$tool" --version | head -1 | grep -qF "(${SMOKE_TAG})" ||
+      { echo "version-tag: $tool --version does not name (${SMOKE_TAG})"; return 1; }
+  done
+  agents=$tools
+  if command -v python3 > /dev/null; then agents="$agents sea-reduce-test"; fi
+  for tool in $agents; do
+    "$tool" --agent | grep '^DOCS-WEB: ' | grep -qF "/tree/${SMOKE_TAG}/docs" ||
+      { echo "version-tag: $tool --agent DOCS-WEB is not at tree/${SMOKE_TAG}"; return 1; }
+  done
 }
 
 # sea-reduce-test is a Python script
@@ -192,7 +214,9 @@ run() { # name
   set -e
   expected=pass
   case " $xfail " in *" $name "*) expected=fail;; esac
-  if [ "$rc" = 0 ] && [ "$expected" = pass ]; then
+  if [ "$rc" = 77 ]; then
+    status=skipped
+  elif [ "$rc" = 0 ] && [ "$expected" = pass ]; then
     status=pass
   elif [ "$rc" = 0 ]; then
     status=XPASS; failed="$failed $name"
@@ -204,7 +228,7 @@ run() { # name
   printf 'check: %s %s\n' "$name" "$status"
 }
 
-checks="libs version agent-docs sat-z3 unsat-profile sat-yices sat-bitwuzla build-paths"
+checks="libs version version-tag agent-docs sat-z3 unsat-profile sat-yices sat-bitwuzla build-paths"
 if command -v python3 > /dev/null; then
   checks="$checks reduce-test"
 else

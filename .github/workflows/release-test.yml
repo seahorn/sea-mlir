@@ -99,4 +99,8 @@ jobs:
       - name: Smoke the extracted tarball
         env:
           TMPDIR: ${{ runner.temp }}
-        run: sh docker/smoke/test-tarball.sh "$RUNNER_TEMP/assets" "$PACKAGE" "${VERSION:-${TAG#v}}"
+        run: |
+          # the tag must show in --version and --agent only for a tag
+          # named v<version>; a trial tag skips that check
+          if [ "$TAG" = "v${VERSION:-${TAG#v}}" ]; then export SMOKE_TAG="$TAG"; fi
+          sh docker/smoke/test-tarball.sh "$RUNNER_TEMP/assets" "$PACKAGE" "${VERSION:-${TAG#v}}"

@@ -163,7 +163,9 @@ each on the maintainer's word:
    Ubuntu 24.04 and 26.04 runners it downloads each tarball, checks its
    SHA-256 file, installs the runtime packages below (the bundle also
    `clang-18` and `python3`), extracts it outside
-   the checkout and runs `docker/smoke/test-tarball.sh`: every tool runs,
+   the checkout and runs `docker/smoke/test-tarball.sh`: every tool runs
+   (for a tag `v<version>` each reports `(v<version>)` and its `--agent`
+   DOCS-WEB link uses that tag; trial tags skip this),
    the `DOCS:` line of `--agent` names the extracted tree, sat with
    replay (z3, Yices, Bitwuzla), unsat through the installed `seam`
    profile, every library resolves inside the tree or the system's

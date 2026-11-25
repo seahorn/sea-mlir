@@ -150,11 +150,21 @@ fresh container on the extracted tarball: every tool's version (with Yices
 and Bitwuzla), the `--agent` `DOCS:` line, SAT with counterexample replay
 (z3, Yices, Bitwuzla), UNSAT through the installed profile, every library
 resolving inside the tree or the system's library directories, and no
-build source path. Each check prints `check: <name> pass|FAIL`;
+build source path. With `SMOKE_TAG` (the tag, set by release-test.yml
+when the tag is `v<version>`) the `version-tag` check also needs every
+tool's `--version` to name `(v<version>)` and every `--agent` DOCS-WEB
+link to use `tree/v<version>`; without it the check prints `skipped`.
+Each check prints `check: <name> pass|FAIL`;
 `SMOKE_XFAIL` names checks an older tarball is known to fail
 (release-test.yml and direct runs only; run.sh does not pass it into the
 container). `.github/workflows/release-test.yml` runs the same script
 on GitHub's runners against a published release.
+
+The release build passes `SEA_GIT_DESCRIBE` from `git describe --tags
+--always --dirty --abbrev=12` of the host checkout (as a normal build
+does; recorded as `source_describe` in `release-run.json`), so a clean
+checkout at tag `v<version>` reports `v<version>`. A source without a
+tag reports `<sha12>-release-build`.
 
 ### SeaHorn bundle
 
