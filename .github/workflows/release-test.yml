@@ -10,7 +10,11 @@
 # `prereleased` would start a second run of the same prerelease; promoting a
 # prerelease changes no file), and by hand:
 #   gh workflow run release-test.yml -f tag=v0.6.0 [-f repo=OWNER/NAME]
-#     [-f xfail="agent-docs build-paths"]
+#     [-f version=0.6.0] [-f xfail="agent-docs build-paths"]
+# (version: of the tarballs, default the tag without its `v`; a trial tag
+# such as v0.5.0-ci-trial holding 0.5.0 tarballs needs -f version=0.5.0.)
+# A release whose tag's commit lacks this file never starts it: GitHub runs
+# the workflow of the tagged commit for the release event.
 # The smoke scripts come from the workflow's ref: the release's tag, or the
 # branch a manual run names (so newer checks can test an older release).
 # Jobs per platform can be added next to tgz-linux (Homebrew, macOS).
@@ -29,6 +33,10 @@ on:
         description: Repository of the release (default this one)
         required: false
         type: string
+      version:
+        description: Version in the tarball names (default the tag without v)
+        required: false
+        type: string
       xfail:
         description: Checks expected to fail (check.sh names), for old releases
         required: false
@@ -38,7 +46,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-test-${{ inputs.tag || github.event.release.tag_name }}
+  group: release-test-${{ inputs.repo || github.repository }}-${{ inputs.tag || github.event.release.tag_name }}
   cancel-in-progress: false
 
 jobs:
@@ -54,6 +62,7 @@ jobs:
     env:
       TAG: ${{ inputs.tag || github.event.release.tag_name }}
       REPO: ${{ inputs.repo || github.repository }}
+      VERSION: ${{ inputs.version }}
       PACKAGE: ${{ matrix.package }}
       SMOKE_XFAIL: ${{ inputs.xfail }}
     steps:
@@ -65,6 +74,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           [[ "$TAG" =~ ^v[0-9A-Za-z._-]+$ ]] || { echo "bad tag: $TAG"; exit 1; }
+          [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "bad repo: $REPO"; exit 1; }
+          [[ -z "$VERSION" || "$VERSION" =~ ^[0-9A-Za-z._-]+$ ]] || { echo "bad version: $VERSION"; exit 1; }
           if [ "$PACKAGE" = bundle ]; then
             pattern='sea-mlir-bundle-*-linux-x86_64.*'
           else
@@ -88,4 +99,4 @@ jobs:
       - name: Smoke the extracted tarball
         env:
           TMPDIR: ${{ runner.temp }}
-        run: sh docker/smoke/test-tarball.sh "$RUNNER_TEMP/assets" "$PACKAGE" "${TAG#v}"
+        run: sh docker/smoke/test-tarball.sh "$RUNNER_TEMP/assets" "$PACKAGE" "${VERSION:-${TAG#v}}"
