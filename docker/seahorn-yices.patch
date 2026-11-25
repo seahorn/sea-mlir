@@ -1,0 +1,88 @@
+SPDX-FileCopyrightText: 2026 The SeaHorn Authors
+SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+SeaHorn branch feat/binary-release over the dev18 pin 67474bf6 (two commits):
+build the Yices backend with Yices >= 2.7, and allow Yices >= 2.8.0 in the
+release notices. docker/SeaHorn.Dockerfile applies it until the branch is in
+dev18; then move SEAHORN_REVISION and delete this file.
+
+diff --git a/THIRD-PARTY-NOTICES b/THIRD-PARTY-NOTICES
+index 3d01e50a..fc1ffec9 100644
+--- a/THIRD-PARTY-NOTICES
++++ b/THIRD-PARTY-NOTICES
+@@ -6,8 +6,10 @@ with the binaries, together with SeaHorn's LICENSE and NOTICE. Component
+ versions and build options must be recorded by the release manifest.
+ 
+ This input covers LLVM, Z3, Boost, crab/clam, sea-dsa and llvm-seahorn.
+-It does not authorize a bundle containing Yices. Release builds must disable
+-Yices and audit the actual linked libraries for additional dependencies.
++A release build may link Yices 2.8.0 or later (BSD-3-Clause); earlier Yices
++releases are GPLv3 and must not be bundled. The bundle that links Yices
++carries Yices' LICENSE and third-party NOTICES. Release builds must audit the
++actual linked libraries for additional dependencies.
+ Source-only tools and test fixtures retain their per-file terms in REUSE.toml.
+ The unlicensed play/neha-examples corpus is not part of the binary bundle.
+ 
+diff --git a/lib/seahorn/Smt/Yices2SolverImpl.cc b/lib/seahorn/Smt/Yices2SolverImpl.cc
+index ab10299a..f270a4a9 100644
+--- a/lib/seahorn/Smt/Yices2SolverImpl.cc
++++ b/lib/seahorn/Smt/Yices2SolverImpl.cc
+@@ -15,6 +15,14 @@
+ 
+ #include <vector>
+ 
++// Yices 2.7 renamed the smt_status_t constants (STATUS_SAT ->
++// YICES_STATUS_SAT, ...)
++#if __YICES_VERSION > 2 || (__YICES_VERSION == 2 && __YICES_VERSION_MAJOR >= 7)
++#define SEA_YICES_STATUS(x) YICES_STATUS_##x
++#else
++#define SEA_YICES_STATUS(x) STATUS_##x
++#endif
++
+ using namespace expr;
+ 
+ namespace seahorn {
+@@ -182,11 +190,16 @@ SolverResult yices_solver_impl::check(){
+   //could have a param_t field for this call.
+   smt_status_t stat = yices_check_context(d_ctx, nullptr);
+   switch(stat){
+-  case STATUS_UNSAT: return SolverResult::UNSAT;
+-  case STATUS_SAT: return SolverResult::SAT;
+-  case STATUS_UNKNOWN: return SolverResult::UNKNOWN;
+-  case STATUS_INTERRUPTED: return SolverResult::UNKNOWN;
+-  case STATUS_ERROR: return SolverResult::ERROR;
++  case SEA_YICES_STATUS(UNSAT):
++    return SolverResult::UNSAT;
++  case SEA_YICES_STATUS(SAT):
++    return SolverResult::SAT;
++  case SEA_YICES_STATUS(UNKNOWN):
++    return SolverResult::UNKNOWN;
++  case SEA_YICES_STATUS(INTERRUPTED):
++    return SolverResult::UNKNOWN;
++  case SEA_YICES_STATUS(ERROR):
++    return SolverResult::ERROR;
+   default: return SolverResult::UNKNOWN;
+   }
+ }
+@@ -211,11 +224,16 @@ SolverResult yices_solver_impl::check_with_assumptions(const expr_const_it_range
+   smt_status_t stat = yices_check_context_with_assumptions(d_ctx, nullptr,
+ 							   y_lits.size(), &y_lits[0]);
+   switch(stat){
+-  case STATUS_UNSAT: return SolverResult::UNSAT;
+-  case STATUS_SAT: return SolverResult::SAT;
+-  case STATUS_UNKNOWN: return SolverResult::UNKNOWN;
+-  case STATUS_INTERRUPTED: return SolverResult::UNKNOWN;
+-  case STATUS_ERROR: return SolverResult::ERROR;
++  case SEA_YICES_STATUS(UNSAT):
++    return SolverResult::UNSAT;
++  case SEA_YICES_STATUS(SAT):
++    return SolverResult::SAT;
++  case SEA_YICES_STATUS(UNKNOWN):
++    return SolverResult::UNKNOWN;
++  case SEA_YICES_STATUS(INTERRUPTED):
++    return SolverResult::UNKNOWN;
++  case SEA_YICES_STATUS(ERROR):
++    return SolverResult::ERROR;
+   default: return SolverResult::UNKNOWN;
+   }
+ }

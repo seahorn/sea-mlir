@@ -35,8 +35,10 @@
 #include "sea/Expr/Smt/Z3.hh"
 #include "sea/Expr/Smt/Z3Error.h"
 #include "sea/Interp/ParseInput.h"
+#include "sea/Support/AgentGuide.h"
 #include "sea/Support/Assume.h"
 #include "sea/Support/Diag.h"
+#include "sea/Support/InstallLayout.h"
 #include "sea/Support/Log.h"
 #include "sea/Support/Output.h"
 #include "sea/Support/ProcMem.h"
@@ -1473,7 +1475,8 @@ static cl::opt<unsigned> memLimit(
     "mem-limit",
     cl::desc("Memory limit in GB (0: none): RLIMIT_AS of the process, z3's "
              "memory_max_size, Bitwuzla's memory-limit; when hit, "
-             "`result: unknown` and `mem-limit: hit`"),
+             "`result: unknown` and `mem-limit: hit`. macOS does not "
+             "enforce RLIMIT_AS (warning vc.mem-limit-unenforced)"),
     cl::init(0), cl::value_desc("GB"));
 
 static cl::opt<bool> vcgenOnly(
@@ -2245,7 +2248,8 @@ static cl::list<std::string> configFiles(
              "the configs' options come before the command line's, so later "
              "ones win. A bare name (no '/', no extension) is <name>.cfg in "
              "$SEA_MLIR_PROFILE_PATH, then <prefix>/share/sea-mlir/profiles, "
-             "then the source tree's profiles/ (docs/Profiles.md)"),
+             "then, for a build directory, the source tree's profiles/ "
+             "(docs/Profiles.md)"),
     cl::value_desc("file|name"));
 
 /// The directories a bare --config name is looked up in, in order.
@@ -2257,17 +2261,15 @@ static std::vector<std::string> profileDirs(const char *argv0) {
     for (StringRef p : parts)
       dirs.push_back(p.str());
   }
-  std::string exe =
-      sys::fs::getMainExecutable(argv0, (void *)(intptr_t)&profileDirs);
+  // found from the executable's real path (sea/Support/InstallLayout.h):
+  // the install's profiles, then the source tree of a build directory
+  std::string exe = sea::mainExecutableRealPath(argv0);
   if (!exe.empty()) {
-    SmallString<256> d(sys::path::parent_path(exe));
-    sys::path::append(d, "..", "share", "sea-mlir", "profiles");
-    sys::path::remove_dots(d, /*remove_dot_dot=*/true);
-    dirs.push_back(std::string(d));
+    dirs.push_back(sea::installShareDir(exe, "sea-mlir/profiles"));
+    std::string src = sea::buildSourceTree(exe);
+    if (!src.empty())
+      dirs.push_back(std::string(sea::joinClean(src, "profiles")));
   }
-#ifdef SEA_SOURCE_PROFILES_DIR
-  dirs.push_back(SEA_SOURCE_PROFILES_DIR);
-#endif
   return dirs;
 }
 
@@ -2602,7 +2604,9 @@ TYPICAL:
                                  #   --mem-limit is RLIMIT_AS (address
                                  #   space, not resident memory): set it
                                  #   above the expected resident size, with
-                                 #   headroom
+                                 #   headroom; macOS does not enforce
+                                 #   RLIMIT_AS (--mem-limit warns
+                                 #   vc.mem-limit-unenforced there)
   sea-vc p.mlir --mem-trace --max-nodes=50000000  # a VC blowup: a
                                  #   heartbeat of what grows (vc.mem beats on
                                  #   stderr) and a diagnosed stop (budget:
@@ -4449,8 +4453,8 @@ command line, win (the last value of an option counts; lists accumulate).
 A bare name (no '/', no extension) is <name>.cfg, looked up in order in:
 the directories of $SEA_MLIR_PROFILE_PATH (colon-separated), then
 <prefix>/share/sea-mlir/profiles (../share/sea-mlir/profiles from the
-binary), then the source tree's profiles/ (build trees). Anything else is
-a path. Not found: error vc.config-not-found (the searched directories);
+binary's real path), then, for a build directory, the source tree's
+profiles/ (the tree <build>/CMakeCache.txt names). Anything else is a path. Not found: error vc.config-not-found (the searched directories);
 unreadable / a bad include: error vc.config-read; status 1. Inside a config,
 include another with @file (a --config there is LLVM's own: a path or a
 file name in the same directories, not printed). Shipped examples (not
@@ -5471,7 +5475,7 @@ int main(int argc, char **argv) {
     }
   }
   if (agent) {
-    outs() << agentGuide;
+    sea::printAgentGuide(outs(), agentGuide, argv[0]);
     return 0;
   }
   sea::out::Emitter emitter(outs(), outFormat);
@@ -5669,6 +5673,15 @@ int main(int argc, char **argv) {
       rl.rlim_cur = bytes;
       if (setrlimit(RLIMIT_AS, &rl) != 0)
         return fail("--mem-limit: setrlimit(RLIMIT_AS) failed");
+#ifdef __APPLE__
+      // Hypothesis (not checked on macOS): Darwin accepts RLIMIT_AS (an
+      // alias of RLIMIT_RSS) but does not enforce it, so only the solvers'
+      // own limits bound memory there.
+      sea::diag::warn("vc.mem-limit-unenforced",
+                      "--mem-limit: RLIMIT_AS is not enforced on macOS; "
+                      "only z3's memory_max_size and Bitwuzla's "
+                      "memory-limit apply");
+#endif
     } else {
       return fail("--mem-limit: above the hard limit of RLIMIT_AS");
     }
@@ -7569,7 +7582,7 @@ int main(int argc, char **argv) {
           if (!c.chosen)
             continue;
           for (const expr::Expr &idx : words->wordIndices(c.array.get())) {
-            unsigned n = expr::op::bv::width(expr::sort::arrayIndexTy(
+            unsigned n = expr::op::bv::width(expr::op::sort::arrayIndexTy(
                 expr::op::bind::declaredSort(c.array)));
             expr::Expr cat;
             for (unsigned k = 0; k < words->wordBytes(); ++k) {

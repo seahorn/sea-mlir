@@ -67,8 +67,26 @@ llvm_config.add_tool_substitutions(
 
 config.substitutions.append(("%sea_src_root", config.sea_src_root))
 config.substitutions.append(("%python", "python3"))
+# %timeout <s> <cmd>: a wall-clock bound, coreutils timeout (gtimeout from
+# Homebrew coreutils on macOS); tests that use it REQUIRES: timeout
+_timeout = shutil.which("timeout") or shutil.which("gtimeout")
+if _timeout:
+    config.available_features.add("timeout")
+    config.substitutions.append(("%timeout", _timeout))
 config.substitutions.append(("%sea_vc", os.path.join(sea_tools_dir, "sea-vc")))
 config.substitutions.append(("%sea_bin", sea_tools_dir))
+config.substitutions.append(("%sea_obj_root", config.sea_obj_root))
+
+# Optimized builds without debug info or coverage: their binaries hold no
+# source path (Tools/no-source-paths.test). Debug and RelWithDebInfo keep
+# __FILE__ / debug info; so does a Release build with -g (the profiling
+# build), and coverage mapping records file names (utils/qa-coverage.py).
+_flags = getattr(config, "sea_cxx_flags", "").split()
+if getattr(config, "sea_build_type", "").lower() in (
+    "release",
+    "minsizerel",
+) and not any(f.startswith("-g") or f == "-fcoverage-mapping" for f in _flags):
+    config.available_features.add("release-build")
 
 if config.z3 and not config.z3.endswith("NOTFOUND"):
     config.available_features.add("z3")

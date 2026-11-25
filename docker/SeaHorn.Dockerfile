@@ -1,21 +1,48 @@
 # SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-# Separate LLVM 18 frontend builder. No Yices package is installed or detected.
+# Separate LLVM 18 frontend builder: SeaHorn dev18 without clam/crab
+# (WITH_CLAM=OFF), z3 4.12.0, and the Yices 2.8.0 of the sea-mlir solvers stage.
 # Build from the sea-mlir source root; docker/release.py orchestrates the stages.
 ARG UBUNTU=ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+# the solvers stage of docker/Dockerfile (Yices at YICES_TAG); release.py
+# passes <image-prefix>:solvers
+ARG SOLVERS_IMAGE=sea-mlir-release:solvers
+FROM ${SOLVERS_IMAGE} AS solvers
 FROM ${UBUNTU} AS seahorn-base
 ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates git cmake ninja-build clang-18 llvm-18-dev lld-18 \
+# LLVM 18 from apt.llvm.org (llvm-toolchain-noble-18, 18.1.8), as SeaHorn's
+# CI and the tested local builds use; Ubuntu's own 18.1.3 fails two
+# llvm-seahorn InstCombine tests. The key is checked by fingerprint and the
+# packages by version, so a changed archive fails the build.
+ARG LLVM18_VERSION=1:18.1.8~++20240731025043+3b5b5c1ec4a3-1~exp1~20240731145144.92
+ARG LLVM_APT_SIGNER_FINGERPRINT=6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
+    curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+      | gpg --dearmor > /usr/share/keyrings/apt.llvm.org.gpg; \
+    gpg --show-keys --fingerprint /usr/share/keyrings/apt.llvm.org.gpg \
+      | tr -d ' ' | grep -qx "$LLVM_APT_SIGNER_FINGERPRINT"; \
+    echo 'deb [signed-by=/usr/share/keyrings/apt.llvm.org.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-18 main' \
+      > /etc/apt/sources.list.d/apt.llvm.org.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      git cmake ninja-build \
+      clang-18="$LLVM18_VERSION" llvm-18-dev="$LLVM18_VERSION" \
+      lld-18="$LLVM18_VERSION" llvm-18="$LLVM18_VERSION" \
       libboost-dev libgmp-dev libmpfr-dev zlib1g-dev libzstd-dev \
       libedit-dev libffi-dev libncurses-dev libxml2-dev \
-      python3 python3-yaml file patchelf \
-  && rm -rf /var/lib/apt/lists/*
+      python3 python3-yaml file patchelf; \
+    rm -rf /var/lib/apt/lists/*; \
+    llvm-config-18 --version | grep -qx 18.1.8
 ENV CC=clang-18 CXX=clang++-18
 
-# z3 4.12.0 (feda706), the version this SeaHorn checkout is built with
-# locally; independent of the sea-mlir solver.
+# z3 4.12.0 (feda706), the version SeaHorn dev18 is built and tested with;
+# independent of the sea-mlir solver. The sea-mlir pin (z3 master bbd46c9)
+# does not serve SeaHorn: Spacer did not finish test/tutorial/add_by_one.c
+# -O0 in 120 s (0.5 s with 4.12.0), and units_z3 expr.neg expects 4.12's
+# simplifier output (docs/design/BinaryRelease.md).
 # Keep its SONAME distinct so both libraries can coexist in the bundle.
 FROM seahorn-base AS seahorn-z3
 ARG JOBS=8
@@ -40,9 +67,13 @@ RUN set -eux; \
 
 FROM seahorn-z3 AS seahorn
 ARG JOBS=8
-ARG SEAHORN_REVISION=4f7fdaf30502f745136808aa4cfe1274084d7358
-ARG SEADSA_REVISION=3134604191f94f83e1b408a55f404ff23f341011
-ARG LLVM_SEAHORN_REVISION=6cfacb810374711b4f7252f412edb2dd23e0f22e
+# dev18 of seahorn, sea-dsa and llvm-seahorn. Clam and crab are not built
+# (WITH_CLAM=OFF), so they have no pins (docs/design/BinaryRelease.md).
+ARG SEAHORN_REVISION=67474bf6d58fe923f5cbb5947def9e794ce613fe
+ARG SEADSA_REVISION=1e33f160e8c0b3f395176af019efd7f67f82a79b
+ARG LLVM_SEAHORN_REVISION=92258148416984b19111a44b9a2f660f7c4132a6
+# the version of YICES_TAG in docker/Dockerfile; the build refuses another
+ARG YICES_TAG=yices-2.8.0
 RUN set -eux; \
     mkdir -p /src/seahorn && cd /src/seahorn; \
     git init -q; \
@@ -62,7 +93,18 @@ RUN set -eux; \
     git fetch -q --depth 1 origin "$LLVM_SEAHORN_REVISION"; \
     git checkout -q FETCH_HEAD; \
     test "$(git rev-parse HEAD)" = "$LLVM_SEAHORN_REVISION"
+# SeaHorn's Yices >= 2.7 fix, not yet in dev18 (the patch's header)
+COPY docker/seahorn-yices.patch /src/seahorn-yices.patch
+RUN cd /src/seahorn && git apply /src/seahorn-yices.patch
+# the solvers stage's Yices: the same libyices.so.2.8 as sea-vc
+COPY --from=solvers /opt/solvers/include/yices.h /opt/solvers/include/yices_exit_codes.h \
+     /opt/solvers/include/yices_limits.h /opt/solvers/include/yices_types.h /opt/yices/include/
+COPY --from=solvers /opt/solvers/lib/libyices.so.2.8.0 /opt/yices/lib/
+# SeaHorn's FindYices2 also wants the executable (the bundle does not ship it)
+COPY --from=solvers /opt/solvers/bin/yices-smt2 /opt/yices/bin/
+RUN ln -s libyices.so.2.8.0 /opt/yices/lib/libyices.so.2.8 \
+ && ln -s libyices.so.2.8 /opt/yices/lib/libyices.so
 COPY docker/build-seahorn-release.sh /usr/local/bin/build-seahorn-release
-RUN JOBS="$JOBS" bash /usr/local/bin/build-seahorn-release
+RUN JOBS="$JOBS" YICES_TAG="$YICES_TAG" bash /usr/local/bin/build-seahorn-release
 ENV PATH=/opt/seahorn/bin:$PATH
 WORKDIR /work

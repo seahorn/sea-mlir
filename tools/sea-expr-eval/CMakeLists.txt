@@ -3,4 +3,4 @@
 
 add_llvm_executable(sea-expr-eval sea-expr-eval.cpp)
 llvm_update_compile_flags(sea-expr-eval)
-target_link_libraries(sea-expr-eval PRIVATE SeaExpr)
+target_link_libraries(sea-expr-eval PRIVATE SeaSupport SeaExpr)

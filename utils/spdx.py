@@ -65,6 +65,7 @@ RULES = [
     ("**.py", "#", "top"),
     ("**.py.in", "#", "top"),
     ("**.sh", "#", "top"),
+    ("**.rb", "#", "top"),
     ("**.cmake", "#", "top"),
     ("**CMakeLists.txt", "#", "top"),
     ("**requirements.txt", "#", "top"),

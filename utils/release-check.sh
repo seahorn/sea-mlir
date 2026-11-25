@@ -105,7 +105,8 @@ step "smoke: the installed tools (cwd $WORK, no SEA_MLIR_PROFILE_PATH)"
 cd "$WORK" || fail smoke
 unset SEA_MLIR_PROFILE_PATH
 for t in sea-vc sea-run sea-opt sea-reduce sea-seam-export; do
-  if ldd "$BIN/$t" | grep -q 'not found'; then
+  # no ldd on macOS: dyld refuses a missing library when --version runs
+  if command -v ldd > /dev/null && ldd "$BIN/$t" | grep -q 'not found'; then
     ldd "$BIN/$t" | grep 'not found'
     fail "smoke: $t misses a shared library"
   fi

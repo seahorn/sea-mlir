@@ -3,4 +3,4 @@
 
 add_llvm_executable(sea-seam-export sea-seam-export.cpp)
 llvm_update_compile_flags(sea-seam-export)
-target_link_libraries(sea-seam-export PRIVATE SeaVC SeaExpr MLIRSea MLIRParser)
+target_link_libraries(sea-seam-export PRIVATE SeaSupport SeaVC SeaExpr MLIRSea MLIRParser)

@@ -9,7 +9,7 @@
 // RUN: FileCheck %s --check-prefix=MAN < %t/s1/fam/manifest.yaml
 // RUN: env SEA_BENCH_SUITES=%t/s1 python3 %sea_src_root/utils/bench.py suites | FileCheck %s --check-prefix=LIST
 // RUN: env SEA_BENCH_SUITES=%t/s1 SEA_BENCH_HOME=%t/home python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %sea_vc --min-free-gb 0 --no-record | FileCheck %s --check-prefix=PASS
-// RUN: sed -i 's/expected: unsat/expected: sat/' %t/s1/fam/manifest.yaml
+// RUN: sed -i.orig 's/expected: unsat/expected: sat/' %t/s1/fam/manifest.yaml
 // RUN: env SEA_BENCH_SUITES=%t/s1 SEA_BENCH_HOME=%t/home not python3 %sea_src_root/utils/bench.py gate smoke --sea-vc %sea_vc --min-free-gb 0 --no-record | FileCheck %s --check-prefix=FAIL
 // EST: establish: jobs=2
 // EST: verdicts: unsat=2

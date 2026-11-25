@@ -17,8 +17,11 @@ namespace bv {
 inline Expr mulOverflows(bool isSigned, Expr a, Expr b) {
   if (!isSigned)
     return mk<NEG>(mk<UMUL_NO_OVERFLOW>(a, b));
-  return mk<NEG>(
-      mk<AND>(mk<SMUL_NO_OVERFLOW>(a, b), mk<SMUL_NO_UNDERFLOW>(a, b)));
+  // two statements: the order of function arguments is unspecified, and the
+  // creation order of the nodes decides the printed order of the and
+  Expr noOverflow = mk<SMUL_NO_OVERFLOW>(a, b);
+  Expr noUnderflow = mk<SMUL_NO_UNDERFLOW>(a, b);
+  return mk<NEG>(mk<AND>(noOverflow, noUnderflow));
 }
 
 } // namespace bv

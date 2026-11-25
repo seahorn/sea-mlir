@@ -4,7 +4,9 @@ This release freezes the functionality of sea-mlir so that applications can
 build on a fixed version instead of the development branch. It is a
 research prototype. Expect bugs. There is no promise that the text format of
 the dialect or the options stay compatible across releases. Linux (x86-64)
-is the only platform built and tested.
+is the only platform built and tested. A first macOS build is described in
+[BuildMacOS.md](BuildMacOS.md); the plan for binary releases is
+[design/BinaryRelease.md](design/BinaryRelease.md).
 
 Every tool prints its version with `--version`. `sea-vc` also prints it as
 the first line of every run (`tool.version:`), so every bug report should
@@ -111,6 +113,9 @@ ninja -C build-release check-sea  # lit: every test must pass
 ninja -C build-release install
 ```
 
+`-DLLVM_ENABLE_LLD=ON` is for Linux. On macOS leave it off: `ld64.lld` is
+untested there ([BuildMacOS.md](BuildMacOS.md)).
+
 `just release-check` (`utils/release-check.sh`) runs the release gate:
 - a Release build in `build-rc`, which takes its settings from
   `build-release/CMakeCache.txt` when no `-D` arguments are given;
@@ -146,7 +151,7 @@ other gates are run by hand.
 | `bin/sea-seam-export` | exports SeaM terms and rule firings for the Lean conformance checks ([SeamExport.md](SeamExport.md)) |
 | `bin/sea-reduce-test` | `utils/reduce-test.py`, the interestingness tests and reduction loop for `sea-reduce`. It finds the tools next to itself. |
 | `share/sea-mlir/profiles/` | the example profiles (`sea-vc --config=seam`) |
-| `share/doc/sea-mlir/` | `README.md`, `CHANGELOG.md`, `docs/` (this file, the design notes) |
+| `share/doc/sea-mlir/` | `README.md`, `CHANGELOG.md`, `docs/` (this file, the design notes); the `DOCS:` line of every `--agent` guide names this directory |
 
 The following are not installed:
 - `sea-expr-eval` and the `unittests/` drivers: they are test utilities.
@@ -170,9 +175,10 @@ solver) link the solvers as shared libraries:
 
 Release binaries include z3, Bitwuzla and Yices. z3 and Bitwuzla are
 MIT-licensed. Yices is BSD-3-Clause from 2.8.0 (earlier releases are
-GPLv3). GMP is LGPL: the release links it dynamically, as a replaceable
-shared library, so a user can substitute a modified build. The release's Yices is built without
-MCSAT and links GMP only. A build from source without Yices
+GPLv3). GMP and MPFR are LGPL: the binary release tarballs do not include
+them (they ship no GPL-family code); Ubuntu supplies them (`libgmp10` is in
+the base image; `apt-get install libgmpxx4ldbl libmpfr6`). The release's
+Yices is built without MCSAT and links GMP only. A build from source without Yices
 (`-DSEA_ENABLE_YICES=OFF`, or Yices not found) rejects `--solver=yices` and
 the `--yices-*` options, and `sea-vc --version` prints `yices: not built`.
 

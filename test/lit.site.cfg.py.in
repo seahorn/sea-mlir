@@ -6,6 +6,8 @@
 config.llvm_tools_dir = lit_config.substitute("@LLVM_TOOLS_DIR@")
 config.sea_obj_root = "@SEA_BINARY_DIR@"
 config.sea_src_root = "@SEA_SOURCE_DIR@"
+config.sea_build_type = "@CMAKE_BUILD_TYPE@"
+config.sea_cxx_flags = "@CMAKE_CXX_FLAGS@ @CMAKE_C_FLAGS@"
 config.z3 = "@SEA_Z3@"
 config.bitwuzla = "@SEA_WITH_BITWUZLA@"
 config.yices = "@SEA_WITH_YICES@"

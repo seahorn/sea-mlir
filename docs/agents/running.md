@@ -15,6 +15,25 @@ sea-seam-export --agent
 sea-reduce-test --agent
 ```
 
+Each guide's title line is followed by two lines that say where these
+docs are. A guide cites pages as repository paths (`docs/agents/slow-vc.md`);
+they are relative to the `DOCS:` directory:
+
+```text
+DOCS: <prefix>/share/doc/sea-mlir (installed with this binary: the docs of this release; ...)
+DOCS-WEB: https://seahorn.github.io/sea-mlir/ (follows main, not this release; docs/<page>.md is at https://seahorn.github.io/sea-mlir/<page>/ except docs/design/ and docs/<Capitalized>.md, which are only in the repository: https://github.com/seahorn/sea-mlir/tree/v0.5.0/docs)
+```
+
+`DOCS:` is found from the tool's real path (symlinks resolved, so a
+Homebrew `bin/` link works): an install's `share/doc/sea-mlir`, else, for a
+binary in a build directory, the source tree that `CMakeCache.txt` names
+(possibly newer than the binary), else `none`. The web site follows `main`,
+so it may describe options that a release does not have, and it leaves out
+`docs/design/` and the capitalized pages (`docs/Release.md`). For those,
+`DOCS-WEB` names the repository's `docs/` at the release tag when the tool
+is a build of exactly that tag (`--version` shows `(v<x.y.z>)`), else at
+`main`.
+
 In a source tree, `python3 utils/bench.py --agent` describes the
 benchmark harness.
 

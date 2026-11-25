@@ -12,6 +12,7 @@
 #include "sea/Dialect/Sea/SeaDialect.h"
 #include "sea/Dialect/SeaImp/SeaImpDialect.h"
 #include "sea/Reduce/Reduce.h"
+#include "sea/Support/AgentGuide.h"
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
 #include "sea/Support/Version.h"
@@ -142,7 +143,7 @@ int main(int argc, char **argv) {
   for (int i = 1; i < argc; ++i)
     if (llvm::StringRef(argv[i]) == "--agent" ||
         llvm::StringRef(argv[i]) == "-agent") {
-      llvm::outs() << agentGuide;
+      sea::printAgentGuide(llvm::outs(), agentGuide, argv[0]);
       return 0;
     }
   sea::log::init(); // SEA_LOG / SEA_LOG_FILE, before --log

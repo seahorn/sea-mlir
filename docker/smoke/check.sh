@@ -53,6 +53,13 @@ if [ "${2:-}" = bundle ]; then
       grep -q '^replay: assert-failed' "$verdict-bundle.log"
       grep -q 'mismatches=0' "$verdict-bundle.log"
     fi
+    # SeaHorn's own BMC with its Yices backend (the bundle's libyices.so.2.8)
+    sea bpf -m64 --bmc=mono --horn-bmc-solver=smt-y2 --log=bmc \
+      "$fixtures/$verdict.c" > "$verdict-yices.log" 2>&1 || :
+    cat "$verdict-yices.log"
+    grep -q 'bmc using Yices2' "$verdict-yices.log"
+    grep -q "^$verdict\$" "$verdict-yices.log"
   done
+  ldd "$prefix/bin/seahorn" | grep -q "libyices.so.2.8 => $prefix/bin/../lib/libyices.so.2.8"
 fi
 printf 'smoke: pass\n'

@@ -5,6 +5,7 @@
 
 import importlib.util
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -75,9 +76,18 @@ class LicenseTests(PrefixCase):
             pr.require_licenses(libraries, copied)
 
     def test_owned_library_accepted(self):
-        _, libraries, packages, copied = self.bundle("libgmp.so.10", "libgmp10:amd64")
-        self.assertIn("libgmp10:amd64", packages)
+        _, libraries, packages, copied = self.bundle("libz.so.1", "zlib1g:amd64")
+        self.assertIn("zlib1g:amd64", packages)
         pr.require_licenses(libraries, copied)
+
+    def test_lgpl_library_not_copied(self):
+        # GMP, GMPXX, MPFR (LGPL) stay Ubuntu runtime packages
+        for name, package in pr.APT_RUNTIME.items():
+            _, libraries, packages, copied = self.bundle(name, package + ":amd64")
+            self.assertEqual(copied, set())
+            self.assertEqual(packages, {})
+            self.assertEqual(libraries[name], {"system": True, "apt": package})
+            self.assertFalse((self.prefix / "lib" / name).exists())
 
     def test_known_upstream_library_accepted(self):
         _, libraries, _, copied = self.bundle("libz3.so.5.3")
@@ -132,6 +142,14 @@ class LicenseTests(PrefixCase):
         self.assertEqual(copied, set())
         pr.require_licenses(libraries, copied)
 
+    def test_preinstalled_upstream_library_gets_license(self):
+        # SeaHorn's copy of libyices.so.2.8 is in the prefix before packaging
+        libraries = {"libyices.so.2.8": {"system": False, "source": "lib"}}
+        pr.require_licenses(libraries, set())
+        self.assertTrue(
+            libraries["libyices.so.2.8"]["license"].endswith("Yices-LICENSE.txt")
+        )
+
 
 class RelocatableTests(PrefixCase):
     def test_dependency_outside_prefix_refused(self):
@@ -161,6 +179,11 @@ class RelocatableTests(PrefixCase):
             patch.object(pr.subprocess, "run", side_effect=fake),
             patch.object(pr, "run", return_value=printed),
         )
+
+    def test_apt_runtime_dependency_accepted(self):
+        deps = [("libmpfr.so.6", Path("/lib/x86_64-linux-gnu/libmpfr.so.6"))]
+        with patch.object(pr, "dependencies", return_value=deps):
+            pr.check_relocatable(self.prefix, {self.tool}, {})
 
     def test_wrong_runpath_refused(self):
         run_patch, print_patch = self.stub_patchelf("/opt/solvers/lib")
@@ -245,6 +268,282 @@ class PinTests(PrefixCase):
     def test_missing_wrap_refused(self):
         with self.assertRaises(OSError):
             pr.source_pins(self.root / "none")
+
+
+class SpdxTests(unittest.TestCase):
+    def test_permissive_expressions_allowed(self):
+        for expression in (
+            "MIT",
+            "Apache-2.0 WITH LLVM-exception",
+            "Apache-2.0 WITH LLVM-exception AND BSL-1.0",
+            "BSD-3-Clause OR GPL-2.0-only",
+            "MIT AND (GPL-3.0-only OR BSD-3-Clause)",
+        ):
+            self.assertIsNotNone(pr.license_allowed(expression), expression)
+
+    def test_gpl_family_refused(self):
+        for expression in (
+            "GPL-2.0-only",
+            "LGPL-3.0-or-later",
+            "LGPL-3.0-or-later OR GPL-2.0-or-later",
+            "AGPL-3.0-only",
+            "MIT AND GPL-3.0-or-later",
+            # an exception does not make a GPL license allowed
+            "GPL-3.0-or-later WITH GCC-exception-3.1",
+            # an unknown exception is not dropped
+            "MIT WITH Unknown-exception",
+        ):
+            self.assertIsNone(pr.license_allowed(expression), expression)
+
+    def test_malformed_refused(self):
+        for expression in ("MIT AND", "(MIT", "MIT OR OR BSD-3-Clause", "MIT; rm"):
+            with self.assertRaises(ValueError, msg=expression):
+                pr.license_allowed(expression)
+
+
+class LicenseGateTests(unittest.TestCase):
+    """The license gate on fake release prefixes."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.prefix = Path(temporary.name) / "prefix"
+        for relative in (
+            "bin/sea-vc",
+            "bin/sea-reduce-test",
+            "lib/libz3.so.5.4",
+            "lib/libyices.so.2.8",
+            "lib/libbitwuzla.so.0",
+            "lib/libzstd.so.1",
+            "share/sea-mlir/profiles/vcc.yaml",
+            "share/doc/sea-mlir/README.md",
+            "share/licenses/release/GPL-text-of-a-dual-license",
+            "LICENSE",
+            "THIRD-PARTY-NOTICES",
+            "RELEASE-MANIFEST.json",
+        ):
+            self.add(relative)
+        self.repos = {
+            "sea-mlir": self.licenses("sea-mlir", "Apache-2.0", "LLVM-exception", "MIT")
+        }
+
+    def add(self, relative):
+        path = self.prefix / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(ELF)
+
+    def licenses(self, name, *identifiers):
+        directory = self.prefix / "share/release-licenses" / (name + "-LICENSES")
+        directory.mkdir(parents=True, exist_ok=True)
+        for identifier in identifiers:
+            (directory / (identifier + ".txt")).write_text("text")
+        return directory
+
+    def seahorn(self):
+        for relative in (
+            "bin/sea",
+            "bin/seahorn",
+            "lib/seapy/sea/commands.py",
+            "lib/seapy/yaml/__init__.py",
+            "include/seadsa/Graph.hh",
+            "share/seahorn/profiles/sea-mlir-export.yaml",
+            "lib/libz3.so.4.12",
+        ):
+            self.add(relative)
+        self.repos["seahorn"] = self.licenses(
+            "seahorn", "Apache-2.0", "LLVM-exception", "MIT", "LicenseRef-NoLicense"
+        )
+        self.repos["sea-dsa"] = self.licenses("sea-dsa", "Apache-2.0", "NCSA")
+        self.repos["llvm-seahorn"] = self.licenses("llvm-seahorn", "Apache-2.0")
+
+    def audit(self, libraries=None):
+        return pr.license_audit(self.prefix, self.repos, libraries or {})
+
+    def test_release_passes(self):
+        audit = self.audit()
+        self.assertEqual(audit["sea-mlir"]["license"], "Apache-2.0 AND MIT")
+        self.assertEqual(audit["yices"]["files"], 1)
+        self.assertIsNone(audit["notices"]["license"])
+
+    def test_bundle_passes(self):
+        self.seahorn()
+        audit = self.audit()
+        # LicenseRef-NoLicense (play/, not installed) is excepted
+        self.assertNotIn("NoLicense", audit["seahorn"]["license"])
+        self.assertIn("NCSA", audit["seahorn-tools"]["license"])
+
+    def test_every_component_is_allowed(self):
+        repos = {
+            name: "Apache-2.0"
+            for name in ("sea-mlir", "seahorn", "sea-dsa", "llvm-seahorn")
+        }
+        for component in pr.COMPONENTS:
+            expression = pr.resolve_component(component, repos)
+            if expression is not None:
+                self.assertIsNotNone(pr.license_allowed(expression), component)
+
+    def test_lgpl_library_refused(self):
+        self.add("lib/libmpfr.so.6")
+        with self.assertRaisesRegex(RuntimeError, "no license rule.*libmpfr"):
+            self.audit()
+
+    def test_unknown_file_refused(self):
+        # SeaHorn's test corpus has Linux-derived (GPL-2.0) inputs
+        self.seahorn()
+        self.add("share/seahorn/test/simple/ldv_bounce_sat.c")
+        with self.assertRaisesRegex(RuntimeError, "no license rule.*ldv_bounce"):
+            self.audit()
+
+    def test_clam_refused(self):
+        self.seahorn()
+        self.add("include/clam/Clam.hh")
+        with self.assertRaisesRegex(RuntimeError, "no license rule.*clam"):
+            self.audit()
+
+    def test_gpl_in_repository_refused(self):
+        self.seahorn()
+        self.licenses("seahorn", "GPL-2.0-only")
+        with self.assertRaisesRegex(RuntimeError, "bin/sea.*GPL-2.0-only.*allowed"):
+            self.audit()
+
+    def test_missing_repository_licenses_refused(self):
+        self.add("bin/sea")
+        with self.assertRaisesRegex(RuntimeError, "repo:seahorn"):
+            self.audit()
+
+    def test_library_from_unknown_package_refused(self):
+        libraries = {"libz.so.1": {"system": False, "package": "zlib1g:amd64"}}
+        self.audit(libraries)
+        libraries["libreadline.so.8"] = {
+            "system": False,
+            "package": "libreadline8t64:amd64",
+        }
+        with self.assertRaisesRegex(RuntimeError, "libreadline8t64"):
+            self.audit(libraries)
+
+    def test_apt_runtime_library_not_audited(self):
+        libraries = {"libgmp.so.10": {"system": True, "apt": "libgmp10"}}
+        self.audit(libraries)
+
+
+class BottleAuditTests(unittest.TestCase):
+    """The license gate over Homebrew bottles (--audit-bottles)."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def bottle(self, name, files, version="1.0"):
+        stage = Path(tempfile.mkdtemp(dir=self.root))
+        keg = stage / name / version
+        for relative in files:
+            path = keg / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(ELF)
+        bottle = stage / f"{name}-{version}.x86_64_linux.bottle.tar.gz"
+        with tarfile.open(bottle, "w:gz") as archive:
+            archive.add(stage / name, arcname=name)
+        return bottle
+
+    SEA_MLIR = (
+        "INSTALL_RECEIPT.json",
+        ".brew/sea-mlir.rb",
+        "LICENSE",
+        "bin/sea-vc",
+        "share/doc/sea-mlir/LICENSES/Apache-2.0.txt",
+        "share/doc/sea-mlir/LICENSES/LLVM-exception.txt",
+        "share/doc/sea-mlir/LICENSES/MIT.txt",
+        "share/doc/sea-mlir/third-party/Z3-LICENSE.txt",
+        "share/doc/sea-mlir/docs/index.md",
+        "libexec/lib/libz3.so.5.4",
+        "libexec/lib/libbitwuzla.so.0",
+        "libexec/lib/libyices.so.2.8",
+        "libexec/include/yices.h",
+        "libexec/bin/yices-smt2",
+    )
+
+    def test_sea_mlir_bottle_passes(self):
+        report = pr.audit_bottle(self.bottle("sea-mlir", self.SEA_MLIR))
+        self.assertEqual(report["formula"], "sea-mlir")
+        self.assertEqual(
+            report["components"]["sea-mlir-tools"]["allowed"],
+            "Apache-2.0 AND BSL-1.0 AND MIT",
+        )
+
+    def test_lgpl_library_in_bottle_refused(self):
+        for extra in ("libexec/lib/libgmp.so.10", "libexec/lib/libmpfr.so.6"):
+            with (
+                self.subTest(extra=extra),
+                self.assertRaisesRegex(RuntimeError, "no license rule"),
+            ):
+                pr.audit_bottle(self.bottle("sea-mlir", (*self.SEA_MLIR, extra)))
+
+    def test_unknown_file_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "no license rule.*libexec/bin/z3"):
+            pr.audit_bottle(self.bottle("sea-mlir", (*self.SEA_MLIR, "libexec/bin/z3")))
+
+    def test_gpl_repository_license_refused(self):
+        files = (*self.SEA_MLIR, "share/doc/sea-mlir/LICENSES/GPL-3.0-only.txt")
+        with self.assertRaisesRegex(RuntimeError, "not built from the allowed"):
+            pr.audit_bottle(self.bottle("sea-mlir", files))
+
+    def test_seahorn_test_corpus_refused(self):
+        files = (
+            "bin/sea",
+            "share/doc/seahorn/third-party/seahorn-LICENSES/Apache-2.0.txt",
+            "share/doc/seahorn/third-party/sea-dsa-LICENSES/Apache-2.0.txt",
+            "share/doc/seahorn/third-party/llvm-seahorn-LICENSES/NCSA.txt",
+            "libexec/share/seahorn/test/simple/ldv_bounce_sat.c",
+        )
+        report = pr.audit_bottle(self.bottle("seahorn", files[:4]))
+        self.assertIn("seahorn", report["components"])
+        # SeaHorn's test corpus has inputs derived from Linux (GPL-2.0)
+        with self.assertRaisesRegex(RuntimeError, "no license rule.*ldv_bounce"):
+            pr.audit_bottle(self.bottle("seahorn", files))
+
+    def test_llvm_bottle_rules_are_explicit(self):
+        files = (
+            "bin/FileCheck",
+            "include/mlir/IR/Builders.h",
+            "lib/libMLIRIR.a",
+            "share/lit/lit.py",
+            "LLVM_REVISION",
+            "LICENSE.TXT",
+        )
+        report = pr.audit_bottle(self.bottle("sea-mlir-llvm", files))
+        self.assertEqual(report["components"]["llvm"]["files"], 4 + 1)
+        for extra in (
+            "libexec/lib/libgmp.so.10",
+            "lib/libgmp.so.10",
+            "lib/libmpfr.so.6",
+            "bin/yices",
+            "COPYING",
+            "share/gcc/x",
+        ):
+            with (
+                self.subTest(extra=extra),
+                self.assertRaisesRegex(RuntimeError, "no license rule"),
+            ):
+                pr.audit_bottle(self.bottle("sea-mlir-llvm", (*files, extra)))
+
+    def test_seahorn_doc_rules_are_explicit(self):
+        files = (
+            "bin/sea",
+            "share/doc/seahorn/third-party/seahorn-LICENSES/Apache-2.0.txt",
+            "share/doc/seahorn/third-party/sea-dsa-LICENSES/Apache-2.0.txt",
+            "share/doc/seahorn/third-party/llvm-seahorn-LICENSES/NCSA.txt",
+            "share/doc/seahorn/seahorn_license.txt",
+        )
+        pr.audit_bottle(self.bottle("seahorn", files))
+        with self.assertRaisesRegex(RuntimeError, "no license rule"):
+            pr.audit_bottle(
+                self.bottle("seahorn", (*files, "share/doc/seahorn/test/x.c"))
+            )
+
+    def test_unknown_formula_refused(self):
+        with self.assertRaisesRegex(RuntimeError, "no license rules for formula"):
+            pr.audit_bottle(self.bottle("gmp", ("lib/libgmp.so.10",)))
 
 
 if __name__ == "__main__":

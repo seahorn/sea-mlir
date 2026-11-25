@@ -535,7 +535,10 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
         "replay_no_clobber": replay_no_clobber,
         "replay_mismatch_diag": replay_mismatch_diag,
         "replay": replay,
-        "maxrss_mb": round(ru.ru_maxrss / 1024),
+        # ru_maxrss: KiB on Linux, bytes on macOS
+        "maxrss_mb": round(
+            ru.ru_maxrss / (1 << (20 if sys.platform == "darwin" else 10))
+        ),
         "log": base,
     }
     for k, v in stats.items():
