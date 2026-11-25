@@ -31,7 +31,7 @@ a change to sea-mlir rebuilds only the sea-mlir and runtime stages.
 | `base` | Ubuntu 24.04 with clang 18, lld, CMake, Ninja, Python 3, Boost, GMP, MPFR and the tools the solver builds need |
 | `llvm` | a shallow fetch of the commit in `LLVM_REVISION`; LLVM + MLIR, Release with assertions, X86 only, `LLVM_INSTALL_UTILS=ON` (FileCheck, not, count), installed in `/opt/llvm` with lit (`/opt/llvm/share/lit/lit.py`) |
 | `solvers` | z3, Bitwuzla and Yices built from source into `/opt/solvers`; `--build-arg YICES=0` leaves Yices out |
-| `sea-mlir` | configure against `/opt/llvm` and `/opt/solvers`, build, `check-sea`, install to `/opt/sea-mlir`; the build tree stays in `/build` |
+| `sea-mlir` | configure against `/opt/llvm` and `/opt/solvers`, build, `check-sea`, install to `/opt/sea-mlir`; the build tree stays in `/sea-mlir-build` |
 | `runtime` (default) | Ubuntu 24.04 with the runtime libraries, `/opt/sea-mlir` and `/opt/solvers`; `sea-vc` on `PATH` |
 
 ## Pins
