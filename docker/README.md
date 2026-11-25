@@ -145,9 +145,14 @@ so a GPL file added to one of them fails the gate. The manifest's
 `license_audit` lists each component, its license and its file count;
 `docker/test_package_release.py` tests the gate.
 
-The smoke test checks the version (with Yices), SAT with counterexample
-replay (with z3 and with Yices), and UNSAT after relocating the tarball
-into a fresh container.
+The smoke test (`docker/smoke/test-tarball.sh`, then `check.sh`) runs in a
+fresh container on the extracted tarball: every tool's version (with Yices
+and Bitwuzla), the `--agent` `DOCS:` line, SAT with counterexample replay
+(z3, Yices, Bitwuzla), UNSAT through the installed profile, library
+resolution inside the tree, and no build source path. Each check prints
+`check: <name> pass|FAIL`; `SMOKE_XFAIL` names checks an older tarball is
+known to fail. `.github/workflows/release-test.yml` runs the same script
+on GitHub's runners against a published release.
 
 ### SeaHorn bundle
 

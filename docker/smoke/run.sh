@@ -25,7 +25,7 @@ trap 'exit 143' TERM
 printf 'smoke-container: %s\n' "$container"
 docker run --name "$container" --label sea-mlir.release-smoke=true \
   -v "$artifacts:/artifacts:ro" -v "$fixtures:/fixtures:ro" \
-  -e PACKAGE="$package" -e ARCHIVE="$archive" -e MODE="$mode" \
+  -e VERSION="$version" -e MODE="$mode" \
   ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 \
   sh -ec '
     # GMP, GMPXX, MPFR (LGPL) come from Ubuntu, not the tarball
@@ -36,12 +36,9 @@ docker run --name "$container" --label sea-mlir.release-smoke=true \
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y --no-install-recommends $packages
-    cd /artifacts
-    sha256sum -c "$ARCHIVE.sha256"
-    mkdir /test /work
-    tar -xzf "$ARCHIVE" -C /test
-    cd /work
-    sh /fixtures/check.sh "/test/$PACKAGE" "${MODE#--}"
+    kind=standalone
+    if [ "$MODE" = --bundle ]; then kind=bundle; fi
+    sh /fixtures/test-tarball.sh /artifacts "$kind" "$VERSION"
   ' &
 client=$!
 wait "$client"
