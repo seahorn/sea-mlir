@@ -855,9 +855,42 @@ def cmd_audit(a):
     return 0
 
 
+DOCS_WEB = "https://seahorn.github.io/sea-mlir/"
+
+
+def docs_lines():
+    """The DOCS and DOCS-WEB lines of the --agent guide, as the C++ tools
+    print them (include/sea/Support/AgentGuide.h): the docs root found from
+    this script's real path (Homebrew links bin/ into the prefix)."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    inst = os.path.normpath(os.path.join(here, "..", "share", "doc", "sea-mlir"))
+    src = os.path.dirname(here)
+    if os.path.isdir(os.path.join(inst, "docs")):
+        docs = (
+            f"DOCS: {inst} (installed with this script: the docs of this "
+            "release; the docs/... paths in this guide are relative to it)"
+        )
+    elif os.path.basename(here) == "utils" and os.path.isdir(os.path.join(src, "docs")):
+        docs = (
+            f"DOCS: {src} (the source tree of this script; the docs/... "
+            "paths in this guide are relative to it)"
+        )
+    else:
+        docs = (
+            "DOCS: none (no share/doc/sea-mlir/docs next to this script and "
+            "no source tree; use DOCS-WEB)"
+        )
+    web = (
+        f"DOCS-WEB: {DOCS_WEB} (follows main, not this release; "
+        f"docs/<page>.md is at {DOCS_WEB}<page>/)"
+    )
+    return f"{docs}\n{web}\n"
+
+
 def main():
     if "--agent" in sys.argv[1:]:
-        print(AGENT, end="")
+        title, rest = AGENT.split("\n", 1)
+        print(f"{title}\n{docs_lines()}{rest}", end="")
         return 0
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter

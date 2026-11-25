@@ -35,6 +35,7 @@
 #include "sea/Expr/Smt/Z3.hh"
 #include "sea/Expr/Smt/Z3Error.h"
 #include "sea/Interp/ParseInput.h"
+#include "sea/Support/AgentGuide.h"
 #include "sea/Support/Assume.h"
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
@@ -5361,7 +5362,7 @@ int main(int argc, char **argv) {
     }
   }
   if (agent) {
-    outs() << agentGuide;
+    sea::printAgentGuide(outs(), agentGuide, argv[0]);
     return 0;
   }
   sea::out::Emitter emitter(outs(), outFormat);
