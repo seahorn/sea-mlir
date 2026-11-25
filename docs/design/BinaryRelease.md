@@ -123,8 +123,9 @@ the manifest. Both may be distributed; the build is not a publication
 The version is the sea-mlir version (`project(sea-mlir VERSION ...)`, or
 `--version`): the bundle is a sea-mlir release with SeaHorn as a
 dependency. The SeaHorn commits (seahorn, sea-dsa, llvm-seahorn),
-SeaHorn's z3 and Yices versions and LLVM 18's version are under `"seahorn"` in the bundle's `RELEASE-MANIFEST.json`
-(from `share/seahorn/build-pins.txt`).
+SeaHorn's z3 and Yices versions and LLVM 18's version are under
+`"seahorn"` in the bundle's `RELEASE-MANIFEST.json` (from
+`share/seahorn/build-pins.txt`).
 
 ### Relocatability
 
