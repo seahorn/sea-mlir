@@ -4920,7 +4920,11 @@ public:
         t.push_back(under(b, true));
         e.push_back(under(b, false));
       }
-      return mk<ITE>(c, split(t), split(e));
+      // the then side first: both sides spend one pull budget, and the
+      // order of function arguments is unspecified (GCC and clang differ)
+      Expr thenSide = split(t);
+      Expr elseSide = split(e);
+      return mk<ITE>(c, thenSide, elseSide);
     };
     Expr res = split(bytes);
     if (!resolved)
