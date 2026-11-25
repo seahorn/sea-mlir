@@ -226,16 +226,16 @@ CPUs (`--cpuset`), 8 compile jobs:
 
 | stage | wall time |
 |---|---|
-| `llvm` (LLVM + MLIR at the pin, from source) | 54 min (its last 23 min shared the 8 CPUs with the `seahorn` stage) |
-| `seahorn` (z3 4.12.0, SeaHorn with clam, unit tests) | 23 min (shared, as above) |
+| `llvm` (LLVM + MLIR at the pin, from source) | 54 min (its last 23 min shared the 8 CPUs with an earlier `seahorn` build, with clam) |
+| `seahorn` (SeaHorn without clam, with Yices, unit tests; z3 4.12.0 cached) | 4.5 min |
 | `solvers` (z3, Bitwuzla, Yices) | 12 min |
-| `sea-mlir` (build, `check-sea`: 669 tests pass, install) | 9 min |
+| `sea-mlir` (build, `check-sea`: 669 tests pass, install) | 8 min |
 | `package`, `bundle-package`, both runtimes, both smokes | 3 min |
 
-With the `llvm` and `seahorn` images cached, `just binary-release OUT
---bundle --llvm-image IMAGE` took 24 minutes. Docker keeps the `llvm`
-layer until `LLVM_REVISION` moves. Artifacts: the standalone tarball is
-35 MB, the bundle 120 MB (gzip).
+With the `llvm`, `solvers` and `seahorn` images cached, `just
+binary-release OUT --bundle --llvm-image IMAGE` took 11 minutes. Docker
+keeps the `llvm` layer until `LLVM_REVISION` moves. Artifacts: the
+standalone tarball is 34 MB, the bundle 108 MB (gzip).
 
 Checked in a fresh `ubuntu:24.04` with the bundle and `clang-18 python3`
 from apt: `-m64` export and `sea-vc` give sat (replayed) and unsat; the

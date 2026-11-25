@@ -218,7 +218,18 @@ def bundle_libraries(prefix, lib, env):
 
 
 def require_licenses(libraries, copied):
-    """Fail closed: every copied library has a package copyright or an upstream license."""
+    """Fail closed: every copied library has a package copyright or an upstream license.
+    A library already in the prefix (SeaHorn's copy of libyices) gets its
+    upstream license entry too, when it has one."""
+    for name, entry in sorted(libraries.items()):
+        if name in copied or entry.get("system"):
+            continue
+        if entry.get("package") or entry.get("license"):
+            continue
+        for pattern, license_file in UPSTREAM_LICENSE:
+            if pattern.fullmatch(name):
+                entry["license"] = "share/licenses/release/" + license_file
+                break
     for name in sorted(copied):
         entry = libraries[name]
         if entry.get("package") or entry.get("license"):
@@ -423,10 +434,13 @@ def resolve_component(component, repos):
     expression = COMPONENTS[component]
     if expression is None:
         return None
-    return " AND ".join(
-        repos[part[len("repo:") :]] if part.startswith("repo:") else part
-        for part in expression.split(" AND ")
-    )
+    parts = []
+    for part in expression.split(" AND "):
+        if part.startswith("repo:"):
+            parts.extend(repos[part[len("repo:") :]].split(" AND "))
+        else:
+            parts.append(part)
+    return " AND ".join(dict.fromkeys(parts))  # in order, without repeats
 
 
 def file_component(relative):

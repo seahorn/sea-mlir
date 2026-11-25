@@ -141,6 +141,14 @@ class LicenseTests(PrefixCase):
         self.assertEqual(copied, set())
         pr.require_licenses(libraries, copied)
 
+    def test_preinstalled_upstream_library_gets_license(self):
+        # SeaHorn's copy of libyices.so.2.8 is in the prefix before packaging
+        libraries = {"libyices.so.2.8": {"system": False, "source": "lib"}}
+        pr.require_licenses(libraries, set())
+        self.assertTrue(
+            libraries["libyices.so.2.8"]["license"].endswith("Yices-LICENSE.txt")
+        )
+
 
 class RelocatableTests(PrefixCase):
     def test_dependency_outside_prefix_refused(self):
