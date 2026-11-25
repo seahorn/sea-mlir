@@ -149,18 +149,25 @@ The Linux tarballs are built locally (`just binary-release OUT --bundle`,
 `docker/README.md`), never on GitHub. They are published in three steps,
 each on the maintainer's word:
 
-1. Create the GitHub release of the tag `v<version>` as a prerelease, with
-   both tarballs and their `.sha256` and `.json` files:
-   `gh release create v<version> --prerelease <files>`.
-2. Publishing it starts `.github/workflows/release-test.yml` (by hand:
-   `gh workflow run release-test.yml -f tag=v<version>`). On GitHub's
+1. Create the GitHub release of the tag `v<version>` as a prerelease with
+   both tarballs and their `.sha256` and `.json` files attached at
+   creation: `gh release create v<version> --prerelease <files>`. Not in
+   the web UI with files attached afterwards: publishing starts the test,
+   which would find no files. Keep immutable releases off for the
+   repository while assets may still need replacing.
+2. Publishing it starts `.github/workflows/release-test.yml`, if the
+   tagged commit contains that workflow (GitHub runs the tagged commit's
+   copy; otherwise nothing starts). By hand:
+   `gh workflow run release-test.yml -f tag=v<version>` (`-f version=`
+   for a trial tag whose name is not `v<version>`). On GitHub's
    Ubuntu 24.04 and 26.04 runners it downloads each tarball, checks its
    SHA-256 file, installs the runtime packages below (the bundle also
    `clang-18` and `python3`), extracts it outside
    the checkout and runs `docker/smoke/test-tarball.sh`: every tool runs,
    the `DOCS:` line of `--agent` names the extracted tree, sat with
    replay (z3, Yices, Bitwuzla), unsat through the installed `seam`
-   profile, every library resolves inside the tree or the system, no
+   profile, every library resolves inside the tree or the system's
+   library directories, no
    source path of the build; for the bundle also C through SeaHorn's
    `sea` to `sea-vc` and SeaHorn's BMC with Yices. The hosted runners
    have many packages preinstalled, so the clean-container smoke of
