@@ -165,6 +165,10 @@ class SeaMlir < Formula
       -DSEA_GIT_DESCRIBE=v#{version}
       -DCMAKE_INSTALL_RPATH=#{solver_rpath}
     ]
+    # no build path in the tools: assertion __FILE__ strings become
+    # source-relative (Tools/no-source-paths.test)
+    ENV.append "CFLAGS", "-ffile-prefix-map=#{buildpath}/="
+    ENV.append "CXXFLAGS", "-ffile-prefix-map=#{buildpath}/="
     system "cmake", "-S", ".", "-B", "build", "-G", "Ninja", *args, *std_cmake_args
     system "cmake", "--build", "build", "--parallel", ENV.make_jobs.to_s
     # the tests of the release tarball's build (docker/Dockerfile)
