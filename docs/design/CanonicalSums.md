@@ -341,6 +341,19 @@ arity is a leaf, with the warning `vc.canonical-sums-opaque`.
   input and one run, as `BvRules.hh`'s order; not a property of the
   formula alone.
 
+## Measured configuration
+
+The profile `canonical` (`sea-vc --config=seam --config=canonical`,
+`profiles/canonical.cfg`, opt-in) sets `--solver-nary-sums`, this step with
+`neg=auto`, `eq=unshared`, `inner=flatten`, and for z3 the tactic `S2`.
+Measured on the Firedancer and `vcc` jobs that take more than 5 s, z3 with
+3 seeds: 132 of 132 runs solved, against 130 of 132 with the defaults, and
+the total time 40% lower. Two jobs are slower: `h2fc-settings-proof`
+(225 s to 625 s) and `step-reach-sz` (11 s to 45 s). Yices and Bitwuzla
+were also faster or equal. `S2` assumes a pure bit-vector goal (no
+`ackermannize_bv`, no SMT-core fallback), so it is meant for the default
+`--ackermannize`; see docs/Profiles.md.
+
 ## Open
 
 - The default (off) and the combination with `--vc-defs`.

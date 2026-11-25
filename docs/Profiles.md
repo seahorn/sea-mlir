@@ -55,4 +55,26 @@ examples of the format, not recommended defaults (the defaults of `sea-vc`
 are still open):
 
 - `seam.cfg`: `--lower --seam`;
-- `seam-wide.cfg`: `@seam.cfg` plus `--seam-wide`.
+- `seam-wide.cfg`: `@seam.cfg` plus `--seam-wide`;
+- `canonical.cfg`: the canonical linear forms of the query and a z3 tactic
+  (below). It does not lower: `--config=seam --config=canonical`.
+
+### Measured configuration: `canonical`
+
+`canonical.cfg` sets `--solver-nary-sums`, `--vc-canonical-sums`,
+`--vc-canonical-sums-neg=auto`, `--vc-canonical-sums-eq=unshared`,
+`--vc-canonical-sums-inner=flatten` and, for z3, the tactic `S2` as
+`--z3-tactic` (`docs/design/CanonicalSums.md`). It was measured on the
+Firedancer and `vcc` jobs that take more than 5 s, with z3 and 3 seeds:
+132 of 132 runs were solved, against 130 of 132 with the defaults, and the
+total time was 40% lower. Two jobs are slower: `h2fc-settings-proof`
+(225 s to 625 s) and `step-reach-sz` (11 s to 45 s). Yices and Bitwuzla
+were also faster or equal. It is opt-in; the defaults are unchanged.
+
+The tactic assumes a pure bit-vector goal: it has no `ackermannize_bv`
+and no fallback to z3's SMT core. Use it with the default `--ackermannize`
+lowering. With arrays left in the query (`--ackermannize=off`) or
+uninterpreted functions (`--ro-arrays=uf`), z3 cannot run it: `sea-vc`
+prints `solver-answer: unknown`, `result: unknown`, the warning
+`vc.unknown` and exits with status 3. It does not give a wrong answer.
+Drop the tactic there (`--z3-tactic=smtfd`, or a different solver).

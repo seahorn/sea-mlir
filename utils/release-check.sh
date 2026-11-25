@@ -98,6 +98,7 @@ for t in sea-expr-eval sea-expr-rewriter-test; do
   [[ ! -e "$BIN/$t" ]] || fail "install: $t is a test utility, not installed"
 done
 [[ -f "$PREFIX/share/sea-mlir/profiles/seam.cfg" ]] || fail "install: no profiles"
+[[ -f "$PREFIX/share/sea-mlir/profiles/canonical.cfg" ]] || fail "install: no canonical profile"
 [[ -f "$PREFIX/share/doc/sea-mlir/docs/Release.md" ]] || fail "install: no docs"
 
 step "smoke: the installed tools (cwd $WORK, no SEA_MLIR_PROFILE_PATH)"

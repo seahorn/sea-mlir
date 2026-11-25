@@ -4455,7 +4455,8 @@ unreadable / a bad include: error vc.config-read; status 1. Inside a config,
 include another with @file (a --config there is LLVM's own: a path or a
 file name in the same directories, not printed). Shipped examples (not
 recommended defaults): seam (--lower --seam), seam-wide (@seam.cfg
---seam-wide).
+--seam-wide), canonical (canonical sums + a z3 tactic for pure bit-vector
+queries; no --lower: --config=seam --config=canonical).
 
 PRINTS (docs/design/Print.md): sea.print / sea.print.mem /
 sea.print.scope / sea.print.end show values in the counterexample; the VC
