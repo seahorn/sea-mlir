@@ -351,7 +351,10 @@ do` block. Constraints:
 
 ### Versions
 
-`sea-mlir` uses the sea-mlir tag. `seahorn` has no releases: version it by
+`sea-mlir` uses the sea-mlir tag, and the formula passes
+`-DSEA_GIT_DESCRIBE=v<version>` (a tarball has no `.git`; as
+`docker/release.py` does), so `--version` and the `DOCS-WEB` line name the
+tag, not `main`. `seahorn` has no releases: version it by
 date and commit, e.g. `18.0.0-dev.<yyyymmdd>` with the pinned dev18
 commit in the `url` (`revision:`), until SeaHorn makes a release.
 
