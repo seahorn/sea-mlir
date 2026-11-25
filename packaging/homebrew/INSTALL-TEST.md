@@ -8,9 +8,9 @@ published. This page tests them on a machine that has never built them.
 ## What you need
 
 - Linux x86_64 with glibc 2.38 or newer and the libstdc++ of GCC 13 or
-  newer (Ubuntu 24.04 or later; the bottles were built on Ubuntu 24.04), `git`, `curl`, and a C library
-  development package (`build-essential` on Ubuntu). `sea` compiles C with
-  llvm@18's clang, which uses the system's C headers.
+  newer (Ubuntu 24.04 or later; the bottles were built on Ubuntu 24.04).
+  On Ubuntu: `apt-get install build-essential procps curl file git`.
+  `sea` compiles C with llvm@18's clang, which uses the system's C headers.
 - Homebrew 7.0 or newer (`brew trust` is new in 7.0; tested with 7.0.16).
   Its default prefix is the tested one; the bottles are `cellar: :any`,
   relocatable to another prefix. Install it with https://brew.sh's
@@ -19,7 +19,7 @@ published. This page tests them on a machine that has never built them.
   the install needs: `install-local.sh`, this page, the formulae
   (`Formula-local/` for a build from a local source, `Formula/` for a
   release build) and the `sea-mlir` and `seahorn` bottles. Not the
-  `sea-mlir-llvm` bottle (958 MB, needed only to build sea-mlir from
+  `sea-mlir-llvm` bottle (large, needed only to build sea-mlir from
   source) and not `logs/`.
 
 ## A. From local bottles (before upload)
@@ -28,15 +28,17 @@ On the build host:
 
 ```bash
 cd <output>/artifacts/homebrew
-tar -czf ~/sea-mlir-bottles.tar.gz install-local.sh INSTALL-TEST.md \
+tar -cf ~/sea-mlir-bottles.tar install-local.sh INSTALL-TEST.md \
   Formula* bottles/sea-mlir-[0-9]*.bottle.tar.gz bottles/seahorn-*.bottle.tar.gz
 ```
 
 On the test machine:
 
 ```bash
-mkdir ~/sea-mlir-bottles
-tar -xzf sea-mlir-bottles.tar.gz -C ~/sea-mlir-bottles
+scp <build-host>:sea-mlir-bottles.tar ~/
+cd ~
+mkdir -p sea-mlir-bottles
+tar -xf sea-mlir-bottles.tar -C sea-mlir-bottles
 bash ~/sea-mlir-bottles/install-local.sh ~/sea-mlir-bottles
 ```
 
@@ -93,4 +95,5 @@ brew uninstall seahorn/seahorn/seahorn seahorn/seahorn/sea-mlir
 brew uninstall seahorn/seahorn/sea-mlir-llvm   # if installed
 brew untap seahorn/seahorn
 brew autoremove
+brew developer off      # part A turned it on (brew ruby)
 ```

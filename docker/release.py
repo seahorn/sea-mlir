@@ -545,10 +545,25 @@ def main():
         job.save()
 
 
+def require_clean_source(source):
+    """`--brew-source formula` writes the formulae the tap publishes: they
+    must be the committed ones."""
+    dirty = subprocess.check_output(
+        ["git", "-C", str(source), "status", "--porcelain"], text=True
+    )
+    if dirty.strip():
+        raise RuntimeError(
+            "--brew-source formula needs a clean source tree (the formulae "
+            "are published); commit or stash:\n" + dirty.rstrip()
+        )
+
+
 def homebrew(job, source, output, args):
     """The --homebrew stages; the record's status as in main()."""
     artifacts = output / "artifacts" / "homebrew"
     try:
+        if args.brew_source == "formula":
+            require_clean_source(source)
         job.record["homebrew_source"] = homebrew_context(
             source, output, args.brew_source
         )
@@ -575,16 +590,16 @@ def homebrew(job, source, output, args):
                 str(artifacts / "license-audit.json"),
             ],
         )
-        smoke = ["bash", "docker/homebrew-smoke.sh", str(artifacts)]
-        if args.cpuset:
-            smoke.append(args.cpuset)
-        job.run("homebrew-smoke", smoke)
         (artifacts / "INSTALL-TEST.md").write_text(
             (source / "packaging" / "homebrew" / "INSTALL-TEST.md").read_text()
         )
         (artifacts / "install-local.sh").write_text(
             (source / "packaging" / "homebrew" / "install-local.sh").read_text()
         )
+        smoke = ["bash", "docker/homebrew-smoke.sh", str(artifacts)]
+        if args.cpuset:
+            smoke.append(args.cpuset)
+        job.run("homebrew-smoke", smoke)
         job.record["artifacts"] = {
             str(p.relative_to(output / "artifacts")): {
                 "bytes": p.stat().st_size,

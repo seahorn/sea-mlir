@@ -308,7 +308,7 @@ the binary releases.
   `tools/sea-vc/sea-vc.cpp`), but three `check-sea` tests fail:
   `Expr/addr-range.test` (its semantics check reports a wrong claim),
   `SeamExport/mul-overflow-nodes.mlir` and `VC/seam/k-cancel.mlir`; under
-  investigation (`fix/gcc-portability`), so GCC is not a supported compiler of sea-mlir until they
+  investigation, so GCC is not a supported compiler of sea-mlir until they
   are understood. GNU ld 2.42 links SeaHorn against `llvm@18`'s static
   (PIC) libraries wrongly: it relaxes an `R_X86_64_GOTPCRELX` relocation on
   a `push` into `addr32 call`, and `seaopt` jumps into
@@ -414,8 +414,8 @@ job limit) are an optional later step for the tap's pull requests.
   URL; its version is `<project version>-local.<commit>`, so `--version`
   and `DOCS-WEB` do not claim a tag. On release day, `--brew-source
   formula`: the tag's GitHub tarball as the formula names it. The smoke
-  checks the `DOCS:` line of `feat/agent-docs-line`, which lands before
-  this branch (it is merged into it).
+  checks the `DOCS:` line of `sea-vc --agent`, which the agent-docs change
+  provides; that change lands first.
 - **macOS, on the laptop.** The same commands per formula (`brew install
   --build-bottle`, `brew test`, `brew bottle --json --root-url=...`), then
   `brew bottle --merge --write` adds the `arm64_*` lines to the same
@@ -568,7 +568,7 @@ Homebrew bottles only.
   `DOCS:` line, so the bottles need that change in the source they build.
 - **GCC**: sea-mlir built with GCC 13 fails three `check-sea` tests
   (section 3, "Toolchain"); the formulae use clang 18 on Linux. Under
-  investigation on `fix/gcc-portability`.
+  investigation.
 - **PyYAML in the formulae**: pure Python resources (as in the bundle);
   `brew style` asks for a `libyaml` dependency they do not use (one
   offense per formula). Keep, or depend on `libyaml` to satisfy the cop.

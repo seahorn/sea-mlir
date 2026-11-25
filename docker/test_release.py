@@ -319,6 +319,50 @@ class HomebrewFormulaTests(unittest.TestCase):
                 release.brew_source(Path(directory), "HEAD"), ("1.2.3", commit, True)
             )
 
+    def homebrew_args(self, brew_source):
+        return Mock(brew_source=brew_source, cpuset=None)
+
+    def test_formula_source_dirty_tree_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            git = ["git", "-C", directory, "-c", "user.name=t", "-c", "user.email=t@t"]
+            subprocess.run(["git", "init", "-q", directory], check=True)
+            Path(directory, "a").write_text("1\n")
+            subprocess.run([*git, "add", "."], check=True)
+            subprocess.run([*git, "commit", "-q", "-m", "a"], check=True)
+            source = Path(directory)
+            release.require_clean_source(source)
+            Path(directory, "a").write_text("2\n")
+            with self.assertRaisesRegex(RuntimeError, "clean source tree"):
+                release.require_clean_source(source)
+            job = Mock()
+            job.record = {}
+            with patch.object(release, "homebrew_context") as context:
+                status = release.homebrew(
+                    job, source, source.parent / "out", self.homebrew_args("formula")
+                )
+            self.assertEqual(status, 1)
+            self.assertEqual(job.record["status"], "failed")
+            context.assert_not_called()
+            job.build.assert_not_called()
+
+    def test_local_source_dirty_tree_not_checked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            subprocess.run(["git", "init", "-q", directory], check=True)
+            Path(directory, "a").write_text("1\n")
+            job = Mock()
+            job.record = {}
+            with (
+                patch.object(release, "homebrew_context", side_effect=OSError("stop")),
+                patch.object(release, "require_clean_source") as clean,
+            ):
+                release.homebrew(
+                    job,
+                    Path(directory),
+                    Path(directory).parent / "out",
+                    self.homebrew_args("HEAD"),
+                )
+            clean.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

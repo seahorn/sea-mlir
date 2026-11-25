@@ -28,10 +28,17 @@ docker run --name "$container" --label sea-mlir.release-smoke=true "${limits[@]}
   -v "$root/docker/smoke:/fixtures:ro" \
   "$image" bash -euo pipefail -c '
     start=$SECONDS
-    bash /scripts/install-local.sh /bottle-test seahorn sea-mlir-llvm
+    # part A of INSTALL-TEST.md: seahorn alone from the documented subset
+    # of the output (no sea-mlir-llvm bottle)
+    mkdir "$HOME/sea-mlir-bottles"
+    (cd /bottle-test && tar -cf - install-local.sh INSTALL-TEST.md \
+      Formula* bottles/sea-mlir-[0-9]*.bottle.tar.gz bottles/seahorn-*.bottle.tar.gz) |
+      tar -xf - -C "$HOME/sea-mlir-bottles"
+    ! ls "$HOME"/sea-mlir-bottles/bottles/sea-mlir-llvm* > /dev/null 2>&1
+    bash "$HOME/sea-mlir-bottles/install-local.sh" "$HOME/sea-mlir-bottles"
     echo "time: install $((SECONDS - start)) s"
     brew list --versions
-    brew test seahorn/seahorn/sea-mlir seahorn/seahorn/seahorn seahorn/seahorn/sea-mlir-llvm
+    brew test seahorn/seahorn/sea-mlir seahorn/seahorn/seahorn
     prefix=$(brew --prefix)
     mkdir -p "$HOME/work" && cd "$HOME/work"
     sea-vc --version
@@ -58,6 +65,10 @@ docker run --name "$container" --label sea-mlir.release-smoke=true "${limits[@]}
         ! ldd "$binary" | grep "not found"
       fi
     done
+    # the LLVM bottle separately, from the full output
+    brew untap --force seahorn/seahorn
+    bash /scripts/install-local.sh /bottle-test sea-mlir-llvm
+    brew test seahorn/seahorn/sea-mlir-llvm
     echo "smoke: pass"
   ' &
 client=$!

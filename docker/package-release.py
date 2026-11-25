@@ -374,12 +374,30 @@ BOTTLE_RULES = {
         ("LICENSE.TXT", "notices"),
         ("share/doc/sea-mlir-llvm/LICENSE.TXT", "notices"),
         # the install tree of LLVM + MLIR (measured), lit from llvm/utils
-        ("bin/*", "llvm"),
+        ("bin/llvm-*", "llvm"),
+        ("bin/mlir-*", "llvm"),
+        *(
+            (f"bin/{name}", "llvm")
+            for name in (
+                "FileCheck UnicodeNameMappingGenerator clang-offload-packager"
+                " count dsymutil llc lli lli-child-target llubi not obj2yaml opt"
+                " reduce-chunk-list sancov sanstats split-file"
+                " tblgen-lsp-server tblgen-to-irdl verify-uselistorder"
+                " yaml-bench yaml2obj"
+            ).split()
+        ),
         ("include/llvm/*", "llvm"),
         ("include/llvm-c/*", "llvm"),
         ("include/mlir/*", "llvm"),
         ("include/mlir-c/*", "llvm"),
-        ("lib/*", "llvm"),
+        ("lib/libLLVM*", "llvm"),
+        ("lib/libMLIR*", "llvm"),
+        ("lib/libmlir_*", "llvm"),
+        ("lib/libLTO.so*", "llvm"),
+        ("lib/libRemarks.so*", "llvm"),
+        ("lib/cmake/llvm/*", "llvm"),
+        ("lib/cmake/mlir/*", "llvm"),
+        ("lib/objects-Release/*", "llvm"),
         ("share/lit/*", "llvm"),
         ("share/opt-viewer/*", "llvm"),
         ("LLVM_REVISION", "llvm"),

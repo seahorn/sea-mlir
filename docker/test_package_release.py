@@ -513,7 +513,14 @@ class BottleAuditTests(unittest.TestCase):
         )
         report = pr.audit_bottle(self.bottle("sea-mlir-llvm", files))
         self.assertEqual(report["components"]["llvm"]["files"], 4 + 1)
-        for extra in ("libexec/lib/libgmp.so.10", "COPYING", "share/gcc/x"):
+        for extra in (
+            "libexec/lib/libgmp.so.10",
+            "lib/libgmp.so.10",
+            "lib/libmpfr.so.6",
+            "bin/yices",
+            "COPYING",
+            "share/gcc/x",
+        ):
             with (
                 self.subTest(extra=extra),
                 self.assertRaisesRegex(RuntimeError, "no license rule"),
