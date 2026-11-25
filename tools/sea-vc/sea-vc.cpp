@@ -38,6 +38,7 @@
 #include "sea/Support/AgentGuide.h"
 #include "sea/Support/Assume.h"
 #include "sea/Support/Diag.h"
+#include "sea/Support/InstallLayout.h"
 #include "sea/Support/Log.h"
 #include "sea/Support/Output.h"
 #include "sea/Support/ProcMem.h"
@@ -2185,17 +2186,15 @@ static std::vector<std::string> profileDirs(const char *argv0) {
     for (StringRef p : parts)
       dirs.push_back(p.str());
   }
-  std::string exe =
-      sys::fs::getMainExecutable(argv0, (void *)(intptr_t)&profileDirs);
+  // found from the executable's real path (sea/Support/InstallLayout.h):
+  // the install's profiles, then the source tree of a build directory
+  std::string exe = sea::mainExecutableRealPath(argv0);
   if (!exe.empty()) {
-    SmallString<256> d(sys::path::parent_path(exe));
-    sys::path::append(d, "..", "share", "sea-mlir", "profiles");
-    sys::path::remove_dots(d, /*remove_dot_dot=*/true);
-    dirs.push_back(std::string(d));
+    dirs.push_back(sea::installShareDir(exe, "sea-mlir/profiles"));
+    std::string src = sea::buildSourceTree(exe);
+    if (!src.empty())
+      dirs.push_back(std::string(sea::joinClean(src, "profiles")));
   }
-#ifdef SEA_SOURCE_PROFILES_DIR
-  dirs.push_back(SEA_SOURCE_PROFILES_DIR);
-#endif
   return dirs;
 }
 

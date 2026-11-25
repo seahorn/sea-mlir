@@ -6,6 +6,7 @@ add_mlir_library(SeaSupport
   Assume.cpp
   BoostException.cpp
   Diag.cpp
+  InstallLayout.cpp
   Log.cpp
   Output.cpp
   ProcMem.cpp

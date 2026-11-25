@@ -55,7 +55,7 @@ struct DocsRoot {
 };
 
 /// The docs root of the executable at \p exePath (a real path; see the
-/// file comment).
+/// file comment and sea/Support/InstallLayout.h).
 DocsRoot findDocsRoot(llvm::StringRef exePath);
 
 /// The DOCS and DOCS-WEB lines for \p d, each ending in a newline.

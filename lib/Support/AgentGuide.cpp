@@ -4,25 +4,14 @@
 //===- AgentGuide.cpp - --agent guides and the docs root ------------------===//
 
 #include "sea/Support/AgentGuide.h"
+#include "sea/Support/InstallLayout.h"
 #include "sea/Support/Version.h"
 
-#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/Path.h"
 
 using namespace llvm;
 
 namespace sea {
-
-/// `<dir>/<parts...>` without `.` / `..` components.
-static SmallString<256> joinClean(StringRef dir, StringRef a, StringRef b = "",
-                                  StringRef c = "", StringRef d = "") {
-  SmallString<256> p(dir);
-  sys::path::append(p, a, b, c, d);
-  sys::path::remove_dots(p, /*remove_dot_dot=*/true);
-  return p;
-}
 
 static bool hasDocs(StringRef root) {
   return sys::fs::is_directory(joinClean(root, "docs"));
@@ -32,35 +21,18 @@ DocsRoot findDocsRoot(StringRef exePath) {
   DocsRoot d;
   if (exePath.empty())
     return d;
-  SmallString<256> real;
-  if (sys::fs::real_path(exePath, real))
-    real = exePath;
-  StringRef exeDir = sys::path::parent_path(real);
-  // an install: <prefix>/bin/<tool>, <prefix>/share/doc/sea-mlir/docs
-  SmallString<256> inst = joinClean(exeDir, "..", "share", "doc", "sea-mlir");
+  // an install: <prefix>/share/doc/sea-mlir/docs
+  std::string inst = installShareDir(exePath, "doc/sea-mlir");
   if (hasDocs(inst)) {
     d.kind = DocsRoot::Install;
-    d.root = std::string(inst);
+    d.root = inst;
     return d;
   }
-  // a build directory: <build>/bin/<tool>, <build>/CMakeCache.txt names
-  // the source tree
-  auto buf = MemoryBuffer::getFile(joinClean(exeDir, "..", "CMakeCache.txt"),
-                                   /*IsText=*/true);
-  if (!buf)
-    return d;
-  SmallVector<StringRef> lines;
-  (*buf)->getBuffer().split(lines, '\n');
-  for (StringRef line : lines) {
-    line = line.rtrim("\r");
-    if (!line.consume_front("sea-mlir_SOURCE_DIR:"))
-      continue;
-    StringRef src = line.split('=').second;
-    if (!src.empty() && hasDocs(src)) {
-      d.kind = DocsRoot::SourceTree;
-      d.root = src.str();
-    }
-    break;
+  // a build directory: the source tree its CMakeCache.txt names
+  std::string src = buildSourceTree(exePath);
+  if (!src.empty() && hasDocs(src)) {
+    d.kind = DocsRoot::SourceTree;
+    d.root = src;
   }
   return d;
 }
@@ -99,9 +71,7 @@ std::string docsRepoRef() {
 void printAgentGuide(raw_ostream &os, StringRef guide, const char *argv0) {
   auto [title, rest] = guide.split('\n');
   os << title << '\n';
-  std::string exe = sys::fs::getMainExecutable(
-      argv0, reinterpret_cast<void *>(&printAgentGuide));
-  printDocsLines(os, findDocsRoot(exe));
+  printDocsLines(os, findDocsRoot(mainExecutableRealPath(argv0)));
   os << rest;
 }
 

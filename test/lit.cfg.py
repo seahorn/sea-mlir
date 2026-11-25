@@ -69,6 +69,13 @@ config.substitutions.append(("%sea_src_root", config.sea_src_root))
 config.substitutions.append(("%python", "python3"))
 config.substitutions.append(("%sea_vc", os.path.join(sea_tools_dir, "sea-vc")))
 config.substitutions.append(("%sea_bin", sea_tools_dir))
+config.substitutions.append(("%sea_obj_root", config.sea_obj_root))
+
+# Optimized builds without debug info: their binaries hold no source path
+# (Tools/no-source-paths.test); Debug and RelWithDebInfo keep __FILE__ /
+# debug info.
+if getattr(config, "sea_build_type", "") in ("Release", "MinSizeRel"):
+    config.available_features.add("release-build")
 
 if config.z3 and not config.z3.endswith("NOTFOUND"):
     config.available_features.add("z3")
