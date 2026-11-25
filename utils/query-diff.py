@@ -150,7 +150,9 @@ OUTPUT (stdout, one line per job, then totals):
   premises: accesses <old> -> <new> conditions <old> -> <new>
 STATUS: 0 if every job is identical / order / both-unsat / equiv-sat;
   1 if some job is DIFF or error; 2 if some is unknown; 3 with --strict
-  if some job is both-unsat (checked in this order).
+  if some job is both-unsat (checked in this order). A binary whose
+  --help-hidden fails (whether it folds is not known) is an error: exit 1
+  before any job.
 --keep <dir> keeps the two queries of every DIFF / unknown / error job.
 """
 
@@ -757,6 +759,7 @@ def main():
     )
     ap.add_argument("--keep")
     a = ap.parse_args()
+    seavc_flags.require((a.old, a.new), 1)
     a.args = a.args.split()
     # the seam.premises counts (sea-vc refuses --seam-stats without a rewriter)
     if any(x == "--seam" or x.startswith("--simplify") for x in a.args):

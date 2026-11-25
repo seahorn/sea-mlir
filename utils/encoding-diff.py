@@ -134,7 +134,9 @@ OUTPUT (stdout, one block per pair, then totals; key: value):
   [strict: fail both-unsat=<n> ...]   (--strict, some pair is both-unsat)
 STATUS: 0 if every pair is identical / same-dag / equiv-parts / equiv /
   both-unsat; 1 if some is DIFF or error; 2 if some is unknown; 3 with
-  --strict if some is both-unsat (checked in this order).
+  --strict if some is both-unsat (checked in this order). A sea-vc whose
+  --help-hidden fails (whether it folds is not known) is an error: exit 1
+  before any pair.
 """
 
 
@@ -616,6 +618,7 @@ def main():
             ap.error(f"--alias {x}: expected OLD=NEW")
     if len(a.files) % 2:
         ap.error("an even number of files: LEFT RIGHT pairs")
+    seavc_flags.require((a.sea_vc,), 1)
     counts = dict.fromkeys(
         (
             "identical",

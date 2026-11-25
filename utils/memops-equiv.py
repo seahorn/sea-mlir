@@ -43,7 +43,8 @@ which one of A/B accepts and the other cannot) | unknown (z3 gave up) |
 error. Plain-vs-seam equivalence holds under the premises (implied by A-INB: accesses stay in their
 objects), which --seam assumes; a program that leaves its objects may
 differ legitimately.
-Exit status: 0 all equivalent, 1 some differ, 2 unknown or error.
+Exit status: 0 all equivalent, 1 some differ, 2 unknown or error (also a
+sea-vc whose --help-hidden fails: whether it folds is not known).
 """
 
 import argparse
@@ -75,7 +76,8 @@ OPTIONS: --sea-vc PATH (default build/bin/sea-vc next to the repo), --z3 PATH,
   --common 'FLAGS' (both sides, default --lower), --a / --b 'FLAGS'
   (side A default none, B default --seam), --timeout SECONDS (z3, default 60).
 OUTPUT: one line per program: equivalent | differ | unknown | error, then
-  details. Exit 0 / 1 (differ) / 2 (unknown, error)."""
+  details. Exit 0 / 1 (differ) / 2 (unknown, error; also a sea-vc whose
+  --help-hidden fails: whether it folds is not known)."""
 
 
 def sexps(text):
@@ -291,6 +293,7 @@ def main():
     ap.add_argument("--timeout", type=int, default=60)
     ap.add_argument("--keep", help="directory for the z3 inputs")
     args = ap.parse_args()
+    seavc_flags.require((args.sea_vc,), 2)
     args.common, args.a, args.b = args.common.split(), args.a.split(), args.b.split()
     worst = 0
     for mlir in args.mlir:

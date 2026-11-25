@@ -289,7 +289,10 @@ that differ only in an eliminated fact are identical: in
 `test/Tools/cover-diff-layout.test` a program input that only one side
 assumes (`x == 5`) became a pass instead of a DIFF. They pass the flag
 only to a binary that knows it (probed once from `--help-hidden`,
-`utils/seavc_flags.py`): an older binary does not fold. Consequence:
+`utils/seavc_flags.py`): an older binary does not fold. A probe that
+fails (the binary does not start, exits non-zero, times out) is an error
+of the tool before any job: it cannot tell whether the binary folds
+(`test/Tools/seavc-flags.test`). Consequence:
 query-diff does not see the fold's own change to the query; the
 benchmarks (default against `no-fold-top-eqs`) measure it.
 
