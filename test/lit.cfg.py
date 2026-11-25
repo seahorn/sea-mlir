@@ -65,13 +65,27 @@ llvm_config.add_tool_substitutions(
     [sea_test_bin_dir],
 )
 
+# Every feature that depends on the build or the host is added through
+# build_feature(): it records the name in BUILD_FEATURES, and a test that
+# needs a feature this build lacks is not collected (below), so a good run
+# reports passes only. Do not call config.available_features.add() for such
+# a feature directly (Tools/lit-build-features.test checks this file).
+BUILD_FEATURES = set()
+
+
+def build_feature(name, present=True):
+    BUILD_FEATURES.add(name)
+    if present:
+        config.available_features.add(name)
+
+
 config.substitutions.append(("%sea_src_root", config.sea_src_root))
 config.substitutions.append(("%python", "python3"))
 # %timeout <s> <cmd>: a wall-clock bound, coreutils timeout (gtimeout from
 # Homebrew coreutils on macOS); tests that use it REQUIRES: timeout
 _timeout = shutil.which("timeout") or shutil.which("gtimeout")
+build_feature("timeout", bool(_timeout))
 if _timeout:
-    config.available_features.add("timeout")
     config.substitutions.append(("%timeout", _timeout))
 config.substitutions.append(("%sea_vc", os.path.join(sea_tools_dir, "sea-vc")))
 config.substitutions.append(("%sea_bin", sea_tools_dir))
@@ -82,22 +96,20 @@ config.substitutions.append(("%sea_obj_root", config.sea_obj_root))
 # __FILE__ / debug info; so does a Release build with -g (the profiling
 # build), and coverage mapping records file names (utils/qa-coverage.py).
 _flags = getattr(config, "sea_cxx_flags", "").split()
-if getattr(config, "sea_build_type", "").lower() in (
-    "release",
-    "minsizerel",
-) and not any(f.startswith("-g") or f == "-fcoverage-mapping" for f in _flags):
-    config.available_features.add("release-build")
+build_feature(
+    "release-build",
+    getattr(config, "sea_build_type", "").lower() in ("release", "minsizerel")
+    and not any(f.startswith("-g") or f == "-fcoverage-mapping" for f in _flags),
+)
 
-if config.z3 and not config.z3.endswith("NOTFOUND"):
-    config.available_features.add("z3")
+build_feature("z3", bool(config.z3) and not config.z3.endswith("NOTFOUND"))
+if "z3" in config.available_features:
     config.substitutions.append(("%z3", config.z3))
 
 # The Bitwuzla backend is optional (BITWUZLA_ROOT at configure time).
-if config.bitwuzla == "ON":
-    config.available_features.add("bitwuzla")
+build_feature("bitwuzla", config.bitwuzla == "ON")
 
-if config.yices == "ON":
-    config.available_features.add("yices")
+build_feature("yices", config.yices == "ON")
 
 # The command-line solvers of those installs (reading a --smt2 query):
 # yices-smt2 in YICES2_ROOT/bin, bitwuzla in BITWUZLA_ROOT/bin.
@@ -105,8 +117,9 @@ for feature, subst, path in (
     ("yices-bin", "%yices_smt2", config.yices_smt2),
     ("bitwuzla-bin", "%bitwuzla", config.bitwuzla_bin),
 ):
-    if path and not path.endswith("NOTFOUND") and not path.startswith("@"):
-        config.available_features.add(feature)
+    found = bool(path) and not path.endswith("NOTFOUND") and not path.startswith("@")
+    build_feature(feature, found)
+    if found:
         config.substitutions.append((subst, path))
 
 # Disabled tests carry `REQUIRES: disabled-test` and show up as UNSUPPORTED.
@@ -115,22 +128,17 @@ if lit_config.params.get("run_disabled"):
     config.available_features.add("disabled-test")
 
 # The source tree is a git checkout (utils/spdx.py lists its files with git).
-if os.path.exists(os.path.join(config.sea_src_root, ".git")) and shutil.which("git"):
-    config.available_features.add("sea-git-tree")
+build_feature(
+    "sea-git-tree",
+    os.path.exists(os.path.join(config.sea_src_root, ".git"))
+    and bool(shutil.which("git")),
+)
 
 # A test that this build cannot run (a solver it was built without, or the
 # build without one: `UNSUPPORTED: yices`) is not collected at all, so a good
-# run reports passes only. Only the build's optional parts count here;
+# run reports passes only. Only the features of build_feature() count here;
 # `REQUIRES: disabled-test` still shows as UNSUPPORTED, on purpose. lit
 # excludes by file name, so a name used twice is left to lit.
-BUILD_FEATURES = {
-    "z3",
-    "bitwuzla",
-    "yices",
-    "yices-bin",
-    "bitwuzla-bin",
-    "sea-git-tree",
-}
 
 
 def _not_for_this_build(path):
