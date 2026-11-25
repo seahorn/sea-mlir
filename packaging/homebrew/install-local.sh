@@ -5,8 +5,9 @@
 # Install the tap's formulae from local bottles, before they are uploaded:
 #   install-local.sh DIR [FORMULA...]      (default FORMULA: seahorn)
 # DIR is a `docker/release.py --homebrew` output (artifacts/homebrew): the
-# formulae with their bottle blocks in DIR/Formula, the bottles in
-# DIR/bottles. The script taps a copy of DIR/Formula whose root_url is
+# formulae with their bottle blocks in DIR/Formula (release source) or
+# DIR/Formula-local (a local source, not for publishing), the bottles in
+# DIR/bottles. The script taps a copy of those formulae whose root_url is
 # file://DIR/bottles as seahorn/seahorn, trusts it, installs, and fails
 # unless every installed formula was poured from a bottle (no source build).
 set -euo pipefail
@@ -14,8 +15,10 @@ set -euo pipefail
 dir=$(CDPATH='' cd -- "$1" && pwd)
 shift
 formulae=("${@:-seahorn}")
-[[ -d "$dir/Formula" && -d "$dir/bottles" ]] ||
-  { echo "$dir: no Formula/ or bottles/" >&2; exit 2; }
+formula_dir=$dir/Formula
+[[ -d "$formula_dir" ]] || formula_dir=$dir/Formula-local
+[[ -d "$formula_dir" && -d "$dir/bottles" ]] ||
+  { echo "$dir: no Formula/ (or Formula-local/) or bottles/" >&2; exit 2; }
 command -v brew > /dev/null || { echo 'brew is not on PATH' >&2; exit 2; }
 export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1
 
@@ -26,8 +29,15 @@ if brew tap | grep -qx seahorn/seahorn; then
 fi
 tap=$(mktemp -d)/homebrew-seahorn
 mkdir -p "$tap/Formula"
-cp "$dir"/Formula/*.rb "$tap/Formula/"
-ROOT="file://$dir/bottles" perl -pi -e 's|^(\s*root_url )"[^"]*"|$1"$ENV{ROOT}"|' "$tap"/Formula/*.rb
+cp "$formula_dir"/*.rb "$tap/Formula/"
+# shellcheck disable=SC2016 # Ruby code, not shell
+brew ruby -e '
+  root = ARGV.shift
+  ARGV.each do |path|
+    text = File.read(path)
+    File.write(path, text.gsub(/^(\s*root_url )"[^"]*"/) { "#{Regexp.last_match(1)}\"#{root}\"" })
+  end
+' "file://$dir/bottles" "$tap"/Formula/*.rb
 grep -h 'root_url' "$tap"/Formula/*.rb
 git -C "$tap" init -q
 git -C "$tap" add Formula

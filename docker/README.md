@@ -207,13 +207,16 @@ line of `sea-vc --agent`.
 
 ```bash
 just binary-release ../brew-output --homebrew --cpuset 40-47
-just binary-release ../brew-output --homebrew --brew-source v0.6.0
+just binary-release ../brew-output --homebrew --brew-source formula
 ```
 
 The sea-mlir source is a `git archive` of `--brew-source REF` (default
 `HEAD`), version `<project version>-local.<commit>` unless REF is the tag
 `v<project version>`; `--brew-source formula` builds the formula's own
-`url`, the release tag's tarball. Output in `artifacts/homebrew`:
-`bottles/` (tarballs under their release names, JSON), `Formula/`,
+`url`, the release tag's tarball. Only that release source writes
+`Formula/`, the formulae for the tap; any other source writes
+`Formula-local/`, each file headed `# NOT FOR PUBLISHING`. Output in
+`artifacts/homebrew`: `bottles/` (tarballs under their release names,
+JSON), `Formula/` or `Formula-local/`,
 `license-audit.json`, `timings.tsv`, build logs, `INSTALL-TEST.md` and
 `install-local.sh` for a test on another machine.

@@ -218,10 +218,6 @@ class PinTests(unittest.TestCase):
         self.assertTrue(all(pin.split("=", 1)[1] for pin in found))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 ROOT = Path(__file__).resolve().parent.parent
 FORMULA = ROOT / "packaging" / "homebrew" / "Formula"
 
@@ -291,6 +287,21 @@ class HomebrewFormulaTests(unittest.TestCase):
         self.assertEqual(local.count("    url "), text.count("    url "))
         self.assertEqual(local.count("    sha256 "), text.count("    sha256 "))
 
+    def test_local_formulae_are_not_publishable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = Path(directory)
+            (artifacts / "Formula").mkdir()
+            (artifacts / "Formula" / "sea-mlir.rb").write_text("class SeaMlir\n")
+            local = release.mark_local_formulae(
+                artifacts, {"commit": "a" * 40, "version": "1.2.3-local.aaaaaaaaaaaa"}
+            )
+            self.assertEqual(local, artifacts / "Formula-local")
+            self.assertFalse((artifacts / "Formula").exists())
+            text = (local / "sea-mlir.rb").read_text()
+            self.assertTrue(text.startswith("# NOT FOR PUBLISHING."))
+            self.assertIn("1.2.3-local.aaaaaaaaaaaa", text)
+            self.assertTrue(text.endswith("class SeaMlir\n"))
+
     def test_brew_source_version(self):
         with tempfile.TemporaryDirectory() as directory:
             git = ["git", "-C", directory, "-c", "user.name=t", "-c", "user.email=t@t"]
@@ -307,3 +318,7 @@ class HomebrewFormulaTests(unittest.TestCase):
             self.assertEqual(
                 release.brew_source(Path(directory), "HEAD"), ("1.2.3", commit, True)
             )
+
+
+if __name__ == "__main__":
+    unittest.main()

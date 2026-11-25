@@ -26,36 +26,45 @@ python3 docker/release.py OUTPUT --homebrew --cpuset 40-47 [--brew-source REF]
 ```
 
 builds, in `ghcr.io/homebrew/brew` pinned by digest, each formula from
-source (`brew install --build-bottle`), runs `brew test`, bottles it
+source (`brew install --build-bottle`), checks `brew linkage --test
+--strict`, runs `brew test`, bottles it
 (`brew bottle --json`), merges the `bottle do` blocks, runs the license
 gate over every bottle (`docker/package-release.py --audit-bottles`) and
 installs the bottles in a fresh container with `install-local.sh`. Output
 in `OUTPUT/artifacts/homebrew`: `bottles/` (tarballs under their release
-names, JSON), `Formula/` (with bottle blocks), `license-audit.json`,
+names, JSON), the formulae with their bottle blocks (`Formula/` for
+`--brew-source formula`, else `Formula-local/`), `license-audit.json`,
 `timings.tsv`, `INSTALL-TEST.md`, `install-local.sh`, build logs.
 
 The `root_url` of each bottle is the release `<formula>-<version>` of the
 tap repository (`https://github.com/seahorn/homebrew-seahorn/releases/download/<formula>-<version>`),
-where `brew pr-upload` would put it; `install-local.sh` points it at a
-local directory instead.
+the layout `brew pr-upload` uses; `install-local.sh` points it at a local
+directory instead.
 
 ## The sea-mlir source
 
 - Release: `sea-mlir.rb`'s `url` is the tag's tarball,
   `https://github.com/seahorn/sea-mlir/archive/refs/tags/v<version>.tar.gz`,
   with its `sha256` (the committed one is a placeholder until the tag
-  exists). `--brew-source formula` builds it as written.
+  exists). `--brew-source formula` builds it as written; it is the only
+  build whose formulae may go to the tap (`artifacts/homebrew/Formula/`:
+  the committed formulae with only the bottle blocks merged in).
 - Local (default): `--brew-source REF` (default `HEAD`) builds a
   `git archive` of REF. The build context's copy of `sea-mlir.rb` gets
   `url "file:///home/linuxbrew/src/sea-mlir-<version>.tar.gz"`, its
   `sha256` and `version "<project version>-local.<commit>"` (the project
   version when REF is the tag `v<project version>`). The formula passes
   `-DSEA_GIT_DESCRIBE=v<version>`, so a local bottle never claims a tag.
+  Its formulae land in `artifacts/homebrew/Formula-local/`, each headed
+  `# NOT FOR PUBLISHING`: for `install-local.sh` tests only.
 
 ## Release
 
-Upload each bottle (`bottles/*.bottle.tar.gz`) to the release
-`<formula>-<version>` of the tap repository and commit `Formula/` with the
-`bottle do` blocks. macOS bottles are built on a Mac with the same
+From a `--brew-source formula` build only: upload each bottle
+(`bottles/*.bottle.tar.gz`, already under its `filename`) with
+`gh release upload` to the release `<formula>-<version>` of the tap
+repository (`brew pr-upload` cannot consume this directory), and commit
+`Formula/` with the `bottle do` blocks. Bottling uses `--no-rebuild`:
+re-bottling a published version bumps the formula's `revision`. macOS bottles are built on a Mac with the same
 commands (`brew install --build-bottle`, `brew test`, `brew bottle --json`,
 `brew bottle --merge --write`); their blocks merge into the same formulae.

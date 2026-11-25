@@ -32,7 +32,9 @@ USAGE: python3 docker/release.py OUTPUT [--bundle] [--llvm-image IMAGE]
   --brew-source REF: the sea-mlir commit of the sea-mlir bottle, as a local
     `git archive` tarball (default HEAD); version <project version>-local.<sha>
     unless REF is the tag v<project version>. `formula` keeps the formula's
-    own url (the release tag's tarball).
+    own url (the release tag's tarball): the only build that writes
+    artifacts/homebrew/Formula (the tap's formulae); any other source writes
+    Formula-local, headed NOT FOR PUBLISHING.
   --llvm-image reuses an installed LLVM image after checking LLVM_REVISION,
     Release mode, assertions, MLIR and lit. Without it LLVM builds from source.
   --image-prefix NAME tags the images NAME:<stage> (default sea-mlir-release).
@@ -357,6 +359,32 @@ def homebrew_context(source, output, ref):
     }
 
 
+LOCAL_FORMULA_HEADER = """\
+# NOT FOR PUBLISHING. Built from a local sea-mlir source ({source}),
+# version {version}: the tap gets only the formulae of
+# `docker/release.py --homebrew --brew-source formula` (the release tag's
+# url and sha256 with the bottle blocks merged in).
+
+"""
+
+
+def mark_local_formulae(artifacts, record):
+    """Formula/ of a local-source build -> Formula-local/, each file headed
+    by a not-for-publishing comment: only `--brew-source formula` gives
+    formulae for the tap."""
+    formulae = artifacts / "Formula"
+    local = artifacts / "Formula-local"
+    if local.exists():
+        shutil.rmtree(local)
+    formulae.rename(local)
+    header = LOCAL_FORMULA_HEADER.format(
+        source=record["commit"][:12], version=record["version"]
+    )
+    for path in sorted(local.glob("*.rb")):
+        path.write_text(header + path.read_text())
+    return local
+
+
 def file_hash(path):
     with path.open("rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
@@ -534,6 +562,8 @@ def homebrew(job, source, output, args):
         if artifacts.exists():
             shutil.rmtree(artifacts)
         job.extract(image)
+        if args.brew_source != "formula":
+            mark_local_formulae(artifacts, job.record["homebrew_source"])
         job.run(
             "homebrew-license-gate",
             [

@@ -11,34 +11,50 @@ published. This page tests them on a machine that has never built them.
   newer (Ubuntu 24.04 or later; the bottles were built on Ubuntu 24.04), `git`, `curl`, and a C library
   development package (`build-essential` on Ubuntu). `sea` compiles C with
   llvm@18's clang, which uses the system's C headers.
-- Homebrew (its default prefix is the tested one; the bottles are
-  `cellar: :any`, relocatable to another prefix). Install it with
-  https://brew.sh's one-line installer and run the `brew shellenv` line it
-  prints.
-- This directory (`artifacts/homebrew` of the build output): `Formula/`
-  (the formulae with their `bottle do` blocks), `bottles/` (the bottle
-  tarballs under their release file names), `install-local.sh`.
+- Homebrew 7.0 or newer (`brew trust` is new in 7.0; tested with 7.0.16).
+  Its default prefix is the tested one; the bottles are `cellar: :any`,
+  relocatable to another prefix. Install it with https://brew.sh's
+  one-line installer and run the `brew shellenv` line it prints.
+- From this directory (`artifacts/homebrew` of the build output) only what
+  the install needs: `install-local.sh`, this page, the formulae
+  (`Formula-local/` for a build from a local source, `Formula/` for a
+  release build) and the `sea-mlir` and `seahorn` bottles. Not the
+  `sea-mlir-llvm` bottle (958 MB, needed only to build sea-mlir from
+  source) and not `logs/`.
 
 ## A. From local bottles (before upload)
 
+On the build host:
+
 ```bash
-scp -r <build-host>:<output>/artifacts/homebrew ~/sea-mlir-bottles
+cd <output>/artifacts/homebrew
+tar -czf ~/sea-mlir-bottles.tar.gz install-local.sh INSTALL-TEST.md \
+  Formula* bottles/sea-mlir-[0-9]*.bottle.tar.gz bottles/seahorn-*.bottle.tar.gz
+```
+
+On the test machine:
+
+```bash
+mkdir ~/sea-mlir-bottles
+tar -xzf sea-mlir-bottles.tar.gz -C ~/sea-mlir-bottles
 bash ~/sea-mlir-bottles/install-local.sh ~/sea-mlir-bottles
 ```
 
-`install-local.sh` taps a copy of `Formula/` as `seahorn/seahorn` with
+`install-local.sh` taps a copy of the formulae as `seahorn/seahorn` with
 `root_url` set to `file://<this directory>/bottles`, runs `brew trust
 seahorn/seahorn` (Homebrew loads formulae of other taps only when they are
 trusted), `brew install seahorn/seahorn/seahorn` (and with it
 `seahorn/seahorn/sea-mlir`, llvm@18, gmp, mpfr, python@3.15 and their
 dependencies from homebrew-core), and fails unless every installed formula
-was poured from a bottle. Pass more formulae after the directory, e.g.
-`... ~/sea-mlir-bottles seahorn sea-mlir-llvm`; `sea-mlir-llvm` is needed
-only to build sea-mlir from source.
+was poured from a bottle. It edits the formulae and checks the receipts
+with `brew ruby`, which turns on Homebrew's developer mode (`brew
+developer off` turns it off). With the `sea-mlir-llvm` bottle copied too,
+`... ~/sea-mlir-bottles seahorn sea-mlir-llvm` also installs it.
 
 ## B. From uploaded bottles (the tap on GitHub)
 
-When the tap repository exists with these formulae and each bottle is
+When the tap repository has the formulae of a release build (`Formula/`,
+from `--brew-source formula`) and each bottle is
 attached to the release `<formula>-<version>` of the tap repository (the
 `root_url` of each `bottle do` block):
 
