@@ -25,6 +25,10 @@
 //    part that is one. The same over a pointer register is substituted, as
 //    is a read at an object's address (its value is memory contents); the
 //    testing switch turns the skip off.
+//  - concat-kept: a concat fact skipped for an object keeps the parts it
+//    defines in its own conjunct (top and nested), so the fold is
+//    equivalent to its input (z3, the object's address as a free value)
+//    and still substitutes the parts elsewhere.
 //
 //===----------------------------------------------------------------------===//
 
@@ -331,6 +335,81 @@ void testPtrFacts() {
   CHECK(xFolded && !aFolded, "ptr-facts: concat part");
 }
 
+/// does \p e contain the node \p t?
+bool mentions(const Expr &e, const Expr &t) {
+  std::set<ENode *> seen;
+  std::vector<ENode *> stack{e.get()};
+  while (!stack.empty()) {
+    ENode *n = stack.back();
+    stack.pop_back();
+    if (n == t.get())
+      return true;
+    if (!seen.insert(n).second)
+      continue;
+    for (size_t i = 0; i < n->arity(); ++i)
+      stack.push_back(n->arg(i));
+  }
+  return false;
+}
+
+/// a concat fact skipped because it mentions an object still gives its
+/// other parts; the conjunct that defines them keeps them (rebuilt, not
+/// substituted), so the fold is equivalent to its input. z3 decides the
+/// equivalence with the object's address as a free value \p a (the fold
+/// never substitutes it).
+void testConcatKept() {
+  ExprFactory efac;
+  auto name = [&](const char *n) { return mkTerm<std::string>(n, efac); };
+  auto n32 = [&](long v) { return op::bv::bvnum(mpz_class(v), 32, efac); };
+  Expr x = op::bv::bvConst(name("x"), 32), y = op::bv::bvConst(name("y"), 32);
+  Expr as = mk<ADDR>(op::ptr::segment("stack.1", n32(0x1000)));
+  Expr a = op::bv::bvConst(name("a"), 32);
+  auto equiv = [&](const Expr &in, const Expr &out) {
+    sea::solver::z3_solver_impl s(efac);
+    s.add(mk<NEQ>(replaceAll(in, as, a), replaceAll(out, as, a)));
+    return s.check() == SolverResult::UNSAT;
+  };
+  auto uses = [](const Expr &q, const Expr &t) {
+    unsigned k = 0;
+    for (size_t i = 0; i < q->arity(); ++i)
+      k += mentions(Expr(q->arg(i)), t);
+    return k;
+  };
+  // top: concat(x + y, addr(seg)) = 0x7_00000005 fixes x + y = 7; with
+  // x = y (2x = 7 has no solution) the query is unsat
+  {
+    Expr s = mk<BADD>(x, y);
+    Expr c = op::bv::bvnum(mpz_class((7UL << 32) | 5UL), 64, efac);
+    Expr in = mk<AND>(mk<EQ>(mk<BCONCAT>(s, as), c), mk<BULT>(s, n32(100)),
+                      mk<EQ>(x, y));
+    sea::TopEqFolder f([](Expr e) { return e; });
+    Expr out = f.fold(in);
+    bool eq = equiv(in, out);
+    llvm::outs() << "concat-kept: top equiv=" << eq
+                 << " part-uses=" << uses(out, s) << "\n";
+    CHECK(eq, "concat-kept: top: the fold is equivalent to its input");
+    CHECK(uses(out, s) == 1, "concat-kept: top: x + y only in its fact");
+  }
+  // nested: concat(addr(seg), concat(x, y)) = 0x1000_00000003_00000004:
+  // the inner concat and x, y are facts, the outer one is skipped
+  {
+    Expr c = op::bv::bvnum((mpz_class(0x1000UL) << 64) +
+                               (mpz_class(3UL) << 32) + mpz_class(4UL),
+                           96, efac);
+    Expr in =
+        mk<AND>(mk<EQ>(mk<BCONCAT>(as, mk<BCONCAT>(x, y)), c), mk<BULT>(x, y));
+    sea::TopEqFolder f([](Expr e) { return e; });
+    Expr out = f.fold(in);
+    bool eq = equiv(in, out);
+    llvm::outs() << "concat-kept: nested equiv=" << eq
+                 << " x-uses=" << uses(out, x) << " y-uses=" << uses(out, y)
+                 << "\n";
+    CHECK(eq, "concat-kept: nested: the fold is equivalent to its input");
+    CHECK(uses(out, x) == 1 && uses(out, y) == 1,
+          "concat-kept: nested: x, y only in their fact");
+  }
+}
+
 int main() {
   testShared();
   llvm::outs() << "test: shared ok\n";
@@ -342,6 +421,8 @@ int main() {
   llvm::outs() << "test: refused-memo ok\n";
   testPtrFacts();
   llvm::outs() << "test: ptr-facts ok\n";
+  testConcatKept();
+  llvm::outs() << "test: concat-kept ok\n";
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

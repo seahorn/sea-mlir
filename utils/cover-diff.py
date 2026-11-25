@@ -113,7 +113,8 @@ by name), by=hints, by=exists. --no-hints: the quantified check only.
 
 Exit: 0 pass; 1 some DIFF (level 0 or 1, or the verdicts); 3 an error
 (sea-vc or z3 failed); 2 some unknown; checked in this order, for a job's
-verdict and for the run.
+verdict and for the run. --level 1 with a sea-vc whose --help-hidden fails
+(whether it folds is not known) is an error: exit 3 before any job.
 """
 
 import argparse
@@ -214,7 +215,8 @@ OUTPUT (stdout, line-oriented):
       by-identical=<n> by-names=<n> by-hints=<n> by-exists=<n>]
   status: pass|DIFF|unknown|error
 STATUS: 0 pass; 1 some DIFF; 3 some error; 2 some unknown (checked in
-  this order, per job and for the run).
+  this order, per job and for the run). --level 1 with a sea-vc whose
+  --help-hidden fails (whether it folds is not known): exit 3, no job.
 --keep <dir>: keep each job's witnesses and R_T programs in
   <dir>/<input path, / as _> (else removed). Jobs are named by basename,
   by path when two inputs share one.
@@ -840,6 +842,9 @@ def main():
         if x.startswith("--reach"):
             ap.error(f"{x}: cover-diff sets the --reach options (checks only)")
     a.rt_args = rt_args_of(a.common) if a.rt_args is None else shlex.split(a.rt_args)
+    if a.level >= 1:
+        # level 1 reads the R_T queries as the VC: the fold must be known off
+        seavc_flags.require((a.sea_vc,), 3)
     files = []
     for i in a.inputs:
         files += (

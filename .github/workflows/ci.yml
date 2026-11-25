@@ -93,6 +93,8 @@ jobs:
         run: python utils/attest.py --self-test
       - name: output-diff self-test (no build)
         run: python utils/output-diff.py --self-test
+      - name: seavc_flags probe failures (test/Tools/seavc-flags.test without lit)
+        run: python test/Tools/Inputs/seavc-flags.py utils
       - name: query-diff classes (test/Tools/query-diff.test without lit)
         run: |
           sudo apt-get update -q

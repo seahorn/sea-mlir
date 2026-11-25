@@ -1,0 +1,17 @@
+// utils/seavc_flags.py: a sea-vc whose --help-hidden probe fails (exit,
+// missing, timeout) is an error, never taken for an older binary that does
+// not fold; query-diff, encoding-diff, cover-diff level 1 and memops-equiv
+// stop with their error status before any job.
+RUN: %python %S/Inputs/seavc-flags.py %sea_src_root/utils | FileCheck %s
+CHECK: module: probe ok
+CHECK: module: fail raises
+CHECK: module: missing raises
+CHECK: module: slow raises
+CHECK: tool: query-diff.py exit=1
+CHECK: tool: encoding-diff.py exit=1
+CHECK: tool: cover-diff.py exit=3
+CHECK: tool: memops-equiv.py exit=2
+CHECK: seavc-flags: ok
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
