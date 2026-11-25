@@ -71,10 +71,15 @@ config.substitutions.append(("%sea_vc", os.path.join(sea_tools_dir, "sea-vc")))
 config.substitutions.append(("%sea_bin", sea_tools_dir))
 config.substitutions.append(("%sea_obj_root", config.sea_obj_root))
 
-# Optimized builds without debug info: their binaries hold no source path
-# (Tools/no-source-paths.test); Debug and RelWithDebInfo keep __FILE__ /
-# debug info.
-if getattr(config, "sea_build_type", "") in ("Release", "MinSizeRel"):
+# Optimized builds without debug info or coverage: their binaries hold no
+# source path (Tools/no-source-paths.test). Debug and RelWithDebInfo keep
+# __FILE__ / debug info; so does a Release build with -g (the profiling
+# build), and coverage mapping records file names (utils/qa-coverage.py).
+_flags = getattr(config, "sea_cxx_flags", "").split()
+if getattr(config, "sea_build_type", "").lower() in (
+    "release",
+    "minsizerel",
+) and not any(f.startswith("-g") or f == "-fcoverage-mapping" for f in _flags):
     config.available_features.add("release-build")
 
 if config.z3 and not config.z3.endswith("NOTFOUND"):

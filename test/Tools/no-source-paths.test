@@ -1,8 +1,12 @@
-# The tools compile in no source or build path: they find their data
-# (docs, profiles) at run time (sea/Support/InstallLayout.h), so a release
-# binary does not carry the machine it was built on. Optimized builds
-# only: Debug / RelWithDebInfo keep __FILE__ and debug info. RUNPATH
-# entries of the solver libraries are not source paths (docs/Release.md).
+# The tools compile in no source or build path of sea-mlir: they find
+# their data (docs, profiles) at run time (sea/Support/InstallLayout.h),
+# so a release binary does not carry the machine it was built on.
+# Optimized builds only (feature release-build, test/lit.cfg.py): Debug,
+# RelWithDebInfo and a Release build with -g* or -fcoverage-mapping keep
+# __FILE__, debug info or coverage file names. Not checked: LLVM/MLIR's
+# own source paths (assertion strings of the assertion-enabled LLVM
+# libraries) and the RUNPATH entries of the solver libraries; Docker
+# release builds carry only container paths there (docs/Release.md).
 REQUIRES: release-build
 RUN: %python %S/Inputs/no-paths-check.py --path %sea_src_root/ --path %sea_obj_root/ %sea_bin/sea-vc %sea_bin/sea-run %sea_bin/sea-opt %sea_bin/sea-reduce %sea_bin/sea-seam-export | FileCheck %s
 CHECK-NOT: no-paths.found

@@ -11,7 +11,7 @@
 //              Homebrew bin/ link finds its prefix)
 //   build dir: <build>/bin/<tool>; <build>/CMakeCache.txt names the source
 //              tree (`sea-mlir_SOURCE_DIR`), read when asked
-// test/Tools/agent-docs.test, test/VC/config-lookup.test and
+// test/Tools/agent-docs.test, test/VC/config/lookup.mlir and
 // test/Tools/no-source-paths.test pin them.
 //
 //===----------------------------------------------------------------------===//

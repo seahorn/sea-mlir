@@ -2174,7 +2174,8 @@ static cl::list<std::string> configFiles(
              "the configs' options come before the command line's, so later "
              "ones win. A bare name (no '/', no extension) is <name>.cfg in "
              "$SEA_MLIR_PROFILE_PATH, then <prefix>/share/sea-mlir/profiles, "
-             "then the source tree's profiles/ (docs/Profiles.md)"),
+             "then, for a build directory, the source tree's profiles/ "
+             "(docs/Profiles.md)"),
     cl::value_desc("file|name"));
 
 /// The directories a bare --config name is looked up in, in order.
@@ -4340,8 +4341,8 @@ command line, win (the last value of an option counts; lists accumulate).
 A bare name (no '/', no extension) is <name>.cfg, looked up in order in:
 the directories of $SEA_MLIR_PROFILE_PATH (colon-separated), then
 <prefix>/share/sea-mlir/profiles (../share/sea-mlir/profiles from the
-binary), then the source tree's profiles/ (build trees). Anything else is
-a path. Not found: error vc.config-not-found (the searched directories);
+binary's real path), then, for a build directory, the source tree's
+profiles/ (the tree <build>/CMakeCache.txt names). Anything else is a path. Not found: error vc.config-not-found (the searched directories);
 unreadable / a bad include: error vc.config-read; status 1. Inside a config,
 include another with @file (a --config there is LLVM's own: a path or a
 file name in the same directories, not printed). Shipped examples (not
