@@ -81,7 +81,6 @@ find "$prefix/lib/seapy/yaml" -type d -name __pycache__ -empty -delete
   printf 'seahorn: %s\n' "$(git -C "$source_dir" rev-parse HEAD)"
   printf 'sea-dsa: %s\n' "$(git -C "$source_dir/sea-dsa" rev-parse HEAD)"
   printf 'llvm-seahorn: %s\n' "$(git -C "$source_dir/llvm-seahorn" rev-parse HEAD)"
-  printf 'seahorn-patch: %s\n' "$(sha256sum < /src/seahorn-yices.patch | cut -d' ' -f1)"
   printf 'clam: off\n'
   printf 'z3: %s\n' "$(cat /opt/seahorn-z3/source-revision)"
   printf 'yices: %s\n' "$yices_version"

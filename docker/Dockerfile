@@ -113,7 +113,9 @@ RUN set -eux; \
 
 # ---------------------------------------------------------------- sea-mlir
 # configure against /opt/llvm and /opt/solvers, build, check-sea, install
-# to /opt/sea-mlir. The build tree stays in /build (`just docker-check`).
+# to /opt/sea-mlir. The build tree stays in /sea-mlir-build (`just docker-check`).
+# Not /build: no-source-paths.test looks for the build dir in the tools, and
+# the tablegen paths in LLVM's libraries (/src/build/...) contain "/build/".
 FROM base AS sea-mlir
 ARG JOBS=8
 ARG YICES=1
@@ -123,7 +125,7 @@ COPY --from=solvers /opt/solvers /opt/solvers
 COPY . /src/sea-mlir
 RUN set -eux; \
     if [ "$YICES" = 1 ]; then yices=ON; else yices=OFF; fi; \
-    cmake -S /src/sea-mlir -B /build -GNinja -DCMAKE_BUILD_TYPE=Release \
+    cmake -S /src/sea-mlir -B /sea-mlir-build -GNinja -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 \
       -DLLVM_ENABLE_LLD=ON \
       -DMLIR_DIR=/opt/llvm/lib/cmake/mlir \
@@ -134,9 +136,9 @@ RUN set -eux; \
       -DSEA_ENABLE_YICES="$yices" -DYICES2_ROOT=/opt/solvers \
       -DSEA_GIT_DESCRIBE="$SEA_GIT_DESCRIBE" \
       -DCMAKE_INSTALL_PREFIX=/opt/sea-mlir; \
-    ninja -C /build -j"$JOBS"; \
-    ninja -C /build -j"$JOBS" check-sea; \
-    ninja -C /build install; \
+    ninja -C /sea-mlir-build -j"$JOBS"; \
+    ninja -C /sea-mlir-build -j"$JOBS" check-sea; \
+    ninja -C /sea-mlir-build install; \
     /opt/sea-mlir/bin/sea-vc --version
 
 # ---------------------------------------------------------------- runtime
