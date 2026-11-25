@@ -54,7 +54,12 @@ an object (`skipped-base`, section Pointer observations).
 
 Every occurrence of a fact's T in the other conjuncts becomes c. The
 defining conjunct stays, rebuilt with its own T kept (`T = c` never
-becomes `c = c`); the other facts are substituted inside it too. Then the
+becomes `c = c`); the other facts are substituted inside it too. The
+rebuilt path from the equation to its keys includes a concat skipped for
+an object (section Pointer observations): substituted as a term, it would
+replace its parts inside their own fact, `concat(p, a) = c` would become
+`concat(hi(c), a) = c`, and `p = hi(c)` would leave the query while p is
+replaced everywhere else (the query was no longer equisatisfiable). Then the
 whole query is simplified again (the same rewriter, so ites, read guards
 and comparisons fold), concats whose parts are numerals and ites on one
 condition become ites of concats (`concat-ite`, below), and the round
@@ -127,7 +132,10 @@ a memory (`select`, `wselect`, `store`, `wstore`), as
 contents, not an address: a fact on a read at a pointer index
 (`select(m, p) = c`, the facts of the step jobs) replaces the read, and
 its index stays. The same test applies to each part of a concat fact; a
-concat with such a part is not a fact itself, its other parts are. Skips
+concat with such a part is not a fact itself, its other parts are, and
+its conjunct keeps them (`concat(p, a) = c` stays as is, p is replaced in
+the other conjuncts; nested concats the same;
+`test/VC/fold-top-eqs/concat-object-part.mlir`). Skips
 are counted `skipped-base` (terms and parts, summed over the rounds).
 A T that mentions no object is substituted, pointer observations
 included: the address of a pointer register (`addr(p) = c`, p a block
@@ -176,7 +184,9 @@ other use in the query.
 A top-level conjunct holds in every model of the query.
 
 Step 1: Q = (T = c) /\ R. Every model of Q has T = c, so it satisfies
-R[T := c], and Q' = (T = c) /\ R[T := c] has the same models as Q. A split
+R[T := c], and Q' = (T = c) /\ R[T := c] has the same models as Q. This
+needs `T = c` itself in Q': every key is substituted in the conjuncts that
+do not own it, never on the path from its own equation to it. A split
 part follows from its concat's fact (concat is injective in its parts), a
 Boolean fact b gives b = true. The simplifier and the concat hoist are
 equivalences. Identity is syntactic: T and its occurrences are one

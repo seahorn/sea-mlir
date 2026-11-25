@@ -7,6 +7,8 @@
 // PTR_SEGMENT) outside a memory read is not substituted; one that mentions
 // none is, pointer observations of registers included ("Pointer
 // observations"; docs/design/PtrSegment.md, "What F2 does then").
+// concat-kept: a concat fact skipped for an object keeps the parts it
+// defines in its own conjunct; the fold is z3-equivalent to its input.
 RUN: sea-fold-top-eqs-test | FileCheck %s
 CHECK: shared: mode=numeral concat-ite=47 refused=0
 CHECK: test: shared ok
@@ -31,6 +33,9 @@ CHECK: ptr-facts: seg-node folded=0 skipped-base=1
 CHECK: ptr-facts: seg-read folded=1 skipped-base=0
 CHECK: ptr-facts: concat-part x-folded=1 addr-folded=0 skipped-base={{[1-9][0-9]*}}
 CHECK: test: ptr-facts ok
+CHECK: concat-kept: top equiv=1 part-uses=1
+CHECK: concat-kept: nested equiv=1 x-uses=1 y-uses=1
+CHECK: test: concat-kept ok
 CHECK: failures: 0
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors

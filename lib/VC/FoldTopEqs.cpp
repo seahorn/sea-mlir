@@ -412,7 +412,8 @@ void TopEqFolder::factsOf(const Expr &c,
       }
       // a term that mentions an object (an address in it, an extract or a
       // sum of one, a pointer difference with it): not substituted
-      // (mentionsObject); a concat of one still gives its other parts
+      // (mentionsObject); a concat of one still gives its other parts, and
+      // keep() rebuilds it in its conjunct, so they stay in their fact
       if (mentionsObject(t))
         ++st.skippedBase;
       else
@@ -435,16 +436,24 @@ Expr TopEqFolder::subst(const Expr &e, const Map &m, Cache &cache, bool count) {
 }
 
 Expr TopEqFolder::keep(const Expr &e, const std::vector<ENode *> &own,
-                       const Map &m, Cache &cache, bool root) {
+                       const Map &m, Cache &cache, bool root, bool path) {
   // the defining conjunct and the path to its keys are rebuilt, not
-  // replaced: (= T c) stays (= T' c), never (= c c)
-  if (!root && !llvm::is_contained(own, e.get()))
+  // replaced: (= T c) stays (= T' c), never (= c c). The path includes a
+  // concat skipped because it mentions an object (factsOf, splitConcat):
+  // no key itself, it holds the parts it defines, and substituted it would
+  // replace them inside their own fact (concat(p, a) = c would become
+  // concat(hi(c), a) = c, and p = hi(c) would leave the query)
+  if (!root && !llvm::is_contained(own, e.get()) &&
+      !(path && isOpX<BCONCAT>(e) && mentionsObject(e)))
     return subst(e, m, cache, true);
   if (e->arity() == 0)
     return e;
+  // the operands of the equation and the parts of a concat on it are on
+  // the defining path
+  bool sub = (root && isOpX<EQ>(e)) || (path && isOpX<BCONCAT>(e));
   llvm::SmallVector<Expr, 4> kids;
   for (size_t i = 0; i < e->arity(); ++i)
-    kids.push_back(keep(Expr(e->arg(i)), own, m, cache, false));
+    kids.push_back(keep(Expr(e->arg(i)), own, m, cache, false, sub));
   return e->efac().mkNary(e->op(), kids.begin(), kids.end());
 }
 
@@ -483,7 +492,7 @@ Expr TopEqFolder::fold(Expr query) {
     for (size_t i = 0; i < conj.size(); ++i)
       next.push_back(own[i].empty()
                          ? subst(conj[i], facts, cache, true)
-                         : keep(conj[i], own[i], facts, cache, true));
+                         : keep(conj[i], own[i], facts, cache, true, false));
     Expr q = simplify(boolop::land(next, query->efac()));
     Expr h = hoistConcatItes(q, concatIte, st);
     if (h != q)

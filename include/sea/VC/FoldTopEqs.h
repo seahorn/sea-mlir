@@ -122,9 +122,11 @@ private:
   bool mentionsObject(const expr::Expr &e);
   /// \p e with every key of \p m replaced, memoized in \p cache; counts uses
   expr::Expr subst(const expr::Expr &e, const Map &m, Cache &cache, bool count);
-  /// \p e with the keys in \p own kept (their operands substituted)
+  /// \p e with the keys in \p own kept (their operands substituted), and
+  /// the concats skipped for an object on the way to them (\p path: \p e
+  /// is an operand of the defining equation or a part of a concat on it)
   expr::Expr keep(const expr::Expr &e, const std::vector<expr::ENode *> &own,
-                  const Map &m, Cache &cache, bool root);
+                  const Map &m, Cache &cache, bool root, bool path);
 
   Simplify simplify;
   ConcatIte concatIte;
