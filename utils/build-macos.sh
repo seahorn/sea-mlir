@@ -34,8 +34,6 @@ usage: utils/build-macos.sh [options] [stage ...]
                    (separate, as the Linux bundle; default)
     --seahorn-yices
                    build SeaHorn with the Yices pin, as the Linux bundle
-                   (applies docker/seahorn-yices.patch, SeaHorn's
-                   Yices >= 2.7 fix, until the pin includes it)
   Every stage logs to $ROOT/logs/<stage>.log and appends its wall time to
   $ROOT/logs/timings.txt. A finished stage is redone when named again.
 EOF
@@ -310,10 +308,6 @@ stage_seahorn() {
   z3root=$SOLVERS
   [ "$SEAHORN_Z3" = shared ] || z3root=$SEAHORN_Z3_PREFIX
   if [ "$SEAHORN_YICES" = 1 ]; then
-    # fetch leaves an applied patch in place (same HEAD): apply it once
-    if ! git -C "$src" apply --reverse --check "$SRC/docker/seahorn-yices.patch" 2> /dev/null; then
-      git -C "$src" apply "$SRC/docker/seahorn-yices.patch"
-    fi
     yices=(-DYICES2_HOME="$SOLVERS" -DYICES2_INCLUDE_DIR="$SOLVERS/include"
       -DYICES2_LIBRARY="$SOLVERS/lib/libyices.dylib")
   fi

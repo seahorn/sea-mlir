@@ -10,9 +10,9 @@ class Seahorn < Formula
   desc "Verification framework for LLVM 18 programs, without Clam"
   homepage "https://github.com/seahorn/seahorn"
   # SEAHORN_REVISION; version 18.0.0-dev.<commit date> until SeaHorn releases
-  url "https://github.com/seahorn/seahorn/archive/67474bf6d58fe923f5cbb5947def9e794ce613fe.tar.gz"
-  version "18.0.0-dev.20261122"
-  sha256 "355a6eb6c75ff537bc593d6ecd1b9c90a13acb4376725785e0d1e3a8c8eea5e6"
+  url "https://github.com/seahorn/seahorn/archive/5373d0789f61d6cb0645641fe0e64e21366d12b3.tar.gz"
+  version "18.0.0-dev.20261125"
+  sha256 "adfd7750401a1a05d15dac989f2ac1030398c0011772e7a03168352f72293637"
   license all_of: [
     { "Apache-2.0" => { with: "LLVM-exception" } },
     "BSD-2-Clause",
@@ -60,10 +60,6 @@ class Seahorn < Formula
     url "https://files.pythonhosted.org/packages/76/b8/c0b780928e2fb1c87e9e375818c6f121da2398b071012d1747be300b83f4/pyyaml-6.0.4.tar.gz"
     sha256 "e24bf71af8a432d7808fabff134d38dfe16d3cbb41f2873bb4b1e42422de0a1a"
   end
-
-  # SeaHorn's Yices >= 2.7 fix (docker/seahorn-yices.patch), until SeaHorn
-  # #620 is in dev18; test_release.py checks that the two copies agree
-  patch :DATA
 
   # Linux: clang 18 and lld (llvm@18), the toolchain of the tested builds
   # (docker/Dockerfile); with Homebrew's GCC 13, sea-mlir fails three
@@ -212,93 +208,3 @@ class Seahorn < Formula
     end
   end
 end
-
-__END__
-SPDX-FileCopyrightText: 2026 The SeaHorn Authors
-SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-
-SeaHorn branch feat/binary-release over the dev18 pin 67474bf6 (two commits):
-build the Yices backend with Yices >= 2.7, and allow Yices >= 2.8.0 in the
-release notices. docker/SeaHorn.Dockerfile applies it until the branch is in
-dev18; then move SEAHORN_REVISION and delete this file.
-
-diff --git a/THIRD-PARTY-NOTICES b/THIRD-PARTY-NOTICES
-index 3d01e50a..fc1ffec9 100644
---- a/THIRD-PARTY-NOTICES
-+++ b/THIRD-PARTY-NOTICES
-@@ -6,8 +6,10 @@ with the binaries, together with SeaHorn's LICENSE and NOTICE. Component
- versions and build options must be recorded by the release manifest.
- 
- This input covers LLVM, Z3, Boost, crab/clam, sea-dsa and llvm-seahorn.
--It does not authorize a bundle containing Yices. Release builds must disable
--Yices and audit the actual linked libraries for additional dependencies.
-+A release build may link Yices 2.8.0 or later (BSD-3-Clause); earlier Yices
-+releases are GPLv3 and must not be bundled. The bundle that links Yices
-+carries Yices' LICENSE and third-party NOTICES. Release builds must audit the
-+actual linked libraries for additional dependencies.
- Source-only tools and test fixtures retain their per-file terms in REUSE.toml.
- The unlicensed play/neha-examples corpus is not part of the binary bundle.
- 
-diff --git a/lib/seahorn/Smt/Yices2SolverImpl.cc b/lib/seahorn/Smt/Yices2SolverImpl.cc
-index ab10299a..f270a4a9 100644
---- a/lib/seahorn/Smt/Yices2SolverImpl.cc
-+++ b/lib/seahorn/Smt/Yices2SolverImpl.cc
-@@ -15,6 +15,14 @@
- 
- #include <vector>
- 
-+// Yices 2.7 renamed the smt_status_t constants (STATUS_SAT ->
-+// YICES_STATUS_SAT, ...)
-+#if __YICES_VERSION > 2 || (__YICES_VERSION == 2 && __YICES_VERSION_MAJOR >= 7)
-+#define SEA_YICES_STATUS(x) YICES_STATUS_##x
-+#else
-+#define SEA_YICES_STATUS(x) STATUS_##x
-+#endif
-+
- using namespace expr;
- 
- namespace seahorn {
-@@ -182,11 +190,16 @@ SolverResult yices_solver_impl::check(){
-   //could have a param_t field for this call.
-   smt_status_t stat = yices_check_context(d_ctx, nullptr);
-   switch(stat){
--  case STATUS_UNSAT: return SolverResult::UNSAT;
--  case STATUS_SAT: return SolverResult::SAT;
--  case STATUS_UNKNOWN: return SolverResult::UNKNOWN;
--  case STATUS_INTERRUPTED: return SolverResult::UNKNOWN;
--  case STATUS_ERROR: return SolverResult::ERROR;
-+  case SEA_YICES_STATUS(UNSAT):
-+    return SolverResult::UNSAT;
-+  case SEA_YICES_STATUS(SAT):
-+    return SolverResult::SAT;
-+  case SEA_YICES_STATUS(UNKNOWN):
-+    return SolverResult::UNKNOWN;
-+  case SEA_YICES_STATUS(INTERRUPTED):
-+    return SolverResult::UNKNOWN;
-+  case SEA_YICES_STATUS(ERROR):
-+    return SolverResult::ERROR;
-   default: return SolverResult::UNKNOWN;
-   }
- }
-@@ -211,11 +224,16 @@ SolverResult yices_solver_impl::check_with_assumptions(const expr_const_it_range
-   smt_status_t stat = yices_check_context_with_assumptions(d_ctx, nullptr,
- 							   y_lits.size(), &y_lits[0]);
-   switch(stat){
--  case STATUS_UNSAT: return SolverResult::UNSAT;
--  case STATUS_SAT: return SolverResult::SAT;
--  case STATUS_UNKNOWN: return SolverResult::UNKNOWN;
--  case STATUS_INTERRUPTED: return SolverResult::UNKNOWN;
--  case STATUS_ERROR: return SolverResult::ERROR;
-+  case SEA_YICES_STATUS(UNSAT):
-+    return SolverResult::UNSAT;
-+  case SEA_YICES_STATUS(SAT):
-+    return SolverResult::SAT;
-+  case SEA_YICES_STATUS(UNKNOWN):
-+    return SolverResult::UNKNOWN;
-+  case SEA_YICES_STATUS(INTERRUPTED):
-+    return SolverResult::UNKNOWN;
-+  case SEA_YICES_STATUS(ERROR):
-+    return SolverResult::ERROR;
-   default: return SolverResult::UNKNOWN;
-   }
- }

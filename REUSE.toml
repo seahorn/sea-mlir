@@ -31,11 +31,3 @@ path = "docs/assets/katex/**"
 precedence = "override"
 SPDX-FileCopyrightText = "2013-2020 Khan Academy and other contributors"
 SPDX-License-Identifier = "MIT"
-
-# SeaHorn's Yices >= 2.7 fix, applied by docker/SeaHorn.Dockerfile until it
-# is in SeaHorn dev18.
-[[annotations]]
-path = "docker/seahorn-yices.patch"
-precedence = "override"
-SPDX-FileCopyrightText = "2026 The SeaHorn Authors"
-SPDX-License-Identifier = "Apache-2.0 WITH LLVM-exception"

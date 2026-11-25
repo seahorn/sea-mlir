@@ -48,7 +48,7 @@ this table in sync.
 | Yices | tag `yices-2.8.0` (`YICES_TAG`), without MCSAT; left out with `YICES=0` | BSD 3-Clause (GPLv3 before 2.8.0) |
 | CaDiCaL | tag from Bitwuzla's `subprojects/cadical.wrap` (currently `rel-2.1.2`); not set by hand | MIT |
 | SymFPU | revision from Bitwuzla's `subprojects/symfpu.wrap` (currently `40bdec0`); not set by hand | GPL-3.0 or BSD 3-Clause, at the user's choice; the release uses BSD 3-Clause |
-| SeaHorn | `SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` (dev18 `67474bf`), plus `docker/seahorn-yices.patch` (the Yices >= 2.7 fix, until it is in dev18) | Apache-2.0 WITH LLVM-exception |
+| SeaHorn | `SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` (dev18 `5373d07`) | Apache-2.0 WITH LLVM-exception |
 | sea-dsa | `SEADSA_REVISION` (dev18 `1e33f16`) | Apache-2.0 WITH LLVM-exception |
 | llvm-seahorn | `LLVM_SEAHORN_REVISION` (dev18 `9225814`) | Apache-2.0 WITH LLVM-exception |
 | clam, crab | not built (`WITH_CLAM=OFF`) | |

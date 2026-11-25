@@ -265,12 +265,6 @@ class HomebrewFormulaTests(unittest.TestCase):
         )
         self.assertIn("z3/archive/refs/tags/z3-4.12.0.tar.gz", text)
 
-    def test_seahorn_patch_is_the_docker_patch(self):
-        text = (FORMULA / "seahorn.rb").read_text()
-        embedded = text.split("\n__END__\n", 1)[1]
-        patch_text = (ROOT / "docker" / "seahorn-yices.patch").read_text()
-        self.assertEqual(embedded, patch_text)
-
     def test_set_formula_source_replaces_top_level_only(self):
         text = (FORMULA / "sea-mlir.rb").read_text()
         local = release.set_formula_source(
