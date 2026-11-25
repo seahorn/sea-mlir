@@ -7453,7 +7453,7 @@ int main(int argc, char **argv) {
           if (!c.chosen)
             continue;
           for (const expr::Expr &idx : words->wordIndices(c.array.get())) {
-            unsigned n = expr::op::bv::width(expr::sort::arrayIndexTy(
+            unsigned n = expr::op::bv::width(expr::op::sort::arrayIndexTy(
                 expr::op::bind::declaredSort(c.array)));
             expr::Expr cat;
             for (unsigned k = 0; k < words->wordBytes(); ++k) {
