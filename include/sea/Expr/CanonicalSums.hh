@@ -54,11 +54,14 @@
 // corner values, when the miter is unknown).
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/ExprOpBv.hh"
+#include "sea/Expr/ScopedMarks.hh"
 #include "sea/Expr/SmallArith.hh"
 #include "sea/Expr/TypeChecker.hh"
+#include "sea/Support/Diag.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <optional>
 #include <tuple>
@@ -109,13 +112,35 @@ public:
   };
 
   /// \p query with every maximal linear term and every equality with a
-  /// linear side in the canonical form.
+  /// linear side in the canonical form. Once per object (image() answers
+  /// for that query; the walk's visited set is a scope of that call): a
+  /// second call is expr.canonical-sums-reused, a fatal error.
   Expr rewrite(const Expr &query) {
+    if (LLVM_UNLIKELY(m_efac != nullptr)) {
+      sea::diag::error("expr.canonical-sums-reused",
+                       "CanonicalSums::rewrite called twice on one object "
+                       "(one rewrite per object; a bug in the caller)");
+      std::abort();
+    }
     m_efac = &query->efac();
-    if (m_eq == EqForm::Unshared || m_inner == InnerForm::SharedLeaf)
+    // the use counts and the shared sums met: scopes of this call (mark
+    // bits, ScopedMarks.hh); every query of them is made before it returns
+    std::optional<ScopedUseCount> uses;
+    std::optional<ScopedExprSet> sharedSeen;
+    if (m_eq == EqForm::Unshared || m_inner == InnerForm::SharedLeaf) {
+      uses.emplace(efac(), "canonical-sums.uses");
+      m_uses = &*uses;
       countUses(query);
+    }
+    if (m_inner == InnerForm::SharedLeaf) {
+      sharedSeen.emplace(efac(), "canonical-sums.shared");
+      m_sharedSeen = &*sharedSeen;
+    }
     walk(query);
-    return imageOf(query.get());
+    Expr res = imageOf(query.get());
+    m_uses = nullptr;
+    m_sharedSeen = nullptr;
+    return res;
   }
 
   const Stats &stats() const { return m_stats; }
@@ -190,22 +215,24 @@ private:
   /// post-order over the input: the form of each linear node, the rebuilt
   /// term of every other node
   void walk(const Expr &root) {
+    // the visited nodes (m_pin keeps them, and the leaves, after the walk)
+    ScopedExprSet visited(efac(), "canonical-sums");
     std::vector<std::pair<ENode *, bool>> stack{{root.get(), false}};
     while (!stack.empty()) {
       auto [n, done] = stack.back();
-      if (m_visited.count(n)) {
+      if (visited.contains(n)) {
         stack.pop_back();
         continue;
       }
       if (!done) {
         stack.back().second = true;
         for (size_t i = n->arity(); i-- > 0;)
-          if (!m_visited.count(n->arg(i)))
+          if (!visited.contains(n->arg(i)))
             stack.push_back({n->arg(i), false});
         continue;
       }
       stack.pop_back();
-      m_visited.insert(n);
+      visited.insert(n);
       m_pin.push_back(Expr(n));
       visit(n);
     }
@@ -248,10 +275,9 @@ private:
   bool sharedLeaf(ENode *k) {
     if (m_inner != InnerForm::SharedLeaf || !isSum(k))
       return false;
-    auto it = m_uses.find(k);
-    if (it == m_uses.end() || it->second < 2)
+    if (!m_uses || !m_uses->shared(k))
       return false;
-    if (m_sharedSeen.insert(k).second)
+    if (m_sharedSeen->insert(k))
       ++m_stats.innerShared;
     return true;
   }
@@ -260,22 +286,22 @@ private:
   bool soleUse(ENode *side) const {
     if (!isSum(side))
       return false;
-    auto it = m_uses.find(side);
-    return it != m_uses.end() && it->second == 1;
+    return m_uses && m_uses->count(side) == 1;
   }
 
-  /// the uses of every node of the input: argument slots of its distinct
-  /// parents (a parent with the node in two slots counts two)
+  /// the uses of every node of the input, up to two: argument slots of its
+  /// distinct parents (a parent with the node in two slots counts two).
+  /// Callers ask 1 (soleUse) or more than 1 (sharedLeaf) only.
   void countUses(const Expr &root) {
-    std::unordered_set<ENode *> seen;
+    ScopedExprSet seen(efac(), "canonical-sums.count-uses");
     std::vector<ENode *> stack{root.get()};
     while (!stack.empty()) {
       ENode *n = stack.back();
       stack.pop_back();
-      if (!seen.insert(n).second)
+      if (!seen.insert(n))
         continue;
       for (size_t i = 0; i < n->arity(); ++i) {
-        ++m_uses[n->arg(i)];
+        m_uses->add(n->arg(i));
         stack.push_back(n->arg(i));
       }
     }
@@ -538,8 +564,10 @@ private:
   NegForm m_neg;
   EqForm m_eq;
   InnerForm m_inner;
-  std::unordered_set<ENode *> m_sharedSeen;
-  std::unordered_map<ENode *, unsigned> m_uses;
+  /// during rewrite(): its use counts (Unshared, SharedLeaf) and the
+  /// shared sums counted in innerShared (SharedLeaf); null otherwise
+  ScopedUseCount *m_uses = nullptr;
+  ScopedExprSet *m_sharedSeen = nullptr;
   ExprFactory *m_efac = nullptr;
   TypeChecker m_tc;
   std::unordered_map<ENode *, Form> m_form;
@@ -547,7 +575,6 @@ private:
   std::unordered_map<ENode *, Key> m_base;
   std::map<std::tuple<ENode *, unsigned, unsigned>, Expr> m_spelling;
   std::unordered_set<ENode *> m_linear;
-  std::unordered_set<ENode *> m_visited;
   std::vector<Expr> m_pin;
   Stats m_stats;
 };

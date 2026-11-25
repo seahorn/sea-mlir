@@ -3,14 +3,18 @@
 // recovery. unittests/ExprCore: the last allowed count and id, ordinary
 // release, duplicate terms, id reset on recycling, lookup before
 // building (no operator clone, no id on a hit), the watch of node
-// creation (every step nodes made, not on a hit); then each broken
-// invariant aborts before the counter changes.
+// creation (every step nodes made, not on a hit), scoped marks (nested
+// scopes, clear and reuse, recycled nodes unmarked, the two-bit use count);
+// then each broken invariant aborts before the counter changes, and a
+// mark scope beyond the 64 bits or given a node of another factory aborts
+// (no fallback), naming the live leases.
 RUN: sea-expr-core-test | FileCheck %s
 CHECK: test: limits ok
 CHECK: test: lifecycle ok
 CHECK: test: reclamation ok
 CHECK: test: lookup ok
 CHECK: test: watch ok
+CHECK: test: marks ok
 CHECK: failures: 0
 RUN: not --crash sea-expr-core-test refcount-overflow 2>&1 | FileCheck %s --check-prefix=OVF
 OVF: error: [expr.refcount-overflow] Expr counter invariant broken: {{.*}} value=4294967295
@@ -21,6 +25,15 @@ UNF-NOT: no crash
 RUN: not --crash sea-expr-core-test id-exhausted 2>&1 | FileCheck %s --check-prefix=IDX
 IDX: error: [expr.id-exhausted] Expr counter invariant broken: {{.*}} value=4294967295
 IDX-NOT: no crash
+RUN: not --crash sea-expr-core-test marks-exhausted 2>&1 | FileCheck %s --check-prefix=MEX
+MEX: error: [expr.marks-exhausted] no free Expr mark bit: scope 'use-count' needs 2, {{.*}} has 63 live leases
+MEX: lease: bit=0 owner=leaked-walk
+MEX: lease: bit=62 owner=leaked-walk
+MEX-NOT: no crash
+RUN: not --crash sea-expr-core-test marks-factory 2>&1 | FileCheck %s --check-prefix=MFA
+MFA: error: [expr.marks-factory] a node of factory {{.*}} given to a mark scope of factory
+MFA: lease: bit=0 owner=s
+MFA-NOT: no crash
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

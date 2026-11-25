@@ -16,6 +16,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "sea/Expr/Expr.hh"
+#include "sea/Expr/ScopedMarks.hh"
 #include <boost/functional/hash.hpp>
 
 #include "llvm/ADT/STLExtras.h"
@@ -23,6 +24,8 @@
 
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -33,6 +36,7 @@ struct ExprCoreTestAccess {
   static size_t freeListSize(ExprFactory &f) { return f.freeList.size(); }
   static ENode *freeListBack(ExprFactory &f) { return f.freeList.back(); }
   static unsigned id(ENode *n) { return n->id; }
+  static uint64_t marks(ENode *n) { return n->marks; }
 };
 } // namespace expr
 
@@ -245,6 +249,121 @@ void testWatch() {
   llvm::outs() << "test: watch ok\n";
 }
 
+/// Scoped marks (ScopedMarks.hh): nested scopes hold distinct bits and
+/// see the same nodes independently; clear keeps the lease; a scope keeps
+/// its nodes alive and leaves no bit behind; recycled nodes start unmarked;
+/// the two-bit use count.
+void testMarks() {
+  static_assert(sizeof(ENode) <= ExprFactoryAllocator::kSmallChunk);
+  ExprFactory f;
+  Expr x = var(f, "x"), y = var(f, "y");
+  Expr s = mk<BADD>(x, y);
+  {
+    ScopedExprSet outer(f, "outer");
+    CHECK(outer.insert(x) && !outer.insert(x), "first insertion only");
+    CHECK(outer.contains(x) && !outer.contains(y), "membership");
+    {
+      ScopedExprSet inner(f, "inner");
+      CHECK(f.marksLeased() == 3,
+            "two live leases, distinct bits: " << f.marksLeased());
+      CHECK(!inner.contains(x), "a nested scope does not see the outer");
+      CHECK(inner.insert(x) && inner.insert(y), "the nested scope's own");
+      inner.clear();
+      CHECK(!inner.contains(x) && !inner.contains(y) && inner.empty(),
+            "clear empties the set");
+      CHECK(outer.contains(x), "clear of a nested scope keeps the outer's");
+      CHECK(f.marksLeased() == 3, "clear keeps the lease");
+      CHECK(inner.insert(y) && inner.contains(y), "reuse after clear");
+    }
+    CHECK(f.marksLeased() == 1, "the nested lease is released");
+    CHECK(A::marks(y.get()) == 0, "the nested scope's bits are cleared");
+    CHECK(outer.contains(x) && outer.size() == 1, "the outer set intact");
+    // a scope keeps a node alive: the set holds the only reference
+    ENode *raw = s.get();
+    outer.insert(s);
+    const size_t free0 = A::freeListSize(f);
+    s.reset();
+    CHECK(A::freeListSize(f) == free0 && outer.contains(raw),
+          "a marked node stays alive");
+  }
+  CHECK(f.marksLeased() == 0, "every lease released");
+  CHECK(A::marks(x.get()) == 0, "no bit left on a node");
+  // the scope dropped the last reference of x + y: recycled storage starts
+  // unmarked (a stale bit would make the new node a member of a new scope)
+  CHECK(A::freeListSize(f) > 0 && A::marks(A::freeListBack(f)) == 0,
+        "a freed node has no mark");
+  {
+    ScopedExprSet set(f, "recycle");
+    ENode *slot = A::freeListBack(f);
+    Expr m = mk<BMUL>(x, y);
+    CHECK(m.get() == slot, "the recycled storage");
+    CHECK(A::marks(m.get()) == 0 && !set.contains(m) && set.insert(m),
+          "a recycled node starts with no marks");
+  }
+  // a lease per live scope, the lowest free bits; a released bit is reused
+  {
+    ScopedExprSet a(f, "a");
+    {
+      ScopedExprSet b(f, "b");
+      ScopedExprSet c(f, "c");
+      CHECK(f.marksLeased() == 7 && !std::strcmp(f.markOwner(1), "b"),
+            "three bits");
+    }
+    ScopedUseCount u(f, "u");
+    CHECK(f.marksLeased() == 7 && !std::strcmp(f.markOwner(2), "u"),
+          "the two-bit lease reuses the freed bits");
+  }
+  // the two-bit counter: 0, 1, more than one
+  {
+    ScopedUseCount uses(f, "uses");
+    ScopedExprSet other(f, "other");
+    CHECK(uses.count(x) == 0 && !uses.shared(x), "unseen");
+    CHECK(uses.add(x) && uses.count(x) == 1 && !uses.shared(x), "once");
+    CHECK(!uses.add(x) && uses.count(x) == 2 && uses.shared(x), "twice");
+    uses.add(x);
+    CHECK(uses.count(x) == 2, "saturates at 2");
+    CHECK(!other.contains(x), "a use count is not another scope's set");
+    uses.add(y);
+    CHECK(uses.count(y) == 1 && uses.size() == 2, "one log entry per node");
+    uses.clear();
+    CHECK(uses.count(x) == 0 && uses.count(y) == 0 && A::marks(x.get()) == 0,
+          "clear forgets both bits");
+    CHECK(uses.add(y) && uses.count(y) == 1, "reuse after clear");
+  }
+  CHECK(f.marksLeased() == 0 && A::marks(y.get()) == 0, "all released");
+  // dagSize (a scope of its own): distinct nodes, nested in a live scope
+  {
+    ScopedExprSet live(f, "live");
+    live.insert(x);
+    Expr t = mk<BADD>(mk<BMUL>(x, y), mk<BMUL>(x, y), x);
+    // the reference: a std::set of the reachable nodes
+    std::set<ENode *> reach;
+    std::vector<ENode *> todo{t.get()};
+    while (!todo.empty()) {
+      ENode *n = todo.back();
+      todo.pop_back();
+      if (reach.insert(n).second)
+        todo.insert(todo.end(), n->args_begin(), n->args_end());
+    }
+    CHECK(dagSize(t) == reach.size(),
+          "distinct nodes: " << dagSize(t) << " vs " << reach.size());
+    CHECK(dagSize(t) == dagSize(ExprVector{t, x}),
+          "a root met twice counts once");
+    CHECK(dagSize(Expr()) == 0 && dagSize(ExprVector{Expr(), x}) == dagSize(x),
+          "nulls skipped");
+    CHECK(live.contains(x) && live.size() == 1, "the walk's own bit");
+    // termForLog: a walk of at most 65 nodes decides printed or elided
+    Expr chain = x;
+    for (int i = 0; i < 100; ++i)
+      chain = mk<BADD>(chain, var(f, ("c" + std::to_string(i)).c_str()));
+    CHECK(termForLog(chain) ==
+              "#" + std::to_string(chain->getId()) + " (> 64 nodes)",
+          "a large term elided: " << termForLog(chain));
+    CHECK(termForLog(t).find('#') != 0, "a small term printed");
+  }
+  llvm::outs() << "test: marks ok\n";
+}
+
 int crash(const char *mode) {
   ExprFactory f;
   if (!std::strcmp(mode, "refcount-overflow")) {
@@ -260,6 +379,17 @@ int crash(const char *mode) {
   } else if (!std::strcmp(mode, "id-exhausted")) {
     A::idCount(f) = kMax;
     Expr y = mkTerm<std::string>("y", f); // must abort
+  } else if (!std::strcmp(mode, "marks-exhausted")) {
+    // 63 live scopes of one kind (a leak) and one more pair: no bits left
+    std::vector<std::unique_ptr<ScopedExprSet>> leak;
+    for (int i = 0; i < 63; ++i)
+      leak.push_back(std::make_unique<ScopedExprSet>(f, "leaked-walk"));
+    ScopedUseCount u(f, "use-count"); // must abort
+  } else if (!std::strcmp(mode, "marks-factory")) {
+    ExprFactory g;
+    Expr x = var(g, "x");
+    ScopedExprSet s(f, "s");
+    s.insert(x); // must abort
   }
   llvm::errs() << "no crash in mode " << mode << "\n";
   return 0;
@@ -274,6 +404,7 @@ int main(int argc, char **argv) {
   testReclamation();
   testLookup();
   testWatch();
+  testMarks();
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }
