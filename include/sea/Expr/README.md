@@ -63,7 +63,8 @@ scope holds a reference to every node it marked and clears its bits on
 them before it releases them. 64 live leases on one factory is
 `expr.marks-exhausted`, a hard failure that lists the live leases (no
 fallback: it would hide a leaked scope). Single-threaded, like the factory.
-Users: `dagSize`, `sea-vc --dag-stats`, `CanonicalSums`' walk
+Users: `dagSize`, `sea-vc --dag-stats`, `CanonicalSums` (its walk, and
+the use counts of `--vc-canonical-sums-eq=unshared` / `-inner=shared-leaf`)
 (`unittests/ExprCore`, `test/Expr/expr-core.test`).
 
 `ExprRewriter.hh` / `ExprRewriteRules.hh` (new in sea-mlir, not part of the
