@@ -368,6 +368,9 @@ binary, but nothing yet tells an agent where it is. Proposal:
 Bottles are built locally, not on GitHub Actions: Linux x86_64 in Docker
 now, macOS arm64 on a Mac later. GitHub-hosted runners (3-4 cores, a 6 h
 job limit) are an optional later step for the tap's pull requests.
+Hosted runners do test the published Linux tarballs
+(`.github/workflows/release-test.yml`, section 5); Homebrew and macOS
+jobs can be added to that workflow.
 
 - **Linux, in Docker.** `just binary-release OUT --homebrew --cpuset
   <8 cpus>` (`docker/release.py`, `docker/Homebrew.Dockerfile`) runs
@@ -542,7 +545,11 @@ Homebrew bottles only.
    --cpuset <8 cpus>` on a clean checkout of the tag.
 3. Review the manifest (`license_audit`, `"seahorn"`) and
    `THIRD-PARTY-NOTICES`; upload both tarballs to the sea-mlir GitHub
-   release.
+   release as a prerelease. `.github/workflows/release-test.yml` tests
+   them on GitHub's Ubuntu 24.04 and 26.04 runners (no compilation:
+   download, SHA-256, runtime packages, `docker/smoke/test-tarball.sh`);
+   promote the release when it passes ([Release.md](../Release.md),
+   "Publishing a binary release").
 4. Tap: bump `sea-mlir` (`url`/`sha256` of the tag), and `seahorn` and
    `sea-mlir-llvm` when their pins moved; `just binary-release OUT
    --homebrew --brew-source formula --cpuset <8 cpus>` builds the Linux
@@ -593,8 +600,9 @@ Homebrew bottles only.
       reviewed.
 - [ ] `docker/seahorn-yices.patch` gone once SeaHorn's fix is in the
       pinned dev18 commit.
-- [ ] Tarballs and `.sha256` attached to the GitHub release (on the
-      maintainer's word).
+- [ ] Tarballs, `.sha256` and manifests attached to the GitHub release
+      as a prerelease (on the maintainer's word); `release-test.yml`
+      passes on Ubuntu 24.04 and 26.04; then the release is promoted.
 - [ ] Tap: `sea-mlir` (tag `url`, `sha256`), `seahorn` and
       `sea-mlir-llvm` formulae match the pins (`docker/test_release.py`).
 - [ ] `just binary-release OUT --homebrew --brew-source formula`:

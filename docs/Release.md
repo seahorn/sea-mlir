@@ -143,6 +143,31 @@ other gates are run by hand.
 | benchmark canary | a few jobs per family (tag `canary`): verdicts and completeness counter bounds (Ackermann constraints / reads) | `just bench-canary` ([Benchmarks.md](Benchmarks.md), counter expectations) |
 | benchmark smoke / quick | every connected suite (vcc, firedancer, stellar, nki, crafted) | smoke: `just bench-smoke`, which also runs in `release-check` when `bench/work/` is connected (with `--no-record`); quick: `just bench-gate quick` ([Benchmarks.md](Benchmarks.md)) |
 
+### Publishing a binary release
+
+The Linux tarballs are built locally (`just binary-release OUT --bundle`,
+`docker/README.md`), never on GitHub. They are published in three steps,
+each on the maintainer's word:
+
+1. Create the GitHub release of the tag `v<version>` as a prerelease, with
+   both tarballs and their `.sha256` and `.json` files:
+   `gh release create v<version> --prerelease <files>`.
+2. Publishing it starts `.github/workflows/release-test.yml` (by hand:
+   `gh workflow run release-test.yml -f tag=v<version>`). On GitHub's
+   Ubuntu 24.04 and 26.04 runners it downloads each tarball, checks its
+   SHA-256 file, installs the runtime packages below (the bundle also
+   `clang-18` and `python3`), extracts it outside
+   the checkout and runs `docker/smoke/test-tarball.sh`: every tool runs,
+   the `DOCS:` line of `--agent` names the extracted tree, sat with
+   replay (z3, Yices, Bitwuzla), unsat through the installed `seam`
+   profile, every library resolves inside the tree or the system, no
+   source path of the build; for the bundle also C through SeaHorn's
+   `sea` to `sea-vc` and SeaHorn's BMC with Yices. The hosted runners
+   have many packages preinstalled, so the clean-container smoke of
+   `just binary-release` remains the test of the package list.
+3. When every job passes, promote the release:
+   `gh release edit v<version> --prerelease=false`.
+
 ### What is installed
 
 | Path | What |
@@ -164,7 +189,8 @@ The following are not installed:
 ### Runtime requirements
 
 `sea-run`, `sea-opt` and `sea-reduce` need only the C/C++ runtime, zlib
-and zstd. LLVM and MLIR are linked statically.
+and zstd. LLVM and MLIR are linked statically. `sea-reduce-test` is a
+Python 3 script (`apt-get install python3`).
 
 `sea-vc` and `sea-seam-export` (which links the VC library but runs no
 solver) link the solvers as shared libraries:
