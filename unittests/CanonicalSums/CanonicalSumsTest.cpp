@@ -36,6 +36,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
+#include <cstring>
 #include <iterator>
 #include <random>
 #include <sstream>
@@ -607,6 +608,17 @@ void testRandom(
 
 int main(int argc, char **argv) {
   unsigned randomCount = 300;
+  if (argc > 1 && !std::strcmp(argv[1], "reuse")) {
+    // one rewrite per object: a second call must abort
+    // (expr.canonical-sums-reused)
+    ExprFactory f;
+    Expr x = op::bv::bvConst(mkTerm<std::string>("x", f), 8);
+    CanonicalSums cs;
+    cs.rewrite(mk<EQ>(x, x));
+    cs.rewrite(mk<EQ>(x, x));
+    llvm::errs() << "no crash\n";
+    return 0;
+  }
   if (argc > 1)
     randomCount = std::atoi(argv[1]);
   struct Test {

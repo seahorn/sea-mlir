@@ -34,8 +34,15 @@
 
 namespace expr {
 
-/// The node-bit access of the scopes (ENode::marks is private).
+class ScopedExprSet;
+class ScopedUseCount;
+
+/// The node-bit access of the scopes (ENode::marks is private, and so is
+/// this access: only the scope classes reach the bits).
 struct ExprMarkAccess {
+private:
+  friend class ScopedExprSet;
+  friend class ScopedUseCount;
   static uint64_t &marks(ENode *n) { return n->marks; }
   static uint64_t marks(const ENode *n) { return n->marks; }
   static void checkFactory(const ExprFactory *f, const ENode *n) {
@@ -105,8 +112,8 @@ private:
 class ScopedUseCount {
 public:
   ScopedUseCount(ExprFactory &f, const char *owner)
-      : m_fac(&f), m_bits(f.leaseMarks(2, owner)),
-        m_once(m_bits & -m_bits), m_twice(m_bits & ~m_once) {}
+      : m_fac(&f), m_bits(f.leaseMarks(2, owner)), m_once(m_bits & -m_bits),
+        m_twice(m_bits & ~m_once) {}
   ScopedUseCount(const ScopedUseCount &) = delete;
   ScopedUseCount &operator=(const ScopedUseCount &) = delete;
   ScopedUseCount(ScopedUseCount &&) = delete;

@@ -25,5 +25,9 @@ CHECK: random: neg=bvnot eq=balance inner=shared-leaf terms=50 {{.*}} unknown={{
 CHECK: test: random-shared-leaf ok
 CHECK: failures: 0
 
+RUN: not --crash sea-canonical-sums-test reuse 2>&1 | FileCheck %s --check-prefix=REUSE
+REUSE: twice on one object {{.*}}[expr.canonical-sums-reused]
+REUSE-NOT: no crash
+
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

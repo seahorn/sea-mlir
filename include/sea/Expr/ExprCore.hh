@@ -582,8 +582,6 @@ public:
   /// The owner of leased bit \p i, or null.
   const char *markOwner(unsigned i) const { return markOwners[i]; }
 
-private:
-public:
   ExprFactory() : idCount(0) {}
   /// The nodes made so far, freed ones included (the ids handed out): a
   /// constant-time measure of the terms built, for flow logs.

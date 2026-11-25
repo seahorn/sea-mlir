@@ -57,9 +57,11 @@
 #include "sea/Expr/ScopedMarks.hh"
 #include "sea/Expr/SmallArith.hh"
 #include "sea/Expr/TypeChecker.hh"
+#include "sea/Support/Diag.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <optional>
 #include <tuple>
@@ -111,9 +113,15 @@ public:
 
   /// \p query with every maximal linear term and every equality with a
   /// linear side in the canonical form. Once per object (image() answers
-  /// for that query).
+  /// for that query; the walk's visited set is a scope of that call): a
+  /// second call is expr.canonical-sums-reused, a fatal error.
   Expr rewrite(const Expr &query) {
-    assert(!m_efac && "one rewrite per CanonicalSums");
+    if (LLVM_UNLIKELY(m_efac != nullptr)) {
+      sea::diag::error("expr.canonical-sums-reused",
+                       "CanonicalSums::rewrite called twice on one object "
+                       "(one rewrite per object; a bug in the caller)");
+      std::abort();
+    }
     m_efac = &query->efac();
     if (m_eq == EqForm::Unshared || m_inner == InnerForm::SharedLeaf)
       countUses(query);
