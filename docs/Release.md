@@ -43,8 +43,8 @@ include it (see [Reporting a bug](#reporting-a-bug)).
   - counterexample replay and the program's print ops.
 - **Profiles** (`sea-vc --config=<name|file>`): named option sets, in
   LLVM config-file syntax ([Profiles.md](Profiles.md)). The shipped
-  `seam` and `seam-wide` profiles are examples of the format. They are not
-  recommended defaults.
+  `seam`, `seam-wide` and `canonical` profiles are examples of the format.
+  They are not recommended defaults.
 - **The reducer** (`sea-reduce`, `sea-reduce-test`): test-case reduction
   for sea programs ([Reducer.md](Reducer.md)).
 - **Machine-readable output**: `--format=jsonl` (`sea-vc`, `sea-run`) and

@@ -117,7 +117,7 @@ Expr decode_type(type_t ytau, ExprFactory &efac) {
   return etype;
 }
 
-term_t marshal_yices::encode_term(Expr e, ycache_t &cache) {
+term_t marshal_yices::encode_term(Expr e, ycache_t &cache, bool naryBv) {
 
   assert(e);
 
@@ -213,7 +213,7 @@ term_t marshal_yices::encode_term(Expr e, ycache_t &cache) {
   /** function application */
   else if (bind::isFapp(e)) {
     if (bind::isFdecl(bind::fname(e))) {
-      term_t yfdecl = encode_term(bind::fname(e), cache);
+      term_t yfdecl = encode_term(bind::fname(e), cache, naryBv);
       assert(yfdecl != NULL_TERM);
 
       uint32_t arity = e->arity() - 1;
@@ -221,7 +221,7 @@ term_t marshal_yices::encode_term(Expr e, ycache_t &cache) {
       unsigned pos = 0;
       for (auto it = ++(e->args_begin()), end = e->args_end(); it != end;
            ++it) {
-        term_t arg_i = encode_term(*it, cache);
+        term_t arg_i = encode_term(*it, cache, naryBv);
         assert(arg_i != NULL_TERM);
         args[pos++] = arg_i;
       }
@@ -252,7 +252,7 @@ term_t marshal_yices::encode_term(Expr e, ycache_t &cache) {
       encode_term_fail(e, "array-default term not supported in yices");
     }
 
-    term_t arg = encode_term(e->left(), cache);
+    term_t arg = encode_term(e->left(), cache, naryBv);
 
     if (isOpX<UN_MINUS>(e)) {
       res = yices_neg(arg);
@@ -277,10 +277,10 @@ term_t marshal_yices::encode_term(Expr e, ycache_t &cache) {
       encode_term_fail(e, "Integer remainder not supported in yices");
     }
     if (!isOpX<CONST_ARRAY>(e)) {
-      t1 = encode_term(e->left(), cache);
+      t1 = encode_term(e->left(), cache, naryBv);
     }
     if (!isOpX<BSEXT>(e) && !isOpX<BZEXT>(e)) {
-      t2 = encode_term(e->right(), cache);
+      t2 = encode_term(e->right(), cache, naryBv);
     }
 
     if (isOpX<CONST_ARRAY>(e)) {
@@ -289,7 +289,7 @@ term_t marshal_yices::encode_term(Expr e, ycache_t &cache) {
       // https://github.com/SRI-CSL/yices2/issues/271#issuecomment-664726905
       type_t indexType = encode_type(e->left());
       term_t i = yices_new_variable(indexType);
-      term_t v = encode_term(e->right(), cache);
+      term_t v = encode_term(e->right(), cache, naryBv);
       res = yices_lambda(1, &i, v);
     } else if (isOpX<AND>(e))
       res = yices_and2(t1, t2);
@@ -360,7 +360,7 @@ term_t marshal_yices::encode_term(Expr e, ycache_t &cache) {
       Expr trueE = mk<TRUE>(x->efac());
       Expr noovfl = mk<ITE>(mk<EQ>(x, bv0), trueE,
                             mk<EQ>(mk<BUDIV>(mk<BMUL>(x, y), x), y));
-      res = encode_term(noovfl, cache);
+      res = encode_term(noovfl, cache, naryBv);
     } else if (isOpX<BADD>(e))
       res = yices_bvadd(t1, t2);
     else if (isOpX<BSUB>(e))
@@ -411,7 +411,7 @@ term_t marshal_yices::encode_term(Expr e, ycache_t &cache) {
       return encode_term_fail(e, "unhandle binary case");
   } else if (isOpX<BEXTRACT>(e)) {
     assert(bv::high(e) >= bv::low(e));
-    term_t b = encode_term(bv::earg(e), cache);
+    term_t b = encode_term(bv::earg(e), cache, naryBv);
     res = yices_bvextract(b, bv::low(e), bv::high(e));
   } else if (isOpX<AND>(e) || isOpX<OR>(e) || isOpX<ITE>(e) || isOpX<XOR>(e) ||
              isOpX<PLUS>(e) || isOpX<MINUS>(e) || isOpX<MULT>(e) ||
@@ -421,7 +421,7 @@ term_t marshal_yices::encode_term(Expr e, ycache_t &cache) {
 
     std::vector<term_t> args;
     for (auto it = e->args_begin(), end = e->args_end(); it != end; ++it) {
-      term_t yt = encode_term(*it, cache);
+      term_t yt = encode_term(*it, cache, naryBv);
       args.push_back(yt);
     }
 
@@ -452,6 +452,11 @@ term_t marshal_yices::encode_term(Expr e, ycache_t &cache) {
       res = yices_bvproduct(args.size(), &args[0]);
     else if (isOp<BXOR>(e))
       res = yices_bvxor(args.size(), &args[0]);
+    else if (isOp<BADD>(e) && naryBv)
+      // sea-vc --solver-nary-sums: one call; the nested chain below gives
+      // the same term (Yices normalizes a sum into one polynomial), without
+      // the partial sums it also makes
+      res = yices_bvsum(args.size(), &args[0]);
     else if (isOp<BADD>(e)) {
       assert(e->arity() > 2);
       res = args.back();
@@ -638,18 +643,18 @@ Expr marshal_yices::decode_yval(yval_t &yval, ExprFactory &efac, model_t *model,
 // This only works for simple expressions; constants (either atomic or
 // uninterpreted function)
 Expr marshal_yices::eval(Expr expr, ExprFactory &efac, ycache_t &cache,
-                         bool complete, model_t *model) {
+                         bool complete, model_t *model, bool naryBv) {
   if (isOp<MK_STRUCT>(expr)) {
     ExprVector kids;
     for (auto arg : *expr) {
-      kids.push_back(eval(arg, efac, cache, complete, model));
+      kids.push_back(eval(arg, efac, cache, complete, model, naryBv));
     }
     return strct::mk(kids);
   } else if (op::bv::isBvNum(expr) || isOpX<MPZ>(expr) || isOpX<MPQ>(expr)) {
     return expr;
   }
 
-  term_t yt_var = encode_term(expr, cache);
+  term_t yt_var = encode_term(expr, cache, naryBv);
   if (yt_var == NULL_TERM) {
     report_fatal_error("Could not convert an Expr into a yices term");
   }

@@ -32,6 +32,13 @@
 //              also as an assumption (unknown), and takes the same terms
 //              under a logic that admits them; a name without a table: null
 //              solver and <prefix>z3-logic
+//  nary        SolverConfig::naryBv (sea-vc --solver-nary-sums): z3 gets an
+//              n-ary bvadd / bvmul / bvand / bvor / bvxor as one app of
+//              all arguments in order (1, 8 and 16 bits), and the query it
+//              prints reads back (Z3_parse_smtlib2_string, same context) as
+//              the very term it was given; off: the right-nested binary
+//              chain. Every built backend decides an n-ary sum with it
+//              (Yices: one yices_bvsum)
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,6 +46,7 @@
 #include "sea/Expr/Expr.hh"
 #include "sea/Expr/ExprOpBinder.hh"
 #include "sea/Expr/Smt/LogicGuard.h"
+#include "sea/Expr/Smt/Z3SolverImpl.hh"
 #include "sea/Support/Diag.h"
 
 #include "llvm/Support/raw_ostream.h"
@@ -382,6 +390,95 @@ int bitwuzlaCoreWithoutOption(Terms &T) {
   return 0;
 }
 
+/// The n-ary bit-vector operators of one width under SolverConfig::naryBv
+void testNaryBvShape(Terms &T, bool nary, unsigned w) {
+  using sea::solver::z3_solver_impl;
+  Expr a = T.var("na", w), b = T.var("nb", w), c = T.var("nc", w),
+       d = T.var("nd", w), r = T.var("nr", w);
+  struct Case {
+    const char *name;
+    Expr e;
+  };
+  ExprVector args{a, b, c, d};
+  Case cases[] = {
+      {"bvadd", mknary<BADD>(args.begin(), args.end())},
+      {"bvmul", mknary<BMUL>(args.begin(), args.end())},
+      {"bvand", mknary<BAND>(args.begin(), args.end())},
+      {"bvor", mknary<BOR>(args.begin(), args.end())},
+      {"bvxor", mknary<BXOR>(args.begin(), args.end())},
+  };
+  SolverConfig cfg;
+  cfg.naryBv = nary;
+  std::string tag =
+      std::string(nary ? "nary" : "chain") + " w=" + std::to_string(w) + " ";
+  for (const Case &k : cases) {
+    auto s = sea::solver::makeSolver(T.efac, Backend::Z3, Limits(), cfg);
+    CHECK(s, tag << k.name << ": solver");
+    if (!s)
+      continue;
+    auto &z = static_cast<z3_solver_impl &>(*s);
+    Z3_context ctx = z.get_context().raw_context();
+    Expr q = mk<EQ>(k.e, r);
+    z3::ast zq = z.get_context().toZ3(q);
+    z3::ast ze = z.get_context().toZ3(k.e);
+    Z3_app app = Z3_to_app(ctx, ze);
+    unsigned n = Z3_get_app_num_args(ctx, app);
+    CHECK(n == (nary ? 4u : 2u), tag << k.name << ": " << n << " arguments");
+    // in argument order (nary); the first argument, then the chain (off)
+    for (unsigned i = 0; i < n; ++i) {
+      Z3_ast arg = Z3_get_app_arg(ctx, app, i);
+      bool same = Z3_is_eq_ast(ctx, arg, z.get_context().toZ3(args[i]));
+      // off: argument 1 is the chain of the others
+      CHECK(nary || i == 0 ? same : !same, tag << k.name << ": argument " << i);
+    }
+    if (!nary)
+      continue;
+    // the printed query, parsed in the same context, is the same term (z3
+    // shares structurally equal terms)
+    CHECK(s->add(q), tag << k.name << ": add");
+    std::string smt;
+    llvm::raw_string_ostream os(smt);
+    s->to_smt_lib(os, sea::solver::Smt2Dialect::Native, /*warn=*/false);
+    z3::ast_vector parsed(
+        zq.ctx(), Z3_parse_smtlib2_string(ctx, os.str().c_str(), 0, nullptr,
+                                          nullptr, 0, nullptr, nullptr));
+    CHECK(parsed.size() == 1 && Z3_is_eq_ast(ctx, parsed[0], zq),
+          tag << k.name << ": the printed query reads back as another term:\n"
+              << os.str());
+  }
+}
+
+void testNaryBv(Terms &T) {
+  for (unsigned w : {1u, 8u, 16u}) {
+    testNaryBvShape(T, /*nary=*/false, w);
+    testNaryBvShape(T, /*nary=*/true, w);
+  }
+  // every built backend decides an n-ary sum with the switch: 1 + 2 + 3 + d
+  // = 10 holds for d = 4 only
+  Expr a = T.var("sa", 8), b = T.var("sb", 8), c = T.var("sc", 8),
+       d = T.var("sd", 8);
+  ExprVector args{a, b, c, d};
+  Expr sum = mknary<BADD>(args.begin(), args.end());
+  Expr pre =
+      mk<AND>(mk<AND>(mk<EQ>(a, T.num(1, 8)), mk<EQ>(b, T.num(2, 8))),
+              mk<AND>(mk<EQ>(c, T.num(3, 8)), mk<EQ>(sum, T.num(10, 8))));
+  SolverConfig cfg;
+  cfg.naryBv = true;
+  for (Backend be : {Backend::Z3, Backend::Yices, Backend::Bitwuzla}) {
+    if (!sea::solver::available(be))
+      continue;
+    const char *nm = sea::solver::backendName(be);
+    auto s = sea::solver::makeSolver(T.efac, be, Limits(), cfg);
+    CHECK(s && s->add(pre) && s->check() == SolverResult::SAT,
+          nm << " nary sum sat");
+    auto u = sea::solver::makeSolver(T.efac, be, Limits(), cfg);
+    CHECK(u && u->add(pre) && u->add(mk<NEQ>(d, T.num(4, 8))) &&
+              u->check() == SolverResult::UNSAT,
+          nm << " nary sum unsat");
+  }
+  llvm::outs() << "nary: ok\n";
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -393,6 +490,7 @@ int main(int argc, char **argv) {
   testOptional(T, Backend::Yices);
   testOptional(T, Backend::Bitwuzla);
   testBitwuzlaCores(T);
+  testNaryBv(T);
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

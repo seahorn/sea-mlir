@@ -17,12 +17,18 @@ using ycache_t = std::map<expr::Expr, term_t>;
 class marshal_yices {
 
 public:
-  static term_t encode_term(expr::Expr exp, ycache_t &cache);
+  /// \p naryBv: an n-ary bvadd as one yices_bvsum (sea-vc
+  /// --solver-nary-sums), else a right-nested chain of yices_bvadd. Both
+  /// give the same term; bvmul, bvand, bvor and bvxor are one call either
+  /// way. A solver passes one value to every call (its cache keeps terms)
+  static term_t encode_term(expr::Expr exp, ycache_t &cache,
+                            bool naryBv = false);
 
   static type_t encode_type(expr::Expr exp);
 
   static expr::Expr eval(expr::Expr expr, expr::ExprFactory &efac,
-                         ycache_t &cache, bool complete, model_t *model);
+                         ycache_t &cache, bool complete, model_t *model,
+                         bool naryBv = false);
 
   static expr::Expr decode_type(type_t yty, expr::ExprFactory &efac);
 

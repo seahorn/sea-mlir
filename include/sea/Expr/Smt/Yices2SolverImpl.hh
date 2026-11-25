@@ -54,6 +54,8 @@ private:
   expr::ExprFactory &d_efac;
 
   ycache_t d_cache;
+  /// marshal_yices::encode_term's naryBv for every term of this context
+  bool d_nary_bv = false;
 
   /* to build unsat cores: this avoids a decode_term function */
   assumptions_map_t d_last_assumptions;
@@ -127,6 +129,11 @@ public:
                   bool warn = true) override;
 
   ycache_t &get_cache(void);
+
+  /// An n-ary bvadd as one yices_bvsum (sea-vc --solver-nary-sums; the same
+  /// term as the default chain); set before the first term
+  void set_nary_bv(bool on) { d_nary_bv = on; }
+  bool nary_bv() const { return d_nary_bv; }
 
   /// \p e with the inlined array definitions substituted (what the solver
   /// knows an inlined constant as): apply before evaluating in the model

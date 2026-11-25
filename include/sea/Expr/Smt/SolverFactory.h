@@ -103,6 +103,15 @@ struct SolverConfig {
   /// cores, which skip preprocessing passes); unsat_core without it is an
   /// error. z3 and Yices give cores without a setting.
   bool unsatCores = false;
+  /// n-ary (arity > 2) bit-vector sums and products and n-ary bvand / bvor
+  /// / bvxor (sea-vc --solver-nary-sums; off: not tuned). z3: one n-ary
+  /// app, the term z3's SMT-LIB parser builds for (bvadd a b c), instead of
+  /// a right-nested chain of binary apps (ExprToZ::Options::naryBv). Yices:
+  /// a sum by one yices_bvsum instead of a chain of yices_bvadd (the same
+  /// term; the others are one call either way). Bitwuzla has binary
+  /// operators only and always builds the left-associated chain in argument
+  /// order (SMT-LIB's meaning of the n-ary form): not read
+  bool naryBv = false;
   /// Yices: the logic of the context (empty: Yices' default)
   std::string yicesLogic;
   /// Yices: context configuration, `key=value` each

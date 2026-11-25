@@ -7,7 +7,7 @@
 // CHECK: (= (bvxor nd.0_0 #xff) nd.1_0)
 // STAT: vc.canonical-sums: on
 // STAT: vc.canonical-sums-sums: 0
-// STAT: vc.canonical-sums-eqs: 0
+// STAT: vc.canonical-sums-eqs-balanced: 0
 sea.program @p {
   %x = sea.nondet "f" [0] : i8
   %y = sea.nondet "f" [1] : i8
