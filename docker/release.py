@@ -128,12 +128,20 @@ def smoke_command(job, output, version, *extra):
     that the tools report the tag; otherwise the check is skipped, with a
     visible warning and a note in release-run.json.
     """
-    command = ["bash", "docker/smoke/run.sh", str(output / "artifacts"), version, *extra]
+    command = [
+        "bash",
+        "docker/smoke/run.sh",
+        str(output / "artifacts"),
+        version,
+        *extra,
+    ]
     described = job.record["source_describe"]
     if described == "v" + version:
         return ["env", "SMOKE_TAG=" + described, *command]
     if "smoke_tag_warning" not in job.record:
-        warning = f"source_describe {described} is not v{version}; version-tag check skipped"
+        warning = (
+            f"source_describe {described} is not v{version}; version-tag check skipped"
+        )
         job.record["smoke_tag_warning"] = warning
         job.save()
         print("release: " + warning)
