@@ -585,12 +585,11 @@ struct Sem {
                                0xff, 0xfe, 0xf8, 0xfc, 0x40, 0x41};
     return F.num(vals[rng.next(sizeof vals / sizeof *vals)]);
   }
-  // The generators draw from rng in a fixed order: one call per statement
-  // where a term has several random parts (the order of function arguments
-  // is unspecified; GCC and clang differ, and the terms would too).
-
   /// an integer term (PtrSort S2e: integers and pointers apart; an address
-  /// in an integer is an observation)
+  /// in an integer is an observation). term() and ptr() draw from rng in a
+  /// fixed order: one call per statement where a term has several random
+  /// parts (the order of function arguments is unspecified; GCC and clang
+  /// differ, and the terms would too).
   Expr term(unsigned depth) {
     unsigned k = rng.next(depth ? 11 : 4);
     switch (k) {
@@ -695,12 +694,12 @@ struct Sem {
       mpz_class off = op::ptr::constant(e) + op::ptr::byteOffset(e);
       int prov = b.prov, ptrs = b.prov >= 0;
       for (size_t i = 0; i < op::ptr::numIndices(e); ++i) {
-        Val x = eval(op::ptr::index(e, i));
+        Val xi = eval(op::ptr::index(e, i));
         mpz_class s = op::ptr::stride(e, i), sr;
         mpz_fdiv_r_ui(sr.get_mpz_t(), s.get_mpz_t(), 256);
-        off = off + mpz_class(x.v) * s;
-        if (x.prov >= 0 && sr == 1) {
-          prov = x.prov;
+        off = off + mpz_class(xi.v) * s;
+        if (xi.prov >= 0 && sr == 1) {
+          prov = xi.prov;
           ++ptrs;
         }
       }
