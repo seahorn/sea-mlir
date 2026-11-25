@@ -352,6 +352,14 @@ void testMarks() {
     CHECK(dagSize(Expr()) == 0 && dagSize(ExprVector{Expr(), x}) == dagSize(x),
           "nulls skipped");
     CHECK(live.contains(x) && live.size() == 1, "the walk's own bit");
+    // termForLog: a walk of at most 65 nodes decides printed or elided
+    Expr chain = x;
+    for (int i = 0; i < 100; ++i)
+      chain = mk<BADD>(chain, var(f, ("c" + std::to_string(i)).c_str()));
+    CHECK(termForLog(chain) ==
+              "#" + std::to_string(chain->getId()) + " (> 64 nodes)",
+          "a large term elided: " << termForLog(chain));
+    CHECK(termForLog(t).find('#') != 0, "a small term printed");
   }
   llvm::outs() << "test: marks ok\n";
 }

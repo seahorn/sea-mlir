@@ -9,6 +9,7 @@
 #include "sea/Expr/ScopedMarks.hh"
 
 #include <algorithm>
+#include <limits>
 /// yet to be refactored
 
 namespace expr {
@@ -70,7 +71,8 @@ struct SIZE {
 /// the distinct nodes reachable from the roots [b, e) (nulls skipped): a
 /// read-only walk with a scoped mark set
 template <typename It>
-size_t dagSizeOf(It b, It e) {
+size_t dagSizeOf(It b, It e,
+                 size_t limit = std::numeric_limits<size_t>::max()) {
   It first = std::find_if(b, e, [](const Expr &r) { return bool(r); });
   if (first == e)
     return 0;
@@ -79,7 +81,7 @@ size_t dagSizeOf(It b, It e) {
   for (; b != e; ++b)
     if (*b)
       stack.push_back(b->get());
-  while (!stack.empty()) {
+  while (!stack.empty() && seen.size() < limit) {
     ENode *n = stack.pop_back_val();
     if (!seen.insert(n))
       continue;
@@ -96,11 +98,13 @@ std::string termForLog(Expr e) {
   constexpr size_t kLimit = 64;
   std::string s;
   llvm::raw_string_ostream os(s);
-  size_t n = dagSize(e);
-  if (n <= kLimit)
+  // at most kLimit + 1 nodes walked: a large term is not counted
+  if (!e)
+    os << "null";
+  else if (dagSizeOf(&e, &e + 1, kLimit + 1) <= kLimit)
     os << *e;
   else
-    os << "#" << e->getId() << " (" << n << " nodes)";
+    os << "#" << e->getId() << " (> " << kLimit << " nodes)";
   return s;
 }
 
