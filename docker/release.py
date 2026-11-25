@@ -121,6 +121,25 @@ def source_describe(source):
     )
 
 
+def smoke_command(job, output, version, *extra):
+    """The docker/smoke/run.sh command of one smoke stage.
+
+    A source exactly at tag v<version> passes SMOKE_TAG so the smoke checks
+    that the tools report the tag; otherwise the check is skipped, with a
+    visible warning and a note in release-run.json.
+    """
+    command = ["bash", "docker/smoke/run.sh", str(output / "artifacts"), version, *extra]
+    described = job.record["source_describe"]
+    if described == "v" + version:
+        return ["env", "SMOKE_TAG=" + described, *command]
+    if "smoke_tag_warning" not in job.record:
+        warning = f"source_describe {described} is not v{version}; version-tag check skipped"
+        job.record["smoke_tag_warning"] = warning
+        job.save()
+        print("release: " + warning)
+    return command
+
+
 class ReleaseJob:
     def __init__(
         self, source, output, deadline, prefix="sea-mlir-release", cpuset=None
@@ -518,7 +537,7 @@ def main():
         # the exported tarball in a clean base, rather than testing the build tree.
         job.run(
             "standalone-smoke",
-            ["bash", "docker/smoke/run.sh", str(output / "artifacts"), args.version],
+            smoke_command(job, output, args.version),
         )
         if args.bundle:
             # SeaHorn links the solvers stage's Yices (YICES_TAG)
@@ -546,13 +565,7 @@ def main():
             )
             job.run(
                 "bundle-smoke",
-                [
-                    "bash",
-                    "docker/smoke/run.sh",
-                    str(output / "artifacts"),
-                    args.version,
-                    "--bundle",
-                ],
+                smoke_command(job, output, args.version, "--bundle"),
             )
         job.record["artifacts"] = {
             str(p.relative_to(output / "artifacts")): {

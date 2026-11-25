@@ -589,7 +589,8 @@ Homebrew bottles only.
 - [ ] SeaHorn pins in `docker/SeaHorn.Dockerfile` moved to the chosen
       dev18 commits; SeaHorn CI green at those commits.
 - [ ] `just binary-release OUT --bundle` from a clean checkout of the tag:
-      `release-run.json` status `complete`, `source_dirty: false`.
+      `release-run.json` status `complete`, `source_dirty: false` and
+      `source_describe: v<version>`.
 - [ ] Both smoke stages pass (fresh `ubuntu:24.04`).
 - [ ] `sea-vc --version` in the tarball names z3 5.4.2 (`bbd46c9`), Yices
       2.8.0, Bitwuzla 0.9.1.

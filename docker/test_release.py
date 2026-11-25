@@ -164,6 +164,30 @@ class DescribeTests(unittest.TestCase):
         )
 
 
+class SmokeCommandTests(unittest.TestCase):
+    def job(self, described):
+        job = Mock()
+        job.record = {"source_describe": described}
+        return job
+
+    def test_tagged_source_passes_smoke_tag(self):
+        job = self.job("v0.5.0")
+        command = release.smoke_command(job, Path("out"), "0.5.0", "--bundle")
+        self.assertEqual(command[:2], ["env", "SMOKE_TAG=v0.5.0"])
+        self.assertEqual(command[-2:], ["0.5.0", "--bundle"])
+        self.assertNotIn("smoke_tag_warning", job.record)
+
+    def test_untagged_source_warns_and_skips(self):
+        job = self.job("v0.5.0-1-gabcdef123456")
+        with patch("builtins.print") as printed:
+            command = release.smoke_command(job, Path("out"), "0.5.0")
+        self.assertEqual(command[0], "bash")
+        self.assertFalse(any("SMOKE_TAG" in part for part in command))
+        self.assertIn("version-tag check skipped", job.record["smoke_tag_warning"])
+        self.assertIn("v0.5.0-1-gabcdef123456", printed.call_args.args[0])
+        job.save.assert_called()
+
+
 class SystemZoneTests(unittest.TestCase):
     def test_naive_arithmetic_in_system_zone(self):
         now = datetime.fromisoformat("2026-06-01T12:00:00").astimezone()

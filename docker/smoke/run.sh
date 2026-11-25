@@ -25,7 +25,7 @@ trap 'exit 143' TERM
 printf 'smoke-container: %s\n' "$container"
 docker run --name "$container" --label sea-mlir.release-smoke=true \
   -v "$artifacts:/artifacts:ro" -v "$fixtures:/fixtures:ro" \
-  -e VERSION="$version" -e MODE="$mode" \
+  -e VERSION="$version" -e MODE="$mode" -e SMOKE_TAG="${SMOKE_TAG:-}" \
   ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 \
   sh -ec '
     # GMP, GMPXX, MPFR (LGPL) come from Ubuntu, not the tarball
@@ -38,6 +38,7 @@ docker run --name "$container" --label sea-mlir.release-smoke=true \
     apt-get install -y --no-install-recommends $packages
     kind=standalone
     if [ "$MODE" = --bundle ]; then kind=bundle; fi
+    [ -n "$SMOKE_TAG" ] || unset SMOKE_TAG
     sh /fixtures/test-tarball.sh /artifacts "$kind" "$VERSION"
   ' &
 client=$!

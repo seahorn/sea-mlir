@@ -214,7 +214,7 @@ run() { # name
   set -e
   expected=pass
   case " $xfail " in *" $name "*) expected=fail;; esac
-  if [ "$rc" = 77 ]; then
+  if [ "$rc" = 77 ] && [ "$name" = version-tag ]; then
     status=skipped
   elif [ "$rc" = 0 ] && [ "$expected" = pass ]; then
     status=pass

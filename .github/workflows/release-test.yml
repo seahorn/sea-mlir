@@ -11,6 +11,8 @@
 # prerelease changes no file), and by hand:
 #   gh workflow run release-test.yml -f tag=v0.6.0 [-f repo=OWNER/NAME]
 #     [-f version=0.6.0] [-f xfail="agent-docs build-paths"]
+# (releases built before the version-tag check, v0.5.0 and older, need
+# `-f xfail=version-tag` along with their other old-release xfails.)
 # (version: of the tarballs, default the tag without its `v`; a trial tag
 # such as v0.5.0-ci-trial holding 0.5.0 tarballs needs -f version=0.5.0.)
 # A release whose tag's commit lacks this file never starts it: GitHub runs
