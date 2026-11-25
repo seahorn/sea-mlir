@@ -10,14 +10,16 @@
 // the prefix):
 //
 //   DOCS: <root> (...)       <root>/docs/... is a cited path
-//   DOCS-WEB: <site> (...)   the web site, which follows main
+//   DOCS-WEB: <site> (...)   the web site, which follows main, and the
+//                            repository docs of this release (docsRepoRef)
 //
 // <root> is, in order: an install, `<exe dir>/../share/doc/sea-mlir`
 // when it has `docs/` (the install rules of CMakeLists.txt; the docs of
 // this binary's release); a build directory, the source tree named by
 // `<exe dir>/../CMakeCache.txt` (`sea-mlir_SOURCE_DIR`) when it has
 // `docs/` (read at run time: no path is compiled in); else none. utils/
-// reduce-test.py prints the same lines (sea-reduce-test).
+// reduce-test.py prints the same lines (sea-reduce-test), with the ref of
+// the sea-opt it runs (`--version`); test/Tools/agent-docs.test compares.
 //
 //===----------------------------------------------------------------------===//
 #ifndef SEA_SUPPORT_AGENTGUIDE_H
@@ -32,6 +34,17 @@ namespace sea {
 /// The site of the docs (mkdocs.yml site_url).
 inline constexpr llvm::StringLiteral kDocsWebSite =
     "https://seahorn.github.io/sea-mlir/";
+
+/// The repository's tree view; + ref + "/docs" is the docs of that ref
+/// (mkdocs.yml excludes docs/design/ and docs/<Capitalized>.md from the
+/// site).
+inline constexpr llvm::StringLiteral kDocsRepoTree =
+    "https://github.com/seahorn/sea-mlir/tree/";
+
+/// The ref of the repository docs that match this binary: the release tag
+/// `v<version>` when `git describe` at build time is exactly that tag (a
+/// clean build of the tag, or -DSEA_GIT_DESCRIBE=v<version>), else "main".
+std::string docsRepoRef();
 
 /// Where the docs of a binary are.
 struct DocsRoot {

@@ -856,6 +856,34 @@ def cmd_audit(a):
 
 
 DOCS_WEB = "https://seahorn.github.io/sea-mlir/"
+DOCS_REPO_TREE = "https://github.com/seahorn/sea-mlir/tree/"
+
+
+def docs_repo_ref():
+    """sea::docsRepoRef of the sea-opt this script runs (it has no version
+    of its own): the tag v<version> when `sea-opt --version` shows a build
+    of exactly that tag, else main (also when no sea-opt is found)."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    cands = [
+        os.environ.get("SEA_OPT"),
+        os.path.join(HERE, "..", "build", "bin", "sea-opt"),
+        os.path.join(here, "sea-opt"),
+        os.path.join(HERE, "sea-opt"),
+        shutil.which("sea-opt"),
+    ]
+    exe = next((c for c in cands if c and os.path.isfile(c)), None)
+    if not exe:
+        return "main"
+    try:
+        out = subprocess.run(
+            [exe, "--version"], capture_output=True, text=True, timeout=30
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return "main"
+    m = re.search(r"\(sea-mlir (\S+) \((\S+)\)\)", out)
+    if m and m.group(2) == f"v{m.group(1)}":
+        return m.group(2)
+    return "main"
 
 
 def docs_lines():
@@ -882,7 +910,9 @@ def docs_lines():
         )
     web = (
         f"DOCS-WEB: {DOCS_WEB} (follows main, not this release; "
-        f"docs/<page>.md is at {DOCS_WEB}<page>/)"
+        f"docs/<page>.md is at {DOCS_WEB}<page>/ except docs/design/ and "
+        "docs/<Capitalized>.md, which are only in the repository: "
+        f"{DOCS_REPO_TREE}{docs_repo_ref()}/docs)"
     )
     return f"{docs}\n{web}\n"
 

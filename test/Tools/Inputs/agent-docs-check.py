@@ -6,7 +6,7 @@
 usage: agent-docs-check.py ROOT GUIDE...
 
 Paths are `docs/` followed by path characters; an anchor (#...) and
-trailing punctuation are stripped. The DOCS / DOCS-WEB lines (the docs
+trailing punctuation are stripped. A .md path must be a file. The DOCS / DOCS-WEB lines (the docs
 root, include/sea/Support/AgentGuide.h) are skipped: their docs/... is a
 pattern, not a page. Prints `agent-docs.missing: <guide>:<line>: <path>`
 per dangling path and `agent-docs.checked: <n> paths` at the end; exit 1
@@ -31,7 +31,13 @@ def main():
                 for m in PATH.finditer(line):
                     p = m.group(0).split("#", 1)[0].rstrip(".,;:)")
                     checked += 1
-                    if not os.path.exists(os.path.join(root, p)):
+                    full = os.path.join(root, p)
+                    ok = (
+                        os.path.isfile(full)
+                        if p.endswith(".md")
+                        else os.path.exists(full)
+                    )
+                    if not ok:
                         missing += 1
                         print(f"agent-docs.missing: {g}:{n}: {p}")
     print(f"agent-docs.checked: {checked} paths")

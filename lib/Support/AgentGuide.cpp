@@ -4,6 +4,7 @@
 //===- AgentGuide.cpp - --agent guides and the docs root ------------------===//
 
 #include "sea/Support/AgentGuide.h"
+#include "sea/Support/Version.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/FileSystem.h"
@@ -84,7 +85,15 @@ void printDocsLines(raw_ostream &os, const DocsRoot &d) {
   }
   os << "DOCS-WEB: " << kDocsWebSite
      << " (follows main, not this release; docs/<page>.md is at "
-     << kDocsWebSite << "<page>/)\n";
+     << kDocsWebSite
+     << "<page>/ except docs/design/ and docs/<Capitalized>.md, which are "
+        "only in the repository: "
+     << kDocsRepoTree << docsRepoRef() << "/docs)\n";
+}
+
+std::string docsRepoRef() {
+  std::string tag = ("v" + versionNumber()).str();
+  return gitDescribe() == tag ? tag : "main";
 }
 
 void printAgentGuide(raw_ostream &os, StringRef guide, const char *argv0) {
