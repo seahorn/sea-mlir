@@ -1,0 +1,31 @@
+// A global initializer as SeaHorn exports it (docs/design/MemFill.md): a
+// table of 64 entries of struct {u16; u8;}, one 3-byte sea.mem.fill per
+// entry at stride 4, the padding byte not written (nghttp2's
+// huff_decode_table has 4112 such fills). With --seam every fill stays an
+// mfill term (kept=64), also under --widen-memory=4 (the benchmarks'
+// configuration); a read of entry i at a nondet index reads the data of
+// entry i (unsat), not entry i + 1 (sat), and the padding byte is the
+// memory below (sat). The seaimp form (SeaHorn's
+// --horn-sea-mlir-mem-ssa=erase) gives the same answers.
+// RUN: rm -rf %t && mkdir -p %t
+// RUN: %python %S/Inputs/mfill-padded.py > %t/keep.mlir
+// RUN: %python %S/Inputs/mfill-padded.py --erase > %t/erase.mlir
+// RUN: sea-vc %t/keep.mlir --lower --seam --program=safe | FileCheck %s --check-prefixes=KEPT,UNSAT
+// RUN: sea-vc %t/keep.mlir --lower --seam --replay-original --program=shifted | FileCheck %s --check-prefixes=KEPT,SAT
+// RUN: sea-vc %t/keep.mlir --lower --seam --replay-original --program=pad | FileCheck %s --check-prefixes=KEPT,SAT
+// RUN: sea-vc %t/keep.mlir --lower --seam --widen-memory=4 --program=safe | FileCheck %s --check-prefixes=KEPT,UNSAT
+// RUN: sea-vc %t/keep.mlir --lower --seam --widen-memory=4 --program=shifted | FileCheck %s --check-prefixes=KEPT,SAT
+// RUN: sea-vc %t/erase.mlir --lower --seam --program=safe | FileCheck %s --check-prefixes=KEPT,UNSAT
+// RUN: sea-vc %t/erase.mlir --lower --seam --widen-memory=4 --replay-original --program=shifted | FileCheck %s --check-prefixes=KEPT,SAT
+// RUN: sea-vc %t/erase.mlir --lower --seam --widen-memory=4 --program=pad | FileCheck %s --check-prefixes=KEPT,SAT
+// Every rewrite of the padding read is valid.
+// RUN: sea-vc %t/keep.mlir --lower --seam --seam-check --program=pad | FileCheck %s --check-prefixes=SAT,VALID
+// REQUIRES: z3
+
+// KEPT: vc.expand-mem-fill: expanded=0 cells=0 kept=64
+// UNSAT: result: unsat
+// SAT: result: sat
+// VALID: seam-check: firings={{[0-9]+}} checked={{[0-9]+}} valid={{[0-9]+}} invalid=0 unknown=0
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
