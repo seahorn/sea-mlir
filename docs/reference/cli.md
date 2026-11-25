@@ -2,7 +2,10 @@
 
 All tools take `--help`, `--version` and `--agent`. `--agent` prints a
 plain-text guide to the tool's options, output lines and exit codes, and
-is the most current reference. This page lists the main options.
+is the most current reference. Its `DOCS:` line names the directory that
+the `docs/...` paths it cites are relative to (an install's
+`share/doc/sea-mlir`; [Running the tools](../agents/running.md)). This page
+lists the main options.
 
 | tool | what it does |
 |---|---|

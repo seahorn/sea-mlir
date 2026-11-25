@@ -20,6 +20,7 @@
 #include "sea/Expr/RewriteTrail.hh"
 #include "sea/Expr/SeaMRules.hh"
 #include "sea/Expr/TypeChecker.hh"
+#include "sea/Support/AgentGuide.h"
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
 #include "sea/Support/Version.h"
@@ -569,7 +570,7 @@ int main(int argc, char **argv) {
       "Export the SeaM terms of a straight-line sea.program as JSON "
       "(docs/SeamExport.md)\n");
   if (agent) {
-    llvm::outs() << agentGuide;
+    sea::printAgentGuide(llvm::outs(), agentGuide, argv[0]);
     return 0;
   }
   if (input.empty())

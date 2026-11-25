@@ -857,9 +857,72 @@ def cmd_audit(a):
     return 0
 
 
+DOCS_WEB = "https://seahorn.github.io/sea-mlir/"
+DOCS_REPO_TREE = "https://github.com/seahorn/sea-mlir/tree/"
+
+
+def docs_repo_ref():
+    """sea::docsRepoRef of the sea-opt this script runs (it has no version
+    of its own): the tag v<version> when `sea-opt --version` shows a build
+    of exactly that tag, else main (also when no sea-opt is found)."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    cands = [
+        os.environ.get("SEA_OPT"),
+        os.path.join(HERE, "..", "build", "bin", "sea-opt"),
+        os.path.join(here, "sea-opt"),
+        os.path.join(HERE, "sea-opt"),
+        shutil.which("sea-opt"),
+    ]
+    exe = next((c for c in cands if c and os.path.isfile(c)), None)
+    if not exe:
+        return "main"
+    try:
+        out = subprocess.run(
+            [exe, "--version"], capture_output=True, text=True, timeout=30
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return "main"
+    m = re.search(r"\(sea-mlir (\S+) \((\S+)\)\)", out)
+    if m and m.group(2) == f"v{m.group(1)}":
+        return m.group(2)
+    return "main"
+
+
+def docs_lines():
+    """The DOCS and DOCS-WEB lines of the --agent guide, as the C++ tools
+    print them (include/sea/Support/AgentGuide.h): the docs root found from
+    this script's real path (Homebrew links bin/ into the prefix)."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    inst = os.path.normpath(os.path.join(here, "..", "share", "doc", "sea-mlir"))
+    src = os.path.dirname(here)
+    if os.path.isdir(os.path.join(inst, "docs")):
+        docs = (
+            f"DOCS: {inst} (installed with this script: the docs of this "
+            "release; the docs/... paths in this guide are relative to it)"
+        )
+    elif os.path.basename(here) == "utils" and os.path.isdir(os.path.join(src, "docs")):
+        docs = (
+            f"DOCS: {src} (the source tree of this script; the docs/... "
+            "paths in this guide are relative to it)"
+        )
+    else:
+        docs = (
+            "DOCS: none (no share/doc/sea-mlir/docs next to this script and "
+            "no source tree; use DOCS-WEB)"
+        )
+    web = (
+        f"DOCS-WEB: {DOCS_WEB} (follows main, not this release; "
+        f"docs/<page>.md is at {DOCS_WEB}<page>/ except docs/design/ and "
+        "docs/<Capitalized>.md, which are only in the repository: "
+        f"{DOCS_REPO_TREE}{docs_repo_ref()}/docs)"
+    )
+    return f"{docs}\n{web}\n"
+
+
 def main():
     if "--agent" in sys.argv[1:]:
-        print(AGENT, end="")
+        title, rest = AGENT.split("\n", 1)
+        print(f"{title}\n{docs_lines()}{rest}", end="")
         return 0
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter

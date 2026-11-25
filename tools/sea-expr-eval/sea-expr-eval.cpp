@@ -27,6 +27,7 @@
 #include "sea/Expr/ExprAPInt.hh"
 #include "sea/Expr/ExprOverflow.hh"
 #include "sea/Expr/Smt/SolverFactory.h"
+#include "sea/Support/AgentGuide.h"
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
 #include "sea/Support/Version.h"
@@ -197,7 +198,7 @@ int main(int argc, char **argv) {
   sea::setVersionPrinter("sea-expr-eval");
   cl::ParseCommandLineOptions(argc, argv, "Evaluate bv terms through Expr\n");
   if (agent) {
-    outs() << agentGuide;
+    sea::printAgentGuide(outs(), agentGuide, argv[0]);
     return 0;
   }
 

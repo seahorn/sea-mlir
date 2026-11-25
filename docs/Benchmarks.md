@@ -48,7 +48,7 @@ frag-reach-busy-K1:
   time: 189.48                # wall seconds when established
   established: unknown        # the verdict observed then
   harness-expected: sat       # the harness author's expectation, if stated
-  tags: [reach]               # proof | reach | mutant | blowup-regression | inb-regression | unsafe
+  tags: [reach]               # proof | reach | mutant | blowup-regression | inb-regression | unsafe | mem-fill | canary
   args: [--ptr-mode=address]  # appended to the configuration's args
   mutant: mut-bounds-1        # for tag mutant
   export: {...}               # how the .mlir was made (repo, commit, command, bound, patches)

@@ -151,7 +151,7 @@ other gates are run by hand.
 | `bin/sea-seam-export` | exports SeaM terms and rule firings for the Lean conformance checks ([SeamExport.md](SeamExport.md)) |
 | `bin/sea-reduce-test` | `utils/reduce-test.py`, the interestingness tests and reduction loop for `sea-reduce`. It finds the tools next to itself. |
 | `share/sea-mlir/profiles/` | the example profiles (`sea-vc --config=seam`) |
-| `share/doc/sea-mlir/` | `README.md`, `CHANGELOG.md`, `docs/` (this file, the design notes) |
+| `share/doc/sea-mlir/` | `README.md`, `CHANGELOG.md`, `docs/` (this file, the design notes); the `DOCS:` line of every `--agent` guide names this directory |
 
 The following are not installed:
 - `sea-expr-eval` and the `unittests/` drivers: they are test utilities.
