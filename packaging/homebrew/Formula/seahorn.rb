@@ -10,9 +10,9 @@ class Seahorn < Formula
   desc "Verification framework for LLVM 18 programs, without Clam"
   homepage "https://github.com/seahorn/seahorn"
   # SEAHORN_REVISION; version 18.0.0-dev.<commit date> until SeaHorn releases
-  url "https://github.com/seahorn/seahorn/archive/5373d0789f61d6cb0645641fe0e64e21366d12b3.tar.gz"
+  url "https://github.com/seahorn/seahorn/archive/1f575106dc2dae7c71bdaff7348926efaf5dac76.tar.gz"
   version "18.0.0-dev.20261125"
-  sha256 "adfd7750401a1a05d15dac989f2ac1030398c0011772e7a03168352f72293637"
+  sha256 "40fb207e0716248dc38b22985a34fb9c4d4e334ef4ae9d258cfcde36ca48b3f5"
   license all_of: [
     { "Apache-2.0" => { with: "LLVM-exception" } },
     "BSD-2-Clause",

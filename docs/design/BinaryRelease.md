@@ -29,7 +29,7 @@ sea-mlir links LLVM/MLIR statically, and SeaHorn links LLVM 18 statically
 | z3 (sea-mlir) | master `bbd46c9` (reports 5.4.2) | `Z3_REVISION`, `docker/Dockerfile` | MIT |
 | Bitwuzla | 0.9.1 (with CaDiCaL, SymFPU from its wraps) | `BITWUZLA_TAG` | MIT; SymFPU GPL-3.0 or BSD-3-Clause, used under BSD-3-Clause |
 | Yices | 2.8.0, without MCSAT; linked by sea-vc and SeaHorn | `YICES_TAG` | BSD-3-Clause |
-| SeaHorn | dev18 `5373d07` | `SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` | Apache-2.0 WITH LLVM-exception |
+| SeaHorn | dev18 `1f57510` | `SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` | Apache-2.0 WITH LLVM-exception |
 | sea-dsa | dev18 `1e33f16` | `SEADSA_REVISION` | Apache-2.0 WITH LLVM-exception |
 | llvm-seahorn | dev18 `9225814` | `LLVM_SEAHORN_REVISION` | Apache-2.0 WITH LLVM-exception |
 | clam, crab | not built (`WITH_CLAM=OFF`) | | |

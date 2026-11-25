@@ -69,7 +69,7 @@ FROM seahorn-z3 AS seahorn
 ARG JOBS=8
 # dev18 of seahorn, sea-dsa and llvm-seahorn. Clam and crab are not built
 # (WITH_CLAM=OFF), so they have no pins (docs/design/BinaryRelease.md).
-ARG SEAHORN_REVISION=5373d0789f61d6cb0645641fe0e64e21366d12b3
+ARG SEAHORN_REVISION=1f575106dc2dae7c71bdaff7348926efaf5dac76
 ARG SEADSA_REVISION=1e33f160e8c0b3f395176af019efd7f67f82a79b
 ARG LLVM_SEAHORN_REVISION=92258148416984b19111a44b9a2f660f7c4132a6
 # the version of YICES_TAG in docker/Dockerfile; the build refuses another
