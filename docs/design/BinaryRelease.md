@@ -29,7 +29,7 @@ sea-mlir links LLVM/MLIR statically, and SeaHorn links LLVM 18 statically
 | z3 (sea-mlir) | master `bbd46c9` (reports 5.4.2) | `Z3_REVISION`, `docker/Dockerfile` | MIT |
 | Bitwuzla | 0.9.1 (with CaDiCaL, SymFPU from its wraps) | `BITWUZLA_TAG` | MIT; SymFPU GPL-3.0 or BSD-3-Clause, used under BSD-3-Clause |
 | Yices | 2.8.0, without MCSAT; linked by sea-vc and SeaHorn | `YICES_TAG` | BSD-3-Clause |
-| SeaHorn | dev18 `67474bf` and `docker/seahorn-yices.patch` | `SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` | Apache-2.0 WITH LLVM-exception |
+| SeaHorn | dev18 `1f57510` | `SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` | Apache-2.0 WITH LLVM-exception |
 | sea-dsa | dev18 `1e33f16` | `SEADSA_REVISION` | Apache-2.0 WITH LLVM-exception |
 | llvm-seahorn | dev18 `9225814` | `LLVM_SEAHORN_REVISION` | Apache-2.0 WITH LLVM-exception |
 | clam, crab | not built (`WITH_CLAM=OFF`) | | |
@@ -38,9 +38,8 @@ sea-mlir links LLVM/MLIR statically, and SeaHorn links LLVM 18 statically
 | GMP, GMPXX, MPFR | not shipped: Ubuntu 24.04 packages at run time | | LGPL-3.0+ |
 
 The SeaHorn pins are dev18 commits that passed SeaHorn's CI; a SeaHorn
-release can replace them later. `docker/seahorn-yices.patch` is SeaHorn's
-Yices >= 2.7 fix (branch `feat/binary-release`, pending in dev18); when it
-is merged, `SEAHORN_REVISION` moves to the merge and the patch is deleted.
+release can replace them later. The `seahorn` pin includes SeaHorn's
+Yices >= 2.7 fix (PR #620).
 
 ### One z3 or two
 
@@ -71,8 +70,8 @@ is the check.
 ### Yices in SeaHorn
 
 SeaHorn links Yices, the same `libyices.so.2.8` as sea-vc: one library in
-the bundle. SeaHorn dev18 at the pin does not compile against Yices >= 2.7
-(renamed status constants); `docker/seahorn-yices.patch` is the fix. The
+the bundle. SeaHorn dev18 before PR #620 did not compile against Yices >= 2.7
+(renamed status constants); the pin includes the fix. The
 `seahorn` stage takes the Yices headers, `libyices.so.2.8.0` and
 `yices-smt2` (SeaHorn's CMake requires it; not shipped) from the `solvers`
 image, refuses a Yices other than `YICES_TAG` or older than 2.8.0, keeps
@@ -123,10 +122,10 @@ the manifest. Both may be distributed; the build is not a publication
 
 The version is the sea-mlir version (`project(sea-mlir VERSION ...)`, or
 `--version`): the bundle is a sea-mlir release with SeaHorn as a
-dependency. The SeaHorn commits (seahorn, sea-dsa, llvm-seahorn), the hash
-of `docker/seahorn-yices.patch`, SeaHorn's z3 and Yices versions and LLVM
-18's version are under `"seahorn"` in the bundle's `RELEASE-MANIFEST.json`
-(from `share/seahorn/build-pins.txt`).
+dependency. The SeaHorn commits (seahorn, sea-dsa, llvm-seahorn),
+SeaHorn's z3 and Yices versions and LLVM 18's version are under
+`"seahorn"` in the bundle's `RELEASE-MANIFEST.json` (from
+`share/seahorn/build-pins.txt`).
 
 ### Relocatability
 
@@ -368,6 +367,9 @@ binary, but nothing yet tells an agent where it is. Proposal:
 Bottles are built locally, not on GitHub Actions: Linux x86_64 in Docker
 now, macOS arm64 on a Mac later. GitHub-hosted runners (3-4 cores, a 6 h
 job limit) are an optional later step for the tap's pull requests.
+Hosted runners do test the published Linux tarballs
+(`.github/workflows/release-test.yml`, section 5); Homebrew and macOS
+jobs can be added to that workflow.
 
 - **Linux, in Docker.** `just binary-release OUT --homebrew --cpuset
   <8 cpus>` (`docker/release.py`, `docker/Homebrew.Dockerfile`) runs
@@ -542,7 +544,11 @@ Homebrew bottles only.
    --cpuset <8 cpus>` on a clean checkout of the tag.
 3. Review the manifest (`license_audit`, `"seahorn"`) and
    `THIRD-PARTY-NOTICES`; upload both tarballs to the sea-mlir GitHub
-   release.
+   release as a prerelease. `.github/workflows/release-test.yml` tests
+   them on GitHub's Ubuntu 24.04 and 26.04 runners (no compilation:
+   download, SHA-256, runtime packages, `docker/smoke/test-tarball.sh`);
+   promote the release when it passes ([Release.md](../Release.md),
+   "Publishing a binary release").
 4. Tap: bump `sea-mlir` (`url`/`sha256` of the tag), and `seahorn` and
    `sea-mlir-llvm` when their pins moved; `just binary-release OUT
    --homebrew --brew-source formula --cpuset <8 cpus>` builds the Linux
@@ -582,7 +588,8 @@ Homebrew bottles only.
 - [ ] SeaHorn pins in `docker/SeaHorn.Dockerfile` moved to the chosen
       dev18 commits; SeaHorn CI green at those commits.
 - [ ] `just binary-release OUT --bundle` from a clean checkout of the tag:
-      `release-run.json` status `complete`, `source_dirty: false`.
+      `release-run.json` status `complete`, `source_dirty: false` and
+      `source_describe: v<version>`.
 - [ ] Both smoke stages pass (fresh `ubuntu:24.04`).
 - [ ] `sea-vc --version` in the tarball names z3 5.4.2 (`bbd46c9`), Yices
       2.8.0, Bitwuzla 0.9.1.
@@ -591,10 +598,9 @@ Homebrew bottles only.
 - [ ] License gate passed in both packaging stages; `license_audit` in
       both manifests, `THIRD-PARTY-NOTICES` and `share/licenses/release/`
       reviewed.
-- [ ] `docker/seahorn-yices.patch` gone once SeaHorn's fix is in the
-      pinned dev18 commit.
-- [ ] Tarballs and `.sha256` attached to the GitHub release (on the
-      maintainer's word).
+- [ ] Tarballs, `.sha256` and manifests attached to the GitHub release
+      as a prerelease (on the maintainer's word); `release-test.yml`
+      passes on Ubuntu 24.04 and 26.04; then the release is promoted.
 - [ ] Tap: `sea-mlir` (tag `url`, `sha256`), `seahorn` and
       `sea-mlir-llvm` formulae match the pins (`docker/test_release.py`).
 - [ ] `just binary-release OUT --homebrew --brew-source formula`:

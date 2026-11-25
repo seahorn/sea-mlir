@@ -102,6 +102,92 @@ class CutoffTests(unittest.TestCase):
             release.cutoff(self.local("2026-11-06T08:59:00"), end, start)
 
 
+class DescribeTests(unittest.TestCase):
+    def repo(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name)
+
+        def git(*args):
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    tmp.name,
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    *args,
+                ],
+                check=True,
+                capture_output=True,
+            )
+
+        git("init", "-q")
+        (self.path / "f").write_text("a\n")
+        git("add", "f")
+        git("commit", "-q", "-m", "a")
+        return git
+
+    def test_tag(self):
+        git = self.repo()
+        git("tag", "v1.2.3")
+        self.assertEqual(release.source_describe(self.path), "v1.2.3")
+
+    def test_no_tag_falls_back(self):
+        self.repo()
+        sha = subprocess.check_output(
+            ["git", "-C", str(self.path), "rev-parse", "HEAD"], text=True
+        ).strip()
+        self.assertEqual(
+            release.source_describe(self.path), sha[:12] + "-release-build"
+        )
+
+    def test_dirty(self):
+        git = self.repo()
+        git("tag", "v1.2.3")
+        (self.path / "f").write_text("b\n")
+        self.assertEqual(release.source_describe(self.path), "v1.2.3-dirty")
+        git("tag", "-d", "v1.2.3")
+        self.assertTrue(
+            release.source_describe(self.path).endswith("-release-build-dirty")
+        )
+
+    def test_after_tag(self):
+        git = self.repo()
+        git("tag", "v1.2.3")
+        (self.path / "f").write_text("b\n")
+        git("commit", "-q", "-am", "b")
+        self.assertRegex(
+            release.source_describe(self.path), r"^v1\.2\.3-1-g[0-9a-f]{12}$"
+        )
+
+
+class SmokeCommandTests(unittest.TestCase):
+    def job(self, described):
+        job = Mock()
+        job.record = {"source_describe": described}
+        return job
+
+    def test_tagged_source_passes_smoke_tag(self):
+        job = self.job("v0.5.0")
+        command = release.smoke_command(job, Path("out"), "0.5.0", "--bundle")
+        self.assertEqual(command[:2], ["env", "SMOKE_TAG=v0.5.0"])
+        self.assertEqual(command[-2:], ["0.5.0", "--bundle"])
+        self.assertNotIn("smoke_tag_warning", job.record)
+
+    def test_untagged_source_warns_and_skips(self):
+        job = self.job("v0.5.0-1-gabcdef123456")
+        with patch("builtins.print") as printed:
+            command = release.smoke_command(job, Path("out"), "0.5.0")
+        self.assertEqual(command[0], "bash")
+        self.assertFalse(any("SMOKE_TAG" in part for part in command))
+        self.assertIn("version-tag check skipped", job.record["smoke_tag_warning"])
+        self.assertIn("v0.5.0-1-gabcdef123456", printed.call_args.args[0])
+        job.save.assert_called()
+
+
 class SystemZoneTests(unittest.TestCase):
     def test_naive_arithmetic_in_system_zone(self):
         now = datetime.fromisoformat("2026-06-01T12:00:00").astimezone()
@@ -264,12 +350,6 @@ class HomebrewFormulaTests(unittest.TestCase):
             "feda706d0dda2539176246dd221328122c66f77d",
         )
         self.assertIn("z3/archive/refs/tags/z3-4.12.0.tar.gz", text)
-
-    def test_seahorn_patch_is_the_docker_patch(self):
-        text = (FORMULA / "seahorn.rb").read_text()
-        embedded = text.split("\n__END__\n", 1)[1]
-        patch_text = (ROOT / "docker" / "seahorn-yices.patch").read_text()
-        self.assertEqual(embedded, patch_text)
 
     def test_set_formula_source_replaces_top_level_only(self):
         text = (FORMULA / "sea-mlir.rb").read_text()

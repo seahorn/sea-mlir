@@ -87,6 +87,67 @@ def cutoff(now, until, not_before=None):
     return end.astimezone()  # naive: interpreted in the system zone
 
 
+def source_describe(source):
+    """The SEA_GIT_DESCRIBE of a release build, from the host checkout.
+
+    Same command as cmake/SeaVersion.cmake, so a clean checkout at tag
+    v<version> gives exactly `v<version>` (the --version line and the
+    --agent DOCS-WEB link of the tools depend on it). A source without a
+    reachable tag gives a bare hash from git; then `<sha12>-release-build`.
+    """
+    sha = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+    ).strip()
+    run = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "describe",
+            "--tags",
+            "--always",
+            "--dirty",
+            "--abbrev=12",
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    described = run.stdout.strip()
+    if run.returncode == 0 and not re.fullmatch(r"[0-9a-f]{4,40}(-dirty)?", described):
+        return described
+    return (
+        sha[:12] + "-release-build" + ("-dirty" if described.endswith("-dirty") else "")
+    )
+
+
+def smoke_command(job, output, version, *extra):
+    """The docker/smoke/run.sh command of one smoke stage.
+
+    A source exactly at tag v<version> passes SMOKE_TAG so the smoke checks
+    that the tools report the tag; otherwise the check is skipped, with a
+    visible warning and a note in release-run.json.
+    """
+    command = [
+        "bash",
+        "docker/smoke/run.sh",
+        str(output / "artifacts"),
+        version,
+        *extra,
+    ]
+    described = job.record["source_describe"]
+    if described == "v" + version:
+        return ["env", "SMOKE_TAG=" + described, *command]
+    if "smoke_tag_warning" not in job.record:
+        warning = (
+            f"source_describe {described} is not v{version}; version-tag check skipped"
+        )
+        job.record["smoke_tag_warning"] = warning
+        job.save()
+        print("release: " + warning)
+    return command
+
+
 class ReleaseJob:
     def __init__(
         self, source, output, deadline, prefix="sea-mlir-release", cpuset=None
@@ -120,6 +181,7 @@ class ReleaseJob:
                     text=True,
                 ).strip()
             ),
+            "source_describe": source_describe(source),
             "cutoff": deadline.isoformat() if deadline else None,
             "status": "running",
             "stages": [],
@@ -464,10 +526,7 @@ def main():
     common = ["YICES=1"]
     if args.llvm_image:
         common += ["LLVM_BASE=" + args.llvm_image, "REUSE_LLVM=1"]
-    describe = job.record["source"][:12] + "-release-build"
-    if job.record["source_dirty"]:
-        describe += "-dirty"
-    common += ["SEA_GIT_DESCRIBE=" + describe]
+    common += ["SEA_GIT_DESCRIBE=" + job.record["source_describe"]]
     packaging = [
         "VERSION=" + args.version,
         "SOURCE_REVISION=" + job.record["source"],
@@ -486,7 +545,7 @@ def main():
         # the exported tarball in a clean base, rather than testing the build tree.
         job.run(
             "standalone-smoke",
-            ["bash", "docker/smoke/run.sh", str(output / "artifacts"), args.version],
+            smoke_command(job, output, args.version),
         )
         if args.bundle:
             # SeaHorn links the solvers stage's Yices (YICES_TAG)
@@ -514,13 +573,7 @@ def main():
             )
             job.run(
                 "bundle-smoke",
-                [
-                    "bash",
-                    "docker/smoke/run.sh",
-                    str(output / "artifacts"),
-                    args.version,
-                    "--bundle",
-                ],
+                smoke_command(job, output, args.version, "--bundle"),
             )
         job.record["artifacts"] = {
             str(p.relative_to(output / "artifacts")): {

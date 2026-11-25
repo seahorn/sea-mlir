@@ -71,8 +71,7 @@ default `-m32`. A full run without `--keep-going` therefore stops at the
 Options: `--jobs N` (default: all cores), `--seahorn-z3 shared` (SeaHorn
 against the sea-mlir z3 instead of 4.12.0; on Linux this breaks Spacer,
 see [design/BinaryRelease.md](design/BinaryRelease.md)), `--seahorn-yices`
-(SeaHorn with the Yices pin, as the Linux bundle; the script applies
-`docker/seahorn-yices.patch` until the SeaHorn pin contains the fix).
+(SeaHorn with the Yices pin, as the Linux bundle).
 
 ## 3. What the script does differently from Linux
 

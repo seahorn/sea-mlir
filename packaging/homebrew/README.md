@@ -12,8 +12,7 @@ section 3.
 | `seahorn` | SeaHorn dev18 without clam, z3 4.12.0 in `libexec`, Yices from `sea-mlir`; `sea` runs llvm@18's clang |
 
 The pins are those of `docker/Dockerfile`, `docker/SeaHorn.Dockerfile` and
-`LLVM_REVISION`; `docker/test_release.py` checks that they agree, and that
-`seahorn.rb`'s embedded patch is `docker/seahorn-yices.patch`.
+`LLVM_REVISION`; `docker/test_release.py` checks that they agree.
 
 On Linux every formula compiles with clang 18 and links with lld from
 llvm@18, the toolchain of the tested builds, not with Homebrew's GCC and

@@ -31,7 +31,7 @@ a change to sea-mlir rebuilds only the sea-mlir and runtime stages.
 | `base` | Ubuntu 24.04 with clang 18, lld, CMake, Ninja, Python 3, Boost, GMP, MPFR and the tools the solver builds need |
 | `llvm` | a shallow fetch of the commit in `LLVM_REVISION`; LLVM + MLIR, Release with assertions, X86 only, `LLVM_INSTALL_UTILS=ON` (FileCheck, not, count), installed in `/opt/llvm` with lit (`/opt/llvm/share/lit/lit.py`) |
 | `solvers` | z3, Bitwuzla and Yices built from source into `/opt/solvers`; `--build-arg YICES=0` leaves Yices out |
-| `sea-mlir` | configure against `/opt/llvm` and `/opt/solvers`, build, `check-sea`, install to `/opt/sea-mlir`; the build tree stays in `/build` |
+| `sea-mlir` | configure against `/opt/llvm` and `/opt/solvers`, build, `check-sea`, install to `/opt/sea-mlir`; the build tree stays in `/sea-mlir-build` |
 | `runtime` (default) | Ubuntu 24.04 with the runtime libraries, `/opt/sea-mlir` and `/opt/solvers`; `sea-vc` on `PATH` |
 
 ## Pins
@@ -48,7 +48,7 @@ this table in sync.
 | Yices | tag `yices-2.8.0` (`YICES_TAG`), without MCSAT; left out with `YICES=0` | BSD 3-Clause (GPLv3 before 2.8.0) |
 | CaDiCaL | tag from Bitwuzla's `subprojects/cadical.wrap` (currently `rel-2.1.2`); not set by hand | MIT |
 | SymFPU | revision from Bitwuzla's `subprojects/symfpu.wrap` (currently `40bdec0`); not set by hand | GPL-3.0 or BSD 3-Clause, at the user's choice; the release uses BSD 3-Clause |
-| SeaHorn | `SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` (dev18 `67474bf`), plus `docker/seahorn-yices.patch` (the Yices >= 2.7 fix, until it is in dev18) | Apache-2.0 WITH LLVM-exception |
+| SeaHorn | `SEAHORN_REVISION`, `docker/SeaHorn.Dockerfile` (dev18 `1f57510`) | Apache-2.0 WITH LLVM-exception |
 | sea-dsa | `SEADSA_REVISION` (dev18 `1e33f16`) | Apache-2.0 WITH LLVM-exception |
 | llvm-seahorn | `LLVM_SEAHORN_REVISION` (dev18 `9225814`) | Apache-2.0 WITH LLVM-exception |
 | clam, crab | not built (`WITH_CLAM=OFF`) | |
@@ -145,9 +145,28 @@ so a GPL file added to one of them fails the gate. The manifest's
 `license_audit` lists each component, its license and its file count;
 `docker/test_package_release.py` tests the gate.
 
-The smoke test checks the version (with Yices), SAT with counterexample
-replay (with z3 and with Yices), and UNSAT after relocating the tarball
-into a fresh container.
+The smoke test (`docker/smoke/test-tarball.sh`, then `check.sh`) runs in a
+fresh container on the extracted tarball: every tool's version (with Yices
+and Bitwuzla), the `--agent` `DOCS:` line, SAT with counterexample replay
+(z3, Yices, Bitwuzla), UNSAT through the installed profile, every library
+resolving inside the tree or the system's library directories, and no
+build source path. With `SMOKE_TAG` (the tag; set by release-test.yml, and
+by release.py when the source is at tag `v<version>`) the `version-tag` check also needs every
+tool's `--version` to name `(v<version>)` and every `--agent` DOCS-WEB
+link to use `tree/v<version>`; without it the check prints `skipped`.
+Each check prints `check: <name> pass|FAIL`;
+`SMOKE_XFAIL` names checks an older tarball is known to fail
+(release-test.yml and direct runs only; run.sh does not pass it into the
+container). `.github/workflows/release-test.yml` runs the same script
+on GitHub's runners against a published release.
+
+The release build passes `SEA_GIT_DESCRIBE` from `git describe --tags
+--always --dirty --abbrev=12` of the host checkout (as a normal build
+does; recorded as `source_describe` in `release-run.json`), so a clean
+checkout at tag `v<version>` reports `v<version>`. Another tag on the same commit
+(e.g. an annotated trial tag) can win in `git describe --tags`; put
+trial tags on another commit or delete them before building. A source
+without a tag reports `<sha12>-release-build`.
 
 ### SeaHorn bundle
 

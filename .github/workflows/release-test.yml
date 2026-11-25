@@ -1,0 +1,108 @@
+# Test the binary release of a GitHub release as a user installs it: download
+# its Linux tarballs, check their SHA-256 files, install the runtime packages
+# of docs/Release.md ("Runtime requirements"), extract each tarball outside
+# the checkout and smoke it (docker/smoke/test-tarball.sh, check.sh: every
+# tool runs, the --agent DOCS line, sat / unsat with each solver, the shipped
+# profiles, no build path; the bundle also C -> SeaHorn -> sea-vc). Nothing
+# is compiled. Release steps: docs/Release.md ("Publishing a binary release").
+#
+# Runs when a release or a prerelease is published (`published` covers both;
+# `prereleased` would start a second run of the same prerelease; promoting a
+# prerelease changes no file), and by hand:
+#   gh workflow run release-test.yml -f tag=v0.6.0 [-f repo=OWNER/NAME]
+#     [-f version=0.6.0] [-f xfail="agent-docs build-paths"]
+# (releases built before the version-tag check, v0.5.0 and older, need
+# `-f xfail=version-tag` along with their other old-release xfails.)
+# (version: of the tarballs, default the tag without its `v`; a trial tag
+# such as v0.5.0-ci-trial holding 0.5.0 tarballs needs -f version=0.5.0.)
+# A release whose tag's commit lacks this file never starts it: GitHub runs
+# the workflow of the tagged commit for the release event.
+# The smoke scripts come from the workflow's ref: the release's tag, or the
+# branch a manual run names (so newer checks can test an older release).
+# Jobs per platform can be added next to tgz-linux (Homebrew, macOS).
+name: release test
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to test (v<version>)
+        required: true
+        type: string
+      repo:
+        description: Repository of the release (default this one)
+        required: false
+        type: string
+      version:
+        description: Version in the tarball names (default the tag without v)
+        required: false
+        type: string
+      xfail:
+        description: Checks expected to fail (check.sh names), for old releases
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-test-${{ inputs.repo || github.repository }}-${{ inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  tgz-linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        # versions named explicitly, not ubuntu-latest
+        os: [ubuntu-24.04, ubuntu-26.04]
+        package: [standalone, bundle]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      REPO: ${{ inputs.repo || github.repository }}
+      VERSION: ${{ inputs.version }}
+      PACKAGE: ${{ matrix.package }}
+      SMOKE_XFAIL: ${{ inputs.xfail }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the release's tarball, SHA-256 file and manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9A-Za-z._-]+$ ]] || { echo "bad tag: $TAG"; exit 1; }
+          [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "bad repo: $REPO"; exit 1; }
+          [[ -z "$VERSION" || "$VERSION" =~ ^[0-9A-Za-z._-]+$ ]] || { echo "bad version: $VERSION"; exit 1; }
+          if [ "$PACKAGE" = bundle ]; then
+            pattern='sea-mlir-bundle-*-linux-x86_64.*'
+          else
+            pattern='sea-mlir-[0-9]*-linux-x86_64.*'
+          fi
+          gh release download "$TAG" --repo "$REPO" \
+            --dir "$RUNNER_TEMP/assets" --pattern "$pattern"
+          ls -l "$RUNNER_TEMP/assets"
+      - name: Install the runtime packages of docs/Release.md
+        # Only these packages count: the hosted image already has many
+        # (clang, LLVM, Python), which can hide a missing one; the local
+        # check in a clean ubuntu container does not (docs/Release.md).
+        run: |
+          packages="libgmpxx4ldbl libmpfr6"
+          if [ "$PACKAGE" = bundle ]; then
+            packages="$packages clang-18 python3"
+          fi
+          sudo apt-get update -q
+          # shellcheck disable=SC2086 # a list of package names
+          sudo apt-get install -y --no-install-recommends $packages
+      - name: Smoke the extracted tarball
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          # the tag must show in --version and --agent only for a tag
+          # named v<version>; a trial tag skips that check
+          if [ "$TAG" = "v${VERSION:-${TAG#v}}" ]; then export SMOKE_TAG="$TAG"; fi
+          sh docker/smoke/test-tarball.sh "$RUNNER_TEMP/assets" "$PACKAGE" "${VERSION:-${TAG#v}}"

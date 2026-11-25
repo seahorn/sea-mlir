@@ -69,7 +69,7 @@ FROM seahorn-z3 AS seahorn
 ARG JOBS=8
 # dev18 of seahorn, sea-dsa and llvm-seahorn. Clam and crab are not built
 # (WITH_CLAM=OFF), so they have no pins (docs/design/BinaryRelease.md).
-ARG SEAHORN_REVISION=67474bf6d58fe923f5cbb5947def9e794ce613fe
+ARG SEAHORN_REVISION=1f575106dc2dae7c71bdaff7348926efaf5dac76
 ARG SEADSA_REVISION=1e33f160e8c0b3f395176af019efd7f67f82a79b
 ARG LLVM_SEAHORN_REVISION=92258148416984b19111a44b9a2f660f7c4132a6
 # the version of YICES_TAG in docker/Dockerfile; the build refuses another
@@ -93,9 +93,6 @@ RUN set -eux; \
     git fetch -q --depth 1 origin "$LLVM_SEAHORN_REVISION"; \
     git checkout -q FETCH_HEAD; \
     test "$(git rev-parse HEAD)" = "$LLVM_SEAHORN_REVISION"
-# SeaHorn's Yices >= 2.7 fix, not yet in dev18 (the patch's header)
-COPY docker/seahorn-yices.patch /src/seahorn-yices.patch
-RUN cd /src/seahorn && git apply /src/seahorn-yices.patch
 # the solvers stage's Yices: the same libyices.so.2.8 as sea-vc
 COPY --from=solvers /opt/solvers/include/yices.h /opt/solvers/include/yices_exit_codes.h \
      /opt/solvers/include/yices_limits.h /opt/solvers/include/yices_types.h /opt/yices/include/
