@@ -1,6 +1,8 @@
 # The tools compile in no source or build path of sea-mlir: they find
 # their data (docs, profiles) at run time (sea/Support/InstallLayout.h),
 # so a release binary does not carry the machine it was built on.
+# CMakeLists.txt remaps __FILE__ (-fmacro-prefix-map), so assertion-enabled
+# builds are covered too.
 # Optimized builds only (feature release-build, test/lit.cfg.py): Debug,
 # RelWithDebInfo and a Release build with -g* or -fcoverage-mapping keep
 # __FILE__, debug info or coverage file names. Not checked: LLVM/MLIR's
