@@ -1,0 +1,92 @@
+# Every --agent guide says where the docs are (DOCS / DOCS-WEB right after
+# its title; include/sea/Support/AgentGuide.h), and every docs/... path it
+# cites exists in the source tree.
+
+# In a build directory: the source tree named by CMakeCache.txt.
+RUN: rm -rf %t && mkdir -p %t/guides
+RUN: sea-vc --agent > %t/guides/sea-vc.txt
+RUN: sea-run --agent > %t/guides/sea-run.txt
+RUN: sea-opt --agent > %t/guides/sea-opt.txt
+RUN: sea-reduce --agent > %t/guides/sea-reduce.txt
+RUN: sea-seam-export --agent > %t/guides/sea-seam-export.txt
+RUN: sea-expr-eval --agent > %t/guides/sea-expr-eval.txt
+RUN: %python %sea_src_root/utils/reduce-test.py --agent > %t/guides/sea-reduce-test.txt
+RUN: FileCheck %s -DSRC=%sea_src_root --check-prefix=BUILD < %t/guides/sea-vc.txt
+RUN: FileCheck %s -DSRC=%sea_src_root --check-prefix=BUILD < %t/guides/sea-run.txt
+RUN: FileCheck %s -DSRC=%sea_src_root --check-prefix=BUILD < %t/guides/sea-opt.txt
+RUN: FileCheck %s -DSRC=%sea_src_root --check-prefix=BUILD < %t/guides/sea-reduce.txt
+RUN: FileCheck %s -DSRC=%sea_src_root --check-prefix=BUILD < %t/guides/sea-seam-export.txt
+RUN: FileCheck %s -DSRC=%sea_src_root --check-prefix=BUILD < %t/guides/sea-expr-eval.txt
+BUILD: {{^}}{{[a-z-]+}} agent guide
+BUILD-NEXT: {{^}}DOCS: [[SRC]] (the source tree of this build directory: may be newer than this binary; the docs/... paths in this guide are relative to it)
+BUILD-NEXT: {{^}}DOCS-WEB: https://seahorn.github.io/sea-mlir/ (follows main, not this release; docs/<page>.md is at https://seahorn.github.io/sea-mlir/<page>/ except docs/design/ and docs/<Capitalized>.md, which are only in the repository: https://github.com/seahorn/sea-mlir/tree/{{main|v[0-9]+\.[0-9]+\.[0-9]+}}/docs){{$}}
+
+RUN: FileCheck %s -DSRC=%sea_src_root --check-prefix=PYSRC < %t/guides/sea-reduce-test.txt
+PYSRC: {{^}}reduce-test: interestingness tests
+PYSRC-NEXT: {{^}}DOCS: [[SRC]] (the source tree of this script; the docs/... paths in this guide are relative to it)
+PYSRC-NEXT: {{^}}DOCS-WEB: https://seahorn.github.io/sea-mlir/ (follows main, not this release;
+
+# The Python DOCS-WEB line is the C++ one, ref included (it takes the ref
+# from the sea-opt it runs).
+RUN: env SEA_OPT=%sea_bin/sea-opt %python %sea_src_root/utils/reduce-test.py --agent | sed -n 3p > %t/web-py.txt
+RUN: sed -n 3p %t/guides/sea-opt.txt > %t/web-opt.txt
+RUN: diff %t/web-opt.txt %t/web-py.txt
+# ... a release build of the tag: the tag; anything else: main.
+RUN: mkdir -p %t/fake
+RUN: printf '#!/bin/sh\necho "sea-opt (sea-mlir 0.5.0 (v0.5.0))"\n' > %t/fake/rel
+RUN: printf '#!/bin/sh\necho "sea-opt (sea-mlir 0.5.0 (v0.5.0-3-gabc-dirty))"\n' > %t/fake/dev
+RUN: chmod +x %t/fake/rel %t/fake/dev
+RUN: env SEA_OPT=%t/fake/rel %python %sea_src_root/utils/reduce-test.py --agent | FileCheck %s --check-prefix=PYREL
+RUN: env SEA_OPT=%t/fake/dev %python %sea_src_root/utils/reduce-test.py --agent | FileCheck %s --check-prefix=PYDEV
+PYREL: {{^}}DOCS-WEB: {{.*}} https://github.com/seahorn/sea-mlir/tree/v0.5.0/docs){{$}}
+PYDEV: {{^}}DOCS-WEB: {{.*}} https://github.com/seahorn/sea-mlir/tree/main/docs){{$}}
+
+# The cited paths exist.
+RUN: %python %S/Inputs/agent-docs-check.py %sea_src_root %t/guides/*.txt | FileCheck %s --check-prefix=CITED
+CITED-NOT: agent-docs.missing
+CITED: agent-docs.checked: {{[1-9][0-9]*}} paths
+
+# The check finds a dangling one (anchor and punctuation stripped).
+RUN: echo "see docs/agents/slow-vc.md#step-4, docs/no-such-page.md#x." > %t/bad.txt
+RUN: not %python %S/Inputs/agent-docs-check.py %sea_src_root %t/bad.txt | FileCheck %s --check-prefix=DANGLING
+DANGLING-NOT: slow-vc
+DANGLING: agent-docs.missing: {{.*}}bad.txt:1: docs/no-such-page.md{{$}}
+DANGLING: agent-docs.checked: 2 paths
+# A .md path must be a file, not a directory.
+RUN: mkdir -p %t/root/docs/dir.md %t/root/docs/sub
+RUN: echo "docs/dir.md and docs/sub/" > %t/dir.txt
+RUN: not %python %S/Inputs/agent-docs-check.py %t/root %t/dir.txt | FileCheck %s --check-prefix=DIRMD
+DIRMD: agent-docs.missing: {{.*}}dir.txt:1: docs/dir.md{{$}}
+DIRMD-NEXT: agent-docs.checked: 2 paths
+
+# An install, reached through a symlink (Homebrew links bin/ into the
+# prefix): <prefix>/share/doc/sea-mlir.
+RUN: mkdir -p %t/prefix/bin %t/prefix/share/doc/sea-mlir/docs %t/brew/bin %t/bare/bin
+RUN: ln %sea_bin/sea-opt %t/prefix/bin/sea-opt || cp %sea_bin/sea-opt %t/prefix/bin/sea-opt
+RUN: ln -s %t/prefix/bin/sea-opt %t/brew/bin/sea-opt
+RUN: %t/brew/bin/sea-opt --agent | FileCheck %s --check-prefix=INSTALL
+INSTALL: {{^}}sea-opt agent guide
+INSTALL-NEXT: {{^}}DOCS: {{.*}}/prefix/share/doc/sea-mlir (installed with this binary: the docs of this release; the docs/... paths in this guide are relative to it)
+INSTALL-NEXT: {{^}}DOCS-WEB: https://seahorn.github.io/sea-mlir/
+
+RUN: cp %sea_src_root/utils/reduce-test.py %t/prefix/bin/sea-reduce-test
+RUN: ln -s %t/prefix/bin/sea-reduce-test %t/brew/bin/sea-reduce-test
+RUN: %python %t/brew/bin/sea-reduce-test --agent | FileCheck %s --check-prefix=PYINSTALL
+PYINSTALL: {{^}}reduce-test: interestingness tests
+PYINSTALL-NEXT: {{^}}DOCS: {{.*}}/prefix/share/doc/sea-mlir (installed with this script: the docs of this release; the docs/... paths in this guide are relative to it)
+PYINSTALL-NEXT: {{^}}DOCS-WEB: https://seahorn.github.io/sea-mlir/
+
+# Neither: only the web site.
+RUN: ln %sea_bin/sea-opt %t/bare/bin/sea-opt || cp %sea_bin/sea-opt %t/bare/bin/sea-opt
+RUN: %t/bare/bin/sea-opt --agent | FileCheck %s --check-prefix=NONE
+# A CMakeCache.txt of another project is not a build directory of ours.
+RUN: mkdir -p %t/other/bin
+RUN: ln %sea_bin/sea-opt %t/other/bin/sea-opt || cp %sea_bin/sea-opt %t/other/bin/sea-opt
+RUN: echo "foo_SOURCE_DIR:STATIC=%sea_src_root" > %t/other/CMakeCache.txt
+RUN: %t/other/bin/sea-opt --agent | FileCheck %s --check-prefix=NONE
+NONE: {{^}}sea-opt agent guide
+NONE-NEXT: {{^}}DOCS: none (no share/doc/sea-mlir/docs next to this binary and no source tree; use DOCS-WEB)
+NONE-NEXT: {{^}}DOCS-WEB: https://seahorn.github.io/sea-mlir/
+
+# SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

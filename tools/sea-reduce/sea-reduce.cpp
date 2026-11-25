@@ -25,6 +25,7 @@
 #include "sea/Dialect/Sea/SeaDialect.h"
 #include "sea/Dialect/SeaImp/SeaImpDialect.h"
 #include "sea/Reduce/Reduce.h"
+#include "sea/Support/AgentGuide.h"
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
 #include "sea/Support/Version.h"
@@ -112,7 +113,7 @@ int main(int argc, char **argv) {
   for (int i = 0; i < argc; ++i) {
     llvm::StringRef a(argv[i]);
     if (a == "--agent" || a == "-agent") {
-      llvm::outs() << agentGuide;
+      sea::printAgentGuide(llvm::outs(), agentGuide, argv[0]);
       return 0;
     }
     // Ours, not mlirReduceMain's (it hides unrelated options).

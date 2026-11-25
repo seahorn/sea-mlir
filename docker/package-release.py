@@ -6,6 +6,7 @@
 
 import argparse
 import csv
+import fnmatch
 import gzip
 import hashlib
 import json
@@ -13,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import urllib.request
 from pathlib import Path
@@ -22,6 +24,20 @@ SYSTEM = re.compile(
     r"(?:ld-linux.*|lib(?:c|m|dl|pthread|rt|resolv|util)\.so\..*|"
     r"libgcc_s\.so\..*|libstdc\+\+\.so\..*)$"
 )
+
+
+# LGPL libraries (GMP, GMPXX, MPFR): never shipped (no GPL-family code in a
+# release); Ubuntu supplies them: libgmp10 is in the base image, the others
+# come from apt. Library name -> Ubuntu package.
+APT_RUNTIME = {
+    "libgmp.so.10": "libgmp10",
+    "libgmpxx.so.4": "libgmpxx4ldbl",
+    "libmpfr.so.6": "libmpfr6",
+}
+
+
+def system_library(name):
+    return bool(SYSTEM.fullmatch(name)) or name in APT_RUNTIME
 
 
 # Upstream license files of components built from source and copied into lib/;
@@ -138,8 +154,8 @@ def upstream_license(destination, name, url):
     return {"file": name, "url": url, "sha256": digest(target)}
 
 
-def archive(prefix, output, epoch, suffix=""):
-    path = output / (prefix.name + suffix + ".tar.gz")
+def archive(prefix, output, epoch):
+    path = output / (prefix.name + ".tar.gz")
     with path.open("wb") as raw:
         with gzip.GzipFile(
             filename="", fileobj=raw, mode="wb", mtime=epoch
@@ -182,6 +198,9 @@ def bundle_libraries(prefix, lib, env):
             if SYSTEM.fullmatch(name):
                 libraries.setdefault(name, {"system": True})
                 continue
+            if name in APT_RUNTIME:
+                libraries.setdefault(name, {"system": True, "apt": APT_RUNTIME[name]})
+                continue
             target = lib / name
             if not target.exists():
                 shutil.copy2(source.resolve(), target)
@@ -200,7 +219,18 @@ def bundle_libraries(prefix, lib, env):
 
 
 def require_licenses(libraries, copied):
-    """Fail closed: every copied library has a package copyright or an upstream license."""
+    """Fail closed: every copied library has a package copyright or an upstream license.
+    A library already in the prefix (SeaHorn's copy of libyices) gets its
+    upstream license entry too, when it has one."""
+    for name, entry in sorted(libraries.items()):
+        if name in copied or entry.get("system"):
+            continue
+        if entry.get("package") or entry.get("license"):
+            continue
+        for pattern, license_file in UPSTREAM_LICENSE:
+            if pattern.fullmatch(name):
+                entry["license"] = "share/licenses/release/" + license_file
+                break
     for name in sorted(copied):
         entry = libraries[name]
         if entry.get("package") or entry.get("license"):
@@ -213,6 +243,463 @@ def require_licenses(libraries, copied):
             raise RuntimeError(
                 f"no license for copied library {name} ({entry['source']}): "
                 "no owning package and no known upstream license"
+            )
+
+
+# License gate. A release ships no GPL-family code (GPL, LGPL, AGPL): every
+# shipped file belongs to a component whose license is built from the allowed
+# licenses below, or is a license / notice text. An SPDX expression is allowed
+# when one of its OR alternatives has only allowed licenses; `X WITH E` counts
+# as X (an exception only adds permissions).
+ALLOWED_LICENSES = {
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "MIT",
+    "NCSA",
+    "PSF-2.0",
+    "Zlib",
+    "LicenseRef-PublicDomain",
+}
+ALLOWED_EXCEPTIONS = {"LLVM-exception"}
+
+# Components and their licenses. "repo:<name>" means the licenses of that
+# repository's REUSE LICENSES/ directory (all of them, ANDead), read at
+# packaging time. None: license and notice texts, not code.
+COMPONENTS = {
+    "notices": None,
+    "sea-mlir": "repo:sea-mlir",
+    # sea-mlir with LLVM/MLIR at LLVM_REVISION and Boost headers, static
+    "sea-mlir-tools": "repo:sea-mlir AND Apache-2.0 WITH LLVM-exception AND BSL-1.0",
+    "z3": "MIT",
+    # CaDiCaL (MIT) and SymFPU (GPL-3.0 or BSD-3-Clause, at the user's
+    # choice) are linked into Bitwuzla
+    "bitwuzla": "MIT AND (GPL-3.0-only OR BSD-3-Clause)",
+    # built without MCSAT; etc/NOTICES section 1: MiniSat, lookup3, timsort
+    "yices": "BSD-3-Clause AND MIT AND LicenseRef-PublicDomain AND PSF-2.0",
+    "zlib": "Zlib",
+    "zstd": "BSD-3-Clause OR GPL-2.0-only",
+    "seahorn": "repo:seahorn",
+    "sea-dsa": "repo:sea-dsa",
+    # seahorn, sea-dsa, llvm-seahorn, LLVM 18.1.8 and Boost, static
+    "seahorn-tools": "repo:seahorn AND repo:sea-dsa AND repo:llvm-seahorn"
+    " AND Apache-2.0 WITH LLVM-exception AND BSL-1.0",
+    "pyyaml": "MIT",
+}
+
+# Shipped path (fnmatch, `*` crosses `/`) -> component; the first match wins.
+# A shipped file that matches none fails the build.
+FILE_RULES = (
+    ("LICENSE", "notices"),
+    ("NOTICE", "notices"),
+    ("THIRD-PARTY-NOTICES", "notices"),
+    ("share/licenses/*", "notices"),
+    ("share/release-licenses/*", "notices"),
+    ("share/doc/sea-mlir/LICENSE", "notices"),
+    ("share/doc/sea-mlir/LICENSES/*", "notices"),
+    ("share/doc/seahorn/LICENSE", "notices"),
+    ("share/doc/seahorn/LICENSES/*", "notices"),
+    ("share/doc/seahorn/NOTICE", "notices"),
+    ("share/doc/seahorn/THIRD-PARTY-NOTICES", "notices"),
+    ("share/doc/seahorn/*_license.txt", "notices"),
+    ("RELEASE-MANIFEST.json", "sea-mlir"),
+    ("LLVM_REVISION", "sea-mlir"),
+    ("bin/sea-reduce-test", "sea-mlir"),
+    ("bin/sea-*", "sea-mlir-tools"),
+    ("share/sea-mlir/*", "sea-mlir"),
+    ("share/doc/sea-mlir/*", "sea-mlir"),
+    ("lib/libz3.so.*", "z3"),
+    ("lib/libbitwuzla*.so*", "bitwuzla"),
+    ("lib/libyices.so.*", "yices"),
+    ("lib/libz.so.*", "zlib"),
+    ("lib/libzstd.so.*", "zstd"),
+    ("bin/sea", "seahorn"),
+    ("bin/stats.py", "seahorn"),
+    ("bin/seahorn", "seahorn-tools"),
+    ("bin/seapp", "seahorn-tools"),
+    ("bin/seaopt", "seahorn-tools"),
+    ("bin/seainspect", "seahorn-tools"),
+    ("bin/seadsa", "seahorn-tools"),
+    ("lib/seapy/yaml/*", "pyyaml"),
+    ("lib/seapy/sea/*", "seahorn"),
+    ("lib/seapy/term/*", "seahorn"),
+    ("include/seahorn/*", "seahorn"),
+    ("include/seadsa/*", "sea-dsa"),
+    ("lib/libc-64.spec.bc", "sea-dsa"),
+    ("lib/sea_dsa.ll", "sea-dsa"),
+    ("share/seahorn/profiles/*", "seahorn"),
+    ("share/seahorn/build-pins.txt", "seahorn"),
+    ("share/seahorn/ldd-builder.txt", "seahorn"),
+    ("share/seahorn/runtime-packages.tsv", "seahorn"),
+    ("README.md", "seahorn"),
+)
+
+# REUSE licenses a repository may list without them reaching a release, with
+# the reason.
+REPO_LICENSE_EXCEPTIONS = {
+    ("seahorn", "LicenseRef-NoLicense"): "play/neha-examples only; not installed",
+}
+
+# Ubuntu packages whose libraries may be copied into lib/, with their licenses
+PACKAGE_LICENSES = {
+    "zlib1g": "Zlib",
+    "libzstd1": "BSD-3-Clause OR GPL-2.0-only",
+}
+
+
+# Homebrew bottles (packaging/homebrew/Formula): the same gate over each
+# bottle's files, relative to its keg (`<name>/<version>/` stripped), with
+# rules per formula. Homebrew's metadata (receipt, SBOM) is not code; the
+# formula a bottle carries in .brew/ is this repository's
+# (packaging/homebrew/Formula, its SPDX header).
+COMPONENTS.update(
+    {
+        "homebrew-metadata": None,
+        "homebrew-formula": "Apache-2.0 WITH LLVM-exception",
+        # LLVM + MLIR at LLVM_REVISION, as linked into sea-mlir-tools
+        "llvm": "Apache-2.0 WITH LLVM-exception",
+    }
+)
+BOTTLE_COMMON_RULES = (
+    ("INSTALL_RECEIPT.json", "homebrew-metadata"),
+    ("sbom.spdx.json", "homebrew-metadata"),
+    (".brew/*.rb", "homebrew-formula"),
+)
+BOTTLE_RULES = {
+    "sea-mlir-llvm": (
+        *BOTTLE_COMMON_RULES,
+        ("LICENSE.TXT", "notices"),
+        ("share/doc/sea-mlir-llvm/LICENSE.TXT", "notices"),
+        # the install tree of LLVM + MLIR (measured), lit from llvm/utils
+        ("bin/llvm-*", "llvm"),
+        ("bin/mlir-*", "llvm"),
+        *(
+            (f"bin/{name}", "llvm")
+            for name in (
+                "FileCheck UnicodeNameMappingGenerator clang-offload-packager"
+                " count dsymutil llc lli lli-child-target llubi not obj2yaml opt"
+                " reduce-chunk-list sancov sanstats split-file"
+                " tblgen-lsp-server tblgen-to-irdl verify-uselistorder"
+                " yaml-bench yaml2obj"
+            ).split()
+        ),
+        ("include/llvm/*", "llvm"),
+        ("include/llvm-c/*", "llvm"),
+        ("include/mlir/*", "llvm"),
+        ("include/mlir-c/*", "llvm"),
+        ("lib/libLLVM*", "llvm"),
+        ("lib/libMLIR*", "llvm"),
+        ("lib/libmlir_*", "llvm"),
+        ("lib/libLTO.so*", "llvm"),
+        ("lib/libRemarks.so*", "llvm"),
+        ("lib/cmake/llvm/*", "llvm"),
+        ("lib/cmake/mlir/*", "llvm"),
+        ("lib/objects-Release/*", "llvm"),
+        ("share/lit/*", "llvm"),
+        ("share/opt-viewer/*", "llvm"),
+        ("LLVM_REVISION", "llvm"),
+        ("README.md", "llvm"),
+    ),
+    "sea-mlir": (
+        *BOTTLE_COMMON_RULES,
+        ("LICENSE", "notices"),
+        ("share/doc/sea-mlir/LICENSE", "notices"),
+        ("share/doc/sea-mlir/LICENSES/*", "notices"),
+        ("share/doc/sea-mlir/third-party/*", "notices"),
+        ("README.md", "sea-mlir"),
+        ("CHANGELOG.md", "sea-mlir"),
+        ("AUTHORS", "notices"),
+        ("LLVM_REVISION", "sea-mlir"),
+        ("bin/sea-reduce-test", "sea-mlir"),
+        ("bin/sea-*", "sea-mlir-tools"),
+        ("share/sea-mlir/*", "sea-mlir"),
+        ("share/doc/sea-mlir/*", "sea-mlir"),
+        ("libexec/lib/libz3.so*", "z3"),
+        ("libexec/include/z3*.h", "z3"),
+        ("libexec/lib/libbitwuzla*.so*", "bitwuzla"),
+        ("libexec/include/bitwuzla/*", "bitwuzla"),
+        ("libexec/lib/libyices.so*", "yices"),
+        ("libexec/include/yices*.h", "yices"),
+        ("libexec/bin/yices-smt2", "yices"),
+    ),
+    "seahorn": (
+        *BOTTLE_COMMON_RULES,
+        ("share/doc/seahorn/third-party/*", "notices"),
+        ("share/doc/seahorn/LICENSE", "notices"),
+        ("share/doc/seahorn/LICENSES/*", "notices"),
+        ("share/doc/seahorn/NOTICE", "notices"),
+        ("share/doc/seahorn/THIRD-PARTY-NOTICES", "notices"),
+        ("share/doc/seahorn/seahorn_license.txt", "notices"),
+        # Homebrew copies these from the source root into the keg
+        ("LICENSE", "notices"),
+        ("NOTICE", "notices"),
+        ("license.txt", "notices"),
+        ("README.md", "seahorn"),
+        ("bin/sea", "seahorn"),
+        ("bin/seahorn", "seahorn-tools"),
+        ("bin/seapp", "seahorn-tools"),
+        ("bin/seaopt", "seahorn-tools"),
+        ("bin/seainspect", "seahorn-tools"),
+        ("bin/seadsa", "seahorn-tools"),
+        ("libexec/bin/sea", "seahorn"),
+        ("libexec/bin/stats.py", "seahorn"),
+        ("libexec/bin/seahorn", "seahorn-tools"),
+        ("libexec/bin/seapp", "seahorn-tools"),
+        ("libexec/bin/seaopt", "seahorn-tools"),
+        ("libexec/bin/seainspect", "seahorn-tools"),
+        ("libexec/bin/seadsa", "seahorn-tools"),
+        ("libexec/lib/seapy/yaml/*", "pyyaml"),
+        ("libexec/lib/seapy/*", "seahorn"),
+        ("libexec/lib/libc-64.spec.bc", "sea-dsa"),
+        ("libexec/lib/sea_dsa.ll", "sea-dsa"),
+        ("libexec/include/seahorn/*", "seahorn"),
+        ("libexec/include/seadsa/*", "sea-dsa"),
+        ("libexec/share/seahorn/profiles/*", "seahorn"),
+        ("libexec/share/seahorn/build-pins.txt", "seahorn"),
+        ("libexec/share/seahorn.h", "seahorn"),
+        ("libexec/share/seahorn.c", "seahorn"),
+        ("libexec/README.md", "seahorn"),
+        ("libexec/z3/lib/libz3.so*", "z3"),
+    ),
+}
+# where each bottle keeps the REUSE LICENSES/ of the repositories it ships
+BOTTLE_REPOS = {
+    "sea-mlir-llvm": {},
+    "sea-mlir": {"sea-mlir": "share/doc/sea-mlir/LICENSES"},
+    "seahorn": {
+        name: f"share/doc/seahorn/third-party/{name}-LICENSES"
+        for name in ("seahorn", "sea-dsa", "llvm-seahorn")
+    },
+}
+
+
+def bottle_paths(bottle):
+    """(formula, version, keg-relative paths of the files) of a bottle."""
+    paths = []
+    keg = None
+    with tarfile.open(bottle) as archive:
+        for member in archive:
+            if member.isdir():
+                continue
+            parts = member.name.split("/", 2)
+            if len(parts) != 3 or not parts[2]:
+                raise RuntimeError(f"{bottle.name}: {member.name} is not in a keg")
+            if keg is None:
+                keg = parts[:2]
+            elif parts[:2] != keg:
+                raise RuntimeError(f"{bottle.name}: two kegs, {keg} and {parts[:2]}")
+            paths.append(parts[2])
+    if keg is None:
+        raise RuntimeError(f"{bottle.name}: empty bottle")
+    return keg[0], keg[1], sorted(paths)
+
+
+def audit_bottle(bottle):
+    """The license gate over one bottle; returns its audit record."""
+    name, version, paths = bottle_paths(bottle)
+    if name not in BOTTLE_RULES:
+        raise RuntimeError(f"{bottle.name}: no license rules for formula {name}")
+    expressions = {}
+    for repo, directory in BOTTLE_REPOS[name].items():
+        found = sorted(
+            Path(path).stem
+            for path in paths
+            if path.startswith(directory + "/")
+            and path.count("/") == directory.count("/") + 1
+        )
+        found = [
+            identifier
+            for identifier in found
+            if identifier not in ALLOWED_EXCEPTIONS
+            and (repo, identifier) not in REPO_LICENSE_EXCEPTIONS
+        ]
+        if not found:
+            raise RuntimeError(f"{bottle.name}: no licenses in {directory}")
+        expressions[repo] = " AND ".join(found)
+    return {
+        "formula": name,
+        "version": version,
+        "files": len(paths),
+        "sha256": digest(bottle),
+        "components": audit_paths(paths, expressions, BOTTLE_RULES[name]),
+    }
+
+
+def audit_bottles(directory, output):
+    bottles = sorted(directory.glob("*.bottle.tar.gz"))
+    if not bottles:
+        raise RuntimeError(f"no bottles in {directory}")
+    report = {bottle.name: audit_bottle(bottle) for bottle in bottles}
+    output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    for name, entry in report.items():
+        print(f"license-gate: {name} files={entry['files']} pass")
+        for component, record in sorted(entry["components"].items()):
+            print(
+                f"  {component}: files={record['files']} "
+                f"license={record['license']} allowed={record['allowed']}"
+            )
+
+
+def spdx_alternatives(expression):
+    """The OR alternatives of an SPDX expression in disjunctive normal form:
+    a list of sets of license ids (`X WITH E` as X, E checked separately)."""
+    tokens = re.findall(r"\(|\)|[A-Za-z0-9.+:-]+", expression)
+    if "".join(tokens) != re.sub(r"\s+", "", expression):
+        raise ValueError(f"bad SPDX expression: {expression!r}")
+    position = 0
+
+    def peek():
+        return tokens[position] if position < len(tokens) else None
+
+    def take():
+        nonlocal position
+        if position == len(tokens):
+            raise ValueError(f"incomplete SPDX expression: {expression!r}")
+        position += 1
+        return tokens[position - 1]
+
+    def primary():
+        token = take()
+        if token == "(":
+            result = disjunction()
+            if take() != ")":
+                raise ValueError(f"unbalanced SPDX expression: {expression!r}")
+            return result
+        if token in ("AND", "OR", "WITH", ")"):
+            raise ValueError(f"bad SPDX expression: {expression!r}")
+        if peek() == "WITH":
+            take()
+            exception = take()
+            if exception not in ALLOWED_EXCEPTIONS:
+                token = f"{token} WITH {exception}"
+        return [{token}]
+
+    def conjunction():
+        result = primary()
+        while peek() == "AND":
+            take()
+            right = primary()
+            result = [left | other for left in result for other in right]
+        return result
+
+    def disjunction():
+        result = conjunction()
+        while peek() == "OR":
+            take()
+            result = result + conjunction()
+        return result
+
+    result = disjunction()
+    if position != len(tokens):
+        raise ValueError(f"bad SPDX expression: {expression!r}")
+    return result
+
+
+def license_allowed(expression):
+    """The allowed alternative of an SPDX expression, or None."""
+    for alternative in spdx_alternatives(expression):
+        if alternative <= ALLOWED_LICENSES:
+            return " AND ".join(sorted(alternative))
+    return None
+
+
+def repo_licenses(name, directory):
+    """The licenses of a REUSE repository: its LICENSES/ file names, without
+    the listed exceptions, as an AND expression."""
+    if not directory.is_dir():
+        raise RuntimeError(f"no LICENSES directory for {name}: {directory}")
+    found = []
+    for path in sorted(directory.iterdir()):
+        identifier = path.stem
+        if identifier in ALLOWED_EXCEPTIONS:
+            continue
+        if (name, identifier) in REPO_LICENSE_EXCEPTIONS:
+            continue
+        found.append(identifier)
+    if not found:
+        raise RuntimeError(f"no licenses in {directory}")
+    return " AND ".join(found)
+
+
+def resolve_component(component, repos):
+    expression = COMPONENTS[component]
+    if expression is None:
+        return None
+    parts = []
+    for part in expression.split(" AND "):
+        if part.startswith("repo:"):
+            parts.extend(repos[part[len("repo:") :]].split(" AND "))
+        else:
+            parts.append(part)
+    return " AND ".join(dict.fromkeys(parts))  # in order, without repeats
+
+
+def file_component(relative, rules=FILE_RULES):
+    for pattern, component in rules:
+        if fnmatch.fnmatchcase(relative, pattern):
+            return component
+    return None
+
+
+def license_audit(prefix, repos, libraries):
+    """Fail closed unless every shipped file has a component with an allowed
+    license; return {component: {license, allowed, files}} for the manifest.
+    `repos` maps a repository name to its LICENSES/ directory."""
+    expressions = {name: repo_licenses(name, path) for name, path in repos.items()}
+    paths = [
+        path.relative_to(prefix).as_posix()
+        for path in sorted(prefix.rglob("*"))
+        if not path.is_dir() or path.is_symlink()
+    ]
+    audit = audit_paths(paths, expressions, FILE_RULES)
+    check_copied_packages(libraries)
+    return audit
+
+
+def audit_paths(paths, expressions, rules):
+    """The gate over shipped relative paths; `expressions` maps a repository
+    to its license expression."""
+    audit = {}
+    for relative in paths:
+        component = file_component(relative, rules)
+        if component is None:
+            raise RuntimeError(f"no license rule for shipped file {relative}")
+        for part in (COMPONENTS[component] or "").split(" AND "):
+            if part.startswith("repo:") and part[len("repo:") :] not in expressions:
+                raise RuntimeError(
+                    f"shipped file {relative}: {part} has no LICENSES directory"
+                )
+        expression = resolve_component(component, expressions)
+        entry = audit.setdefault(
+            component, {"license": expression, "allowed": None, "files": 0}
+        )
+        entry["files"] += 1
+        if expression is None:
+            continue
+        allowed = license_allowed(expression)
+        if allowed is None:
+            raise RuntimeError(
+                f"shipped file {relative}: license {expression} ({component}) "
+                "is not built from the allowed licenses (no GPL-family code)"
+            )
+        entry["allowed"] = allowed
+    return audit
+
+
+def check_copied_packages(libraries):
+    for name, entry in sorted(libraries.items()):
+        package = entry.get("package")
+        if entry.get("system") or not package:
+            continue
+        package = package.split(":", 1)[0]
+        expression = PACKAGE_LICENSES.get(package)
+        if expression is None or license_allowed(expression) is None:
+            raise RuntimeError(
+                f"copied library {name} comes from Ubuntu package {package}, "
+                "which has no allowed license entry"
             )
 
 
@@ -284,7 +771,7 @@ def check_relocatable(prefix, visited, env):
     for path in sorted(visited):
         deps = dependencies(path, env)
         for name, resolved in deps:
-            if not SYSTEM.fullmatch(name) and not resolved.is_relative_to(prefix):
+            if not system_library(name) and not resolved.is_relative_to(prefix):
                 raise RuntimeError(f"nonrelocatable dependency: {path}: {resolved}")
         elf_report[str(path.relative_to(prefix))] = {
             "sha256": digest(path),
@@ -294,6 +781,13 @@ def check_relocatable(prefix, visited, env):
 
 
 def main():
+    if "--audit-bottles" in sys.argv[1:]:
+        bottles = argparse.ArgumentParser(description="license gate over bottles")
+        bottles.add_argument("--audit-bottles", type=Path, required=True)
+        bottles.add_argument("--output", type=Path, required=True)
+        args = bottles.parse_args()
+        audit_bottles(args.audit_bottles, args.output)
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--name", required=True)
     parser.add_argument("--source-revision", default="unknown")
@@ -314,6 +808,12 @@ def main():
         type=Path,
         default=Path("/opt/solvers/share/pins"),
         help="Bitwuzla's cadical.wrap and symfpu.wrap, saved by the solvers stage",
+    )
+    parser.add_argument(
+        "--sea-mlir-source",
+        type=Path,
+        default=Path("/src/sea-mlir"),
+        help="the sea-mlir source tree (its REUSE LICENSES/ for the license gate)",
     )
     parser.add_argument("--output", type=Path, default=Path("/artifacts"))
     parser.add_argument("--release-root", type=Path, default=Path("/release"))
@@ -370,6 +870,12 @@ def main():
                         }
                     )
 
+    if args.seahorn and "libz3.so.4.12" in libraries:
+        # SeaHorn's z3 4.12.0, preinstalled by the SeaHorn stage
+        z3_seahorn = "share/release-licenses/z3-seahorn.txt"
+        if not (prefix / z3_seahorn).is_file():
+            raise RuntimeError(f"missing SeaHorn z3 license: {z3_seahorn}")
+        libraries["libz3.so.4.12"]["license"] = z3_seahorn
     require_licenses(libraries, copied)
     license_dir = prefix / "share" / "licenses" / "release"
     license_dir.mkdir(parents=True)
@@ -413,12 +919,27 @@ def main():
             f"https://raw.githubusercontent.com/martin-cs/symfpu/{symfpu_revision}/LICENSE-BSD",
         ),
     ]
+    if args.seahorn:
+        # SeaHorn's tools link LLVM 18.1.8 statically (apt.llvm.org); its
+        # Debian copyright file is share/release-licenses/llvm-18.txt
+        licenses.append(
+            upstream_license(
+                license_dir,
+                "LLVM-18-LICENSE.txt",
+                "https://raw.githubusercontent.com/llvm/llvm-project/"
+                "llvmorg-18.1.8/llvm/LICENSE.TXT",
+            )
+        )
     packages["libboost1.83-dev"] = None
     for package in packages:
         packages[package] = copy_package_license(package, license_dir)
-    for name in ("LGPL-2.1", "LGPL-3", "GPL-3"):
-        shutil.copyfile(Path("/usr/share/common-licenses") / name, license_dir / name)
+    runtime_packages = sorted(
+        {entry["apt"] for entry in libraries.values() if entry.get("apt")}
+    )
     shutil.copyfile(prefix / "share/doc/sea-mlir/LICENSE", prefix / "LICENSE")
+    shutil.copytree(
+        args.sea_mlir_source / "LICENSES", prefix / "share/doc/sea-mlir/LICENSES"
+    )
     shutil.copyfile("/opt/llvm/LLVM_REVISION", prefix / "LLVM_REVISION")
 
     set_runpaths(prefix, lib, visited)
@@ -428,6 +949,7 @@ def main():
     sea_vc_version = run(str(prefix / "bin/sea-vc"), "--version", env=clean_env)
     check_solvers(sea_vc_version, z3, yices)
 
+    apt_line = " ".join(runtime_packages) or "(none)"
     text = f"""Third-party components in this install prefix
 
 sea-mlir: Apache-2.0 WITH LLVM-exception; LICENSE at the prefix root.
@@ -439,14 +961,13 @@ Yices {yices}: BSD 3-Clause; built without MCSAT, so LibPoly is not linked.
 CaDiCaL {cadical_version}: MIT; linked into Bitwuzla.
 SymFPU {symfpu_revision[:7]}: BSD 3-Clause option; linked into Bitwuzla.
 Boost: Boost Software License; headers used by sea-mlir.
-GMP/GMPXX and MPFR: LGPL; dynamically linked (by sea-vc, Yices and
-Bitwuzla), replaceable libraries in lib/.
 zlib and Zstandard: their package copyright/license texts are included.
 
 Full license texts and package copyrights: share/licenses/release/.
-The included GPL text is incorporated by LGPL-3's terms; it does not indicate
-that a GPL-only component is included.
-Ubuntu 24.04 supplies glibc, libstdc++, libgcc and its dynamic loader.
+This prefix contains no GPL-family (GPL, LGPL, AGPL) code: GMP, GMPXX and MPFR
+(LGPL) are not included. Ubuntu supplies them: libgmp10 is in the base image;
+install the others with `apt-get install {apt_line}`.
+Ubuntu 24.04 also supplies glibc, libstdc++, libgcc and its dynamic loader.
 Compiler and solver source pins, dependency versions and hashes are recorded
 in RELEASE-MANIFEST.json. Obtain Ubuntu library sources with apt source for
 the recorded package/version; upstream source URLs are in the license records.
@@ -454,27 +975,38 @@ the recorded package/version; upstream source URLs are in the license records.
 The ELF tools need Ubuntu 24.04 x86_64 or a compatible newer runtime.
 Python utilities require Python 3. The SeaHorn frontend also needs clang-18.
 """
+    seahorn_pins = {}
     if args.seahorn:
         text += """
-SEAHORN BUNDLE: NOT FOR DISTRIBUTION; SEAHORN IS TO BE RELICENSED.
-SeaHorn's current license and dependency licenses are retained under
-share/release-licenses/ (seahorn.txt, sea-dsa.txt, llvm-seahorn.txt, ...).
-This local bundle is for build and interoperability testing only until the
-maintainer relicenses it.
+SeaHorn, sea-dsa and llvm-seahorn (Apache-2.0 WITH LLVM-exception): their
+license and notice files at the pinned commits are under
+share/release-licenses/ (<repository>-LICENSE, ...); the commits are in
+RELEASE-MANIFEST.json ("seahorn"). SeaHorn is built without clam/crab.
+SeaHorn links z3 4.12.0 (MIT, lib/libz3.so.4.12), a second z3 next to the one
+sea-mlir uses, and the same Yices library as sea-vc (lib/libyices.so.2.8).
+LLVM 18.1.8 is linked statically into the SeaHorn tools: LLVM-18-LICENSE.txt
+(upstream) and share/release-licenses/llvm-18.txt (Debian copyright).
+PyYAML (MIT) is included for the `sea` driver.
 """
-        (prefix / "NOT-FOR-DISTRIBUTION").write_text(
-            "SeaHorn is to be relicensed before this bundle can ship.\n"
-        )
+        for line in (prefix / "share/seahorn/build-pins.txt").read_text().splitlines():
+            key, _, value = line.partition(":")
+            seahorn_pins[key.strip()] = value.strip()
     (prefix / "THIRD-PARTY-NOTICES").write_text(text)
     (prefix / "NOTICE").write_text(
         "sea-mlir\nCopyright 2026 The sea-mlir Authors\nSee LICENSE and THIRD-PARTY-NOTICES for terms and dependency notices.\n"
     )
-    suffix = "-held" if args.seahorn else ""
+    repos = {"sea-mlir": prefix / "share/doc/sea-mlir/LICENSES"}
+    if args.seahorn:
+        for name in ("seahorn", "sea-dsa", "llvm-seahorn"):
+            repos[name] = prefix / "share/release-licenses" / (name + "-LICENSES")
+    audit = license_audit(prefix, repos, libraries)
     manifest = {
         "name": args.name,
         "source_revision": args.source_revision,
-        "distribution_hold": bool(args.seahorn),
         "llvm_commit": llvm_commit,
+        "seahorn": seahorn_pins,
+        "runtime_packages": runtime_packages,
+        "license_audit": audit,
         "solvers": {
             "z3": {"revision": args.z3_revision, "version": z3},
             "bitwuzla": {"tag": args.bitwuzla_tag},
@@ -492,9 +1024,9 @@ maintainer relicenses it.
     )
     args.output.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(
-        prefix / "RELEASE-MANIFEST.json", args.output / (args.name + suffix + ".json")
+        prefix / "RELEASE-MANIFEST.json", args.output / (args.name + ".json")
     )
-    archive(prefix, args.output, args.epoch, suffix)
+    archive(prefix, args.output, args.epoch)
 
 
 if __name__ == "__main__":

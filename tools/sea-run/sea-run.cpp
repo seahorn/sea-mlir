@@ -24,6 +24,7 @@
 #include "sea/Interp/Interpreter.h"
 #include "sea/Interp/ParseInput.h"
 #include "sea/Interp/ReachTargets.h"
+#include "sea/Support/AgentGuide.h"
 #include "sea/Support/Assume.h"
 #include "sea/Support/Diag.h"
 #include "sea/Support/Log.h"
@@ -2025,7 +2026,7 @@ int main(int argc, char **argv) {
   sea::setVersionPrinter("sea-run");
   cl::ParseCommandLineOptions(argc, argv, "Run a sea program\n");
   if (agent) {
-    outs() << agentGuide;
+    sea::printAgentGuide(outs(), agentGuide, argv[0]);
     return 0;
   }
   if (fuzzTime < 0)

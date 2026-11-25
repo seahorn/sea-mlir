@@ -3,6 +3,6 @@
 
 add_llvm_executable(sea-reduce sea-reduce.cpp)
 llvm_update_compile_flags(sea-reduce)
-target_link_libraries(sea-reduce PRIVATE MLIRSea SeaTransforms SeaReduceInterface MLIRReduceLib
+target_link_libraries(sea-reduce PRIVATE SeaSupport MLIRSea SeaTransforms SeaReduceInterface MLIRReduceLib
   MLIRReduce MLIRTransforms)
 mlir_check_all_link_libraries(sea-reduce)

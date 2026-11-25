@@ -112,6 +112,9 @@ Analysis, Conditional Soundness, and Proving the Absence of Errors*, SAS
   gives the same as JSON. Parse those, not prose.
 - A change to a tool's options or output updates its `--agent` guide in
   the same change.
+- A guide cites pages as `docs/...` paths, relative to its `DOCS:` line
+  (`include/sea/Support/AgentGuide.h`); `test/Tools/agent-docs.test`
+  checks that each cited path exists.
 
 ## Licensing
 

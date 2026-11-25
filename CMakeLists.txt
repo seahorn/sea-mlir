@@ -55,6 +55,27 @@ include(HandleLLVMOptions)
 
 set(SEA_SOURCE_DIR ${PROJECT_SOURCE_DIR})
 set(SEA_BINARY_DIR ${PROJECT_BINARY_DIR})
+# No source or build path in __FILE__ (assert, llvm_unreachable) of the
+# tools: with assertions on (an LLVM built with them, as in the Docker
+# release) the paths of an out-of-tree build would be compiled in
+# (test/Tools/no-source-paths.test). Only the macros are remapped; debug
+# info keeps full paths for debuggers. CMake hands the compiler source
+# paths relative to the build directory (../../x/sea-mlir/lib/F.cpp), so
+# that spelling is remapped as well.
+include(CheckCXXCompilerFlag)
+file(RELATIVE_PATH _sea_rel_src ${SEA_BINARY_DIR} ${SEA_SOURCE_DIR})
+set(_sea_prefixes ${SEA_SOURCE_DIR} ${SEA_BINARY_DIR})
+if(_sea_rel_src)
+  list(APPEND _sea_prefixes ${_sea_rel_src})
+endif()
+foreach(_sea_dir ${_sea_prefixes})
+  set(_sea_flag "-fmacro-prefix-map=${_sea_dir}/=")
+  check_cxx_compiler_flag("${_sea_flag}" SEA_HAVE_MACRO_PREFIX_MAP)
+  if(SEA_HAVE_MACRO_PREFIX_MAP)
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:${_sea_flag}>")
+  endif()
+  unset(SEA_HAVE_MACRO_PREFIX_MAP CACHE)
+endforeach()
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${SEA_SOURCE_DIR}/include)

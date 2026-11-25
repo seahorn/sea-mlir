@@ -36,9 +36,11 @@ directory. A bare name `<name>` is the file `<name>.cfg`, looked up in:
 1. the directories of `$SEA_MLIR_PROFILE_PATH`, separated by colons, in
    order;
 2. `<prefix>/share/sea-mlir/profiles` of an install, found relative to the
-   `sea-vc` binary;
-3. the source tree's `profiles/`, so that a build tree finds the shipped
-   profiles without an install.
+   `sea-vc` binary's real path;
+3. for a `sea-vc` in a build directory, the source tree that
+   `sea-mlir_SOURCE_DIR` in `<build>/CMakeCache.txt` names (read at run
+   time), so that a build tree finds the shipped profiles without an
+   install.
 
 The first match wins. A profile that is not found is the error
 `vc.config-not-found`, which lists the directories searched. A file that
