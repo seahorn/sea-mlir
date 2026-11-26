@@ -336,8 +336,8 @@ Deviations and additions (none changes the design's contract):
    replay of such a witness could disagree with the placed program
    (exit 2). Not seen in any test or corpus program; a shadow keyed by
    object identity would remove both.
-4. `--seam-check` with Yices refuses queries over `sea.mem.const` (a lambda
-   term; pre-existing): the acceptance tests use
+4. `--seam-check` with Yices refuses queries over `sea.mem.const` (the Yices
+   marshaller refuses a const-array outside a select; pre-existing): the acceptance tests use
    `sea.mem.nondet` memories.
 
 Results (Release, timeout 300 s, `--lower --widen-memory=8 --seam`;

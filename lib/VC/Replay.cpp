@@ -275,7 +275,7 @@ ReplayResult replayAndValidate(ProgramOp program, solver::Model &model,
   options.prints = false;
   options.addr0IsNull = addr0IsNull;
   options.memhavocNullNoop = memhavocNullNoop;
-  options.warnEarlierVersion = false; // counted: interp.earlier-version-loads
+  options.warnEarlierVersion = false; // counted: interp.earlier-version-*
   options.onValue = [&](Value v, const llvm::APInt &interp) {
     ++result.checked;
     Expr t = sem.solverTerm(sem.lookup(v, ctx));
@@ -497,7 +497,7 @@ OriginalReplay replayOriginal(ProgramOp original, ProgramOp lowered,
   options.deferMemoryErrors = true;
   options.addr0IsNull = addr0IsNull;
   options.memhavocNullNoop = memhavocNullNoop;
-  options.warnEarlierVersion = false; // counted: RunResult::earlierVersionLoads
+  options.warnEarlierVersion = false; // counted: RunResult::earlierVersion*
   OriginalReplay r;
   r.run = interpret(original, source, options);
   auto count = [&](StringRef origin) {
@@ -517,10 +517,15 @@ OriginalReplay replayOriginal(ProgramOp original, ProgramOp lowered,
 
 SmallVector<Operation *> noClobberSuspects(const ReplayResult &replay) {
   SmallVector<Operation *> suspects;
-  if (replay.mismatches.empty() || replay.run.earlierVersionLoads.empty())
+  const RunResult &run = replay.run;
+  if (replay.mismatches.empty() ||
+      (run.earlierVersionLoads.empty() && run.earlierVersionMemmoves.empty()))
     return suspects;
-  llvm::DenseSet<Operation *> earlier(replay.run.earlierVersionLoads.begin(),
-                                      replay.run.earlierVersionLoads.end());
+  llvm::DenseSet<Operation *> earlier;
+  earlier.insert(run.earlierVersionLoads.begin(),
+                 run.earlierVersionLoads.end());
+  earlier.insert(run.earlierVersionMemmoves.begin(),
+                 run.earlierVersionMemmoves.end());
   llvm::DenseSet<Operation *> hit;
   // the backward slice of the mismatched values
   llvm::DenseSet<Value> seen;
@@ -557,9 +562,10 @@ SmallVector<Operation *> noClobberSuspects(const ReplayResult &replay) {
     for (Value o : d->getOperands())
       push(o);
   }
-  for (Operation *l : replay.run.earlierVersionLoads)
-    if (hit.contains(l))
-      suspects.push_back(l);
+  for (auto *ops : {&run.earlierVersionLoads, &run.earlierVersionMemmoves})
+    for (Operation *op : *ops)
+      if (hit.contains(op))
+        suspects.push_back(op);
   return suspects;
 }
 

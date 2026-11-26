@@ -1015,8 +1015,9 @@ operation ::= `sea.load` $mem `[` $addr `]` (`align` $align^)? attr-dict `:` qua
 
 The result is an integer, address or pointer whose width is a multiple k
 of the cell width: it is made of the k cells from `addr` on,
-little-endian (the cell at `addr` holds the low bits). Reading an
-earlier version is allowed (see Memory.md).
+little-endian (the cell at `addr` holds the low bits). On a keyed
+memory k is 1: an access is one whole cell. Reading an earlier version
+is allowed (see Memory.md).
 
 `align` (here and on store, memset, memmove; memmove also `src_align`)
 is LLVM's: a promise, in bytes, that the address is a multiple of it.
@@ -1249,6 +1250,11 @@ operation ::= `sea.mem.is_modified` $mem `[` $ptr `]` attr-dict `:` qualified(ty
 
 A property of the object (as SeaHorn's sea_is_modified): any byte of it,
 since the start of tracking or its last sea.mem.reset_modified.
+`mem` may be an earlier version (Memory.md, "Loads of a version after
+its consumer"): the VC reads that version, the in-place interpreter the
+current modification set (warning interp.is-modified-earlier-version),
+and they agree when no tracked update or reset changed the object's
+bit since.
 
 Traits: `AlwaysSpeculatableImplTrait`
 
@@ -1396,6 +1402,11 @@ operation ::= `sea.memmove` $mem `[` $addr `]` `,` $src `[` $srcAddr `]` `,` $le
 
 Reads `src` as it was before the op, so overlap is harmless; `src` may
 be the same version as `mem` or another region of the same type.
+`src` may also be an earlier version, one already consumed (optimized
+Mem-SSA, as for sea.load; Memory.md, "Loads of a version after its
+consumer"): the VC reads that version, the in-place interpreter the
+current contents (warning interp.memmove-earlier-version), and they
+agree when the source range was not overwritten since.
 
 Interfaces: `InferTypeOpInterface`
 
@@ -2091,8 +2102,9 @@ operation ::= `sea.ptr.nondet` $name ` ` `[` $site `]` attr-dict `:` qualified(t
 
 Each execution makes a fresh opaque object of size 0 (named
 nondet.<site>): the pointer is not null, equals no other object's
-pointers, and no access through it is in bounds
-(sea.ptr.dereferenceable is 0). Harnesses use it to mark fields that
+pointers, and no access of positive length through it is in bounds
+(sea.ptr.dereferenceable is 0 for every len > 0; for len 0 it is 1, by
+the general rule). Harnesses use it to mark fields that
 must never be dereferenced (SeaHorn's nd_* functions returning
 pointers). `site` is unique with the other nondet sites.
 
@@ -2617,8 +2629,9 @@ operation ::= `sea.store` $mem `[` $addr `]` `,` $value (`inplace` $inplace^)? (
               qualified(type($mem)) `,` qualified(type($value))
 ```
 
-The value's width is a multiple k of the cell width; it is written to
-the k cells from `addr` on, little-endian. Returns a new version. With
+The value's width is a multiple k of the cell width (k = 1 on a keyed
+memory); it is written to the k cells from `addr` on, little-endian.
+Returns a new version. With
 `inplace`, promises that `mem` is dead
 afterwards, so the new version may reuse its storage (the interpreter
 accepts only in-place memory updates).
@@ -3299,7 +3312,8 @@ always in index units (bytes, for byte-addressed indices).
 - keyed: a cell of any width at every index unit, keyed by its address.
   Cells are independent: a cell does not cover the bytes after its
   address, so a store at a + 1 leaves the cell at a as it was. An
-  access is one whole cell, and a range op over [d, d + n) acts on the
+  access is one whole cell (a load or store of another width is a
+  verifier error), and a range op over [d, d + n) acts on the
   n cells at d .. d + n - 1. memset's value (one unit) is repeated
   across the cell. It is more storage than the bytes, which is what
   metadata memories want: the offset / size companions of fat pointers

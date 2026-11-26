@@ -19,18 +19,39 @@ using namespace expr;
 namespace sea {
 namespace solver {
 
-bool hasConstArrayLeaf(Expr a) {
+bool hasConstArrayLeaf(Expr a, std::unordered_map<Expr, bool> &memo) {
+  // the store chain above the first node with an answer gets that answer
+  ExprVector chain;
+  bool res;
   while (true) {
-    if (isOpX<CONST_ARRAY>(a))
-      return true;
+    auto it = memo.find(a);
+    if (it != memo.end()) {
+      res = it->second;
+      break;
+    }
     if (isOpX<STORE>(a)) {
+      chain.push_back(a);
       a = a->arg(0);
       continue;
     }
-    if (isOpX<ITE>(a))
-      return hasConstArrayLeaf(a->arg(1)) || hasConstArrayLeaf(a->arg(2));
-    return false;
+    if (isOpX<CONST_ARRAY>(a))
+      res = true;
+    else if (isOpX<ITE>(a))
+      res = hasConstArrayLeaf(a->arg(1), memo) ||
+            hasConstArrayLeaf(a->arg(2), memo);
+    else
+      res = false;
+    memo[a] = res;
+    break;
   }
+  for (Expr s : chain)
+    memo[s] = res;
+  return res;
+}
+
+bool hasConstArrayLeaf(Expr a) {
+  std::unordered_map<Expr, bool> memo;
+  return hasConstArrayLeaf(a, memo);
 }
 
 namespace {

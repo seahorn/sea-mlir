@@ -135,6 +135,28 @@ strict mode of the verifier forbids such loads, for programs that do not
 rely on the claim (not written, as the `inplace` checker pass itself; the
 interpreter warns interp.load-earlier-version at each such load it runs).
 
+The other readers follow the same rule. A `memmove` (of nonzero length)
+whose source is an earlier version copies the current contents of the
+source range in the interpreter (warning interp.memmove-earlier-version),
+and `mem.is_modified` of an earlier version reads the current modification
+set (warning interp.is-modified-earlier-version); the VC reads the version
+named. SeaHorn exports have both (memmove sources in the vcc, firedancer and
+stellar suites). The interpreter makes no copies: sea-run warns and reads
+the current contents.
+
+In sea-vc's replay the warnings are off and the ops are counted
+(`interp.earlier-version-loads`, `interp.earlier-version-memmoves`). A
+replayed program has no `is_modified`: sea-lower-tracking turns it into a
+load of the shadow memory, which is counted and named as a load, at the
+is_modified's location. A load is named by `replay: no-clobber-violated`
+only when its own value was not confirmed, so its claim failed. A memmove
+result is a memory value with none of its own to confirm: a memmove from an
+earlier version that a mismatched value depends on is named with "may"
+wording, since it may have copied a clobbered cell or may be innocent (an
+upstream copy whose range nothing overwrote). When only memmoves are named,
+vc.replay-mismatch leaves a VC bug open. Not done: a per-cell check of a
+memmove's claim (compare each copied cell of the source version with the
+current contents at the memmove), which would make its naming definite.
 
 ## Interpreter
 

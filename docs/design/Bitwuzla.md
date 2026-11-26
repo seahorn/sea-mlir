@@ -82,7 +82,7 @@ Dropping an equation is only sound in some shapes, so the helper is careful:
   definition only weakens.
 An array equality with a const-array of another shape (asserted directly)
 still gives `unknown` plus Bitwuzla's own warning, and sea-vc reports
-`vc.unknown` (Yices: a fatal error, lambdas).
+`vc.unknown` (Yices: a fatal error, the marshaller refuses a const-array).
 
 ## Performance
 

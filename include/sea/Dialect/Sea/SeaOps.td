@@ -652,8 +652,9 @@ def Sea_LoadOp : Sea_Op<"load", [Pure, Sea_AddrIndexes<"mem", "addr">]> {
   let description = [{
     The result is an integer, address or pointer whose width is a multiple k
     of the cell width: it is made of the k cells from `addr` on,
-    little-endian (the cell at `addr` holds the low bits). Reading an
-    earlier version is allowed (see Memory.md).
+    little-endian (the cell at `addr` holds the low bits). On a keyed
+    memory k is 1: an access is one whole cell. Reading an earlier version
+    is allowed (see Memory.md).
 
     `align` (here and on store, memset, memmove; memmove also `src_align`)
     is LLVM's: a promise, in bytes, that the address is a multiple of it.
@@ -684,8 +685,9 @@ class Sea_MemUpdateOp<string mnemonic, list<Trait> traits = []> :
 def Sea_StoreOp : Sea_MemUpdateOp<"store"> {
   let summary = "Write a value: m[addr + i := cell i of value]";
   let description = [{
-    The value's width is a multiple k of the cell width; it is written to
-    the k cells from `addr` on, little-endian. Returns a new version. With
+    The value's width is a multiple k of the cell width (k = 1 on a keyed
+    memory); it is written to the k cells from `addr` on, little-endian.
+    Returns a new version. With
     `inplace`, promises that `mem` is dead
     afterwards, so the new version may reuse its storage (the interpreter
     accepts only in-place memory updates).
@@ -729,6 +731,11 @@ def Sea_MemMoveOp : Sea_MemUpdateOp<"memmove", [
   let description = [{
     Reads `src` as it was before the op, so overlap is harmless; `src` may
     be the same version as `mem` or another region of the same type.
+    `src` may also be an earlier version, one already consumed (optimized
+    Mem-SSA, as for sea.load; Memory.md, "Loads of a version after its
+    consumer"): the VC reads that version, the in-place interpreter the
+    current contents (warning interp.memmove-earlier-version), and they
+    agree when the source range was not overwritten since.
   }];
   let arguments = (ins Sea_Mem:$mem, Sea_Index:$addr, Sea_Mem:$src,
                    Sea_Index:$srcAddr, Sea_BV:$len, UnitAttr:$inplace,
@@ -811,6 +818,11 @@ def Sea_IsModifiedOp : Sea_Op<"mem.is_modified", [Pure,
   let description = [{
     A property of the object (as SeaHorn's sea_is_modified): any byte of it,
     since the start of tracking or its last sea.mem.reset_modified.
+    `mem` may be an earlier version (Memory.md, "Loads of a version after
+    its consumer"): the VC reads that version, the in-place interpreter the
+    current modification set (warning interp.is-modified-earlier-version),
+    and they agree when no tracked update or reset changed the object's
+    bit since.
   }];
   let arguments = (ins Sea_Mem:$mem, Sea_Ptr:$ptr);
   let results = (outs I1:$result);
@@ -1023,8 +1035,9 @@ def Sea_PtrNondetOp : Sea_Op<"ptr.nondet", [Sea_NondetSiteOpInterface]> {
   let description = [{
     Each execution makes a fresh opaque object of size 0 (named
     nondet.<site>): the pointer is not null, equals no other object's
-    pointers, and no access through it is in bounds
-    (sea.ptr.dereferenceable is 0). Harnesses use it to mark fields that
+    pointers, and no access of positive length through it is in bounds
+    (sea.ptr.dereferenceable is 0 for every len > 0; for len 0 it is 1, by
+    the general rule). Harnesses use it to mark fields that
     must never be dereferenced (SeaHorn's nd_* functions returning
     pointers). `site` is unique with the other nondet sites.
   }];

@@ -484,8 +484,9 @@ the script. Review of Linux-only assumptions:
 Fixed on this branch (separate commits):
 - `lib/Expr/CMakeLists.txt`: the explicit Bitwuzla `-rpath` (a fixed
   absolute path in installs; on macOS an `LC_RPATH` to the build machine).
-- `sea-vc --mem-limit`: macOS accepts `RLIMIT_AS` but does not enforce it;
-  sea-vc now warns `vc.mem-limit-unenforced` there (not run on macOS yet).
+- `sea-vc --mem-limit`: macOS refuses any finite `RLIMIT_AS` (`EINVAL`,
+  seen on macOS 27); sea-vc sets no process limit there and warns
+  `vc.mem-limit-unenforced` (the solvers' own limits apply).
 - Tests: `sed -i '...'` (BSD sed needs a suffix) in three tests;
   coreutils `timeout` in `test/VC/seam/nki-blowup-regression.test` (now
   `%timeout`: `timeout` or `gtimeout`, `REQUIRES: timeout`).
@@ -509,7 +510,8 @@ Left for the macOS build to settle (in [BuildMacOS.md](../BuildMacOS.md),
 - `docker/smoke/check.sh` and `release-check.sh` read ELF magic and use
   `ldd`; a macOS smoke uses `otool -L` (`build-macos.sh report`).
 - `utils/bench.py` reads `/proc/meminfo` for the memory guard (no guard on
-  macOS: it returns infinity) and sets `RLIMIT_AS` (not enforced).
+  macOS: it returns infinity) and sets `RLIMIT_AS`, which macOS refuses
+  (no memory cap there).
 - SeaHorn: `sea` searches `clang-mp-18`, `clang-18`, `clang` on `PATH`;
   on macOS that `clang` may be Apple's (newer bitcode that LLVM 18 cannot
   read). Homebrew's `llvm@18/bin` must come first; the formula's wrapper

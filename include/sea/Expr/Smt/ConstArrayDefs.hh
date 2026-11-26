@@ -11,6 +11,7 @@
 #include "sea/Expr/Expr.hh"
 
 #include <functional>
+#include <unordered_map>
 #include <vector>
 
 namespace sea {
@@ -18,6 +19,13 @@ namespace solver {
 
 /// true iff the array-term skeleton (stores and ites) has a const-array leaf
 bool hasConstArrayLeaf(expr::Expr a);
+
+/// hasConstArrayLeaf with \p memo (skeleton node -> answer) kept by the
+/// caller: every node of the skeleton is visited once over all calls with
+/// one memo (an ite of a join is DAG-shared; without a memo its leaves are
+/// visited once per path)
+bool hasConstArrayLeaf(expr::Expr a,
+                       std::unordered_map<expr::Expr, bool> &memo);
 
 /// The inlined definitions of a solver (one per context: a solver saves a
 /// copy at push and restores it at pop; reset clears it).

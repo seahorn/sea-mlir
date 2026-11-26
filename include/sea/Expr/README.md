@@ -21,7 +21,13 @@ sea-mlir uses Expr for SMT terms only. Changes from SeaHorn:
 - `boost::throw_exception` reports the error and aborts instead of exiting
   silently with status 1.
 - Yices is optional (`SEA_ENABLE_YICES`, defines `WITH_YICES2`; the
-  backend's sources are empty without it).
+  backend's sources are empty without it). Yices has no const-array, and
+  no lambda is passed to it (a context neither asserts nor evaluates one;
+  SeaHorn encoded a const-array as a lambda): every term assumed or
+  evaluated in a model passes `yices_solver_impl::to_solver_term`, which
+  expands each select over a const-array skeleton into an ite cascade;
+  add() applies the same rewrite after d_defs.add. The marshaller refuses
+  a const-array that is left.
 - New (not in SeaHorn): a Bitwuzla backend (`Smt/*Bitwuzla*`, enabled with
   `BITWUZLA_ROOT` as `WITH_BITWUZLA`; see `docs/design/Bitwuzla.md`), and
   `Smt/ConstArrayDefs.hh`, the const-array definition inlining moved out of

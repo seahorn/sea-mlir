@@ -111,6 +111,10 @@ build_feature("bitwuzla", config.bitwuzla == "ON")
 
 build_feature("yices", config.yices == "ON")
 
+# sea-vc --max-rss reads the resident size from /proc (Linux); elsewhere it
+# is an error (vc.rss-budget-unsupported)
+build_feature("proc-rss", os.path.exists("/proc/self/statm"))
+
 # The command-line solvers of those installs (reading a --smt2 query):
 # yices-smt2 in YICES2_ROOT/bin, bitwuzla in BITWUZLA_ROOT/bin.
 for feature, subst, path in (

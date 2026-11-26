@@ -391,5 +391,40 @@ sea.program @global_size {
   sea.halt
 }
 
+// -----
+
+// An access of a keyed memory is one whole cell, as sea.load / sea.store.
+!km = !sea.mem<!sea.ptr<64>, i8, keyed>
+sea.program @keyed_access {
+  %m = seaimp.var "m" [0] : !seaimp.var<!km>
+  %p = sea.ptr.nondet "p" [1] : !sea.ptr<64>
+  // expected-error@+1 {{result type 'i32' is not one cell 'i8': an access of a keyed memory is one whole cell}}
+  %x = seaimp.load %m[%p] align 4 : !seaimp.var<!km> -> i32
+  sea.halt
+}
+
+// -----
+
+!km = !sea.mem<!sea.ptr<64>, i8, keyed>
+sea.program @keyed_store {
+  %m = seaimp.var "m" [0] : !seaimp.var<!km>
+  %p = sea.ptr.nondet "p" [1] : !sea.ptr<64>
+  %v = sea.const 5 : i32
+  // expected-error@+1 {{value type 'i32' is not one cell 'i8': an access of a keyed memory is one whole cell}}
+  seaimp.store %m[%p], %v align 4 : !seaimp.var<!km>, i32
+  sea.halt
+}
+
+// -----
+
+!km = !sea.mem<!sea.ptr<64>, i8, keyed>
+sea.program @keyed_access_wide {
+  %m = seaimp.var "m" [0] : !seaimp.var<!km>
+  %p = sea.ptr.nondet "p" [1] : !sea.ptr<64>
+  // expected-error@+1 {{result type 'i64' is not one cell 'i8': an access of a keyed memory is one whole cell}}
+  %x = seaimp.load %m[%p] align 8 : !seaimp.var<!km> -> i64
+  sea.halt
+}
+
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

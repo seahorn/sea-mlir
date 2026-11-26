@@ -10,12 +10,15 @@ class SeaMlir < Formula
   # replaces url, sha256 and version with a local `git archive` tarball
   # (packaging/homebrew/README.md).
   url "https://github.com/seahorn/sea-mlir/archive/refs/tags/v0.6.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "d83d2c5e7fa90d0260e8f92723c94cb9ef122ec26268a46430b38e272540af5a"
   license all_of: [
     { "Apache-2.0" => { with: "LLVM-exception" } },
     "MIT",
   ]
 
+  # Yices: `autoconf` generates its configure (on macOS too: superenv's
+  # PATH has only the dependencies' bin directories and /usr/bin)
+  depends_on "autoconf" => :build
   depends_on "boost" => :build
   depends_on "cmake" => :build
   depends_on "gperf" => :build
@@ -29,7 +32,6 @@ class SeaMlir < Formula
   depends_on "mpfr"
 
   on_linux do
-    depends_on "autoconf" => :build
     depends_on "llvm@18" => :build
   end
 
@@ -122,7 +124,10 @@ class SeaMlir < Formula
       # the wraps' sources, offline: CaDiCaL from the package cache (meson
       # checks its hash), SymFPU (a git wrap) unpacked with its overlay
       mkdir_p "subprojects/packagecache"
-      cp resource("cadical").fetch, "subprojects/packagecache/cadical-2.1.2.tar.gz"
+      # (the download Homebrew fetched and verified before the build: a
+      # fetch here takes a lock in HOMEBREW_PREFIX, which the macOS build
+      # sandbox denies)
+      cp resource("cadical").cached_download, "subprojects/packagecache/cadical-2.1.2.tar.gz"
       resource("symfpu").stage(Pathname.pwd/"subprojects/symfpu")
       cp_r "subprojects/packagefiles/symfpu/.", "subprojects/symfpu"
       system "meson", "setup", "build", "--prefix=#{solvers}", "--libdir=#{solvers}/lib",
@@ -219,9 +224,17 @@ class SeaMlir < Formula
         %memory = sea.mem.const %zero : !m
         %size = sea.const 16 : i64
         %object = sea.malloc %size align 16 [0] : i64 -> !sea.ptr<64>
-        %value = sea.nondet "value" [1] : i8
-        %written = sea.store %memory[%object], %value inplace : !m, i8
-        %read = sea.load %written[%object] : !m -> i8
+        %i = sea.nondet "i" [1] : i64
+        %j = sea.nondet "j" [2] : i64
+        %value = sea.nondet "value" [3] : i8
+        %same = sea.icmp eq, %i, %j : i64
+        sea.assume %same
+        %inside = sea.icmp ult, %i, %size : i64
+        sea.assume %inside
+        %at_i = sea.ptr.add %object, %i : !sea.ptr<64>, i64
+        %at_j = sea.ptr.add %object, %j : !sea.ptr<64>, i64
+        %written = sea.store %memory[%at_i], %value inplace : !m, i8
+        %read = sea.load %written[%at_j] : !m -> i8
         %ok = sea.icmp eq, %read, %value : i8
         sea.assert %ok
         sea.halt
@@ -233,7 +246,10 @@ class SeaMlir < Formula
       assert_match(/^replay: assert-failed/, sat)
       assert_match "mismatches=0", sat
     end
-    assert_match(/^result: unsat$/, shell_output("#{bin}/sea-vc unsat.mlir --lower --config=seam"))
+    # an unsat answer that lowering reached by dropping the assertion is vacuous
+    unsat = shell_output("#{bin}/sea-vc unsat.mlir --lower --config=seam 2>&1")
+    assert_match(/^result: unsat$/, unsat)
+    refute_match "no-assertions", unsat
     assert_match(%r{^DOCS: #{Regexp.escape(HOMEBREW_PREFIX.to_s)}/.*share/doc/sea-mlir },
                  shell_output("#{bin}/sea-vc --agent"))
   end

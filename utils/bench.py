@@ -410,7 +410,12 @@ def run_one(vc, mlir, cfg, cfgname, job, rep, outdir, timeout, mem):
 
     def limits():  # as brunch: CPU and address-space rlimits
         if mem:
-            resource.setrlimit(resource.RLIMIT_AS, (mem << 20, mem << 20))
+            try:
+                resource.setrlimit(resource.RLIMIT_AS, (mem << 20, mem << 20))
+            except (OSError, ValueError):
+                # macOS refuses any finite RLIMIT_AS (EINVAL): no memory cap
+                if sys.platform != "darwin":
+                    raise
         if timeout:
             resource.setrlimit(resource.RLIMIT_CPU, (timeout, timeout + 5))
 

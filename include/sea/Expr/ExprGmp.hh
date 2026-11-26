@@ -9,6 +9,10 @@
 #include <gmp.h>
 #include <string>
 
+// The (unsigned) long long overloads of mpz_class narrow to (unsigned) long.
+static_assert(sizeof(long) == sizeof(long long),
+              "ExprGmp.hh assumes an LP64 platform");
+
 namespace expr {
 
 namespace {
@@ -44,6 +48,12 @@ public:
   explicit mpz_class(unsigned int v) { mpz_init_set_ui(m_num, v); }
   explicit mpz_class(unsigned long int v) { mpz_init_set_ui(m_num, v); }
   mpz_class(signed long int v) { mpz_init_set_si(m_num, v); }
+  // unsigned long long: uint64_t on macOS, a type distinct from unsigned
+  // long there, so mpz_class(uint64_t) would match no overload above exactly
+  // (ambiguous). Explicit, and no signed long long overload: an implicit one
+  // would make every int -> mpz_class conversion ambiguous.
+  explicit mpz_class(unsigned long long v)
+      : mpz_class(static_cast<unsigned long>(v)) {}
 
   mpz_class(const std::string &v, int base = 10) {
     if (mpz_init_set_str(m_num, v.c_str(), base) != 0) {
@@ -104,6 +114,30 @@ public:
   bool operator<=(signed long v) const { return mpz_cmp_si(m_num, v) <= 0; }
   bool operator>=(unsigned long v) const { return mpz_cmp_ui(m_num, v) >= 0; }
   bool operator>=(signed long v) const { return mpz_cmp_si(m_num, v) >= 0; }
+  bool operator<(unsigned long long v) const {
+    return *this < static_cast<unsigned long>(v);
+  }
+  bool operator<(signed long long v) const {
+    return *this < static_cast<signed long>(v);
+  }
+  bool operator>(unsigned long long v) const {
+    return *this > static_cast<unsigned long>(v);
+  }
+  bool operator>(signed long long v) const {
+    return *this > static_cast<signed long>(v);
+  }
+  bool operator<=(unsigned long long v) const {
+    return *this <= static_cast<unsigned long>(v);
+  }
+  bool operator<=(signed long long v) const {
+    return *this <= static_cast<signed long>(v);
+  }
+  bool operator>=(unsigned long long v) const {
+    return *this >= static_cast<unsigned long>(v);
+  }
+  bool operator>=(signed long long v) const {
+    return *this >= static_cast<signed long>(v);
+  }
 
   bool operator<(const mpz_class &v) const {
     return mpz_cmp(m_num, v.m_num) < 0;
