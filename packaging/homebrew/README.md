@@ -64,6 +64,75 @@ From a `--brew-source formula` build only: upload each bottle
 `gh release upload` to the release `<formula>-<version>` of the tap
 repository (`brew pr-upload` cannot consume this directory), and commit
 `Formula/` with the `bottle do` blocks. Bottling uses `--no-rebuild`:
-re-bottling a published version bumps the formula's `revision`. macOS bottles are built on a Mac with the same
-commands (`brew install --build-bottle`, `brew test`, `brew bottle --json`,
-`brew bottle --merge --write`); their blocks merge into the same formulae.
+re-bottling a published version bumps the formula's `revision`. macOS
+bottles are built on a Mac ("Bottles: macOS" below); their lines merge into
+the same `bottle do` blocks.
+
+## Bottles: macOS
+
+Built by hand on an Apple Silicon Mac, from the tap's formulae (the
+release's `url` and `sha256`); from sea-mlir 0.6.1 on (0.6.0 does not
+build on macOS). A bottle installs on the macOS release it
+was built on and on newer ones (its tag: `arm64_tahoe` = macOS 26,
+`arm64_golden_gate` = macOS 27): build on the oldest macOS to support.
+Only `sea-mlir` (and later `seahorn`) is bottled: `sea-mlir-llvm` is
+built from source on the Mac as a build dependency and is never needed to
+install a bottle.
+
+Needs: the Xcode command-line tools (`xcode-select --install`), Homebrew
+7.0 or newer at its default prefix (`/opt/homebrew`), and about 20 GB of
+free disk (the LLVM build tree, the `sea-mlir-llvm` keg of 3.1 GB, the
+build dependencies of about 1 GB). Times on a 14-core M-series Mac:
+`sea-mlir-llvm` 8 min, `sea-mlir` 4 min (solvers and `check-sea`
+included).
+
+```bash
+export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1 \
+       HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_AUTOREMOVE=1
+# the tap at the commit whose formulae carry the release (url, sha256)
+brew tap seahorn/seahorn
+git -C "$(brew --repository seahorn/seahorn)" checkout <tap commit or branch>
+brew trust seahorn/seahorn          # Homebrew 7 loads other taps' formulae only once trusted
+mkdir -p ~/bottles && cd ~/bottles
+version=$(brew ruby -e 'puts Formula["seahorn/seahorn/sea-mlir"].version')
+brew install --build-bottle seahorn/seahorn/sea-mlir    # builds sea-mlir-llvm first; runs check-sea
+brew linkage --test --strict seahorn/seahorn/sea-mlir  # only declared dependencies (gmp, mpfr)
+brew test seahorn/seahorn/sea-mlir
+brew bottle --json --no-rebuild \
+  --root-url="https://github.com/seahorn/homebrew-seahorn/releases/download/sea-mlir-$version" \
+  seahorn/seahorn/sea-mlir
+```
+
+`brew bottle` writes `sea-mlir--<version>.<tag>.bottle.tar.gz` (two
+dashes) and its `.json`; the download name is the JSON's `filename`
+(`sea-mlir-<version>.<tag>.bottle.tar.gz`, one dash): rename the tarball
+to it before uploading, as `docker/homebrew-bottle.sh` does.
+
+Before uploading, install the bottle as a user would, from the bottle only:
+copy the tap's formulae into `DIR/Formula`, add the `bottle do` line from
+the JSON, put the renamed tarball into `DIR/bottles`, remove the kegs built
+from source and run `install-local.sh` (it fails unless every keg was
+poured from a bottle):
+
+```bash
+HOMEBREW_NO_AUTOREMOVE=1 brew uninstall seahorn/seahorn/sea-mlir seahorn/seahorn/sea-mlir-llvm
+brew untap --force seahorn/seahorn
+bash install-local.sh DIR sea-mlir && brew test seahorn/seahorn/sea-mlir
+```
+
+Release: upload the renamed tarball to the tap release
+`sea-mlir-<version>` (`gh release upload sea-mlir-<version> <file> --repo
+seahorn/homebrew-seahorn`) and merge its line into the tap's formula,
+next to `x86_64_linux` (`brew bottle --merge --write --no-commit
+*.bottle.json` in the tap checkout; not yet tried on this tap).
+
+Traps:
+- `HOMEBREW_NO_AUTOREMOVE=1`: without it `brew uninstall` also removes
+  dependencies nothing else in Homebrew uses (for example a `python@3.x`
+  that virtualenvs outside Homebrew still use).
+- The build runs in macOS's sandbox: a formula's `install` cannot fetch
+  (a resource's `fetch` takes a lock under the Homebrew prefix that the
+  sandbox denies; `sea-mlir.rb` uses `cached_download`), and its `PATH`
+  holds only the declared dependencies' `bin` directories and `/usr/bin`.
+- `check-sea` and `brew test` crash some processes on purpose (death tests,
+  `test/Tools/Inputs/fake-sea-vc.py`); macOS writes crash reports for them.
