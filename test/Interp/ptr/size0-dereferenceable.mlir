@@ -1,6 +1,6 @@
 // RUN: sea-run %s --program=main | FileCheck %s
 // RUN: sea-opt %s --sea-lower-fat-pointers --sea-place-static | sea-run - --program=main | FileCheck %s
-// RUN: sea-vc %s --program=any_len --lower | FileCheck %s --check-prefix=VC
+// RUN: sea-vc %s --program=any_len --lower --lower-opt=false | FileCheck %s --check-prefix=VC
 
 // A pointer of sea.ptr.nondet or sea.func_addr points to an object of size
 // 0: sea.ptr.dereferenceable is 0 for every len > 0, and 1 for len 0 (the

@@ -257,11 +257,16 @@ static LogicalResult verifyAlign(Operation *op, std::optional<uint64_t> align,
   return success();
 }
 
-/// A value loaded or stored spans whole cells (as sea.load / sea.store).
+/// A value loaded or stored spans whole cells (as sea.load / sea.store); on a
+/// keyed memory it is exactly one cell.
 static LogicalResult verifyCellValue(Operation *op, Value var, Type t,
                                      StringRef what) {
   sea::MemType mem = regionOf(var.getType());
   unsigned cell = mem.getCell().getWidth();
+  if (mem.isKeyed() && sea::bitWidthOf(t) != cell)
+    return op->emitOpError()
+           << what << " type " << t << " is not one cell " << mem.getCell()
+           << ": an access of a keyed memory is one whole cell";
   if (sea::bitWidthOf(t) % cell == 0)
     return success();
   return op->emitOpError() << what << " type " << t << " does not fit cells "

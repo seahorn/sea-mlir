@@ -36,7 +36,9 @@
 //     (fat.unsupported); pointers must not flow through unreachable blocks;
 //     a pointer loaded or stored has the width of its memory's index
 //     (fat.mixed-pointer-width: a companion cell has the index width, and a
-//     keyed access is one cell). Checked before any change.
+//     keyed access is one cell). Checked whenever the pass lowers
+//     anything (a program with no sea.ptr.base / dereferenceable is left
+//     alone); sea-place-static refuses mixed widths anyway.
 //   Produces: no sea.ptr.base / sea.ptr.dereferenceable (checked); the
 //     companions are ordinary values and memories (dead ones are harmless).
 //   Not modeled: an integer store into a pointer-holding memory leaves the
