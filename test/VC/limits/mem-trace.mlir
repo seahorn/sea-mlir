@@ -24,12 +24,13 @@
 // QUIET-NOT: vc.mem
 // RUN: sea-vc %s --lower --seam --smt2 > %t.off
 // RUN: sea-vc %s --lower --seam --smt2 --mem-trace --mem-trace-interval=0 --mem-watch-step=16 2>/dev/null > %t.on
-// RUN: sea-vc %s --lower --seam --smt2 --max-nodes=100000000 --max-rss=100000000 > %t.budget
+// --max-rss: Linux only (/proc)
+// RUN: %if proc-rss %{ sea-vc %s --lower --seam --smt2 --max-nodes=100000000 --max-rss=100000000 > %t.budget %}
 // RUN: sed -e '/-time:/d' -e '/^tool.version/d' %t.off > %t.off.s
 // RUN: sed -e '/-time:/d' -e '/^tool.version/d' %t.on > %t.on.s
-// RUN: sed -e '/-time:/d' -e '/^tool.version/d' %t.budget > %t.budget.s
+// RUN: %if proc-rss %{ sed -e '/-time:/d' -e '/^tool.version/d' %t.budget > %t.budget.s %}
 // RUN: diff %t.off.s %t.on.s
-// RUN: diff %t.off.s %t.budget.s
+// RUN: %if proc-rss %{ diff %t.off.s %t.budget.s %}
 
 // A budget never replaces a verdict: they bound encoding and solving. With
 // the limit between the live nodes up to the solve's end and those of the

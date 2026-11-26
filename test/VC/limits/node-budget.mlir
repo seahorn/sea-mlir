@@ -44,9 +44,9 @@
 // JSONL-NEXT: {"kind":"stat","key":"budget","value":"hit","resource":"nodes","limit":150,
 
 // --max-rss: a budget of resident memory in MiB, checked at the same
-// points (1 MiB: exceeded at the first check).
-// RUN: not sea-vc %s --lower --seam --max-rss=1 2>%t.rss.err | FileCheck %s --check-prefix=RSS
-// RUN: FileCheck %s --check-prefix=RSSERR < %t.rss.err
+// points (1 MiB: exceeded at the first check). Linux only (/proc).
+// RUN: %if proc-rss %{ not sea-vc %s --lower --seam --max-rss=1 2>%t.rss.err | FileCheck %s --check-prefix=RSS %}
+// RUN: %if proc-rss %{ FileCheck %s --check-prefix=RSSERR < %t.rss.err %}
 // RSS: result: unknown
 // RSS-NEXT: budget: hit resource=rss limit=1
 // RSSERR: [vc.rss-budget]
