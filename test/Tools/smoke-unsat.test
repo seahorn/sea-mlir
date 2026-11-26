@@ -1,0 +1,25 @@
+// The release smoke program docker/smoke/unsat.mlir (also inline in the
+// Homebrew formula's test) is not vacuous: its assertion survives lowering
+// (no merge-asserts.no-assertions warning) under the default and the seam
+// configurations, and the solver decides it. Without the assumption i == j
+// the same program is sat, with a replay that fails the assertion.
+// RUN: mkdir -p %t
+// RUN: sea-vc %sea_src_root/docker/smoke/unsat.mlir --lower 2>&1 | FileCheck %s --check-prefix=UNSAT
+// RUN: sea-vc %sea_src_root/docker/smoke/unsat.mlir --lower --config=seam 2>&1 | FileCheck %s --check-prefixes=UNSAT,SEAM
+// RUN: grep -v 'sea.assume [%]same\|[%]same =' %sea_src_root/docker/smoke/unsat.mlir > %t/mutant.mlir
+// RUN: sea-vc %t/mutant.mlir --lower 2>&1 | FileCheck %s --check-prefix=SAT
+// RUN: sea-vc %t/mutant.mlir --lower --config=seam 2>&1 | FileCheck %s --check-prefix=SAT
+
+// UNSAT-NOT: no-assertions
+// SEAM: seam.premises: assumed
+// UNSAT: solver-answer: unsat
+// UNSAT: result: unsat
+
+// SAT-NOT: no-assertions
+// SAT: solver-answer: sat
+// SAT: replay: assert-failed
+// SAT: validate: checked={{[0-9]+}} mismatches=0
+// SAT: result: sat
+
+// SPDX-FileCopyrightText: 2026 The sea-mlir Authors
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

@@ -132,13 +132,15 @@ check_sat_z3() {
 
 # the shipped profile, found from the binary (no SEA_MLIR_PROFILE_PATH)
 check_unsat_profile() {
-  sea-vc "$fixtures/unsat.mlir" --lower --config=seam > unsat.log
+  sea-vc "$fixtures/unsat.mlir" --lower --config=seam > unsat.log 2>&1
   cat unsat.log
   grep -qxF "vc.config: $prefix/share/sea-mlir/profiles/seam.cfg" unsat.log
   grep -q '^result: unsat$' unsat.log
+  # not vacuous: the assertion survived lowering
+  ! grep -q 'no-assertions' unsat.log
 }
 
-# the unsat fixture needs no query; the sat one reaches the solver
+# the sat fixture with the other solvers
 check_sat_yices() {
   sea-vc "$fixtures/sat.mlir" --lower --solver=yices > sat-yices.log
   cat sat-yices.log

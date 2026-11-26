@@ -224,9 +224,17 @@ class SeaMlir < Formula
         %memory = sea.mem.const %zero : !m
         %size = sea.const 16 : i64
         %object = sea.malloc %size align 16 [0] : i64 -> !sea.ptr<64>
-        %value = sea.nondet "value" [1] : i8
-        %written = sea.store %memory[%object], %value inplace : !m, i8
-        %read = sea.load %written[%object] : !m -> i8
+        %i = sea.nondet "i" [1] : i64
+        %j = sea.nondet "j" [2] : i64
+        %value = sea.nondet "value" [3] : i8
+        %same = sea.icmp eq, %i, %j : i64
+        sea.assume %same
+        %inside = sea.icmp ult, %i, %size : i64
+        sea.assume %inside
+        %at_i = sea.ptr.add %object, %i : !sea.ptr<64>, i64
+        %at_j = sea.ptr.add %object, %j : !sea.ptr<64>, i64
+        %written = sea.store %memory[%at_i], %value inplace : !m, i8
+        %read = sea.load %written[%at_j] : !m -> i8
         %ok = sea.icmp eq, %read, %value : i8
         sea.assert %ok
         sea.halt
@@ -238,7 +246,10 @@ class SeaMlir < Formula
       assert_match(/^replay: assert-failed/, sat)
       assert_match "mismatches=0", sat
     end
-    assert_match(/^result: unsat$/, shell_output("#{bin}/sea-vc unsat.mlir --lower --config=seam"))
+    # an unsat answer that lowering reached by dropping the assertion is vacuous
+    unsat = shell_output("#{bin}/sea-vc unsat.mlir --lower --config=seam 2>&1")
+    assert_match(/^result: unsat$/, unsat)
+    refute_match "no-assertions", unsat
     assert_match(%r{^DOCS: #{Regexp.escape(HOMEBREW_PREFIX.to_s)}/.*share/doc/sea-mlir },
                  shell_output("#{bin}/sea-vc --agent"))
   end

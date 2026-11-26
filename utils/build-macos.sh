@@ -351,8 +351,9 @@ stage_smoke() {
     grep -q '^result: sat$' "sat-$solver.log" || die "sat.mlir with $solver: $(cat "sat-$solver.log")"
     grep -q 'mismatches=0' "sat-$solver.log" || die "sat.mlir replay with $solver"
   done
-  sea-vc "$fx/unsat.mlir" --config=seam > unsat.log
+  sea-vc "$fx/unsat.mlir" --config=seam > unsat.log 2>&1
   grep -q '^result: unsat$' unsat.log || die "unsat.mlir: $(cat unsat.log)"
+  ! grep -q 'no-assertions' unsat.log || die "unsat.mlir is vacuous: $(cat unsat.log)"
   # the export frontend: SeaHorn compiles C with llvm@18's clang (-m64:
   # the default -m32 needs 32-bit headers, which macOS does not have)
   for v in sat unsat; do
