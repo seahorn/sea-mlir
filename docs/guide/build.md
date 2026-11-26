@@ -5,6 +5,29 @@ the command-line options can change between releases. Linux on x86-64 is
 the platform the release gates run on. From 0.6.1 on, sea-mlir also builds
 on macOS (arm64) and passes `check-sea` there.
 
+## Install a release
+
+Prebuilt binaries need no build. With Homebrew, on Linux x86-64 (Ubuntu
+24.04 or newer) and macOS arm64 (macOS 26 or newer):
+
+```bash
+brew tap seahorn/seahorn
+brew trust seahorn/seahorn               # Homebrew 7: load the tap's formulae
+brew install seahorn/seahorn/sea-mlir    # the sea-mlir tools
+brew install seahorn/seahorn/seahorn     # optional: the SeaHorn C front end
+```
+
+On Linux x86-64 without Homebrew, download
+`sea-mlir-<version>-linux-x86_64.tar.gz` (or the bundle with SeaHorn,
+`sea-mlir-bundle-<version>-linux-x86_64.tar.gz`) and its `.sha256` from the
+[latest release](https://github.com/seahorn/sea-mlir/releases/latest),
+check it with `sha256sum -c`, install the runtime libraries
+(`apt-get install libgmpxx4ldbl libmpfr6`; the bundle also needs
+`clang-18` and `python3`), unpack it and add its `bin` directory to
+`PATH`. There is no macOS tarball.
+
+The rest of this page builds from source.
+
 ## Dependencies
 
 | Dependency | Version | Notes |
