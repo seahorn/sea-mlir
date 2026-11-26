@@ -10,12 +10,15 @@ class SeaMlir < Formula
   # replaces url, sha256 and version with a local `git archive` tarball
   # (packaging/homebrew/README.md).
   url "https://github.com/seahorn/sea-mlir/archive/refs/tags/v0.6.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "d83d2c5e7fa90d0260e8f92723c94cb9ef122ec26268a46430b38e272540af5a"
   license all_of: [
     { "Apache-2.0" => { with: "LLVM-exception" } },
     "MIT",
   ]
 
+  # Yices: `autoconf` generates its configure (on macOS too: superenv's
+  # PATH has only the dependencies' bin directories and /usr/bin)
+  depends_on "autoconf" => :build
   depends_on "boost" => :build
   depends_on "cmake" => :build
   depends_on "gperf" => :build
@@ -29,7 +32,6 @@ class SeaMlir < Formula
   depends_on "mpfr"
 
   on_linux do
-    depends_on "autoconf" => :build
     depends_on "llvm@18" => :build
   end
 
@@ -122,7 +124,10 @@ class SeaMlir < Formula
       # the wraps' sources, offline: CaDiCaL from the package cache (meson
       # checks its hash), SymFPU (a git wrap) unpacked with its overlay
       mkdir_p "subprojects/packagecache"
-      cp resource("cadical").fetch, "subprojects/packagecache/cadical-2.1.2.tar.gz"
+      # (the download Homebrew fetched and verified before the build: a
+      # fetch here takes a lock in HOMEBREW_PREFIX, which the macOS build
+      # sandbox denies)
+      cp resource("cadical").cached_download, "subprojects/packagecache/cadical-2.1.2.tar.gz"
       resource("symfpu").stage(Pathname.pwd/"subprojects/symfpu")
       cp_r "subprojects/packagefiles/symfpu/.", "subprojects/symfpu"
       system "meson", "setup", "build", "--prefix=#{solvers}", "--libdir=#{solvers}/lib",
