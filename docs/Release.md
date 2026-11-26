@@ -1,11 +1,13 @@
-# sea-mlir 0.5.0
+# sea-mlir 0.6.0
 
 This release freezes the functionality of sea-mlir so that applications can
 build on a fixed version instead of the development branch. It is a
 research prototype. Expect bugs. There is no promise that the text format of
 the dialect or the options stay compatible across releases. Linux (x86-64)
 is the only platform built and tested. A first macOS build is described in
-[BuildMacOS.md](BuildMacOS.md); the plan for binary releases is
+[BuildMacOS.md](BuildMacOS.md). This is the first release with binary
+artifacts ([Getting the binaries](#getting-the-binaries)); the plan, the
+decisions and the license audit are in
 [design/BinaryRelease.md](design/BinaryRelease.md).
 
 Every tool prints its version with `--version`. `sea-vc` also prints it as
@@ -55,6 +57,95 @@ include it (see [Reporting a bug](#reporting-a-bug)).
 The exporter from LLVM bitcode to the sea dialect (`--horn-sea-mlir-export`)
 is part of SeaHorn, not of this release.
 
+## Getting the binaries
+
+0.6.0 publishes the two Linux x86-64 tarballs below (the standalone
+`sea-mlir` tarball and the bundle with SeaHorn), each with its `.sha256`
+and `.json` manifest, as assets of the GitHub release `v0.6.0`
+([github.com/seahorn/sea-mlir/releases](https://github.com/seahorn/sea-mlir/releases)).
+The Homebrew tap is not published with this release, and there are no
+macOS binaries.
+
+Every artifact is built by the pipeline in `docker/` (`just binary-release`,
+[design/BinaryRelease.md](design/BinaryRelease.md)) from a clean checkout of
+the release tag, with the pins of this release. No GPL-family code is
+shipped. GMP, GMPXX and MPFR (LGPL) are runtime dependencies, never
+bundled.
+
+### Linux tarball
+
+Two tarballs for Ubuntu 24.04 on x86-64, each with a `.sha256` file and a
+`RELEASE-MANIFEST.json` (pins, packages, license audit, ELF dependencies,
+hashes):
+- `sea-mlir-<version>-linux-x86_64.tar.gz`: the sea-mlir tools with z3,
+  Yices and Bitwuzla.
+- `sea-mlir-bundle-<version>-linux-x86_64.tar.gz`: the same, plus the
+  SeaHorn dev18 front end (`sea`, `seahorn`, `seapp`, `seaopt`, sea-dsa;
+  built without clam and crab), so that C programs can be exported and
+  verified.
+
+Unpack the tarball and add `<root>/bin` to `PATH`. The binaries find their
+libraries relative to themselves (`$ORIGIN/../lib`), so `LD_LIBRARY_PATH`
+is not needed. Layout: `bin/`, `lib/`, `share/sea-mlir/profiles`,
+`share/doc/sea-mlir/docs` (the docs root named by the `DOCS:` line of
+`--agent`), `share/seahorn` (bundle), `THIRD-PARTY-NOTICES` and
+`RELEASE-MANIFEST.json`.
+
+Requirements on a clean Ubuntu 24.04:
+- tarball: `apt-get install libgmpxx4ldbl libmpfr6` (`libgmp10` is in the
+  base image);
+- bundle: the same, plus `clang-18` and `python3`. `sea` compiles C with
+  `clang-18`. Its default is `-m32`, which needs `libc6-dev-i386`; `-m64`
+  needs nothing more. Linking several input files uses `llvm-18`.
+
+The bundle ships two z3 libraries side by side: z3 5.4 for `sea-vc` and
+z3 4.12 for SeaHorn. No process loads both.
+
+### Homebrew
+
+The tap is `seahorn/homebrew-seahorn` (`brew tap seahorn/seahorn`), built
+from `packaging/homebrew`. Three formulae, each with its own bottle:
+- `sea-mlir-llvm`: LLVM and MLIR at the pin, keg-only, a build dependency
+  of `sea-mlir` only. Its bottle is large (958 MB); users who pour
+  `sea-mlir` never download it.
+- `sea-mlir`: the tools, profiles and docs, with the pinned z3, Bitwuzla
+  and Yices in `libexec` (34 MB bottle). Depends on `gmp` and `mpfr`.
+- `seahorn`: SeaHorn dev18 without clam, z3 4.12 in `libexec`, Yices from
+  `sea-mlir`; `sea` runs the `clang` of `llvm@18` (90 MB bottle).
+
+```bash
+brew tap seahorn/seahorn
+brew install seahorn/seahorn/sea-mlir      # the sea-mlir tools
+brew install seahorn/seahorn/seahorn       # with SeaHorn (installs sea-mlir)
+```
+
+Bottles exist for Linux x86-64 and need glibc 2.38 and a libstdc++ of GCC
+13 or newer (Ubuntu 24.04 or newer). They were built and smoke-tested in
+Docker, installing from bottles only on a clean Homebrew. Status of the
+rest:
+- the tap repository is not created yet and the bottles are not uploaded;
+- the macOS (arm64) bottles are not built: macOS is a follow-up
+  (see below);
+- the formula's `sha256` is a placeholder until the tag exists.
+
+### macOS
+
+There is no macOS tarball: downloaded by a browser it is quarantined, and
+its unsigned binaries are blocked by Gatekeeper. macOS is to ship as
+Homebrew bottles. Nothing is notarized (that needs a paid Apple Developer
+ID); on arm64 an ad-hoc signature is enough for bottles.
+
+What exists is a first build from source, [BuildMacOS.md](BuildMacOS.md)
+and `utils/build-macos.sh`, which builds LLVM, the solvers, sea-mlir and
+SeaHorn at the pins, runs the tests and a smoke run, and writes logs that
+say what works. Apple Silicon is the expected machine; Intel Macs and
+macOS before 14 were not considered.
+For 0.6.0 the macOS build has not been run; the guide is the starting
+point for a first build.
+
+`sea-vc --mem-limit` is not enforced on macOS (the run warns
+`vc.mem-limit-unenforced`).
+
 ## Building
 
 ### Dependencies
@@ -78,9 +169,10 @@ sea-mlir builds against one LLVM commit, recorded in `LLVM_REVISION`
 LLVM 24 on, the major version of sea-mlir is the LLVM major it builds on:
 `v24.0.0` is pinned to `llvmorg-24.1.0`, minor versions add features
 within one LLVM major, and patch versions fix bugs or move to a later
-24.1.x. The text format of the dialect can change with each major. This
-release, `v0.1`, is a preview pinned to a commit of LLVM `main`. Between
-releases the pin moves to a newer LLVM commit about once a month.
+24.1.x. The text format of the dialect can change with each major. Until
+then, the 0.x releases (this one is 0.6.0) are previews pinned to a commit
+of LLVM `main`. Between releases the pin moves to a newer LLVM commit about
+once a month.
 `just llvm-drift` prints the pin's age (with an llvm-project checkout,
 `--llvm <dir>`, also the commits it is behind `main`, in total and in the
 MLIR parts sea-mlir uses). `just release-check` warns when the pin is
@@ -509,6 +601,36 @@ exports SeaM terms for its conformance checks, which are run from seam-lean
 in each `sea-vc` configuration (lanes), the same terms after the solver
 boundary, and every rule firing with its premise as a witness for the
 proved rules. Format and lanes: [SeamExport.md](SeamExport.md).
+
+The SeaM expression layer of `sea-vc` has a Lean model: terms, rewriting
+rules, the Ackermann lowering and the solver boundary. MLIR passes are
+classified, not proved. The last full parity check against that model was
+at `19a433a`. It classified each rule label of the expression layer: 132
+correspond to a proved theorem, 41 have a theorem but no conformance
+replay yet, and 26 have no proof. A rule without a proof can still be
+checked per run with `--seam-check`.
+
+For 0.6.0, only the fold of top-level equalities was checked, because it
+is new and on by default:
+- a code review of `lib/VC/FoldTopEqs.cpp` and its use in `sea-vc`
+  against its obligation: the folded query is equisatisfiable with the
+  original, and every model extended by the trail replays on the
+  original;
+- a re-check of the fix it led to (#163), with unit probes and the fold's
+  lit tests;
+- `utils/fuzz-seam.py --seam-check` runs in four access modes, with no
+  invalid firing.
+
+Not checked against the model for this release:
+- the rules added or changed in the 0.4.0 stack (slot placement, the
+  Ackermann cells plan and arm separation);
+- object segments beyond the export importer;
+- the theorem mapping of native `mfill`;
+- the classification of the settled result line, `--smt2` and
+  `--z3-logic`;
+- the opt-in canonical-sum modes.
+
+No known soundness defect is open.
 
 ## Reporting a bug
 
