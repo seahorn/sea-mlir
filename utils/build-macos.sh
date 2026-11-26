@@ -242,6 +242,10 @@ stage_bitwuzla() {
   (
     cd "$src"
     # CaDiCaL and SymFPU come from Bitwuzla's subprojects/*.wrap pins
+    # Bitwuzla links a bare -lgmp (at ninja time), and Apple's ld does not
+    # search Homebrew's lib
+    LIBRARY_PATH="$(brew_prefix gmp)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+    export LIBRARY_PATH
     PKG_CONFIG_PATH="$(brew_prefix gmp)/lib/pkgconfig:$(brew_prefix mpfr)/lib/pkgconfig" \
       meson setup build --buildtype=release --prefix="$SOLVERS" \
       --libdir=lib -Ddefault_library=shared \
@@ -271,12 +275,14 @@ stage_yices() {
 
 stage_sea_mlir() {
   local build=$ROOT/build/sea-mlir rc=0
-  # Apple ld (no LLVM_ENABLE_LLD); Boost and GMP from Homebrew; an
+  # Apple ld (no LLVM_ENABLE_LLD); Boost and GMP from Homebrew (Boost's
+  # headers by -isystem: lib/Support includes them without find_package); an
   # install that finds its solver dylibs in ../lib
   cmake -S "$SRC" -B "$build" -GNinja -DCMAKE_BUILD_TYPE=Release \
     -DMLIR_DIR="$LLVM/lib/cmake/mlir" -DLLVM_DIR="$LLVM/lib/cmake/llvm" \
     -DLLVM_EXTERNAL_LIT="$LLVM/share/lit/lit.py" -DLLVM_LIT_ARGS="-sv -j$JOBS" \
     -DCMAKE_PREFIX_PATH="$(brew_prefix boost);$(brew_prefix gmp)" \
+    -DCMAKE_CXX_FLAGS="-isystem $(brew_prefix boost)/include" \
     -DZ3_ROOT="$SOLVERS" -DSEA_Z3="$SOLVERS/bin/z3" \
     -DBITWUZLA_ROOT="$SOLVERS" \
     -DSEA_ENABLE_YICES=ON -DYICES2_ROOT="$SOLVERS" \
