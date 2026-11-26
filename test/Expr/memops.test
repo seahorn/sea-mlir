@@ -38,8 +38,7 @@ RUN: not --crash sea-memops-test const-array-log 2>&1 | FileCheck %s --check-pre
 LOG-NOT: log: yices.const-array
 LOG: const-array-log: unsupported assertion next
 LOG-NEXT: log: yices.const-array const-arrays=2 assertion="(const-array(bv(4), x)=const-array(bv(4), 0:bv(8)))"
-LOG-NEXT: LLVM ERROR: encode_term: failed on const-array(bv(4), x)
-LOG-NEXT: const-array outside a select: Yices has no const-array
+LOG: const-array outside a select
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception

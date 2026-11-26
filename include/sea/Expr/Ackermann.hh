@@ -1528,8 +1528,9 @@ public:
   /// no lowered array, read by the inner model. Any other occurrence of a
   /// lowered A (e.g. an equality of arrays) becomes the store chain of
   /// function(A) over a constant-0 array (Yices cannot evaluate those: its
-  /// const arrays are lambdas). The rest is evaluated by the inner model. Null
-  /// if an index or a condition has no value (then every later call too).
+  /// marshaller refuses a const-array outside a select). The rest is evaluated
+  /// by the inner model. Null if an index or a condition has no value (then
+  /// every later call too).
   Expr eval(Expr e, bool complete) override {
     using namespace ackermann_detail;
     if (m_broken)

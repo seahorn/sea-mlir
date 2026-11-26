@@ -1,10 +1,10 @@
 // REQUIRES: yices
 // RUN: sea-vc %s --program=store --solver=yices | FileCheck %s
-// RUN: sea-vc %s --program=join --lower --solver=yices | FileCheck %s
+// RUN: sea-vc %s --program=join --lower --vc-join=eq --solver=yices | FileCheck %s
 // RUN: sea-vc %s --program=store --solver=z3 | FileCheck %s
-// RUN: sea-vc %s --program=join --lower --solver=z3 | FileCheck %s
+// RUN: sea-vc %s --program=join --lower --vc-join=eq --solver=z3 | FileCheck %s
 // RUN: %if bitwuzla %{ sea-vc %s --program=store --solver=bitwuzla | FileCheck %s %}
-// RUN: %if bitwuzla %{ sea-vc %s --program=join --lower --solver=bitwuzla | FileCheck %s %}
+// RUN: %if bitwuzla %{ sea-vc %s --program=join --lower --vc-join=eq --solver=bitwuzla | FileCheck %s %}
 
 // A sat query over a constant memory (sea.mem.const = a const-array) is
 // replayed with Yices: the replay evaluates the VC's load term, a select
@@ -18,7 +18,7 @@
 // CHECK: validate: checked={{[0-9]+}} mismatches=0
 // CHECK: result: sat
 
-// The release smoke program without its assumption i == j.
+// A reduced form of the release smoke program's mutant (no i == j).
 sea.program @store {
   %z = sea.const 0 : i8
   %m0 = sea.mem.const %z : !sea.mem<!sea.addr<8>, i8>
@@ -34,8 +34,9 @@ sea.program @store {
   sea.halt
 }
 
-// A constant memory reaching a join (Yices inlines the joined memory's
-// definition), with a wrong expectation on the write path.
+// A constant memory reaching a join, with a wrong expectation on the write
+// path. --vc-join=eq: the joined memory is defined by guarded equalities,
+// which Yices inlines (ConstArrayDefs) before the select expansion.
 sea.program @join {
   %z = sea.const 0 : i8
   %m0 = sea.mem.const %z : !sea.mem<!sea.addr<8>, i8>
