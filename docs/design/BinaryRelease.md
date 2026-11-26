@@ -372,8 +372,9 @@ Bottles are built locally, not on GitHub Actions: Linux x86_64 in Docker
 now, macOS arm64 on a Mac later. GitHub-hosted runners (3-4 cores, a 6 h
 job limit) are an optional later step for the tap's pull requests.
 Hosted runners do test the published Linux tarballs
-(`.github/workflows/release-test.yml`, section 5); Homebrew and macOS
-jobs can be added to that workflow.
+(`.github/workflows/release-test.yml`, section 5), and its job
+`homebrew-macos` (by hand, `-f tap-ref=<tap ref>`) installs the tap's
+macOS bottle on a `macos-26` runner from the bottle only.
 
 - **Linux, in Docker.** `just binary-release OUT --homebrew --cpuset
   <8 cpus>` (`docker/release.py`, `docker/Homebrew.Dockerfile`) runs

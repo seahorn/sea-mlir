@@ -19,7 +19,8 @@
 # the workflow of the tagged commit for the release event.
 # The smoke scripts come from the workflow's ref: the release's tag, or the
 # branch a manual run names (so newer checks can test an older release).
-# Jobs per platform can be added next to tgz-linux (Homebrew, macOS).
+# homebrew-macos (by hand, -f tap-ref=REF) installs the tap's macOS bottle;
+# see its comment below.
 name: release test
 
 on:
@@ -41,6 +42,10 @@ on:
         type: string
       xfail:
         description: Checks expected to fail (check.sh names), for old releases
+        required: false
+        type: string
+      tap-ref:
+        description: Ref of seahorn/homebrew-seahorn whose bottle to test on macOS (empty = no macOS job)
         required: false
         type: string
 
@@ -106,3 +111,81 @@ jobs:
           # named v<version>; a trial tag skips that check
           if [ "$TAG" = "v${VERSION:-${TAG#v}}" ]; then export SMOKE_TAG="$TAG"; fi
           sh docker/smoke/test-tarball.sh "$RUNNER_TEMP/assets" "$PACKAGE" "${VERSION:-${TAG#v}}"
+
+  # The macOS bottle of the tap (seahorn/homebrew-seahorn) as a user
+  # installs it: from the bottle only, never built from source. By hand
+  # only, with the tap ref whose formula carries the bottle line: macOS
+  # bottles are added after the release (docs/Release.md, "macOS"):
+  #   gh workflow run release-test.yml -f tag=v0.6.1 -f tap-ref=main
+  # macos-26 is arm64 macOS 26, the oldest macOS the bottle (arm64_tahoe)
+  # supports; no hosted runner runs macOS 27 (arm64_golden_gate).
+  homebrew-macos:
+    if: inputs.tap-ref != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      TAG: ${{ inputs.tag }}
+      VERSION: ${{ inputs.version }}
+      TAP_REF: ${{ inputs.tap-ref }}
+      SMOKE_XFAIL: ${{ inputs.xfail }}
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_ANALYTICS: 1
+      HOMEBREW_NO_ENV_HINTS: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tap seahorn/seahorn at the tap ref
+        run: |
+          [[ "$TAG" =~ ^v[0-9A-Za-z._-]+$ ]] || { echo "bad tag: $TAG"; exit 1; }
+          [[ -z "$VERSION" || "$VERSION" =~ ^[0-9A-Za-z._-]+$ ]] || { echo "bad version: $VERSION"; exit 1; }
+          [[ "$TAP_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "bad tap ref: $TAP_REF"; exit 1; }
+          # the image's Homebrew may predate 7.0 (brew trust); then pinned
+          brew update --quiet
+          brew --version
+          brew ruby -e 'abort "Homebrew #{HOMEBREW_VERSION} < 7.0" if Version.new(HOMEBREW_VERSION) < Version.new("7.0")'
+          brew tap seahorn/seahorn
+          tap=$(brew --repository seahorn/seahorn)
+          git -C "$tap" fetch origin "$TAP_REF"
+          git -C "$tap" checkout --detach FETCH_HEAD
+          git -C "$tap" log --oneline -1
+          # Homebrew loads formulae of other taps only once they are trusted
+          brew trust seahorn/seahorn
+      - name: Install sea-mlir from its bottle only
+        run: |
+          # the formula's version, and a bottle for this macOS: a missing
+          # bottle would otherwise start a source build (LLVM, hours)
+          brew ruby -e '
+            f = Formula["seahorn/seahorn/sea-mlir"]
+            want = ARGV.fetch(0)
+            abort "formula version #{f.version}, expected #{want}" unless f.version.to_s == want
+            abort "no bottle of #{f.full_name} #{f.version} for #{Utils::Bottles.tag}" unless f.bottled?
+            puts "bottle: #{f.full_name} #{f.version} #{Utils::Bottles.tag}"
+          ' "${VERSION:-${TAG#v}}"
+          brew install seahorn/seahorn/sea-mlir
+          # sea-mlir and its runtime dependencies only: the image has
+          # formulae of its own that were not poured (other taps)
+          brew ruby -e '
+            f = Formula["seahorn/seahorn/sea-mlir"]
+            kegs = [f] + f.runtime_dependencies.map(&:to_formula)
+            built = kegs.reject { |k| k.any_installed_keg&.tab&.poured_from_bottle }
+            abort "built from source, not poured: #{built.map(&:full_name).join(" ")}" unless built.empty?
+            puts "poured from bottles: #{kegs.map(&:full_name).sort.join(" ")}"
+          '
+      - name: Check its libraries and run the formula's test
+        run: |
+          brew linkage --test --strict seahorn/seahorn/sea-mlir
+          brew test seahorn/seahorn/sea-mlir
+      - name: Smoke the installed keg
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          if [ "$TAG" = "v${VERSION:-${TAG#v}}" ]; then export SMOKE_TAG="$TAG"; fi
+          work=$(mktemp -d)
+          fixtures=$PWD/docker/smoke
+          cd "$work"
+          sh "$fixtures/check.sh" "$(brew --prefix seahorn/seahorn/sea-mlir)" standalone

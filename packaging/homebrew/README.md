@@ -95,7 +95,9 @@ git -C "$(brew --repository seahorn/seahorn)" checkout <tap commit or branch>
 brew trust seahorn/seahorn          # Homebrew 7 loads other taps' formulae only once trusted
 mkdir -p ~/bottles && cd ~/bottles
 version=$(brew ruby -e 'puts Formula["seahorn/seahorn/sea-mlir"].version')
-brew install --build-bottle seahorn/seahorn/sea-mlir    # builds sea-mlir-llvm first; runs check-sea
+# no bottle: Homebrew 7 builds a dependency from source only when asked
+brew install --build-from-source seahorn/seahorn/sea-mlir-llvm
+brew install --build-bottle seahorn/seahorn/sea-mlir    # runs check-sea
 brew linkage --test --strict seahorn/seahorn/sea-mlir  # only declared dependencies (gmp, mpfr)
 brew test seahorn/seahorn/sea-mlir
 brew bottle --json --no-rebuild \
@@ -123,10 +125,18 @@ bash install-local.sh DIR sea-mlir && brew test seahorn/seahorn/sea-mlir
 Release: upload the renamed tarball to the tap release
 `sea-mlir-<version>` (`gh release upload sea-mlir-<version> <file> --repo
 seahorn/homebrew-seahorn`) and merge its line into the tap's formula,
-next to `x86_64_linux` (`brew bottle --merge --write --no-commit
-*.bottle.json` in the tap checkout; not yet tried on this tap).
+next to `x86_64_linux` (`brew bottle --merge --keep-old --write
+--no-commit *.bottle.json` in the tap checkout; without `--keep-old` the
+block keeps only the JSON's tags and the Linux line is lost). Check that
+`git diff` adds one line, then commit.
 
 Traps:
+- `sea-mlir-llvm` stops in CMake with "Host compiler appears to require
+  libatomic": the compiler finds no `<atomic>`, usually a partial libc++
+  left in `/Library/Developer/CommandLineTools/usr/include/c++` by an old
+  Command Line Tools install, which hides the SDK's. Reinstall the tools
+  (`sudo rm -rf /Library/Developer/CommandLineTools && xcode-select
+  --install`).
 - `HOMEBREW_NO_AUTOREMOVE=1`: without it `brew uninstall` also removes
   dependencies nothing else in Homebrew uses (for example a `python@3.x`
   that virtualenvs outside Homebrew still use).

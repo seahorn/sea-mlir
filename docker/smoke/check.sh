@@ -10,7 +10,8 @@
 # print XFAIL, or XPASS (an error) when they pass. Exit 0 and
 # `smoke: pass` when no check failed unexpectedly. A check that does not
 # apply prints `skipped` (version-tag without SMOKE_TAG, the tag the
-# tarball must report).
+# tarball must report; libs and build-paths off Linux: a Homebrew keg on
+# macOS, whose libraries `brew linkage --test --strict` checks).
 set -eu
 [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { echo 'usage: check.sh PREFIX [standalone|bundle]' >&2; exit 2; }
 # the real path: the tools find their data from their own real path
@@ -20,6 +21,7 @@ case "$mode" in standalone|bundle) ;; *) echo 'expected standalone or bundle' >&
 fixtures=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 export PATH="$prefix/bin:$PATH"
 unset LD_LIBRARY_PATH SEA_MLIR_PROFILE_PATH
+os=$(uname -s)
 tools="sea-vc sea-run sea-opt sea-reduce sea-seam-export"
 xfail=$(printf '%s' "${SMOKE_XFAIL:-}" | tr ',' ' ')
 failed=''
@@ -31,6 +33,10 @@ is_elf() { [ "$(od -An -tx1 -N4 "$1" | tr -d ' \n')" = 7f454c46 ]; }
 # lib/ and libexec/ resolves its libraries, each inside the prefix or in
 # the system's library directories (nothing of the build machine)
 check_libs() {
+  if [ "$os" != Linux ]; then
+    echo "libs: ELF only, not on $os: skipped"
+    return 77
+  fi
   for dir in bin lib libexec; do
     if [ -d "$prefix/$dir" ]; then find "$prefix/$dir" -type f; fi
   done > elf-candidates.txt
@@ -161,6 +167,10 @@ check_sat_bitwuzla() {
 # build directory's path (/build) is checked by that lit test only: too
 # generic a string to scan for here.
 check_build_paths() {
+  if [ "$os" != Linux ]; then
+    echo "build-paths: the path of docker/Dockerfile, not on $os: skipped"
+    return 77
+  fi
   found=0
   for tool in $tools; do
     n=$(grep -c -a -F /src/sea-mlir "$prefix/bin/$tool" || :)
@@ -217,7 +227,7 @@ run() { # name
   set -e
   expected=pass
   case " $xfail " in *" $name "*) expected=fail;; esac
-  if [ "$rc" = 77 ] && [ "$name" = version-tag ]; then
+  if [ "$rc" = 77 ]; then
     status=skipped
   elif [ "$rc" = 0 ] && [ "$expected" = pass ]; then
     status=pass
