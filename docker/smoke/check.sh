@@ -136,8 +136,9 @@ check_unsat_profile() {
   cat unsat.log
   grep -qxF "vc.config: $prefix/share/sea-mlir/profiles/seam.cfg" unsat.log
   grep -q '^result: unsat$' unsat.log
-  # not vacuous: the assertion survived lowering
-  ! grep -q 'no-assertions' unsat.log
+  # not vacuous: the assertion survived lowering (an if, not `! grep`: set -e
+  # ignores a negated pipeline; run() calls each check in a subshell)
+  if grep -q 'no-assertions' unsat.log; then exit 1; fi
 }
 
 # the sat fixture with the other solvers
