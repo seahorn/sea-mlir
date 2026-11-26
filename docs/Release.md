@@ -146,9 +146,12 @@ arm64 an ad-hoc signature is enough for bottles.
 macOS (arm64) bottles of `sea-mlir` are built by hand on a Mac
 (`packaging/homebrew/README.md`, "Bottles: macOS") and added to the tap
 after the Linux release. A bottle installs on the macOS release it was
-built on and on newer ones; the planned tag is `arm64_tahoe` (macOS 26
-and newer). Its build runs `check-sea`, and the bottle is tested by
-installing it from the bottle only. `seahorn` and `sea-mlir-llvm` have no
+built on and on newer ones; the tag is `arm64_tahoe` (macOS 26 and
+newer, from 0.6.1). Its build runs `check-sea`, and the bottle is tested by
+installing it from the bottle only, locally and on GitHub's `macos-26`
+runner: `gh workflow run release-test.yml -f tag=v<version> -f
+tap-ref=<tap branch or main>` (job `homebrew-macos`; the tap ref's
+formula must carry the bottle line). `seahorn` and `sea-mlir-llvm` have no
 macOS bottle; `sea-mlir-llvm` is built from source as a build dependency
 of `sea-mlir` and is not needed to install the bottle.
 
