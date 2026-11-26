@@ -33,7 +33,12 @@
 // Contract.
 //   Accepts: abstract programs with structs scalarized (sea-scalarize-
 //     structs) and no pointer-valued op other than those above
-//     (fat.unsupported); pointers must not flow through unreachable blocks.
+//     (fat.unsupported); pointers must not flow through unreachable blocks;
+//     a pointer loaded or stored has the width of its memory's index
+//     (fat.mixed-pointer-width: a companion cell has the index width, and a
+//     keyed access is one cell). Checked whenever the pass lowers
+//     anything (a program with no sea.ptr.base / dereferenceable is left
+//     alone); sea-place-static refuses mixed widths anyway.
 //   Produces: no sea.ptr.base / sea.ptr.dereferenceable (checked); the
 //     companions are ordinary values and memories (dead ones are harmless).
 //   Not modeled: an integer store into a pointer-holding memory leaves the
@@ -129,11 +134,31 @@ void LowerFatPointersPass::runOnOperation() {
   });
   llvm::DenseSet<Value> holdsPtrs;
   bool ok = true;
+  // a companion cell has the memory's index width and holds the offset or
+  // size of one pointer (keyed: one cell per access), so a pointer of
+  // another width has no companion cell
+  auto checkWidth = [&](Operation *op, Value mem, Value ptr) {
+    unsigned pw = cast<PtrType>(ptr.getType()).getWidth();
+    unsigned iw = cast<MemType>(mem.getType()).getIndexWidth();
+    if (pw == iw)
+      return;
+    diag::error("fat.mixed-pointer-width",
+                "sea-lower-fat-pointers: a " + std::to_string(pw) +
+                    "-bit pointer in a memory indexed by " +
+                    std::to_string(iw) +
+                    "-bit addresses (companion cells have the index width)",
+                op->getLoc());
+    ok = false;
+  };
   program.walk([&](Operation *op) {
-    if (auto st = dyn_cast<StoreOp>(op); st && isPtr(st.getValue()))
+    if (auto st = dyn_cast<StoreOp>(op); st && isPtr(st.getValue())) {
       holdsPtrs.insert(find(st.getMem()));
-    if (auto ld = dyn_cast<LoadOp>(op); ld && isPtr(ld.getResult()))
+      checkWidth(op, st.getMem(), st.getValue());
+    }
+    if (auto ld = dyn_cast<LoadOp>(op); ld && isPtr(ld.getResult())) {
       holdsPtrs.insert(find(ld.getMem()));
+      checkWidth(op, ld.getMem(), ld.getResult());
+    }
     for (Type t : op->getResultTypes())
       if (isa<StructType>(t)) {
         diag::error("fat.unsupported",

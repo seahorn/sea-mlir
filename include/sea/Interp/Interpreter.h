@@ -298,6 +298,16 @@ struct RunResult {
   /// the in-place interpreter read the current contents, right only if the
   /// cell was not clobbered since (Mem-SSA's no-clobber claim, Memory.md).
   llvm::SmallVector<mlir::Operation *> earlierVersionLoads;
+  /// The same for the sea.memmove ops of nonzero length whose source is an
+  /// earlier version (warning interp.memmove-earlier-version): the run
+  /// copied the current contents, right only if the source range was not
+  /// clobbered since.
+  llvm::SmallVector<mlir::Operation *> earlierVersionMemmoves;
+  /// The same for the sea.mem.is_modified ops of an earlier version
+  /// (warning interp.is-modified-earlier-version): the run read the current
+  /// modification set, right only if no tracked update wrote the object
+  /// since.
+  llvm::SmallVector<mlir::Operation *> earlierVersionIsModified;
   /// Steps that rested on addr0-is-null (RunOptions::addr0IsNull).
   uint64_t addr0IsNullUses = 0;
   /// The memhavocs of null the run executed as no-ops
@@ -445,9 +455,11 @@ struct RunOptions {
   /// Execute print ops (else they are skipped).
   bool prints = true;
   /// Warn interp.load-earlier-version at each load of an earlier memory
-  /// version (a Mem-SSA no-clobber claim). Off when replay validation
-  /// checks every loaded value (sea-vc): a broken claim is then a mismatch
-  /// (replay: no-clobber-violated), and the loads are counted instead.
+  /// version (a Mem-SSA no-clobber claim), interp.memmove-earlier-version
+  /// at each memmove whose source is one, interp.is-modified-earlier-version
+  /// at each is_modified of one. Off when replay validation checks every
+  /// value (sea-vc): a broken claim is then a mismatch (replay:
+  /// no-clobber-violated), and the ops are counted instead (RunResult).
   bool warnEarlierVersion = true;
   /// At most this many print / object / note records (0: no limit).
   uint64_t printLimit = 1000;

@@ -4094,18 +4094,28 @@ OUTPUT (stdout, `key: value` lines):
                                   Mem-SSA no-clobber claims: checked by
                                   validate, so counted here instead of
                                   the interp.load-earlier-version warning)
+  interp.earlier-version-memmoves: <n>   (memmoves whose source is an
+                                  earlier version; instead of the
+                                  interp.memmove-earlier-version warning)
   mismatch: <value> <loc> interp=<v> model=<v|none> [obj=&<o>[<off>]]
                                   (one per mismatch; obj: the placed object
                                   an address value lies in)
   replay: no-clobber-violated: <file:line:col> (...)   (after the
                                   mismatches: a load of an earlier memory
                                   version whose value mismatches, or that
-                                  a mismatch depends on: the in-place
+                                  a mismatch depends on (an is_modified
+                                  appears as a load of its shadow memory,
+                                  at the is_modified's location): the in-place
                                   interpreter read a cell overwritten since
                                   the version; the program's Mem-SSA
                                   no-clobber claim (Memory.md) fails there,
                                   not the VC; exit 2, vc.replay-mismatch
-                                  names the claim)
+                                  names the claim. Also a memmove from an
+                                  earlier version that a mismatch depends
+                                  on: it may have copied such cells (not
+                                  checked per cell); with only memmoves
+                                  named, vc.replay-mismatch leaves a VC
+                                  bug open)
   premise.failed: <name> [size=<n> room=<r>] at=<where>   (sat, after
                                   validate: the replayed run fails a
                                   premise assert, not a property assert:
@@ -4138,7 +4148,8 @@ OUTPUT (stdout, `key: value` lines):
                                   vc.replay-no-failure, exit 2)
   replay.original: status=<s> at=<file:line:col|-> match=yes|no|undetermined
       nondets=<n> cells=<n> defaulted=<n> unmapped=<n> [box-all-false=(<k>..)]
-      [earlier-version-loads=<n>]   (box-all-false: the first false index
+      [earlier-version-loads=<n>] [earlier-version-memmoves=<n>]
+      [earlier-version-is-modified=<n>]   (box-all-false: the first false index
                                   of the input's first false sea.box.all;
                                   the lowered program's nondet
                                   box.all.<tag>.<d> is the trip number t
@@ -4166,7 +4177,8 @@ OUTPUT (stdout, `key: value` lines):
                                   interpreter cannot run it (ptr.to_int
                                   before placement, ...) or hits the step
                                   limit (a large sea.box.all), it loads an
-                                  earlier memory version, it read an
+                                  earlier memory version or a memmove or
+                                  is_modified reads one, it read an
                                   unmapped input, or the assert cannot be
                                   told apart: warning
                                   vc.replay-original-undetermined, exit
@@ -4992,10 +5004,11 @@ Kinds and fields:
                 (--reach-programs; reach.programs is a stat record)
   mismatch      def (`<op> <loc>`), type, interp, model (null: none),
                 [obj + off] (an address: the object it points into)
-  no-clobber-violated  loc (the load's file:line:col)
+  no-clobber-violated  loc (the load's or memmove's file:line:col)
   replay-original  (--replay-original) status, at, match, nondets, cells,
                 defaulted, unmapped, [box_all_false],
-                [earlier_version_loads], [expected,
+                [earlier_version_loads], [earlier_version_memmoves],
+                [earlier_version_is_modified], [expected,
                 got, message] (not a match); skipped: status `skipped`,
                 reason; one record for the `replay.original:` lines
   smt2          (--smt2) the query in text (its header, the query, its
@@ -6722,6 +6735,11 @@ int main(int argc, char **argv) {
       undetermined = "the original program loads an earlier memory version "
                      "(a Mem-SSA no-clobber claim the in-place interpreter "
                      "cannot check)";
+    else if (!match && (!o.run.earlierVersionMemmoves.empty() ||
+                        !o.run.earlierVersionIsModified.empty()))
+      undetermined = "the original program reads an earlier memory version "
+                     "(memmove source or is_modified: a Mem-SSA no-clobber "
+                     "claim the in-place interpreter cannot check)";
     const char *matchText = match          ? "yes"
                             : undetermined ? "undetermined"
                                            : "no";
@@ -6752,6 +6770,18 @@ int main(int argc, char **argv) {
       if (!o.run.earlierVersionLoads.empty()) {
         os << " earlier-version-loads=" << o.run.earlierVersionLoads.size();
         rec.num("earlier_version_loads", o.run.earlierVersionLoads.size());
+      }
+      if (!o.run.earlierVersionMemmoves.empty()) {
+        os << " earlier-version-memmoves="
+           << o.run.earlierVersionMemmoves.size();
+        rec.num("earlier_version_memmoves",
+                o.run.earlierVersionMemmoves.size());
+      }
+      if (!o.run.earlierVersionIsModified.empty()) {
+        os << " earlier-version-is-modified="
+           << o.run.earlierVersionIsModified.size();
+        rec.num("earlier_version_is_modified",
+                o.run.earlierVersionIsModified.size());
       }
       if (!match) {
         auto withId = [&](std::optional<Location> l,
@@ -10054,11 +10084,14 @@ int main(int argc, char **argv) {
          << " dontcare=" << replay.dontCare;
       gOut->emit(rec);
     }
-    // loads of earlier memory versions (Mem-SSA no-clobber claims): checked
-    // by the validation above, so a count, not a warning per load
+    // reads of earlier memory versions (Mem-SSA no-clobber claims): checked
+    // by the validation above, so a count, not a warning per op
     if (!replay.run.earlierVersionLoads.empty())
       vout() << "interp.earlier-version-loads: "
              << replay.run.earlierVersionLoads.size() << "\n";
+    if (!replay.run.earlierVersionMemmoves.empty())
+      vout() << "interp.earlier-version-memmoves: "
+             << replay.run.earlierVersionMemmoves.size() << "\n";
     for (const sea::ValueMismatch &m : replay.mismatches) {
       sea::out::Record rec("mismatch");
       std::string where, ty;
@@ -10087,9 +10120,13 @@ int main(int argc, char **argv) {
       gOut->emit(rec);
     }
     // a mismatch explained by the program's own Mem-SSA no-clobber claim
-    // (Memory.md): a load of an earlier version read a clobbered cell
-    // (one line per location: a load split into cells keeps its location)
+    // (Memory.md): a load of an earlier version read a clobbered cell (one
+    // line per location: a load split into cells keeps its location). A
+    // memmove from an earlier version that a mismatch depends on only may
+    // have copied one: its claim is not checked per cell (Memory.md).
     SmallVector<Operation *> noClobber = sea::noClobberSuspects(replay);
+    size_t noClobberLoads = llvm::count_if(
+        noClobber, [](Operation *op) { return !isa<sea::MemMoveOp>(op); });
     llvm::StringSet<> noClobberLocs;
     for (Operation *load : noClobber) {
       sea::out::Record rec("no-clobber-violated");
@@ -10103,9 +10140,14 @@ int main(int argc, char **argv) {
         continue;
       rec.str("loc", where);
       raw_string_ostream os(rec.text);
-      os << "replay: no-clobber-violated: " << where
-         << " (a load of an earlier memory version read a cell overwritten "
-            "since; the program's Mem-SSA no-clobber claim fails here)";
+      os << "replay: no-clobber-violated: " << where;
+      if (isa<sea::MemMoveOp>(load))
+        os << " (a memmove from an earlier memory version that a mismatched "
+              "value depends on: it may have copied cells overwritten since; "
+              "its no-clobber claim is not checked per cell)";
+      else
+        os << " (a load of an earlier memory version read a cell overwritten "
+              "since; the program's Mem-SSA no-clobber claim fails here)";
       gOut->emit(rec);
     }
     // --ptr-companion=check: the query's property is the A-PTRINT guard of
@@ -10375,17 +10417,28 @@ int main(int argc, char **argv) {
                            "promise)"
                      : "";
     if (!replay.mismatches.empty()) {
-      if (!noClobber.empty())
+      if (noClobberLoads)
         sea::diag::error(
             "vc.replay-mismatch",
             Twine(replay.mismatches.size()) +
                 " value(s) differ between the model and the interpreter: the "
                 "cause is the program's Mem-SSA no-clobber claim, not the "
                 "VC: " +
-                Twine(noClobber.size()) +
+                Twine(noClobberLoads) +
                 " load(s) of an earlier memory version read a cell overwritten "
                 "since (replay: no-clobber-violated); the VC reads the version "
                 "the program names");
+      else if (!noClobber.empty())
+        sea::diag::error(
+            "vc.replay-mismatch",
+            Twine(replay.mismatches.size()) +
+                " value(s) differ between the model and the interpreter: a VC "
+                "or interpreter bug, or the Mem-SSA no-clobber claim of " +
+                Twine(noClobber.size()) +
+                " memmove(s) from an earlier memory version that a mismatched "
+                "value depends on (replay: no-clobber-violated; not checked "
+                "per cell)" +
+                strideNote);
       else
         sea::diag::error("vc.replay-mismatch",
                          Twine(replay.mismatches.size()) +

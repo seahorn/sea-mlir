@@ -83,7 +83,8 @@ def Sea_MemType : Sea_Type<"Mem", "mem"> {
     - keyed: a cell of any width at every index unit, keyed by its address.
       Cells are independent: a cell does not cover the bytes after its
       address, so a store at a + 1 leaves the cell at a as it was. An
-      access is one whole cell, and a range op over [d, d + n) acts on the
+      access is one whole cell (a load or store of another width is a
+      verifier error), and a range op over [d, d + n) acts on the
       n cells at d .. d + n - 1. memset's value (one unit) is repeated
       across the cell. It is more storage than the bytes, which is what
       metadata memories want: the offset / size companions of fat pointers

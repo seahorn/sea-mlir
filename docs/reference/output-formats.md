@@ -69,6 +69,7 @@ The main lines of `sea-vc`:
 | `vc.ack-stride-promise-broken: <gep> promise=<P1\|P2\|P3> what=<nusw\|nuw\|inbounds> breaks=<n> via-memory=<0\|1>` | `--ack-stride` (default on with `--seam`): a model that puts two executed reads whose constraint the stride rule dropped at one index, and a replay that fails and breaks a GEP promise at an access. The GEP of the first such access, the part of its promise broken, its flag, the number of (access, broken promise) pairs of the run, and whether the pointer went through memory. Exit status 4, error `vc.ack-stride-promise-broken` ([PtrIndex.md](../design/PtrIndex.md) section 5) |
 | `vc.ack-stride-promise-broken-access: <op> <where>` | the access of that line: the first of the run whose address carries a broken promise |
 | `interp.earlier-version-loads: <n>` | loads of an earlier memory version in the replay; `validate` checks their values |
+| `interp.earlier-version-memmoves: <n>` | memmoves of the replay whose source is an earlier memory version |
 | `mismatch: ...` | one value where they differ (then exit status 2) |
 | `seam.rule.<rule>: <n>` | how often a SeaM rule fired (`--seam-stats`) |
 | `vc.sink-assumes: <n>` | assumes moved by `--sink-assumes` |
@@ -555,10 +556,10 @@ The record kinds of `sea-vc`:
 | `reach` | `id`, `status`, `op`, [`via`, `by`] (decided by a run), [`reason`], [`replay`], [`inb`], [`mismatches`], [`witness`], `time`, [`at`, `at_inlined`, `at_name`], [`site`, [`of`], [`cond`, `next`]] |
 | `reach.program` | `id`, `op`, `file`, [`at`, `at_inlined`, `at_name`], [`site`], [`of`] (`--reach-programs`) |
 | `mismatch` | `def`, `type`, `interp`, `model`, [`obj`, `off`] |
-| `no-clobber-violated` | `loc` |
+| `no-clobber-violated` | `loc` (a load or a memmove) |
 | `ptrint` | `status` (`violated` or `unstored`), `at`, `addr`, [`obj`, `off`], `bits`, [`stored`] |
 | `ptrint-replay` | `loads`, `holds`, `violated`, `unstored` |
-| `replay-original` | `status`, `at`, `match`, `nondets`, `cells`, `defaulted`, `unmapped`, [`earlier_version_loads`], [`expected`, `got`, `message`] (not a match); skipped: `status` `skipped`, `reason` |
+| `replay-original` | `status`, `at`, `match`, `nondets`, `cells`, `defaulted`, `unmapped`, [`earlier_version_loads`], [`earlier_version_memmoves`], [`earlier_version_is_modified`], [`expected`, `got`, `message`] (not a match); skipped: `status` `skipped`, `reason` |
 | `smt2` | the query (with `--smt2`) |
 | `split-part-start` | `part` (`--split*`: the part's own records follow) |
 | `split-part` | `part`, `choice`, `result`, `vc_time`, `solve_time`, `dag`, `alias_open`, `alias_open_pairs`, `alias_open_memop`, `rows`, `ack_reads`, `ack_pairs`, `ack_constraints`, `check` |
