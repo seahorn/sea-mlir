@@ -1033,8 +1033,9 @@ def Sea_PtrNondetOp : Sea_Op<"ptr.nondet", [Sea_NondetSiteOpInterface]> {
   let description = [{
     Each execution makes a fresh opaque object of size 0 (named
     nondet.<site>): the pointer is not null, equals no other object's
-    pointers, and no access through it is in bounds
-    (sea.ptr.dereferenceable is 0). Harnesses use it to mark fields that
+    pointers, and no access of positive length through it is in bounds
+    (sea.ptr.dereferenceable is 0 for every len > 0; for len 0 it is 1, by
+    the general rule). Harnesses use it to mark fields that
     must never be dereferenced (SeaHorn's nd_* functions returning
     pointers). `site` is unique with the other nondet sites.
   }];

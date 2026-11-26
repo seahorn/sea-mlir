@@ -1819,7 +1819,8 @@ LogicalResult Interpreter::execPtr(Operation &op, std::string &error) {
     return success();
   }
   if (auto pn = dyn_cast<PtrNondetOp>(op)) {
-    // a fresh opaque object of size 0: nothing through it is in bounds
+    // a fresh opaque object of size 0: no access of positive length
+    // through it is in bounds
     unsigned n = ++allocCount[&op];
     std::string name = "nondet." + std::to_string(pn.getSite());
     if (n > 1)
