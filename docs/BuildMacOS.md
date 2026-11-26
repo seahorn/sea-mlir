@@ -93,13 +93,16 @@ see [design/BinaryRelease.md](design/BinaryRelease.md)), `--seahorn-yices`
 
 1. `$ROOT/logs/timings.txt`: the time of each stage and the core count.
 2. `check-sea`: the failing tests. Known macOS-specific suspects:
-   - `--mem-limit` tests: macOS does not enforce `RLIMIT_AS` (sea-vc prints
-     `vc.mem-limit-unenforced`); a test that expects `mem-limit: hit` from
-     the process limit fails.
+   - `--mem-limit` tests: macOS refuses any finite `RLIMIT_AS`
+     (`setrlimit` fails with `EINVAL`; seen on macOS 27, arm64), so sea-vc
+     sets no process limit there and warns `vc.mem-limit-unenforced`; only
+     the solvers' own limits apply. A test that expects `mem-limit: hit`
+     from the process limit fails.
    - `--max-rss` needs `/proc` and is an error on macOS
-     (`vc.rss-budget-unsupported`).
-   - `sea-reduce-test` memory caps (Python `resource.setrlimit(RLIMIT_AS)`)
-     may raise on macOS.
+     (`vc.rss-budget-unsupported`); its RUN lines need the lit feature
+     `proc-rss`.
+   - `sea-reduce-test` and `bench.py` memory caps (`RLIMIT_AS`): not
+     enforced on macOS (`sea-reduce-test` warns once).
    - tests whose expected text contains a Linux path, `.so`, or
      GNU-specific tool output (`sed`, `wc` padding, `stat`).
    - floating differences in solver behavior: z3 / Yices / Bitwuzla built

@@ -136,18 +136,43 @@ def find_tool(name, given):
     return found
 
 
+def set_as_limit(b):
+    """RLIMIT_AS = b bytes, in a child before exec. macOS refuses any finite
+    RLIMIT_AS (EINVAL): no memory cap there (warn_mem_cap says so once)."""
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (b, b))
+    except (OSError, ValueError):
+        if sys.platform != "darwin":
+            raise
+
+
+_warned_mem_cap = False
+
+
+def warn_mem_cap():
+    global _warned_mem_cap
+    if sys.platform == "darwin" and not _warned_mem_cap:
+        _warned_mem_cap = True
+        print(
+            "warning: memory caps are not enforced on macOS (no RLIMIT_AS)",
+            file=sys.stderr,
+        )
+
+
 class Run:
     """One process run under a timeout and an address-space cap."""
 
     def __init__(self, argv, timeout, mem_gb):
         self.argv = argv
+        if mem_gb:
+            warn_mem_cap()
         out = tempfile.TemporaryFile()
         start = time.monotonic()
 
         def limit():
             if mem_gb:
                 b = int(mem_gb * (1 << 30))
-                resource.setrlimit(resource.RLIMIT_AS, (b, b))
+                set_as_limit(b)
 
         p = subprocess.Popen(
             argv,

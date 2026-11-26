@@ -1476,8 +1476,9 @@ static cl::opt<unsigned> memLimit(
     "mem-limit",
     cl::desc("Memory limit in GB (0: none): RLIMIT_AS of the process, z3's "
              "memory_max_size, Bitwuzla's memory-limit; when hit, "
-             "`result: unknown` and `mem-limit: hit`. macOS does not "
-             "enforce RLIMIT_AS (warning vc.mem-limit-unenforced)"),
+             "`result: unknown` and `mem-limit: hit`. macOS refuses "
+             "RLIMIT_AS: the solvers' limits only (warning "
+             "vc.mem-limit-unenforced)"),
     cl::init(0), cl::value_desc("GB"));
 
 static cl::opt<bool> vcgenOnly(
@@ -2605,9 +2606,10 @@ TYPICAL:
                                  #   --mem-limit is RLIMIT_AS (address
                                  #   space, not resident memory): set it
                                  #   above the expected resident size, with
-                                 #   headroom; macOS does not enforce
-                                 #   RLIMIT_AS (--mem-limit warns
-                                 #   vc.mem-limit-unenforced there)
+                                 #   headroom; macOS refuses RLIMIT_AS:
+                                 #   only the solvers' limits apply there
+                                 #   (--mem-limit warns
+                                 #   vc.mem-limit-unenforced)
   sea-vc p.mlir --mem-trace --max-nodes=50000000  # a VC blowup: a
                                  #   heartbeat of what grows (vc.mem beats on
                                  #   stderr) and a diagnosed stop (budget:
@@ -5672,16 +5674,18 @@ int main(int argc, char **argv) {
     if (getrlimit(RLIMIT_AS, &rl) == 0 &&
         (rl.rlim_max == RLIM_INFINITY || bytes <= rl.rlim_max)) {
       rl.rlim_cur = bytes;
+#ifdef __APPLE__
+      // macOS (checked on 27, arm64) refuses any finite RLIMIT_AS
+      // (setrlimit: EINVAL), so no process limit applies there: only the
+      // solvers' own limits bound memory.
+      (void)setrlimit(RLIMIT_AS, &rl);
+      sea::diag::warn("vc.mem-limit-unenforced",
+                      "--mem-limit: macOS has no address-space limit "
+                      "(RLIMIT_AS); only z3's memory_max_size and Bitwuzla's "
+                      "memory-limit apply");
+#else
       if (setrlimit(RLIMIT_AS, &rl) != 0)
         return fail("--mem-limit: setrlimit(RLIMIT_AS) failed");
-#ifdef __APPLE__
-      // Hypothesis (not checked on macOS): Darwin accepts RLIMIT_AS (an
-      // alias of RLIMIT_RSS) but does not enforce it, so only the solvers'
-      // own limits bound memory there.
-      sea::diag::warn("vc.mem-limit-unenforced",
-                      "--mem-limit: RLIMIT_AS is not enforced on macOS; "
-                      "only z3's memory_max_size and Bitwuzla's "
-                      "memory-limit apply");
 #endif
     } else {
       return fail("--mem-limit: above the hard limit of RLIMIT_AS");
