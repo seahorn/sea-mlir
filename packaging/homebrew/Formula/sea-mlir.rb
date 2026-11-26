@@ -9,7 +9,7 @@ class SeaMlir < Formula
   # Release: the tag's tarball and its sha256. docker/release.py --homebrew
   # replaces url, sha256 and version with a local `git archive` tarball
   # (packaging/homebrew/README.md).
-  url "https://github.com/seahorn/sea-mlir/archive/refs/tags/v0.5.0.tar.gz"
+  url "https://github.com/seahorn/sea-mlir/archive/refs/tags/v0.6.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license all_of: [
     { "Apache-2.0" => { with: "LLVM-exception" } },

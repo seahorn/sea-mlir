@@ -163,7 +163,7 @@ The invariant after a cancel:
 ```console
 $ sea-vc firedancer/step-inv-cancel.mlir --lower --seam --widen-memory=4
 Warning: assume of constant false: the rest of the block cannot execute (folded to sea.unreachable); ... at loc("firedancer/harness/reasm_inv.h":91:10) [fold.assume-false]
-tool.version: sea-mlir 0.5.0 (...)
+tool.version: sea-mlir 0.6.0 (...)
 ...
 assume.a-sep: seam=0
 assume.a-null: seam=0

@@ -17,13 +17,13 @@
 #include "llvm/Support/raw_ostream.h"
 
 namespace sea {
-/// "0.5.0"
+/// "0.6.0"
 llvm::StringRef versionNumber();
 /// `git describe --tags --always --dirty` at build time, or "unknown"
 llvm::StringRef gitDescribe();
 /// the pinned LLVM revision (LLVM_REVISION)
 llvm::StringRef llvmRevision();
-/// "sea-mlir 0.5.0 (<describe>)": one token-free line for logs
+/// "sea-mlir 0.6.0 (<describe>)": one token-free line for logs
 std::string versionString();
 /// Installs a --version printer for `tool`: the version string, the LLVM
 /// revision and the build type, then `extra` lines (solver versions).

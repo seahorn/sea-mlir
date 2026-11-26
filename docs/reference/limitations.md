@@ -2,7 +2,7 @@
 
 ## Scope
 
-- sea-mlir 0.5.0 is a research prototype. The text format of the dialect
+- sea-mlir 0.6.0 is a research prototype. The text format of the dialect
   and the command-line options can change between releases.
 - Linux on x86-64 is the only platform that is built and tested.
 - z3 is the supported solver. Yices 2 and Bitwuzla work and are

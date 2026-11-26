@@ -1,5 +1,271 @@
 # Changelog
 
+## 0.6.0
+
+A minor release: the output of `sea-vc` changes (one settled `result:` line
+per run, the `solver-answer:` line, the header of `--smt2` dumps, new fatal
+kinds) and `--z3-logic` refuses a query outside its logic
+(docs/Release.md, "Version numbers of the 0.x preview"). It is the first
+release with binary artifacts: two Linux x86-64 tarballs (sea-mlir, and a
+bundle with SeaHorn) on the GitHub release. The Homebrew formulae and a
+macOS build guide are included; the tap is not published and macOS has not
+been built. The solver pins are those of 0.5.0 (z3
+master `bbd46c9`, Yices 2.8.0, Bitwuzla 0.9.1). Triage verdict differences
+against v0.5.0.
+
+0.6.0 has not had a full check against the Lean model of SeaM. The last
+full parity check was at `19a433a`. For this release, the fold of
+top-level equalities (`--vc-fold-top-eqs`, on by default) was checked
+against its correctness obligation in the code, and the two defects found
+there were fixed (#163). The other changes since `19a433a` have not been
+checked against the model. No known soundness defect is open
+(docs/Release.md, "Formal foundations").
+
+### Verdict changes
+- Measured against v0.5.0 with the default configuration: vcc (228 jobs)
+  and firedancer hard (120 jobs) give the same verdict on every job (vcc:
+  227 unsat, 1 sat; firedancer: 64 sat, 26 unsat, 23 timeouts, 6 unknown)
+  and no replay mismatch. On both, `txn-mut-datasz-nonstrict` ends in a
+  memory error of `--replay-original`, a known premise case of that job.
+- None are expected from the code changes. The default configuration
+  builds the same queries as 0.5.0 (checked on vcc: 228 of 228 queries
+  identical; a run without `--z3-logic` is byte-identical). The new
+  options are off by default. (#151, #149)
+- Under `--seam`, a `sea.mem.fill` of a byte memory is now one `mfill` term
+  instead of one store per byte, so the query of a program with such a
+  fill differs from 0.5.0 (the verdict is expected to be the same). No
+  benchmark suite contains `sea.mem.fill` yet. (#148)
+- A run that printed `result: sat` and then failed the replay now prints
+  `result: unknown` (see the output changes). This changes the reported
+  verdict line, not the solver's answer. (#150)
+- With an explicit `--z3-logic=L`, a query outside `L` is refused. Before,
+  z3 skipped the terms outside its logic and could answer a wrong `sat`
+  (an array query under `QF_BV`). (#149)
+
+### Output and command-line changes
+- `sea-vc` prints one settled `result:` line per run. After the solver
+  check it prints `solver-answer: sat|unsat|unknown`. `result: sat` and
+  `result: unsat` (and the `BRUNCH_STAT` line) now mean a confirmed answer
+  and come with exit 0: a sat whose replay confirmed it, with no failed
+  `--seam-check` (exit 5) and no unproven `--narrow-check` (exit 7). Every
+  other ending prints `result: unknown`: replay mismatch (exit 2), a
+  premise failure and the other exit 4 outcomes, exit 6, replay
+  impossible, a memory limit in the replay, a `--split` stopped by a failed
+  part, and a `--check-inb` job with a premise-failed part. The error
+  lines and exit codes are unchanged and say why. Before, `result: sat`
+  was printed right after the check, before the replay. Consumers that read
+  the first `result:` line must read `solver-answer:` for the solver's
+  answer, and `result:` as the final verdict. `bench.py`, the
+  `--check-inb` parts parser, `fuzz-seam.py`, `reduce-test.py` and
+  `check-widen.py` are updated. In `reduce-test.py` an expected `--status`
+  now overrides the error classification. (#150)
+- `--smt2` dumps of z3 queries start with a header: `; sea.smt2-dialect
+  ...`, one `; sea.smt2-nonportable <construct>: read by ...; <fix>` line
+  for each construct another solver cannot read, and `(set-logic ALL)`.
+  The in-process `--z3-logic` is recorded as `; sea.z3-logic L`, so the
+  dump stays readable by z3. `utils/query-diff.py` ignores the `set-logic`
+  line. A construct with no portable form (const arrays, lambda,
+  quantifiers, ...) warns `smt2.nonportable.<name>`; a portable dump whose
+  content is outside the given logic warns `smt2.logic-mismatch`. (#147)
+- New fatal `vc.z3-logic-mismatch`, naming the construct, when a term given
+  to a z3 solver with an explicit `--z3-logic` is outside the logic. The
+  scan covers the verdict, `--reach`, `--ack-relax`, the parts of
+  `--split` and the parts of `--check-inb`. Logic names follow SMT-LIB
+  (`[QF_][A][UF][BV][LIA|LRA|...]`, `ALL`); unknown names, IDL and RDL are
+  errors. UF is strict: `--check-inb` parts use `--ro-arrays=array` under
+  an array logic without UF, and a logic with neither (`QF_BV`) is refused
+  up front. A run that only prints `--smt2` is not guarded. (#149)
+- `--seam-check` always prints `covered=` and `failed=` in its summary
+  line. It proves `row.mfill-expand` firings up to 64 bytes; a larger one
+  prints `seam-check-covered: ... theorem=RangeExpr.eval_mfill_eq_fillStores`.
+  An unknown at or below the cap counts as a failure (exit 5). (#148)
+- `sea-seam-export` schema 5 gains the `mfill` node,
+  `{"op":"mfill","sort":"memory","args":[M,d],"data":[bytes]}`. The schema
+  number stays 5; readers must handle the new op (the formal model's
+  importer needs the matching update). (#148)
+- Under `--seam`, byte-memory fills are no longer expanded
+  (`sea-expand-mem-fill keep-bytes`). Word-layout and keyed fills are
+  still expanded and counted in `vc.expand-mem-fill:`. (#148)
+- Every `--agent` guide (`sea-vc`, `sea-run`, `sea-opt`, `sea-reduce`,
+  `sea-seam-export`, `sea-reduce-test`) prints a `DOCS:` line naming the
+  local docs root, and a `DOCS-WEB:` line naming the docs site and, for
+  design pages that live only in the repository,
+  `https://github.com/seahorn/sea-mlir/tree/<ref>/docs` (`<ref>` is the
+  release tag for a release build, else `main`). (#153)
+- `sea-vc` finds its profiles at run time: `$SEA_MLIR_PROFILE_PATH`, then
+  `<exe>/../share/sea-mlir/profiles`, then the source tree, for a build
+  tree only. `SEA_SOURCE_PROFILES_DIR` is gone. The tools no longer
+  compile in a source or build path: `-fmacro-prefix-map` makes the
+  `__FILE__` of `assert` relative in builds against an LLVM with
+  assertions. (#153)
+- On macOS, `--mem-limit` warns `vc.mem-limit-unenforced`: macOS accepts
+  `RLIMIT_AS` but does not enforce it. (#155)
+- `termForLog` (the text of a term in a log line) walks at most 65 nodes:
+  a larger term logs as `#<id> (> 64 nodes)`, and a null term logs as
+  `null` (docs/reference/logging.md). (#159)
+- New fatal kinds `expr.marks-exhausted` (a traversal needed more mark bits
+  than an `Expr` node has) and `expr.canonical-sums-reused` (a second
+  `rewrite()` of one canonical-sums object). Both indicate a bug. (#159)
+- `--vc-canonical-sums` and `--solver-nary-sums` change the text of the
+  query that `--smt2` prints when they are on (see New flags). Off, the
+  output is as in 0.5.0. (#151, #156)
+
+### New flags and features
+- `--smt2-dialect=z3|portable` (default `z3`). The `portable` dialect
+  writes z3's multiplication-overflow predicates (`bvumul_noovfl`,
+  `bvsmul_noovfl`, `bvsmul_noudfl`) as an exact double-width product with a
+  range test, and `bvredor` / `bvredand` as comparisons; z3, `yices-smt2`
+  and `bitwuzla` read it. It is an equivalent query, not the one z3 solves
+  in-process, so it is opt-in. The lit suite gains the features `yices-bin`
+  and `bitwuzla-bin`. (#147)
+- `mfill(M, d, n, data)`, a native SeaM term for `sea.mem.fill`, following
+  the formal model's `rangeFill` (docs/design/MemFill.md, "SeaM: the mfill
+  term"). Scope: byte memories with full bytes. It shares the range
+  machinery of `mset` / `mcopy` (A-INB counting of the destination, shadow
+  memories without premises). Rules: `row.mfill-hit`, `-skip`,
+  `-skip-disjoint`, `-split`, `-expand`; `wide.mfill-hit`, `-skip`,
+  `-skip-disjoint`; the byte fallback for partial overlap; and
+  `mem.fill-replicate` (an all-equal fill is an `mset`). An undecided read
+  falls back to the in-order store expansion, built once per fill. At the
+  solver boundary a leftover read becomes `ite((j-d) <u n, lookup(j-d),
+  M[j])`. (#148)
+- `--vc-canonical-sums` (off): an exact rewrite of the final solver query
+  into one canonical linear form per sum (docs/design/CanonicalSums.md).
+  Every maximal linear bit-vector term becomes `P`, `(bvadd P c)` or
+  `(bvadd (bvadd P (bvnot N)) c+1)`, with `P` and `N` n-ary chains of leaves
+  in one width-independent order; equalities with a sum side are balanced;
+  sums stay full width with extracts on top; bitwise-only terms are left
+  alone. It runs last on the query, so the in-process solvers and `--smt2`
+  see the same term; side checks see the terms before it. Options, all with
+  the defaults listed first: (#151, #157)
+  - `--vc-canonical-sums-neg=bvnot|sub|auto`: how the negative chain is
+    written. `auto` picks `sub` for Yices (its polynomial normal form does
+    not see through `bvnot`) and `bvnot` for z3 and Bitwuzla.
+  - `--vc-canonical-sums-eq=balance|unshared|keep`: `unshared` balances an
+    equality only when a side is a sum used once.
+  - `--vc-canonical-sums-inner=flatten|shared-leaf`: `shared-leaf` keeps a
+    sum used more than once as one leaf.
+- `--solver-nary-sums` (off): the z3 marshaller builds an n-ary `bvadd`,
+  `bvmul`, `bvand`, `bvor` or `bvxor` as one n-ary application (z3's
+  flat-associative declaration, as its SMT-LIB parser builds it) instead
+  of a right-nested binary chain; Yices `bvadd` becomes `yices_bvsum`;
+  Bitwuzla keeps its left-associated chain. It applies to the verdict
+  solver, `--smt2`, `--split-smt2`, `--seam-check`, `--narrow-check` and
+  `--reach`; the words, split and eq-audit checks keep the chain. (#156)
+- The profile `canonical` (`sea-vc --config=canonical`, `profiles/canonical.cfg`):
+  the configuration measured for the options above: n-ary sums, canonical
+  sums with `neg=auto` and `eq=unshared`, `inner=flatten`, and for z3 the
+  tactic S2 (som simplify; max-bv-sharing; bit-blast; aig; sat). S2 needs a
+  pure bit-vector query: with arrays or UF left (`--ackermannize=off`) z3
+  answers unknown, never a wrong verdict. It is an example, not a
+  recommended default; the default configuration is decided on more
+  suites. (#157)
+- `Expr` nodes carry a 64-bit `marks` word (the node stays in its 64-byte
+  allocation) leased through the scoped classes `ScopedExprSet` (one bit, a
+  visited set) and `ScopedUseCount` (two bits, a use count saturating at
+  2). There is no hash-set fallback: running out of bits is the fatal
+  `expr.marks-exhausted`. `--vc-canonical-sums` uses them for its use
+  counts and its shared-sum set. (#159)
+
+### Binary releases
+- A Linux x86-64 tarball for Ubuntu 24.04, and a bundle with the SeaHorn
+  dev18 frontend (`docker/release.py`, `just binary-release`). The build
+  is a pinned Docker build: LLVM 18.1.8 from apt.llvm.org (signer checked
+  by fingerprint) and z3 4.12 for SeaHorn, Yices 2.8.0. A license gate
+  checks every file; no GPL code ships. GMP, GMPXX and MPFR (LGPL) are
+  runtime dependencies and are not bundled. Layout: `bin/`, `lib/`,
+  `share/sea-mlir/profiles`, `share/doc/sea-mlir/docs`, `share/seahorn`
+  and `RELEASE-MANIFEST.json`. (#155)
+- A Homebrew tap (`packaging/homebrew`) with three formulae and separate
+  bottles: `sea-mlir-llvm` (build-only), `sea-mlir`, and `seahorn` (depends
+  on `sea-mlir`). Linux x86-64 bottles are built in a pinned Homebrew
+  image with clang 18 and lld; measured sizes: `sea-mlir-llvm` 958 MB,
+  `sea-mlir` 34 MB, `seahorn` 90 MB. Only `--brew-source formula` on a
+  clean tree writes the publishable `Formula/`; other builds write
+  `Formula-local/`, marked not for publishing. (#155)
+- A first macOS build: `docs/BuildMacOS.md` and `utils/build-macos.sh`. The
+  macOS bottles and the publication of the tap are not part of this
+  change. (#155)
+- Portability fixes for it: no hard-coded Bitwuzla rpath in installs;
+  `ru_maxrss` is read in bytes on macOS; `ldd` only where it exists; the
+  `sed` and `timeout` tests run on macOS too. (#155)
+- Design and license audit: `docs/design/BinaryRelease.md`. (#155)
+- Release builds report their tag: `docker/release.py` computes the
+  version with the same `git describe` as the CMake build, so a tarball of
+  `v<version>` prints `(v<version>)` and its `--agent` DOCS-WEB links name
+  that tag; a new smoke check, `version-tag`, checks both. The publishing
+  steps (prerelease, `release-test.yml` on GitHub's Ubuntu 24.04 and
+  26.04 runners, promotion) are in docs/Release.md, "Publishing a binary
+  release". (#162)
+
+### Performance
+- Canonical sums and n-ary sums, measured on 44 firedancer and vcc jobs
+  that take more than 5 s (z3, 3 seeds): `--solver-nary-sums` is neutral
+  under z3's default pipeline (its first simplify flattens anyway), and
+  with the custom tactic S2 it solves 132 of 132 runs against 130 of 132.
+  The `canonical` profile solves 132 of 132 runs against 130 of 132 with
+  the defaults, with a total time of -40%. Slower: `h2fc-settings-proof`
+  (225 to 625 s) and `step-reach-sz` (11 to 45 s); Yices and Bitwuzla are
+  faster or equal. (#156, #157)
+- `txn-mut-writable-nonstrict`: adder bits 246k with the default, 195k
+  with `--vc-canonical-sums`, 86k with `eq=unshared`. (#157)
+- A 4 KiB constant initializer under `--seam` is a DAG of 19 nodes with
+  `mfill`, against 24,889 with one store per byte. z3 takes 1.1 s on a 4
+  KiB skip against 21 s for the store chain. (#148)
+- `termForLog` walks at most 65 nodes; the unused visited set of
+  `contains()` is dropped. The attested perf change of the scoped marks is
+  +0.2% on vcc. (#159)
+- Against v0.5.0, default configuration: on the 90 firedancer hard jobs
+  both versions solve, z3 CPU time, wall time and peak RSS in total are
+  equal (4870 s vs 4871 s CPU); no job moves by more than 5 s. On vcc, CPU
+  time in total is within 4% (the runs shared the machine with other
+  benchmarks, so small differences are noise).
+
+### Fixes
+- `--vc-fold-top-eqs` (on by default) could drop a fact from the query: for
+  a top-level `concat(..) = c` with a part that mentions an object, the
+  other parts were replaced inside their own fact, so `x + y = 7` in
+  `concat(x + y, addr(o)) = c` left the query. The folded query was weaker
+  than the VC: an `unsat` stayed correct and a `sat` failed its replay
+  (`result: unknown`), but a `--smt2` or `--split-smt2` dump could be sat
+  for an external solver on an unsat VC. The fact now stays; other uses
+  are still replaced. No vcc query changes (228 of 228 identical). (#163)
+- `utils/seavc_flags.py`: a failed or timed-out probe of `sea-vc`'s hidden
+  options made query-diff, encoding-diff, cover-diff and memops-equiv
+  compare folded queries without saying so; it is now an error with each
+  tool's error status. (#163)
+- The build and `check-sea` pass with GCC 13 as well as clang 18 (672 of
+  672 tests in both). The compiler no longer decides the shape of the
+  query: the load split in `SeaMRules.hh` and the `smulo` AND in
+  `ExprOverflow.hh` built terms inside one call's arguments, so node ids
+  followed the compiler's argument evaluation order. Verdicts were the same
+  either way. Queries of a GCC build equal those of a clang build (186 of
+  186). About a dozen other sites whose output shape depends only on
+  argument evaluation order remain. (#154)
+- `--z3-logic=QF_BV` on a query with arrays answered a wrong `sat` and the
+  replay then ran out of memory; the query is now refused. (#149)
+- `sea-vc` no longer prints `result: sat` before a replay that then fails.
+  (#150)
+
+### Tests and docs
+- `test/VC/seam/mfill-padded.test`: a 64-entry table of 3-byte fills at
+  stride 4 with the padding byte never written (the shape SeaHorn exports
+  for a table of structs), in sea and seaimp form. docs/Benchmarks.md
+  lists the `mem-fill` and `canary` tags. (#152)
+- Every optional lit feature goes through `build_feature()`;
+  `Tools/lit-build-features.test` fails on a direct
+  `config.available_features.add()`. A Debug run no longer shows
+  `Tools/no-source-paths.test` as unsupported. (#158)
+- `Tools/no-source-paths.test` (lit feature `release-build`) checks that
+  the five tools contain no source or build path. (#153)
+- The addr-range semantics oracle in `unittests/AddrRange` models ARM's
+  stride-1 index provenance, which its contract allows; the old evaluator
+  rejected allowed cases (47 of 100000 random cases under clang). A pinned
+  regression pair is added. (#154)
+- New design notes: `docs/design/CanonicalSums.md`,
+  `docs/design/BinaryRelease.md`; `docs/design/MemFill.md` gains the
+  `mfill` term. (#151, #155, #148)
+
 ## 0.5.0
 
 A minor release: the solver pins change (a dependency switch with behaviour
