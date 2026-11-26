@@ -135,9 +135,11 @@ public:
   void set_nary_bv(bool on) { d_nary_bv = on; }
   bool nary_bv() const { return d_nary_bv; }
 
-  /// \p e with the inlined array definitions substituted (what the solver
-  /// knows an inlined constant as): apply before evaluating in the model
-  expr::Expr inline_defs(expr::Expr e) { return d_defs.apply(e); }
+  /// \p e as the solver knows it: the inlined array definitions substituted
+  /// and every select over a const-array skeleton expanded (Yices has no
+  /// const-array; the marshaller refuses one). Every term asserted, assumed
+  /// or evaluated in a model passes it.
+  expr::Expr to_solver_term(expr::Expr e) const;
 };
 } // namespace solver
 } // namespace sea

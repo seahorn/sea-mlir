@@ -276,22 +276,19 @@ term_t marshal_yices::encode_term(Expr e, ycache_t &cache, bool naryBv) {
     if (isOpX<REM>(e)) {
       encode_term_fail(e, "Integer remainder not supported in yices");
     }
-    if (!isOpX<CONST_ARRAY>(e)) {
-      t1 = encode_term(e->left(), cache, naryBv);
-    }
+    // Yices has no const-array: its only encoding is a lambda, which a
+    // context neither asserts nor evaluates in a model. The solver expands
+    // every select over one (yices_solver_impl::to_solver_term); one that is
+    // left (an array equality, a whole array value) is refused here.
+    if (isOpX<CONST_ARRAY>(e))
+      encode_term_fail(e, "const-array outside a select: Yices has no "
+                          "const-array (no lambda is passed to Yices)");
+    t1 = encode_term(e->left(), cache, naryBv);
     if (!isOpX<BSEXT>(e) && !isOpX<BZEXT>(e)) {
       t2 = encode_term(e->right(), cache, naryBv);
     }
 
-    if (isOpX<CONST_ARRAY>(e)) {
-      // (const-array sort v) --> lambda i:sort :: v
-      // idea from:
-      // https://github.com/SRI-CSL/yices2/issues/271#issuecomment-664726905
-      type_t indexType = encode_type(e->left());
-      term_t i = yices_new_variable(indexType);
-      term_t v = encode_term(e->right(), cache, naryBv);
-      res = yices_lambda(1, &i, v);
-    } else if (isOpX<AND>(e))
+    if (isOpX<AND>(e))
       res = yices_and2(t1, t2);
     else if (isOpX<OR>(e))
       res = yices_or2(t1, t2);

@@ -60,7 +60,7 @@ To see what a solver receives, use `--smt2`, not a log.
 | `vc.solve` | 1 | `sea-vc` | one solver call of the verdict |
 | `vc.reach` | 2 | `sea-vc` | `--reach`: one target's query (answer, solve time) and replay (status, time); a target a concrete run decided (`via`, `by`) |
 | `vc.store-read` | 3 | `sea-vc` | a memory key read before any write |
-| `yices.const-array` | 2 | `sea-vc` | `--solver=yices`: an assertion in which a const-array survives the select rewrite (yices cannot assert it): their count and the assertion |
+| `yices.const-array` | 2 | `sea-vc` | `--solver=yices`: an assertion in which a const-array survives the select rewrite (the Yices marshaller refuses it: Yices has no const-array): their count and the assertion |
 | `canon.fold` | 2 | all (canonicalize) | one fold of a sea canonicalizer: `assume-true`, `assume-false`, `assert-true`, `assert-false`, `br-merge`, `load-stored` |
 | `fuzz.run` | 1, 2 | `sea-run` | `--fuzz`: start and end (1); each trial that reached new coverage (2) |
 | `warn.<kind>` | 2 | all | one occurrence of a warning |
