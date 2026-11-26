@@ -128,40 +128,56 @@ Expr expandSelectOverConstArray(Expr arr, Expr idx, ExprMap &memo) {
   return res;
 }
 
+} // namespace
+
+bool yices_solver_impl::ConstArraySelects::containsConstArray(Expr e) {
+  if (isOpX<CONST_ARRAY>(e))
+    return true;
+  if (e->arity() == 0)
+    return false;
+  auto it = hasConst.find(e);
+  if (it != hasConst.end())
+    return it->second;
+  bool res = false;
+  for (auto b = e->args_begin(), be = e->args_end(); b != be && !res; ++b)
+    res = containsConstArray(Expr(*b));
+  hasConst[e] = res;
+  return res;
+}
+
 /// -- rewrite every select whose store/ite skeleton bottoms out in a
 /// -- const-array into an ite cascade (exact: the read-over-write and
 /// -- const-array read axioms). Yices has no const-array (a lambda would be
 /// -- its only encoding, and Yices neither asserts nor evaluates terms with
 /// -- lambdas), so the marshaller refuses one; selects over havoc'd
-/// -- (non-const) memories are left untouched.
-Expr rewriteConstArraySelects(Expr e, ExprMap &cache) {
-  if (e->arity() == 0)
+/// -- (non-const) memories are left untouched, and a term without a
+/// -- const-array is returned as is.
+Expr yices_solver_impl::ConstArraySelects::rewrite(Expr e) {
+  if (!containsConstArray(e))
     return e;
-  auto it = cache.find(e);
-  if (it != cache.end())
+  auto it = rewritten.find(e);
+  if (it != rewritten.end())
     return it->second;
 
   ExprVector kids;
   kids.reserve(e->arity());
   bool changed = false;
   for (auto b = e->args_begin(), be = e->args_end(); b != be; ++b) {
-    Expr kid = rewriteConstArraySelects(Expr(*b), cache);
+    Expr kid = rewrite(Expr(*b));
     changed |= (kid.get() != *b);
     kids.push_back(kid);
   }
   Expr res = changed ? e->efac().mkNary(e->op(), kids.begin(), kids.end()) : e;
-  if (isOpX<SELECT>(res) && hasConstArrayLeaf(res->left())) {
+  if (isOpX<SELECT>(res) && hasConstArrayLeaf(res->left(), constLeaf)) {
     ExprMap memo;
     res = expandSelectOverConstArray(res->left(), res->right(), memo);
   }
-  cache[e] = res;
+  rewritten[e] = res;
   return res;
 }
-} // namespace
 
-Expr yices_solver_impl::to_solver_term(Expr e) const {
-  ExprMap rw_cache;
-  return rewriteConstArraySelects(d_defs.apply(e), rw_cache);
+Expr yices_solver_impl::to_solver_term(Expr e) {
+  return d_selects.rewrite(d_defs.apply(e));
 }
 
 bool yices_solver_impl::add(expr::Expr exp) {
@@ -169,10 +185,9 @@ bool yices_solver_impl::add(expr::Expr exp) {
   // -- (Yices has no const-array): inline their definitions, so the selects
   // -- below see the const-array
   exp = d_defs.add(exp);
-  ExprMap rw_cache;
-  exp = rewriteConstArraySelects(exp, rw_cache);
+  exp = d_selects.rewrite(exp);
   // -- debug aid: the assertions in which a const-array survives the
-  // -- rewrite (the marshaller refuses them; see rewriteConstArraySelects)
+  // -- rewrite (the marshaller refuses them; see ConstArraySelects::rewrite)
   if (logConstArray.on(log::Object)) {
     std::vector<Expr> matches;
     expr::filter(
@@ -356,6 +371,7 @@ void yices_solver_impl::pop() {
 void yices_solver_impl::reset() {
   d_defs = ConstArrayDefs();
   d_defScopes.clear();
+  d_selects.clear();
   yices_reset_context(d_ctx);
 }
 

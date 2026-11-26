@@ -10,6 +10,7 @@
 #include "yices.h"
 
 #include <map>
+#include <unordered_map>
 #include <vector>
 
 namespace llvm {
@@ -65,6 +66,26 @@ private:
   /// A push saves the state for pop to restore.
   ConstArrayDefs d_defs;
   std::vector<ConstArrayDefs> d_defScopes;
+
+  /// the select expansion over const-arrays (rewriteConstArraySelects) is a
+  /// pure term -> term function, after the definitions are substituted: its
+  /// memos live as long as the solver (reset clears them), so a replay that
+  /// evaluates many terms over one VC visits each VC node once
+  struct ConstArraySelects {
+    /// term -> it has a CONST_ARRAY node (no: the rewrite returns it)
+    std::unordered_map<expr::Expr, bool> hasConst;
+    /// array skeleton -> it has a const-array leaf (hasConstArrayLeaf)
+    std::unordered_map<expr::Expr, bool> constLeaf;
+    /// term -> its rewrite
+    std::unordered_map<expr::Expr, expr::Expr> rewritten;
+    expr::Expr rewrite(expr::Expr e);
+    bool containsConstArray(expr::Expr e);
+    void clear() {
+      hasConst.clear();
+      constLeaf.clear();
+      rewritten.clear();
+    }
+  } d_selects;
   /// a sat answer stands only if the inlined joins were exact (else unknown)
   SolverResult validate(SolverResult res);
   /// wall-clock limit of a check in ms (0 = none): a watchdog thread stops
@@ -137,9 +158,10 @@ public:
 
   /// \p e as the solver knows it: the inlined array definitions substituted
   /// and every select over a const-array skeleton expanded (Yices has no
-  /// const-array; the marshaller refuses one). Every term asserted, assumed
-  /// or evaluated in a model passes it.
-  expr::Expr to_solver_term(expr::Expr e) const;
+  /// const-array; the marshaller refuses one). Every term assumed or
+  /// evaluated in a model passes it; add() applies the same rewrite after
+  /// d_defs.add.
+  expr::Expr to_solver_term(expr::Expr e);
 };
 } // namespace solver
 } // namespace sea
