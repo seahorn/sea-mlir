@@ -420,7 +420,10 @@ limits are never deferred.
 
 MEMORY: executed in place. Every memory update must be marked `inplace`
 and consume the current version of its chain, else status: error.
-Loads may read earlier versions (they see the current contents).
+Loads, memmove sources and is_modified may read earlier versions: they
+see the current contents (a Mem-SSA no-clobber claim, Memory.md), with the
+warnings interp.load-earlier-version, interp.memmove-earlier-version,
+interp.is-modified-earlier-version.
 Word layouts (`!sea.mem<..., iC, aligned|unaligned>`): a cell is k bytes;
 an input cell is keyed by its start byte. aligned: an access off a word
 boundary, or to an object aligned below k, is an error; unaligned: an

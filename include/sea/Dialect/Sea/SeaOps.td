@@ -729,6 +729,11 @@ def Sea_MemMoveOp : Sea_MemUpdateOp<"memmove", [
   let description = [{
     Reads `src` as it was before the op, so overlap is harmless; `src` may
     be the same version as `mem` or another region of the same type.
+    `src` may also be an earlier version, one already consumed (optimized
+    Mem-SSA, as for sea.load; Memory.md, "Loads of a version after its
+    consumer"): the VC reads that version, the in-place interpreter the
+    current contents (warning interp.memmove-earlier-version), and they
+    agree when the source range was not overwritten since.
   }];
   let arguments = (ins Sea_Mem:$mem, Sea_Index:$addr, Sea_Mem:$src,
                    Sea_Index:$srcAddr, Sea_BV:$len, UnitAttr:$inplace,
@@ -811,6 +816,11 @@ def Sea_IsModifiedOp : Sea_Op<"mem.is_modified", [Pure,
   let description = [{
     A property of the object (as SeaHorn's sea_is_modified): any byte of it,
     since the start of tracking or its last sea.mem.reset_modified.
+    `mem` may be an earlier version (Memory.md, "Loads of a version after
+    its consumer"): the VC reads that version, the in-place interpreter the
+    current modification set (warning interp.is-modified-earlier-version),
+    and they agree when no tracked update or reset changed the object's
+    bit since.
   }];
   let arguments = (ins Sea_Mem:$mem, Sea_Ptr:$ptr);
   let results = (outs I1:$result);

@@ -158,7 +158,12 @@ OriginalReplay replayOriginal(ProgramOp original, ProgramOp lowered,
 /// executed (RunResult::earlierVersionLoads) whose value is a mismatch, or
 /// that a mismatched value depends on (operands, block arguments through
 /// the branches, memory chains included) and whose own value was not
-/// confirmed by the model. In the order first executed.
+/// confirmed by the model; then the memmoves from an earlier version
+/// (earlierVersionMemmoves) that a mismatched value depends on. A memmove
+/// result is a memory value, with none of its own to confirm: a memmove
+/// suspect only may have copied a clobbered cell (not checked per cell).
+/// Each group in the order first executed. A replayed program has no
+/// is_modified (sea-lower-tracking makes it a shadow-memory load).
 llvm::SmallVector<mlir::Operation *>
 noClobberSuspects(const ReplayResult &replay);
 

@@ -1069,7 +1069,8 @@ private:
   /// (a Limit error), never drops a mark.
   bool poisonOverflow = false;
   llvm::DenseMap<Operation *, unsigned> segmentObject;
-  /// RunResult::earlierVersionLoads, as a set
+  /// The ops of RunResult::earlierVersionLoads, earlierVersionMemmoves and
+  /// earlierVersionIsModified, as one set
   llvm::DenseSet<Operation *> earlierVersionSeen;
   llvm::DenseMap<Value, SmallVector<std::string, 2>> valueNames; // weak prints
   llvm::StringMap<Value> named; // name -> most recent definition
@@ -1562,6 +1563,17 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
 
   if (auto im = dyn_cast<IsModifiedOp>(op)) {
     Buffer &buf = *mems.lookup(im.getMem());
+    if (buf.current != im.getMem()) {
+      if (earlierVersionSeen.insert(&op).second)
+        result.earlierVersionIsModified.push_back(&op);
+      if (options.warnEarlierVersion)
+        diag::warn("interp.is-modified-earlier-version",
+                   "is_modified of an earlier memory version: the in-place "
+                   "interpreter reads the current modification set (correct "
+                   "only if no tracked update wrote the object since, as "
+                   "Mem-SSA claims)",
+                   op.getLoc());
+    }
     if (!buf.abstract) {
       error = "modification tracking on placed memory is not supported yet";
       return failure();
@@ -1626,8 +1638,23 @@ LogicalResult Interpreter::execMem(Operation &op, std::string &error) {
     }
   }
   // memmove reads its source before the destination is handed over (the
-  // source may be the same version).
+  // source may be the same version). A source that is an earlier version
+  // reads the current contents, as a load of one does; a range of length 0
+  // reads nothing.
   SmallVector<CellValue> moved;
+  if (auto mv = dyn_cast<MemMoveOp>(op);
+      mv && !skip && !env.lookup(mv.getLen()).isZero() &&
+      mems.lookup(mv.getSrc())->current != mv.getSrc()) {
+    if (earlierVersionSeen.insert(&op).second)
+      result.earlierVersionMemmoves.push_back(&op);
+    if (options.warnEarlierVersion)
+      diag::warn("interp.memmove-earlier-version",
+                 "memmove from an earlier memory version: the in-place "
+                 "interpreter reads the current contents (correct only if "
+                 "the source range was not clobbered since, as Mem-SSA "
+                 "claims)",
+                 op.getLoc());
+  }
   if (auto mv = dyn_cast<MemMoveOp>(op); mv && !skip) {
     Buffer &src = *mems.lookup(mv.getSrc());
     FailureOr<uint64_t> n =
