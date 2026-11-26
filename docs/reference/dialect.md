@@ -1015,8 +1015,9 @@ operation ::= `sea.load` $mem `[` $addr `]` (`align` $align^)? attr-dict `:` qua
 
 The result is an integer, address or pointer whose width is a multiple k
 of the cell width: it is made of the k cells from `addr` on,
-little-endian (the cell at `addr` holds the low bits). Reading an
-earlier version is allowed (see Memory.md).
+little-endian (the cell at `addr` holds the low bits). On a keyed
+memory k is 1: an access is one whole cell. Reading an earlier version
+is allowed (see Memory.md).
 
 `align` (here and on store, memset, memmove; memmove also `src_align`)
 is LLVM's: a promise, in bytes, that the address is a multiple of it.
@@ -2628,8 +2629,9 @@ operation ::= `sea.store` $mem `[` $addr `]` `,` $value (`inplace` $inplace^)? (
               qualified(type($mem)) `,` qualified(type($value))
 ```
 
-The value's width is a multiple k of the cell width; it is written to
-the k cells from `addr` on, little-endian. Returns a new version. With
+The value's width is a multiple k of the cell width (k = 1 on a keyed
+memory); it is written to the k cells from `addr` on, little-endian.
+Returns a new version. With
 `inplace`, promises that `mem` is dead
 afterwards, so the new version may reuse its storage (the interpreter
 accepts only in-place memory updates).
@@ -3310,7 +3312,8 @@ always in index units (bytes, for byte-addressed indices).
 - keyed: a cell of any width at every index unit, keyed by its address.
   Cells are independent: a cell does not cover the bytes after its
   address, so a store at a + 1 leaves the cell at a as it was. An
-  access is one whole cell, and a range op over [d, d + n) acts on the
+  access is one whole cell (a load or store of another width is a
+  verifier error), and a range op over [d, d + n) acts on the
   n cells at d .. d + n - 1. memset's value (one unit) is repeated
   across the cell. It is more storage than the bytes, which is what
   metadata memories want: the offset / size companions of fat pointers

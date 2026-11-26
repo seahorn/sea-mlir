@@ -652,8 +652,9 @@ def Sea_LoadOp : Sea_Op<"load", [Pure, Sea_AddrIndexes<"mem", "addr">]> {
   let description = [{
     The result is an integer, address or pointer whose width is a multiple k
     of the cell width: it is made of the k cells from `addr` on,
-    little-endian (the cell at `addr` holds the low bits). Reading an
-    earlier version is allowed (see Memory.md).
+    little-endian (the cell at `addr` holds the low bits). On a keyed
+    memory k is 1: an access is one whole cell. Reading an earlier version
+    is allowed (see Memory.md).
 
     `align` (here and on store, memset, memmove; memmove also `src_align`)
     is LLVM's: a promise, in bytes, that the address is a multiple of it.
@@ -684,8 +685,9 @@ class Sea_MemUpdateOp<string mnemonic, list<Trait> traits = []> :
 def Sea_StoreOp : Sea_MemUpdateOp<"store"> {
   let summary = "Write a value: m[addr + i := cell i of value]";
   let description = [{
-    The value's width is a multiple k of the cell width; it is written to
-    the k cells from `addr` on, little-endian. Returns a new version. With
+    The value's width is a multiple k of the cell width (k = 1 on a keyed
+    memory); it is written to the k cells from `addr` on, little-endian.
+    Returns a new version. With
     `inplace`, promises that `mem` is dead
     afterwards, so the new version may reuse its storage (the interpreter
     accepts only in-place memory updates).

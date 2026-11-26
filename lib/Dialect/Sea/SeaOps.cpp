@@ -355,7 +355,8 @@ struct FoldConstAssert : OpRewritePattern<AssertOp> {
 /// layout: the load reads back exactly the cells the store wrote (exact,
 /// aligned and unaligned words, keyed cells, shadow memories alike) -- if
 /// the access spans at most 2^w index units (w the index width; a cell is
-/// one unit in exact and keyed layouts, k in k-byte words). A wider
+/// one unit in exact and keyed layouts, k in k-byte words; a keyed access
+/// is one cell, so it always fits). A wider
 /// one wraps around the address space and the store overwrites its own
 /// first cells, so the load reads the later parts (an i32 at a 1-bit
 /// address): not forwarded.
@@ -374,8 +375,7 @@ struct ForwardStoredValue : OpRewritePattern<LoadOp> {
         !isa<IntegerType>(op.getType()))
       return failure();
     auto mt = cast<MemType>(op.getMem().getType());
-    // cells covered times units per cell; a keyed access wider than its
-    // cell covers one unit per cell too
+    // cells covered times units per cell (a keyed access is one cell)
     const uint64_t units =
         uint64_t(bitWidthOf(op.getType()) / mt.getCell().getWidth()) *
         mt.getCellUnits();
@@ -587,14 +587,20 @@ static LogicalResult verifyAccess(Operation *op, MemType mem, Value addr,
 
 /// A value loaded or stored: an integer, address or pointer whose width is a
 /// positive multiple of the cell width (it spans that many consecutive
-/// cells, little-endian).
+/// cells, little-endian). On a keyed memory it is exactly one cell: keyed
+/// cells are independent, a cell does not cover the bytes after its address.
 static LogicalResult verifyCellValue(Operation *op, MemType mem, Type t,
                                      StringRef what) {
   unsigned cell = mem.getCell().getWidth();
-  if ((isa<IntegerType, AddrType, PtrType>(t)) && bitWidthOf(t) % cell == 0)
-    return success();
-  return op->emitOpError() << what << " type " << t << " does not fit cells "
-                           << mem.getCell();
+  bool scalar = isa<IntegerType, AddrType, PtrType>(t);
+  if (scalar && mem.isKeyed() && bitWidthOf(t) != cell)
+    return op->emitOpError()
+           << what << " type " << t << " is not one cell " << mem.getCell()
+           << ": an access of a keyed memory is one whole cell";
+  if (!scalar || bitWidthOf(t) % cell != 0)
+    return op->emitOpError()
+           << what << " type " << t << " does not fit cells " << mem.getCell();
+  return success();
 }
 
 /// `align` (bytes, as LLVM's) is a power of two.
