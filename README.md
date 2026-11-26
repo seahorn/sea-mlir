@@ -107,6 +107,36 @@ which ones a result used.
 See [Why trust it](docs/trust/index.md) and
 [Known limitations](docs/reference/limitations.md).
 
+## 📦 Install
+
+Homebrew, on Linux x86-64 (Ubuntu 24.04 or newer) and macOS arm64
+(macOS 26 or newer), from bottles:
+
+```bash
+brew tap seahorn/seahorn
+brew trust seahorn/seahorn               # Homebrew 7: load the tap's formulae
+brew install seahorn/seahorn/sea-mlir    # sea-vc, sea-run, sea-opt, sea-reduce
+brew install seahorn/seahorn/seahorn     # optional: the SeaHorn C front end
+```
+
+Linux x86-64 tarball, from the
+[latest release](https://github.com/seahorn/sea-mlir/releases/latest)
+(Ubuntu 24.04 or newer):
+
+```bash
+v=0.6.1
+f=sea-mlir-$v-linux-x86_64.tar.gz       # or sea-mlir-bundle-$v-... with SeaHorn
+curl -LO https://github.com/seahorn/sea-mlir/releases/download/v$v/$f
+curl -LO https://github.com/seahorn/sea-mlir/releases/download/v$v/$f.sha256
+sha256sum -c $f.sha256
+sudo apt-get install libgmpxx4ldbl libmpfr6   # the bundle also needs clang-18 python3
+tar -xzf $f && export PATH=$PWD/${f%.tar.gz}/bin:$PATH
+sea-vc --version
+```
+
+There is no macOS tarball. Details, layout and requirements:
+[Getting the binaries](docs/Release.md#getting-the-binaries).
+
 ## ⚓ Build
 
 sea-mlir builds out of tree against an installed LLVM/MLIR (the commit in
