@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.6.1
+
+A patch release of 0.6.0 (docs/Release.md, "Version numbers of the 0.x
+preview"): fixes, and the first version that builds on macOS. The LLVM and
+solver pins are those of 0.6.0. No change is expected to move a verdict of
+a valid program; programs that the stricter verifier now rejects are
+listed below. Triage verdict differences against v0.6.0.
+
+### macOS
+- sea-mlir and its Homebrew formula build on macOS (arm64); the formula's
+  build runs `check-sea`. `mpz_class` gains overloads for `unsigned long
+  long`, which is `uint64_t` on macOS; `utils/build-macos.sh` finds GMP for
+  Bitwuzla and Boost's headers for sea-mlir. (#165)
+- `--mem-limit` on macOS, which refuses any finite `RLIMIT_AS`: `sea-vc`
+  sets no process limit there and warns `vc.mem-limit-unenforced` instead
+  of failing; `sea-reduce-test` and `bench.py` set the cap only where the
+  platform accepts it. The `--max-rss` tests run only where `/proc`
+  exists. (#165)
+- `packaging/homebrew/README.md`, "Bottles: macOS": how to build, test and
+  upload an arm64 bottle. macOS bottles are built by hand and added to the
+  tap after the Linux release; there is no macOS tarball. (#167)
+
+### Fixes
+- `--solver=yices` aborted with "term contains lambdas" when it evaluated
+  a model over a constant memory (`sea.mem.const`), for example in the
+  replay of a sat result. Selects over a constant array are now expanded
+  for evaluated terms as for asserted and assumed ones, and the Yices
+  marshaller refuses a constant array outside a select instead of encoding
+  a lambda. (#171)
+- A load or store on a keyed memory must be exactly one cell; the verifier
+  rejected only widths that were not a multiple of the cell, and the
+  interpreter and the VC read a wider access as consecutive cells.
+  `seaimp.load` and `seaimp.store` follow the same rule.
+  `sea-lower-fat-pointers` (the only producer of keyed memories) reports
+  `fat.mixed-pointer-width` for a pointer of another width than the
+  memory's index, where it produced invalid IR. (#169)
+- `sea-run` warns `interp.memmove-earlier-version` and
+  `interp.is-modified-earlier-version` when a `sea.memmove` source or a
+  `sea.mem.is_modified` operand is an earlier memory version: the
+  interpreter reads the current contents there, the VC the version named.
+  Both stay allowed (SeaHorn exports use them). The replay reports them
+  (`interp.earlier-version-memmoves`, and `earlier-version-memmoves=`,
+  `earlier-version-is-modified=` in `replay.original`), and
+  `no-clobber-violated` names a memmove that a mismatched value depends
+  on. (#168)
+- The unsat smoke program of the release checks was vacuous: its assertion
+  folded away during `--lower` (`merge-asserts.no-assertions`), so
+  `result: unsat` was trivial. The new program keeps its assertion. The
+  smoke checks, `utils/build-macos.sh` and the formula test fail on
+  `no-assertions`. (#170)
+
+### Known limits
+- With `--solver=yices`, evaluating a model over a long store chain over a
+  constant memory is quadratic inside Yices: about 540 s of replay at 2000
+  stores.
+- With Yices, a constant array outside a select (memory equality,
+  `--seam-check`) is still a fatal error, not a refusal with a diagnostic.
+
+### Docs
+- `sea.ptr.nondet`: `sea.ptr.dereferenceable` of its pointer is 0 for
+  every length above 0 and 1 for length 0. (#169)
+
 ## 0.6.0
 
 A minor release: the output of `sea-vc` changes (one settled `result:` line

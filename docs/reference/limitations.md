@@ -2,9 +2,10 @@
 
 ## Scope
 
-- sea-mlir 0.6.0 is a research prototype. The text format of the dialect
+- sea-mlir 0.6.1 is a research prototype. The text format of the dialect
   and the command-line options can change between releases.
-- Linux on x86-64 is the only platform that is built and tested.
+- Linux on x86-64 is the platform the release gates run on. From 0.6.1
+  on, sea-mlir also builds on macOS (arm64) and passes `check-sea` there.
 - z3 is the supported solver. Yices 2 and Bitwuzla work and are
   smoke-tested; Bitwuzla is optional at build time.
 - `sea-vc` checks programs without loops (BMC form). Loops are unrolled to

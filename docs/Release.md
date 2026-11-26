@@ -1,14 +1,16 @@
-# sea-mlir 0.6.0
+# sea-mlir 0.6.1
 
 This release freezes the functionality of sea-mlir so that applications can
 build on a fixed version instead of the development branch. It is a
 research prototype. Expect bugs. There is no promise that the text format of
-the dialect or the options stay compatible across releases. Linux (x86-64)
-is the only platform built and tested. A first macOS build is described in
-[BuildMacOS.md](BuildMacOS.md). This is the first release with binary
-artifacts ([Getting the binaries](#getting-the-binaries)); the plan, the
-decisions and the license audit are in
-[design/BinaryRelease.md](design/BinaryRelease.md).
+the dialect or the options stay compatible across releases. 0.6.1 is a
+patch release of 0.6.0: fixes, and the first version that builds on macOS
+([CHANGELOG.md](../CHANGELOG.md)). Linux (x86-64) is the platform the
+release gates run on. On macOS (arm64), sea-mlir builds from source
+([BuildMacOS.md](BuildMacOS.md)) and as a Homebrew bottle, whose build runs
+`check-sea`. The binary artifacts are in
+[Getting the binaries](#getting-the-binaries); the plan, the decisions and
+the license audit are in [design/BinaryRelease.md](design/BinaryRelease.md).
 
 Every tool prints its version with `--version`. `sea-vc` also prints it as
 the first line of every run (`tool.version:`), so every bug report should
@@ -59,12 +61,14 @@ is part of SeaHorn, not of this release.
 
 ## Getting the binaries
 
-0.6.0 publishes the two Linux x86-64 tarballs below (the standalone
+0.6.1 publishes the two Linux x86-64 tarballs below (the standalone
 `sea-mlir` tarball and the bundle with SeaHorn), each with its `.sha256`
-and `.json` manifest, as assets of the GitHub release `v0.6.0`
+and `.json` manifest, as assets of the GitHub release `v0.6.1`
 ([github.com/seahorn/sea-mlir/releases](https://github.com/seahorn/sea-mlir/releases)).
-The Homebrew tap is not published with this release, and there are no
-macOS binaries.
+The Homebrew tap `seahorn/homebrew-seahorn` carries the formulae with
+Linux x86-64 bottles. There is no macOS tarball; macOS (arm64) bottles of
+`sea-mlir` are built by hand and added to the tap after the Linux release
+([macOS](#macos)).
 
 Every artifact is built by the pipeline in `docker/` (`just binary-release`,
 [design/BinaryRelease.md](design/BinaryRelease.md)) from a clean checkout of
@@ -115,33 +119,44 @@ from `packaging/homebrew`. Three formulae, each with its own bottle:
 
 ```bash
 brew tap seahorn/seahorn
+brew trust seahorn/seahorn                 # Homebrew 7: load the tap's formulae
 brew install seahorn/seahorn/sea-mlir      # the sea-mlir tools
 brew install seahorn/seahorn/seahorn       # with SeaHorn (installs sea-mlir)
 ```
 
-Bottles exist for Linux x86-64 and need glibc 2.38 and a libstdc++ of GCC
-13 or newer (Ubuntu 24.04 or newer). They were built and smoke-tested in
-Docker, installing from bottles only on a clean Homebrew. Status of the
-rest:
-- the tap repository is not created yet and the bottles are not uploaded;
-- the macOS (arm64) bottles are not built: macOS is a follow-up
-  (see below);
-- the formula's `sha256` is a placeholder until the tag exists.
+Homebrew 7 loads the formulae of another tap only once it is trusted
+(`brew trust`).
+
+The tap's Linux x86-64 bottles need glibc 2.38 and a libstdc++ of GCC 13
+or newer (Ubuntu 24.04 or newer). They are built and smoke-tested in
+Docker, installing from bottles only on a clean Homebrew, and the tap's CI
+installs them from bottles on Ubuntu 24.04 and 26.04.
+The `sha256` of `sea-mlir.rb` in this repository is a placeholder until
+the tag exists; the tap's formula carries the tag's tarball and its
+`sha256`. macOS bottles: see below.
 
 ### macOS
 
+0.6.1 is the first version of sea-mlir that builds on macOS (arm64).
 There is no macOS tarball: downloaded by a browser it is quarantined, and
-its unsigned binaries are blocked by Gatekeeper. macOS is to ship as
-Homebrew bottles. Nothing is notarized (that needs a paid Apple Developer
-ID); on arm64 an ad-hoc signature is enough for bottles.
+its unsigned binaries are blocked by Gatekeeper. macOS ships as Homebrew
+bottles. Nothing is notarized (that needs a paid Apple Developer ID); on
+arm64 an ad-hoc signature is enough for bottles.
 
-What exists is a first build from source, [BuildMacOS.md](BuildMacOS.md)
+macOS (arm64) bottles of `sea-mlir` are built by hand on a Mac
+(`packaging/homebrew/README.md`, "Bottles: macOS") and added to the tap
+after the Linux release. A bottle installs on the macOS release it was
+built on and on newer ones; the planned tag is `arm64_tahoe` (macOS 26
+and newer). Its build runs `check-sea`, and the bottle is tested by
+installing it from the bottle only. `seahorn` and `sea-mlir-llvm` have no
+macOS bottle; `sea-mlir-llvm` is built from source as a build dependency
+of `sea-mlir` and is not needed to install the bottle.
+
+A build from source without Homebrew is [BuildMacOS.md](BuildMacOS.md)
 and `utils/build-macos.sh`, which builds LLVM, the solvers, sea-mlir and
 SeaHorn at the pins, runs the tests and a smoke run, and writes logs that
 say what works. Apple Silicon is the expected machine; Intel Macs and
 macOS before 14 were not considered.
-For 0.6.0 the macOS build has not been run; the guide is the starting
-point for a first build.
 
 `sea-vc --mem-limit` is not enforced on macOS (the run warns
 `vc.mem-limit-unenforced`).
@@ -170,7 +185,7 @@ LLVM 24 on, the major version of sea-mlir is the LLVM major it builds on:
 `v24.0.0` is pinned to `llvmorg-24.1.0`, minor versions add features
 within one LLVM major, and patch versions fix bugs or move to a later
 24.1.x. The text format of the dialect can change with each major. Until
-then, the 0.x releases (this one is 0.6.0) are previews pinned to a commit
+then, the 0.x releases (this one is 0.6.1) are previews pinned to a commit
 of LLVM `main`. Between releases the pin moves to a newer LLVM commit about
 once a month.
 `just llvm-drift` prints the pin's age (with an llvm-project checkout,
@@ -545,6 +560,11 @@ affected.
   error (exit 4): the replay check is of bounds, not of separation.
 - `--ptr-mode=address` can be much slower on code that aligns pointers by
   integer arithmetic.
+- With `--solver=yices`, evaluating a model over a long store chain whose
+  leaf is a constant memory (`sea.mem.const`) is quadratic inside Yices:
+  the replay of a chain of 2000 stores took about 540 s. A constant array
+  outside a select (memory equality, `--seam-check` with Yices) is a fatal
+  error, not a refusal with a diagnostic.
 
 ## Defaults are not tuned
 
@@ -610,8 +630,9 @@ correspond to a proved theorem, 41 have a theorem but no conformance
 replay yet, and 26 have no proof. A rule without a proof can still be
 checked per run with `--seam-check`.
 
-For 0.6.0, only the fold of top-level equalities was checked, because it
-is new and on by default:
+0.6.1 adds no SeaM rule and was not checked against the model beyond
+0.6.0. For 0.6.0, only the fold of top-level equalities was checked,
+because it was new and on by default:
 - a code review of `lib/VC/FoldTopEqs.cpp` and its use in `sea-vc`
   against its obligation: the folded query is equisatisfiable with the
   original, and every model extended by the trail replays on the

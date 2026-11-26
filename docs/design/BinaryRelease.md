@@ -4,9 +4,13 @@ Status: v0.6.0 is the first release with binaries. The Linux pipeline
 (`docker/`, `docker/README.md`) builds both artifacts, the standalone
 tarball and the SeaHorn bundle; both may be distributed. The Homebrew
 formulae are in `packaging/homebrew`, and Linux x86_64 bottles are built
-and smoke-tested in Docker (section 3, "Bottles"). v0.6.0 publishes the
-two Linux tarballs as GitHub release assets; the tap repository is not
-published, and macOS has not been built (section 4).
+and smoke-tested in Docker (section 3, "Bottles"). v0.6.0 and v0.6.1
+publish the two Linux tarballs as GitHub release assets. The tap
+`seahorn/homebrew-seahorn` is published with Linux x86_64 bottles of the
+three formulae. v0.6.1 is the first version that builds on macOS (arm64);
+macOS bottles of `sea-mlir` are built by hand and added to the tap after
+the Linux release (`packaging/homebrew/README.md`, "Bottles: macOS";
+section 4).
 
 This note covers three deliverables for the next release of sea-mlir
 together with SeaHorn dev18:
