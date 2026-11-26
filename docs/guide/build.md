@@ -1,8 +1,9 @@
 # Build and install
 
-sea-mlir 0.6.0 is a research prototype. The text format of the dialect and
+sea-mlir 0.6.1 is a research prototype. The text format of the dialect and
 the command-line options can change between releases. Linux on x86-64 is
-the only platform that is built and tested.
+the platform the release gates run on. From 0.6.1 on, sea-mlir also builds
+on macOS (arm64) and passes `check-sea` there.
 
 ## Dependencies
 
@@ -51,7 +52,7 @@ pin, z3, Bitwuzla and Yices at their pins, sea-mlir with `check-sea`
 
 ```console
 $ sea-vc --version
-sea-vc (sea-mlir 0.6.0 (...))
+sea-vc (sea-mlir 0.6.1 (...))
   LLVM/MLIR 24.0.0git at 302c842d6601
   build: Release, assertions on
   z3 5.4.2.0
