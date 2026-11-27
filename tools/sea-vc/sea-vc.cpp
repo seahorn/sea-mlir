@@ -3747,7 +3747,8 @@ OUTPUT (stdout, `key: value` lines):
                                   --ack-relax, without the simplifier)
   vc.fold-top-eqs: facts=<n> term=<n> split=<n> bool=<n> uses=<n>
       rounds=<n> concat-ite=<n> concat-ite-refused=<n> skipped-masked=<n>
-      skipped-untyped=<n> skipped-base=<n>
+      skipped-untyped=<n> skipped-base=<n> re-added=<n>
+      re-added-const=<n>
                                   (fold on: keys substituted, by
                                   kind (T = c, concat parts, Boolean
                                   constants); operand uses replaced; rounds
@@ -3763,7 +3764,13 @@ OUTPUT (stdout, `key: value` lines):
                                   that mentions an object outside a memory
                                   read (the objects' addresses are stated
                                   at the boundary; step 2 eliminates them
-                                  after it);
+                                  after it); facts re-added
+                                  after the last round (a fact replaced in
+                                  a round in which no conjunct stated it,
+                                  and stated by none at the end: kept so
+                                  the query stays equivalent; normally 0),
+                                  of them over a constant (step 2 moves
+                                  those to the model trail);
                                   warning
                                   vc.fold-top-eqs-rounds: the round bound
                                   stopped it)
@@ -8547,7 +8554,9 @@ int main(int argc, char **argv) {
             .kv("concat-ite-refused", f.hoistRefused)
             .kv("skipped-masked", f.skippedMasked)
             .kv("skipped-untyped", f.skippedUntyped)
-            .kv("skipped-base", f.skippedBase);
+            .kv("skipped-base", f.skippedBase)
+            .kv("re-added", f.reAdded)
+            .kv("re-added-const", f.reAddedConst);
         r.line("vc.model-trail")
             .brunch(sea::stats::Brunch::Parts)
             .kv("cells", trailCells)

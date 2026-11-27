@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace sea {
@@ -55,6 +56,15 @@ struct FoldTopEqsStats {
   /// facts not used (terms and concat parts): the key mentions an object (a
   /// PTR_SEGMENT) outside a memory read (TopEqFolder::mentionsObject)
   uint64_t skippedBase = 0;
+  /// facts re-added after the last round: a key replaced in a round in
+  /// which no conjunct stated it (its defining conjunct was rewritten into
+  /// another form), and that no conjunct of the result states; normally 0
+  /// (docs/design/FoldTopEqs.md, "Step 1's trail")
+  uint64_t reAdded = 0;
+  /// of those, the facts of a constant (`x = c`, `b`, `!b`): step 2
+  /// eliminates them into the model trail and substitutes their values in
+  /// every other conjunct, the re-added facts included
+  uint64_t reAddedConst = 0;
   /// the round bound stopped the iteration (not a fixpoint)
   bool roundCap = false;
 };
@@ -91,7 +101,11 @@ public:
       : simplify(std::move(simplify)), concatIte(concatIte),
         maxRounds(maxRounds), baseSkip(baseSkip) {}
 
-  /// \p query with every fact substituted; the facts themselves kept
+  /// \p query with every fact substituted; the facts themselves kept. The
+  /// result Q_n satisfies Q_0 <=> trail /\ Q_n, the trail being the facts
+  /// as registered (never rewritten): a fact that was substituted in a
+  /// round without a conjunct stating it, and that no conjunct of Q_n
+  /// states, is a conjunct of the result again (FoldTopEqsStats::reAdded)
   expr::Expr fold(expr::Expr query);
   /// the image of a node of fold's input in its output (for origins)
   expr::Expr image(const expr::Expr &n);
@@ -120,8 +134,13 @@ private:
   /// loses an object by it. A read's value is memory contents: a fact on
   /// it replaces the read, never its index.
   bool mentionsObject(const expr::Expr &e);
-  /// \p e with every key of \p m replaced, memoized in \p cache; counts uses
+  /// \p e with every key of \p m replaced, memoized in \p cache; \p count:
+  /// a substitution of the fold (counts uses, records the keys replaced
+  /// that no conjunct of the round owns in `roundLost`)
   expr::Expr subst(const expr::Expr &e, const Map &m, Cache &cache, bool count);
+  /// the facts of \p lost that no conjunct of \p query states with the
+  /// map's value, as atoms (`k = v`, `b`, `!b`), in the order they were lost
+  expr::ExprVector lostAtoms(const expr::Expr &query);
   /// \p e with the keys in \p own kept (their operands substituted), and
   /// the concats skipped for an object on the way to them (\p path: \p e
   /// is an operand of the defining equation or a part of a concat on it)
@@ -133,8 +152,18 @@ private:
   unsigned maxRounds;
   bool baseSkip;
   FoldTopEqsStats st;
-  /// every key and its value (all rounds)
+  /// every key and its value (all rounds): the trail of the first step
   Map facts;
+  /// the keys owned in the current round (a conjunct states them)
+  std::unordered_set<expr::ENode *> owned;
+  /// the keys replaced in a kept round that did not own them, in order,
+  /// once each
+  std::vector<expr::ENode *> lost;
+  std::unordered_set<expr::ENode *> lostSet;
+  /// the same for the current round, merged into `lost` when its result is
+  /// kept
+  std::vector<expr::ENode *> roundLost;
+  std::unordered_set<expr::ENode *> roundLostSet;
   /// mentionsObject per node (the node held)
   std::unordered_map<expr::ENode *, std::pair<expr::Expr, bool>> objMemo;
   /// the map of each round that changed the query, for image()

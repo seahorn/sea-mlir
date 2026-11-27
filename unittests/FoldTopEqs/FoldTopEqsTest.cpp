@@ -29,6 +29,21 @@
 //    defines in its own conjunct (top and nested), so the fold is
 //    equivalent to its input (z3, the object's address as a free value)
 //    and still substitutes the parts elsewhere.
+//  - trail: Q_0 <=> trail /\ Q_n ("Step 1's trail"). A simplifier that rewrites
+//    the defining conjunct of a fact into another form that still holds its
+//    term (injected: `t = c` ~> `t <= c /\ t >= c`, no rule of the rewriter
+//    is known to do this) leaves the fact without an owner in the next
+//    round; the term is replaced there, in that form too. The fact is
+//    re-added (re-added=1) and the fold is z3-equivalent to its input
+//    (unsat stays unsat: x * x = 5 has no solution in 8 bits). A constant's
+//    fact re-added is eliminated by step 2 into its model trail. A fact
+//    whose term only left the query (its conjunct rewritten by another
+//    fact) is not re-added (re-added=0). Two lost facts, a constant's
+//    (x = 5) and one whose term holds it (x * x = 9): both are re-added,
+//    and step 2 substitutes x in the other (unsat kept; the term's fact
+//    without x's is sat). Also lost: b (b ~> !!b), !b (!b ~> b -> false),
+//    a concat part; the round bound (2 rounds); and a concat on a part's
+//    path holding another value (nothing lost, the conjunct false).
 //
 //===----------------------------------------------------------------------===//
 
@@ -410,6 +425,223 @@ void testConcatKept() {
   }
 }
 
+/// z3: \p a <=> \p b
+bool equiv(ExprFactory &efac, const Expr &a, const Expr &b) {
+  sea::solver::z3_solver_impl s(efac);
+  s.add(mk<NEG>(mk<EQ>(a, b)));
+  return s.check() == SolverResult::UNSAT;
+}
+
+SolverResult check(ExprFactory &efac, const Expr &e) {
+  sea::solver::z3_solver_impl s(efac);
+  s.add(e);
+  return s.check();
+}
+
+const char *res(SolverResult r) {
+  return r == SolverResult::SAT     ? "sat"
+         : r == SolverResult::UNSAT ? "unsat"
+                                    : "unknown";
+}
+
+/// a simplifier that rewrites the conjunct \p from (`t = c`) into `t <= c
+/// /\ t >= c`: equivalent, holds t, and is no fact the fold reads
+sea::TopEqFolder::Simplify splitEq(const Expr &from) {
+  Expr t = from->left(), c = from->right();
+  Expr to = mk<AND>(mk<BULE>(t, c), mk<BUGE>(t, c));
+  return [from, to](Expr e) { return replaceAll(e, from, to); };
+}
+
+/// An injected simplifier over the top-level conjuncts, one pass per call:
+/// a rule fires when all its `from` conjuncts are present, and replaces them
+/// by its `to` conjuncts (each conjunct used by one rule at most). Each rule
+/// is an equivalence; none of them is a rule of the rewriter.
+using ConjRule = std::pair<std::vector<Expr>, std::vector<Expr>>;
+sea::TopEqFolder::Simplify conjRules(std::vector<ConjRule> rules) {
+  return [rules](Expr e) {
+    ExprVector cs;
+    std::vector<Expr> stack{e};
+    while (!stack.empty()) {
+      Expr c = stack.back();
+      stack.pop_back();
+      if (isOpX<AND>(c))
+        for (size_t i = c->arity(); i-- > 0;)
+          stack.push_back(c->arg(i));
+      else
+        cs.push_back(c);
+    }
+    std::set<ENode *> used;
+    ExprVector added;
+    for (const ConjRule &r : rules) {
+      bool all = true;
+      for (const Expr &f : r.first)
+        all &= llvm::is_contained(cs, f) && !used.count(f.get());
+      if (!all)
+        continue;
+      for (const Expr &f : r.first)
+        used.insert(f.get());
+      added.insert(added.end(), r.second.begin(), r.second.end());
+    }
+    ExprVector out;
+    for (const Expr &c : cs)
+      if (!used.count(c.get()))
+        out.push_back(c);
+    out.insert(out.end(), added.begin(), added.end());
+    if (out.empty())
+      return mk<TRUE>(e->efac());
+    return out.size() == 1 ? out[0] : mknary<AND>(out.begin(), out.end());
+  };
+}
+
+/// fold \p in with \p simp (at most \p rounds rounds); print and check
+/// z3 equivalence and the re-added counts
+void trailCase(ExprFactory &efac, const char *name, const Expr &in,
+               sea::TopEqFolder::Simplify simp, uint64_t reAdded,
+               uint64_t reAddedConst, unsigned rounds = 64) {
+  sea::TopEqFolder f(std::move(simp), sea::ConcatIte::Numeral, rounds);
+  Expr out = f.fold(in);
+  bool eq = equiv(efac, in, out);
+  llvm::outs() << "trail: " << name << " re-added=" << f.stats().reAdded
+               << " const=" << f.stats().reAddedConst
+               << " cap=" << f.stats().roundCap << " equiv=" << eq << "\n";
+  CHECK(eq, std::string("trail: ") + name + ": equivalent to its input");
+  CHECK(f.stats().reAdded == reAdded && f.stats().reAddedConst == reAddedConst,
+        std::string("trail: ") + name + ": re-added counts");
+}
+
+void testTrail() {
+  ExprFactory efac;
+  auto name = [&](const char *n) { return mkTerm<std::string>(n, efac); };
+  auto n8 = [&](long v) { return op::bv::bvnum(mpz_class(v), 8, efac); };
+  Expr x = op::bv::bvConst(name("x"), 8), z = op::bv::bvConst(name("z"), 8);
+  // a term: x * x = 5 /\ x * x < 9, unsat
+  {
+    Expr t = mk<BMUL>(x, x);
+    Expr fact = mk<EQ>(t, n8(5));
+    Expr in = mk<AND>(fact, mk<BULT>(t, n8(9)));
+    sea::TopEqFolder f(splitEq(fact));
+    Expr out = f.fold(in);
+    bool eq = equiv(efac, in, out);
+    llvm::outs() << "trail: term re-added=" << f.stats().reAdded
+                 << " rounds=" << f.stats().rounds
+                 << " in=" << res(check(efac, in))
+                 << " out=" << res(check(efac, out)) << " equiv=" << eq << "\n";
+    CHECK(f.stats().reAdded == 1 && f.stats().reAddedConst == 0,
+          "trail: term: the lost fact is re-added");
+    CHECK(eq, "trail: term: the fold is equivalent to its input");
+    CHECK(check(efac, out) == SolverResult::UNSAT, "trail: term: unsat kept");
+  }
+  // a constant: x = 5 /\ x < 9; re-added, then step 2 takes it into the
+  // model trail
+  {
+    Expr fact = mk<EQ>(x, n8(5));
+    Expr in = mk<AND>(fact, mk<BULT>(x, n8(9)), mk<BULT>(z, x));
+    sea::TopEqFolder f(splitEq(fact));
+    Expr out = f.fold(in);
+    sea::TopConstEliminator elim;
+    Expr q2 = elim.eliminate(out);
+    bool onTrail = false;
+    for (const sea::TrailEntry &e : elim.trail())
+      onTrail |= e.var == x && e.value == n8(5);
+    bool eq = equiv(efac, in, out);
+    llvm::outs() << "trail: const re-added=" << f.stats().reAdded
+                 << " equiv=" << eq << " step2-trail=" << onTrail
+                 << " step2-mentions=" << mentions(q2, x) << "\n";
+    CHECK(f.stats().reAdded == 1 && f.stats().reAddedConst == 1,
+          "trail: const: the lost fact is re-added");
+    CHECK(eq, "trail: const: the fold is equivalent to its input");
+    CHECK(onTrail && !mentions(q2, x),
+          "trail: const: step 2 moves it to the model trail");
+  }
+  // two lost facts, one of a constant that the other's term holds:
+  // x * x = 9 /\ x <= 5 /\ x >= 5, unsat (x = 5, 25 != 9). Injected, one
+  // pass per call: x * x = 9 ~> x * x <= 9 /\ x * x >= 9, x <= 5 /\ x >= 5
+  // ~> x = 5, and x = 5 ~> x <= 5 /\ x >= 5. The second round replaces x * x
+  // (lost), the third round replaces x (lost). Kept alone, x * x = 9 is sat (x
+  // = 3); with x = 5 re-added too, step 2 substitutes 5 for x in it: 5 * 5 = 9,
+  // false
+  {
+    Expr t = mk<BMUL>(x, x);
+    Expr in = mk<AND>(mk<EQ>(t, n8(9)), mk<BULE>(x, n8(5)), mk<BUGE>(x, n8(5)));
+    Expr eqT = mk<EQ>(t, n8(9)), eqX = mk<EQ>(x, n8(5));
+    Expr le = mk<BULE>(x, n8(5)), ge = mk<BUGE>(x, n8(5));
+    auto simp = conjRules({{{eqT}, {mk<BULE>(t, n8(9)), mk<BUGE>(t, n8(9))}},
+                           {{le, ge}, {eqX}},
+                           {{eqX}, {le, ge}}});
+    sea::TopEqFolder f(simp);
+    Expr out = f.fold(in);
+    sea::TopConstEliminator elim;
+    Expr q2 = elim.eliminate(out);
+    bool eq = equiv(efac, in, out);
+    // the term's fact alone with Q_n (the constant's dropped, not
+    // substituted): what step 2 must not send
+    Expr termOnly = replaceAll(out, eqX, mk<TRUE>(efac));
+    llvm::outs() << "trail: two re-added=" << f.stats().reAdded
+                 << " const=" << f.stats().reAddedConst << " equiv=" << eq
+                 << " step2=" << res(check(efac, q2))
+                 << " term-only=" << res(check(efac, termOnly))
+                 << " step2-mentions=" << mentions(q2, x) << "\n";
+    CHECK(f.stats().reAdded == 2 && f.stats().reAddedConst == 1,
+          "trail: two: both facts re-added, one of a constant");
+    CHECK(eq, "trail: two: the fold is equivalent to its input");
+    CHECK(check(efac, q2) == SolverResult::UNSAT && !mentions(q2, x),
+          "trail: two: step 2 substitutes x in the kept term fact");
+  }
+  Expr b = bind::boolConst(name("b")), y = op::bv::bvConst(name("y"), 8);
+  Expr y1 = mk<EQ>(y, n8(1));
+  // lost b: b ~> !!b (no fact); the next round replaces b in it
+  trailCase(efac, "bool", mk<AND>(b, mk<OR>(mk<NEG>(b), y1)),
+            conjRules({{{b}, {mk<NEG>(mk<NEG>(b))}}}), 1, 1);
+  // lost !b: !b ~> (b -> false)
+  trailCase(efac, "not-bool", mk<AND>(mk<NEG>(b), mk<OR>(b, y1)),
+            conjRules({{{mk<NEG>(b)}, {mk<IMPL>(b, mk<FALSE>(efac))}}}), 1, 1);
+  // lost concat part: concat(x, z) = 0x0102 ~> x <= 1 /\ x >= 1 /\ z = 2;
+  // x is lost (z keeps its fact, the concat's term left the query)
+  {
+    Expr cxz = mk<BCONCAT>(x, z);
+    Expr k = op::bv::bvnum(mpz_class(0x0102L), 16, efac);
+    trailCase(efac, "concat-part", mk<AND>(mk<EQ>(cxz, k), mk<BULT>(x, n8(3))),
+              conjRules({{{mk<EQ>(cxz, k)},
+                          {mk<BULE>(x, n8(1)), mk<BUGE>(x, n8(1)),
+                           mk<EQ>(z, n8(2))}}}),
+              1, 1);
+  }
+  // the round bound: [x * x = 5] with 2 rounds; the second round replaces
+  // x * x in the rewritten conjunct and is the last (unsat kept)
+  {
+    Expr fact = mk<EQ>(mk<BMUL>(x, x), n8(5));
+    trailCase(efac, "cap", fact, splitEq(fact), 1, 0, /*rounds=*/2);
+  }
+  // a path concat holding another value: concat(x, z) = 0x0102 first, then
+  // concat(x, z) = 0x0103 /\ ...: the second states x = 1 (the map's value)
+  // but not the concat, so its concat is replaced, x with it, and the
+  // conjunct is 0x0102 = 0x0103 (false); nothing lost
+  {
+    Expr cxz = mk<BCONCAT>(x, z);
+    Expr k2 = op::bv::bvnum(mpz_class(0x0102L), 16, efac),
+         k3 = op::bv::bvnum(mpz_class(0x0103L), 16, efac);
+    trailCase(
+        efac, "path-mismatch",
+        mk<AND>(mk<EQ>(cxz, k2), mk<EQ>(cxz, k3), mk<BULT>(x, n8(3))),
+        [](Expr e) { return e; }, 0, 0);
+  }
+  // normal: x = 3 /\ x * z = 7 /\ x * z < 9. The first round rewrites the
+  // second conjunct to 3 * z = 7 (x substituted in it): x * z leaves the query
+  // and is replaced nowhere after; nothing is re-added
+  {
+    Expr t = mk<BMUL>(x, z);
+    Expr in = mk<AND>(mk<EQ>(x, n8(3)), mk<EQ>(t, n8(7)), mk<BULT>(t, n8(9)));
+    sea::TopEqFolder f([](Expr e) { return e; });
+    Expr out = f.fold(in);
+    bool eq = equiv(efac, in, out);
+    llvm::outs() << "trail: normal re-added=" << f.stats().reAdded
+                 << " rounds=" << f.stats().rounds << " equiv=" << eq << "\n";
+    CHECK(f.stats().reAdded == 0, "trail: normal: nothing re-added");
+    CHECK(!mentions(out, t), "trail: normal: x * z left the query");
+    CHECK(eq, "trail: normal: the fold is equivalent to its input");
+  }
+}
+
 int main() {
   testShared();
   llvm::outs() << "test: shared ok\n";
@@ -423,6 +655,8 @@ int main() {
   llvm::outs() << "test: ptr-facts ok\n";
   testConcatKept();
   llvm::outs() << "test: concat-kept ok\n";
+  testTrail();
+  llvm::outs() << "test: trail ok\n";
   llvm::outs() << "failures: " << failures << "\n";
   return failures ? 1 : 0;
 }

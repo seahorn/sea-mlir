@@ -9,6 +9,10 @@
 // observations"; docs/design/PtrSegment.md, "What F2 does then").
 // concat-kept: a concat fact skipped for an object keeps the parts it
 // defines in its own conjunct; the fold is z3-equivalent to its input.
+// trail: a fact whose defining conjunct a rewrite turned into another form
+// holding its term (injected) is re-added after the last round; the fold
+// stays z3-equivalent (Q_0 <=> trail /\ Q_n); a constant's goes to step 2's
+// model trail; a fact whose term left the query is not re-added.
 RUN: sea-fold-top-eqs-test | FileCheck %s
 CHECK: shared: mode=numeral concat-ite=47 refused=0
 CHECK: test: shared ok
@@ -36,6 +40,16 @@ CHECK: test: ptr-facts ok
 CHECK: concat-kept: top equiv=1 part-uses=1
 CHECK: concat-kept: nested equiv=1 x-uses=1 y-uses=1
 CHECK: test: concat-kept ok
+CHECK: trail: term re-added=1 rounds={{[0-9]+}} in=unsat out=unsat equiv=1
+CHECK: trail: const re-added=1 equiv=1 step2-trail=1 step2-mentions=0
+CHECK: trail: two re-added=2 const=1 equiv=1 step2=unsat term-only=sat step2-mentions=0
+CHECK: trail: bool re-added=1 const=1 cap=0 equiv=1
+CHECK: trail: not-bool re-added=1 const=1 cap=0 equiv=1
+CHECK: trail: concat-part re-added=1 const=1 cap=0 equiv=1
+CHECK: trail: cap re-added=1 const=0 cap=1 equiv=1
+CHECK: trail: path-mismatch re-added=0 const=0 cap=0 equiv=1
+CHECK: trail: normal re-added=0 rounds={{[0-9]+}} equiv=1
+CHECK: test: trail ok
 CHECK: failures: 0
 
 // SPDX-FileCopyrightText: 2026 The sea-mlir Authors

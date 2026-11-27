@@ -65,7 +65,9 @@ and comparisons fold), concats whose parts are numerals and ites on one
 condition become ites of concats (`concat-ite`, below), and the round
 repeats until the query does not change, collecting new facts each round
 (`rounds`). A bound of 64 rounds stops it with the warning
-`vc.fold-top-eqs-rounds` (exact either way).
+`vc.fold-top-eqs-rounds` (exact either way). After the last round, a fact
+that lost its defining conjunct is a conjunct again (`re-added`, section
+Step 1's trail; normally none).
 
 ### The concat-ite hoist
 
@@ -191,7 +193,88 @@ part follows from its concat's fact (concat is injective in its parts), a
 Boolean fact b gives b = true. The simplifier and the concat hoist are
 equivalences. Identity is syntactic: T and its occurrences are one
 hash-consed node, so substituting the node is substituting the term. No
-premise, no entry of the assumption ledger, no `assume.*` line.
+premise, no entry of the assumption ledger, no `assume.*` line. Over the
+rounds this is the invariant of the next section.
+
+### Step 1's trail
+
+The trail of step 1 is the map of facts, each key with the value of its
+first definition, as registered: it is never rewritten. With Q_0 the
+query before the fold and Q_n after the last round:
+
+    Q_0  <=>  trail /\ Q_n
+
+Each round, under the trail, the substitution is an equivalence, the
+simplifier and the hoist are equivalences, and the facts a round adds
+follow from its query. The trail itself is not sent to the solver: extra
+atoms can trigger solver heuristics, and normally Q_n implies it.
+
+Q_n alone can be weaker. Ownership is decided each round from the forms
+`factsOf` reads (`T = c` either side, the parts of a concat equation, `b`,
+`!b`); `keep()` protects only this round's owners. If the simplifier
+turned a defining conjunct `T = c` into another form that still holds T,
+the next round would find no owner and replace T inside that form too, and
+`T = c` would be in no conjunct. Example (an injected rewrite, i8): [x*x =
+5] is unsat; the first round maps x*x := 5; a rewrite `T = c ~> T <= c /\
+T >= c` gives [x*x <= 5, x*x >= 5]; the second round gives [5 <= 5, 5 >=
+5], sat.
+
+So the result is Q_n /\ L, L the facts *lost*: replaced in a kept round in
+which no conjunct owned them, and stated by no conjunct of Q_n
+(`re-added`). Q_n /\ L <=> Q_0: in a round, a key replaced where it has an
+owner is stated by that owner (its own keys replaced inside it are keys of
+the round, again owned or lost: by induction on the term). An owner of a
+concat part whose path concat holds another value in the map does not keep
+the part: the conjunct does not own that concat, a key, so it is replaced
+(owned elsewhere or lost), the part with it, and the conjunct becomes an
+equation of two different numerals, false; the implication holds. A key
+replaced without an owner is in L, and a key replaced nowhere changes
+nothing; so the round's result with L implies every fact it replaced and
+is equivalent to the round's input with L. The last round, whose result is
+the query it started from, is dropped with its lost keys: the invariant is
+over the kept rounds, and Q_n is the last kept query. A fact a conjunct of
+Q_n states follows from Q_n and is not added. A fact of a term that only
+left the query (its defining conjunct rewritten through another fact, `x *
+z = 7` becoming `3 * z = 7` under x = 3) is not lost, unless later
+rewriting makes the node again; then it is replaced without an owner and
+re-added.
+
+A lost fact whose term is a constant (`x = c`, `b`, `!b`;
+`re-added-const`) is added like the others; step 2 removes it into the
+model trail, so no solver sees it and a model extends by it
+(`TrailModel`). A lost fact over a non-constant term reaches the solver:
+dropping it is what makes Q_n weaker.
+
+Dropping a constant's fact and extending the model by x := c is exact only
+if x occurs nowhere in what is sent: not in Q_n, not in another re-added
+fact. Example (injected rewrites, i8): [x*x = 9, x <= 5, x >= 5] is unsat;
+the first round maps x*x := 9 and the rewrites give [x*x <= 9, x*x >= 9, x
+= 5]; the second round maps x := 5 and a rewrite gives back [x <= 5, x >=
+5]; the third round replaces x. Both facts are lost; x*x = 9 alone is sat
+(x = 3). Hence the constant's fact is not dropped in step 1 but re-added,
+and step 2 drops it the way it drops every definition: it substitutes c
+for x in every other conjunct, the re-added facts included (5*5 = 9,
+false), and it removes x = c only if no other definition gives x another
+value (first wins in step 1 too: the map holds one value per key). This
+also covers a constant that still occurs in Q_n (possible at the round
+bound, where the last substitution was not simplified to a fixpoint).
+
+Which rewrite loses an owner is not known (a hypothesis that none of the
+present rules does, from reading them): the query is in normal form before
+the fold, the rewriter is deterministic, and it is assumed idempotent on
+normal-form conjuncts (a normal form rewritten again is itself: the
+rewriter is depth-bounded per rule, RW_n, and follows its cache, so this
+is not guaranteed); so a defining conjunct changes in a round only through
+a substitution inside T or the hoist, and either makes a new node of T,
+which leaves the conjunct; the rules at the nodes above T in its conjunct
+(`=`, a concat for a split part, the top `and`) either return a fact on T,
+or a term without T (`bv.eq.*`, SeaM's `eq`: decided, ite push,
+cancellation; `bv.concat.*`: flatten and numeral merge keep T a part, the
+merge of extracts removes it). Rules that apply at T or below it (`ac`,
+`extract`, `ext`, SeaM's read rules) replace T by a new node. The counter
+shows a rule that does: 0 on the 228 vcc jobs (`--lower --widen-memory=8
+--seam`, numeral and all hoists). `sea-fold-top-eqs-test` (trail) injects
+the rewrite above.
 
 Step 2: Q = (x = c) /\ R with x a constant, and Q' = R[x := c]. A model M of
 Q is a model of Q' (x = c in M). A model M' of Q' extended by x := c is a
@@ -318,7 +401,8 @@ options passed on: the parts get the default.
 ## Counters
 
 `vc.fold-top-eqs: facts= term= split= bool= uses= rounds= concat-ite=
-concat-ite-refused= skipped-masked= skipped-untyped= skipped-base=` and `vc.model-trail: cells= defs= rounds=`
+concat-ite-refused= skipped-masked= skipped-untyped= skipped-base= re-added=
+re-added-const=` and `vc.model-trail: cells= defs= rounds=`
 (stdout, stderr with `--smt2`):
 
 - `facts`: distinct keys registered (facts found) (term + split + bool);
@@ -327,6 +411,11 @@ concat-ite-refused= skipped-masked= skipped-untyped= skipped-base=` and `vc.mode
 - `concat-ite`: distinct concats made ites, inner ones included;
   `concat-ite-refused`: top concats the hoist applies to and
   `--vc-fold-concat-ite=numeral` refused;
+- `re-added`: lost facts added to the result after the last round (section
+  Step 1's trail); normally 0, a rule that rewrites a defining conjunct
+  into a non-fact form otherwise;
+- `re-added-const`: of those, facts of a constant (`x = c`, `b`, `!b`);
+  step 2 moves them to the model trail;
 - `cells` / `defs`: trail entries, Ackermann reads / other constants;
   `rounds`: rounds of step 2 that eliminated a constant.
 
