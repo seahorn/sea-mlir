@@ -22,7 +22,7 @@
 // makes it 7: the assertion b * b == 49 folds and the query is false
 // (without the fold the product stays: the rewriter does not see b = 7).
 // FOLD: (assert false)
-// FOLD-STATS: vc.fold-top-eqs: facts={{[1-9][0-9]*}} term={{[1-9][0-9]*}} {{.*}}uses={{[1-9][0-9]*}}
+// FOLD-STATS: vc.fold-top-eqs: facts={{[1-9][0-9]*}} term={{[1-9][0-9]*}} {{.*}}uses={{[1-9][0-9]*}}{{.*}} re-added=0
 // OFF-NOT: (assert false)
 // OFF: (check-sat)
 // FOLD-UNSAT: result: unsat

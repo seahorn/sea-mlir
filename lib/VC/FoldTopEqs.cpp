@@ -16,6 +16,8 @@
 #include "sea/Expr/ExprOpPtr.hh"
 #include "sea/Expr/TypeChecker.hh"
 
+#include "llvm/ADT/STLFunctionalExtras.h"
+
 #include <algorithm>
 #include <unordered_set>
 
@@ -48,10 +50,15 @@ bool isNumeral(const Expr &e) { return op::bv::isBvNum(e); }
 using Map = std::unordered_map<ENode *, std::pair<Expr, Expr>>;
 
 /// \p e with every key of \p m replaced, memoized in \p cache; \p uses
-/// (optional) counts the (parent, operand) pairs replaced
-Expr substMap(const Expr &e, const Map &m, Map &cache, uint64_t *uses) {
-  if (auto it = m.find(e.get()); it != m.end())
+/// (optional) counts the (parent, operand) pairs replaced; \p onKey
+/// (optional) is called with each key replaced
+Expr substMap(const Expr &e, const Map &m, Map &cache, uint64_t *uses,
+              llvm::function_ref<void(ENode *)> onKey = nullptr) {
+  if (auto it = m.find(e.get()); it != m.end()) {
+    if (onKey)
+      onKey(e.get());
     return it->second.second;
+  }
   // post-order, explicit stack (VC terms are deep)
   std::vector<std::pair<ENode *, bool>> stack{{e.get(), false}};
   while (!stack.empty()) {
@@ -78,6 +85,8 @@ Expr substMap(const Expr &e, const Map &m, Map &cache, uint64_t *uses) {
         k = it->second.second;
         if (uses)
           ++*uses;
+        if (onKey)
+          onKey(a);
       } else {
         k = cache.at(a).second;
       }
@@ -432,7 +441,47 @@ void TopEqFolder::factsOf(const Expr &c,
 }
 
 Expr TopEqFolder::subst(const Expr &e, const Map &m, Cache &cache, bool count) {
-  return substMap(e, m, cache, count ? &st.uses : nullptr);
+  if (!count)
+    return substMap(e, m, cache, nullptr);
+  // a key replaced while no conjunct of the round states it: its fact may
+  // be in no conjunct after the round (FoldTopEqs.md, "Step 1's trail")
+  return substMap(e, m, cache, &st.uses, [&](ENode *k) {
+    if (!owned.count(k) && roundLostSet.insert(k).second)
+      roundLost.push_back(k);
+  });
+}
+
+ExprVector TopEqFolder::lostAtoms(const Expr &query) {
+  ExprVector atoms;
+  if (lost.empty())
+    return atoms;
+  // the keys the conjuncts state with the map's value (factsOf, its skip
+  // counters left as the rounds set them)
+  ExprVector conj;
+  conjuncts(query, conj);
+  std::unordered_set<ENode *> stated;
+  const FoldTopEqsStats saved = st;
+  std::vector<std::tuple<Expr, Expr, Kind>> fs;
+  for (const Expr &c : conj) {
+    fs.clear();
+    factsOf(c, fs);
+    for (auto &[k, v, kind] : fs)
+      if (auto it = facts.find(k.get());
+          it != facts.end() && it->second.second == v)
+        stated.insert(k.get());
+  }
+  st = saved;
+  for (ENode *k : lost) {
+    if (stated.count(k))
+      continue;
+    const auto &[key, v] = facts.at(k);
+    if (isVar(key))
+      ++st.reAddedConst;
+    atoms.push_back(isOpX<TRUE>(v)    ? key
+                    : isOpX<FALSE>(v) ? mk<NEG>(key)
+                                      : mk<EQ>(key, v));
+  }
+  return atoms;
 }
 
 Expr TopEqFolder::keep(const Expr &e, const std::vector<ENode *> &own,
@@ -470,6 +519,9 @@ Expr TopEqFolder::fold(Expr query) {
     // fixes a key to another value is substituted: false)
     std::vector<std::vector<ENode *>> own(conj.size());
     std::vector<std::tuple<Expr, Expr, Kind>> fs;
+    owned.clear();
+    roundLost.clear();
+    roundLostSet.clear();
     for (size_t i = 0; i < conj.size(); ++i) {
       fs.clear();
       factsOf(conj[i], fs);
@@ -481,8 +533,10 @@ Expr TopEqFolder::fold(Expr query) {
              : kind == Kind::Split ? st.splitFacts
                                    : st.boolFacts);
         }
-        if (it->second.second == v)
+        if (it->second.second == v) {
           own[i].push_back(k.get());
+          owned.insert(k.get());
+        }
       }
     }
     // substitute (one cache over the round), then simplify
@@ -497,12 +551,30 @@ Expr TopEqFolder::fold(Expr query) {
     Expr h = hoistConcatItes(q, concatIte, st);
     if (h != q)
       q = simplify(h);
+    // a round whose result is the query it started from is dropped, and so
+    // are its lost keys: the invariant is over the kept rounds only (Q_0 <=>
+    // Q_r /\ L_r, L_r the facts lost in rounds 0 .. r-1), and Q_n is the
+    // last kept query, not this round's substitution of it. A loss of a
+    // kept round is never missed: each kept round merges its own here
     if (q == query)
       break;
+    for (ENode *k : roundLost)
+      if (lostSet.insert(k).second)
+        lost.push_back(k);
     ++st.rounds;
     roundMaps.push_back(facts);
     query = q;
   }
+  // the invariant Q_0 <=> trail /\ Q_n: a fact replaced in a round that did
+  // not state it, and that Q_n does not state, is a conjunct again (as
+  // registered, not rewritten; FoldTopEqs.md, "Step 1's trail")
+  ExprVector atoms = lostAtoms(query);
+  st.reAdded = atoms.size();
+  if (!atoms.empty()) {
+    atoms.insert(atoms.begin(), query);
+    query = boolop::land(atoms, query->efac());
+  }
+  owned.clear();
   imageCaches.assign(roundMaps.size(), Cache());
   return query;
 }
